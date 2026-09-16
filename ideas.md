@@ -130,6 +130,22 @@ To support wide platform coverage, OpenShip requires an abstraction layer that s
 
 ---
 
+## Resource Identity Tracking
+
+When the agent creates concrete cloud resources from abstract objects, it must maintain a persistent mapping between the two so engineers can later reference, modify, or delete specific resources.
+
+**Core Concept:** Every abstract object (job, deployment, load balancer) created by the agent is assigned a unique OpenShip identifier. When the corresponding concrete resource is provisioned, the mapping is recorded: `openship://job-abc123 → aws_ecs_service.my-service`.
+
+**Key Capabilities:**
+- **Traceability:** Engineers can see which cloud resources were created by which OpenShip objects
+- **Targeted operations:** The agent can find and modify specific resources without ambiguity
+- **Cross-platform consistency:** Same tracking mechanism works whether resources are on AWS, GCP, Azure, or elsewhere
+- **Versioned history:** Mappings are tracked in Git, enabling rollback and change history
+
+**Implementation:** See [architects.md](./architects.md) for detailed architecture including state management, tagging conventions, and execution context handling.
+
+---
+
 ## Terminology: Workflow vs. Job
 
 **Workflow (OpenShip's Process):**
@@ -145,6 +161,64 @@ To support wide platform coverage, OpenShip requires an abstraction layer that s
 - Users can create jobs as discrete units of automation.
 
 This distinction avoids ambiguity between OpenShip's orchestration process and the automation tasks it generates or manages.
+
+---
+
+## Workflow Templates as First-Class Objects
+
+OpenShip supports multiple workflow templates, each modeling a distinct DevOps problem pattern as a state machine. The document-driven build flow (requirements → design → plan → execute) is one template; other templates handle different problem types.
+
+**Workflow Templates:**
+
+- **Provision/Build:** Linear, deterministic flow — requirements → design → validate → implement. The primary template described in existing ideas.
+- **Investigation/Debug:** Non-linear, exploratory — observe symptom → gather telemetry → hypothesize → test hypothesis → fix. Multiple branches and loop-backs.
+- **CI/CD Creation:** Iterative with testing — define job → generate code → test run → debug → validate.
+- **Additional patterns:** Optimization, migration, cost analysis, and more as needed.
+
+**Template Selection:**
+
+- Engineer selects or describes the task type.
+- OpenShip loads the appropriate workflow template (state machine graph).
+- Same agent core, same tools, same abstraction layer — different orchestration logic per problem type.
+
+**Workflow Inputs/Outputs:**
+
+- Each workflow template has optional inputs (parameters) and outputs (results).
+- Inputs may include: target environment, scope, constraints, existing artifacts.
+- Outputs may include: generated code, execution results, reports, recommendations.
+
+**Workflow Composition:**
+
+- Workflows can invoke other workflows as sub-agents to complete dependent tasks.
+- A primary workflow delegates specific steps to specialized sub-workflows, receives results, and continues.
+- Example: An investigation workflow may invoke a build workflow to test a proposed fix.
+- This enables building complex automation from reusable, simpler building blocks.
+
+**Benefits:**
+
+- **Reusability:** Workflow templates can be shared, versioned, and reused across projects.
+- **Extensibility:** New problem types are addressed by adding new templates, not rebuilding the agent.
+- **Modularity:** Complex tasks decompose into manageable, testable workflow units.
+- **Consistency:** All workflows operate on the same abstraction layer, ensuring interoperability.
+
+---
+
+## New Project UI: Simple Entry Points
+
+The new project page offers two big, simple buttons:
+- **[Describe your project]** — Start with a text-based requirements document.
+- **[Build with Diagram]** — Start with a visual diagram.
+
+**Diagram Entry Flow:**
+- Users begin with basic shapes (square, diamond, circle, oval) and simple connectors (lines, arrows).
+- They write component names or step descriptions inside shapes — no need to select specialized components.
+- This creates a "drafting diagram" (version 0).
+- User clicks **[Review]** to send the draft to the agent.
+- The agent assesses the draft and regenerates a proper diagram (version 1) with correct component visualization.
+
+**Diagram-to-Spec Sync:** While generating the polished diagram (version 1), the agent simultaneously creates or updates a description/specification document. The diagram and spec stay in sync throughout the workflow.
+
+**Benefit:** Lowers the barrier to entry — users can quickly express their ideas without learning the diagram toolbox or selecting the correct component types.
 
 ---
 
