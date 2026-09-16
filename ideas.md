@@ -9,6 +9,7 @@ Recorded ideas, features, and improvements for OpenShip.
 OpenShip is designed as a **co-pilot and enhanced automation tool** for DevOps and platform engineers — **not as a replacement** for them.
 
 **Implications:**
+
 - Engineers remain in control throughout the workflow.
 - The entry point is a requirements document because engineers understand their systems and can articulate what they need.
 - Automation augments human expertise; it does not substitute for it.
@@ -27,7 +28,7 @@ This is the foundational decision that guides all subsequent application design 
 **Multiple Meanings:** The name carries layered significance:
 
 - **Ocean theme:** Connects to the DevOps/container ecosystem (Docker, Kubernetes).
-- **"Ship" as delivery:** In software, "ship" means to release or deliver a product. OpenShip helps teams ship products to production ("Brooklyn" as a metaphor for the live environment).
+- **"Ship" as delivery:** In software, "ship" means to release or deliver a product. OpenShip helps teams ship products to production.
 - **"Open":** Signifies the project is open source, inviting community contribution and collaboration.
 
 ---
@@ -132,11 +133,13 @@ To support wide platform coverage, OpenShip requires an abstraction layer that s
 ## Terminology: Workflow vs. Job
 
 **Workflow (OpenShip's Process):**
+
 - The main flow OpenShip uses to build cloud platforms for engineers.
 - Includes: documentation → diagram → code generation → validation → apply → testing.
 - This is OpenShip's internal orchestration process.
 
 **Job (CI/CD Tasks):**
+
 - Tasks like GitHub Actions, CircleCI, or similar CI/CD pipelines.
 - Represents a set of work that needs to be done on the user's side.
 - Users can create jobs as discrete units of automation.
@@ -200,3 +203,26 @@ The main features of OpenShip, ordered from high-level to detailed:
 8. **Cost Analysis** — Infrastructure cost tracking, optimization, and budget management.
 
 *Note: This hierarchy is preliminary and subject to refinement as the design evolves.*
+
+---
+
+## Git Repository Integration
+
+OpenShip requires comprehensive Git integration at multiple levels:
+
+**Project Versioning:**
+- Each OpenShip project is stored in a Git repository.
+- Version tracking for all project artifacts: documentation, diagrams, agent-generated code, and configuration changes.
+- Enables rollback, history inspection, and change management.
+
+**External Repository Connectivity:**
+- The OpenShip agent platform connects to and works with external Git repositories.
+- Agents can check out application code to inspect, modify, or automate.
+- Agents can add automation (e.g., GitHub Actions workflows) to existing projects.
+- Agents can interact with applications, trigger builds, and work on existing codebases.
+
+**Use Cases:**
+- Track all changes made by the agent over time.
+- Collaborate on projects with version history and branching.
+- Integrate with existing development workflows and CI/CD pipelines.
+- Manage multiple projects with separate version histories.
