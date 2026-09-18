@@ -203,6 +203,84 @@ OpenShip supports multiple workflow templates, each modeling a distinct DevOps p
 
 ---
 
+## Workflow Types & Sharing Model
+
+OpenShip workflows fall into two categories with distinct provenance, UI treatment, and lifecycle.
+
+**Built-in Workflows:**
+
+- Provided and maintained by the OpenShip author/team.
+- Well-tested and highly integrated with the OpenShip UI.
+- Accessible via dedicated main UI menu items, not just the workflow list.
+- Represent core, battle-tested workflow patterns (e.g., provision/build, investigation/debug).
+
+**Custom Workflows:**
+
+- User-defined workflows that follow the general agent UI.
+- Can be described and customized to run any automation task.
+- Created by users for specific, specialized needs.
+- Not integrated into the main UI menu; accessible from the workflow list.
+
+**Workflow Sharing & Registry:**
+
+- Custom workflows can be shared with the broader OpenShip community.
+- The workflow registry is internal to the OpenShip repository.
+- Shared workflows are contributed via Pull Request, delivered alongside OpenShip releases.
+- Before a shared workflow is merged and available to all users, it must pass:
+  - **Security scanning:** Automated checks for vulnerabilities, excessive permissions, and unsafe operations.
+  - **Peer review:** Manual review by maintainers or community contributors to validate correctness, documentation, and design.
+- This model ensures quality, security, and maintainability of shared workflows while keeping the submission process transparent and collaborative.
+
+**Benefits:**
+
+- **Trust:** Built-in workflows provide a reliable baseline for core use cases.
+- **Flexibility:** Custom workflows enable users to solve unique problems.
+- **Quality control:** The PR-based sharing model with security scanning and peer review maintains a high standard for shared workflows.
+- **Community growth:** Users can contribute back to the ecosystem, fostering collaboration and reusability.
+
+---
+
+## Home Page: Chat-First Entry
+
+When users first open OpenShip, the default home page provides a familiar, chat-first experience with workflow visibility.
+
+**Primary Entry — Chat Input:**
+
+- A prominent text input field with a friendly placeholder: "What are you going to do?"
+- User types a natural language query describing their task.
+- The query initiates agent chat and automatically routes to the appropriate workflow based on the query content.
+- This provides the lowest-friction entry point — users can start immediately without navigating menus or selecting templates.
+
+**Workflow Discovery — Template List:**
+
+- Below the chat input, a curated list of available workflow templates is displayed.
+- Users can browse and click on a workflow template to start it directly.
+- This serves users who prefer explicit template selection over chat-based routing.
+- The list may include built-in workflows prominently, with custom/shared workflows accessible through filtering or secondary navigation.
+
+**Transition Model — In-Place Evolution:**
+
+- The home page does not redirect; it evolves in-place into the selected or matched workflow interface.
+- When a user submits a chat query or selects a workflow template, the page smoothly transforms into that workflow's UI.
+- The chat input area transitions into the active conversation for that workflow.
+- This avoids jarring navigation and maintains context — the home page becomes the workflow session.
+
+**Relationship to Workflow Templates:**
+
+- The home page is a router, not a workflow itself. It helps users discover and initiate the appropriate workflow.
+- Once routed, the specific workflow (e.g., the document-driven infrastructure build workflow with requirements and diagrams) proceeds as defined by that template.
+- If no matching workflow is found from the chat query, a general custom workflow is started.
+- This does not conflict with or replace specialized workflows like the infra build flow; it simply provides the entry point.
+
+**Design Goals:**
+
+- **Familiarity:** The chat input mirrors the familiar AI chat interface users already know.
+- **Dual entry paths:** Supports both conversational (chat) and structured (template selection) workflows.
+- **Discovery:** Surfaces available workflows so users learn what OpenShip can do.
+- **Immediate action:** Users can start working within seconds of opening the application.
+
+---
+
 ## New Project UI: Simple Entry Points
 
 The new project page offers two big, simple buttons:
