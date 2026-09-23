@@ -1,9 +1,8 @@
-"""API endpoints for workflow management with SSE streaming."""
+"""API endpoints for workflow management."""
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from openship.workflow import run_workflow
+from openship.workflow import create_workflow, approve_diagram, approve_terraform
 from openship.config import config
 
 router = APIRouter()
@@ -17,42 +16,37 @@ class ApproveRequest(BaseModel):
     pass
 
 
-async def _stream_workflow(req: WorkflowRequest):
-    """Async generator that yields SSE strings from workflow events."""
-    async for event in run_workflow(req.requirements):
-        yield event.to_sse()
-
-
 @router.post("/workflows")
 async def create_new_workflow(req: WorkflowRequest):
-    """Create a new workflow run and stream events."""
-    return StreamingResponse(
-        _stream_workflow(req),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        }
-    )
-
-
-@router.get("/workflows/{run_id}/events")
-async def stream_events_endpoint(run_id: str):
-    """Subscribe to workflow events by run ID."""
-    return {"run_id": run_id, "streaming": True}
+    """Create a new workflow and generate diagram."""
+    run_id, diagram = await create_workflow(req.requirements)
+    return {
+        "run_id": run_id,
+        "step": "diagram_generated",
+        "diagram": diagram
+    }
 
 
 @router.post("/workflows/{run_id}/approve-diagram")
 async def approve_diagram_endpoint(run_id: str, req: ApproveRequest):
-    """Approve the diagram and continue the workflow."""
-    return {"run_id": run_id, "status": "diagram approved"}
+    """Approve the diagram and generate Terraform code."""
+    terraform = await approve_diagram(run_id)
+    return {
+        "run_id": run_id,
+        "step": "terraform_generated",
+        "terraform": terraform
+    }
 
 
 @router.post("/workflows/{run_id}/approve-terraform")
 async def approve_terraform_endpoint(run_id: str, req: ApproveRequest):
-    """Approve the terraform code and continue the workflow."""
-    return {"run_id": run_id, "status": "terraform approved"}
+    """Approve the Terraform code and apply."""
+    output = await approve_terraform(run_id)
+    return {
+        "run_id": run_id,
+        "step": "done",
+        "apply_output": output
+    }
 
 
 @router.get("/config")

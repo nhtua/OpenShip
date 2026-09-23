@@ -10,59 +10,57 @@ from openship.events import WorkflowEvent
 from openship.checkpoints import get_checkpointer
 
 
-async def compile_graph() -> StateGraph:
-    graph = StateGraph(WorkflowState)
-
-    def parse_requirements(state):
-        return {"step": "parsing_requirements", "requirements": state.get("requirements", "")}
-
-    def generate_diagram_node(state):
-        diagram = generate_diagram(state.get("requirements", ""))
-        return {"step": "generating_diagram", "diagram": diagram}
-
-    def generate_terraform_node(state):
-        terraform = generate_terraform(state.get("requirements", ""), state.get("diagram", ""))
-        return {"step": "generating_terraform", "terraform": terraform}
-
-    def apply_terraform_node(state):
-        if config.CLOUD_MOCK or not config.TERRAFORM_APPLY:
-            output = "[Mocked] Running terraform plan\n\nTerraform plan completed successfully."
-        else:
-            output = "Running terraform apply...\n\nApply completed successfully."
-        return {"step": "applying_terraform", "apply_output": output, "done": True}
-
-    graph.add_node("parse_requirements", parse_requirements)
-    graph.add_node("generate_diagram", generate_diagram_node)
-    graph.add_node("generate_terraform", generate_terraform_node)
-    graph.add_node("apply_terraform", apply_terraform_node)
-
-    graph.set_entry_point("parse_requirements")
-    graph.add_edge("parse_requirements", "generate_diagram")
-    graph.add_edge("generate_diagram", "generate_terraform")
-    graph.add_edge("generate_terraform", "apply_terraform")
-    graph.add_edge("apply_terraform", END)
-
-    checkpointer = await get_checkpointer()
-    return graph.compile(checkpointer=checkpointer)
+# Global store for workflow state (in production, use Redis or database)
+workflows = {}
 
 
-async def run_workflow(requirements: str) -> AsyncGenerator[WorkflowEvent, None]:
+async def create_workflow(requirements: str):
+    """Create a new workflow and generate diagram."""
     run_id = str(uuid.uuid4())
-    graph = await compile_graph()
+    workflows[run_id] = create_state()
+    workflows[run_id]["requirements"] = requirements
+    workflows[run_id]["step"] = "generating_diagram"
 
-    config_obj = {"configurable": {"thread_id": run_id}}
+    # Generate diagram
+    diagram = generate_diagram(requirements)
+    workflows[run_id]["diagram"] = diagram
+    workflows[run_id]["step"] = "diagram_generated"
 
-    yield WorkflowEvent(type="stage_start", stage="generating_diagram", message="Generating architecture diagram")
+    return run_id, diagram
 
-    async for chunk in graph.astream({"requirements": requirements}, config=config_obj):
-        for node, data in chunk.items():
-            if node == "generate_diagram":
-                yield WorkflowEvent(type="stage_complete", stage="generating_diagram", data={"diagram": data.get("diagram", "")})
-                yield WorkflowEvent(type="stage_start", stage="generating_terraform", message="Generating Terraform code")
-            elif node == "generate_terraform":
-                yield WorkflowEvent(type="stage_complete", stage="generating_terraform", data={"terraform": data.get("terraform", "")})
-                yield WorkflowEvent(type="stage_start", stage="applying_terraform", message="Applying Terraform")
-            elif node == "apply_terraform":
-                yield WorkflowEvent(type="stage_complete", stage="applying_terraform", data={"output": data.get("apply_output", "")})
 
-    yield WorkflowEvent(type="complete", stage="done", message="Workflow completed")
+async def approve_diagram(run_id: str):
+    """Approve diagram and generate Terraform code."""
+    if run_id not in workflows:
+        return None
+
+    workflow = workflows[run_id]
+    workflow["step"] = "generating_terraform"
+
+    # Generate Terraform
+    terraform = generate_terraform(workflow["requirements"], workflow["diagram"])
+    workflow["terraform"] = terraform
+    workflow["step"] = "terraform_generated"
+
+    return terraform
+
+
+async def approve_terraform(run_id: str):
+    """Approve Terraform and apply."""
+    if run_id not in workflows:
+        return None
+
+    workflow = workflows[run_id]
+    workflow["step"] = "applying_terraform"
+
+    # Apply Terraform
+    if config.CLOUD_MOCK or not config.TERRAFORM_APPLY:
+        output = "[Mocked] Running terraform plan\n\nTerraform plan completed successfully."
+    else:
+        output = "Running terraform apply...\n\nApply completed successfully."
+
+    workflow["apply_output"] = output
+    workflow["step"] = "done"
+    workflow["done"] = True
+
+    return output

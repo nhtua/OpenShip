@@ -9,7 +9,7 @@ class Config:
     # LLM Configuration
     LLM_API_KEY: Optional[str] = os.getenv("OPENS_LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
     LLM_BASE_URL: str = os.getenv("OPENS_LLM_BASE_URL", "http://127.0.0.1:1212/v1")
-    LLM_MODEL: str = os.getenv("OPENS_LLM_MODEL", "meta-llama-3-8b-instruct")
+    LLM_MODEL: str = os.getenv("OPENS_LLM_MODEL", "qwen3.8-27b-turbo-fable-cold-fusion-735-882-heretic-uncensored-neo-coder-max-mtp")
     LLM_PROVIDER: str = os.getenv("OPENS_LLM_PROVIDER", "local")  # openai, anthropic, local
 
     # Cloud Provider Configuration (mocked for testing)

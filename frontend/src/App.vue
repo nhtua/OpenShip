@@ -73,7 +73,22 @@ const stages = [
 
 const activeStage = ref('requirements')
 const completedStages = ref([])
-const requirements = ref('')
+let runId = null
+
+const requirements = ref(`# Web Application Infrastructure
+
+## Requirements
+- Web server load-balanced across 2 instances
+- PostgreSQL database
+- Redis cache
+- All resources in us-east-1
+- Tags: env=production, app=webapp
+
+## Networking
+- Private subnet for database
+- Public subnet for web servers
+- Security groups for each tier
+`)
 const diagramSource = ref('')
 const terraformSource = ref('')
 const applyOutput = ref('')
@@ -108,33 +123,11 @@ async function startWorkflow() {
 
     if (!response.ok) throw new Error('Failed to start workflow')
 
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let currentEvent = null
-    let currentData = []
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value)
-      const lines = buffer.split('\n')
-      buffer = lines.pop()
-
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          currentEvent = line.slice(7)
-        } else if (line.startsWith('data: ')) {
-          currentData.push(line.slice(6))
-        } else if (line === '' && currentEvent) {
-          const data = JSON.parse(currentData.join(''))
-          handleSSEEvent(currentEvent, data)
-          currentEvent = null
-          currentData = []
-        }
-      }
-    }
+    const data = await response.json()
+    runId = data.run_id
+    diagramSource.value = data.diagram || ''
+    completedStages.value.push('requirements')
+    activeStage.value = 'generating_diagram'
   } catch (error) {
     console.error('Workflow error:', error)
   }
@@ -155,16 +148,35 @@ function handleSSEEvent(eventType, data) {
       applyOutput.value = data.data?.output || ''
     }
   } else if (eventType === 'complete') {
+    completedStages.value.push('applying_terraform')
     activeStage.value = 'done'
   }
 }
 
 function approveDiagram() {
-  // Continue to next stage
+  fetch('/api/workflows/' + runId + '/approve-diagram', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  }).then(res => res.json()).then(data => {
+    activeStage.value = 'generating_terraform'
+    if (data.terraform) {
+      terraformSource.value = data.terraform
+    }
+  }).catch(err => console.error('Approve diagram error:', err))
 }
 
 function approveTerraform() {
-  // Continue to next stage
+  fetch('/api/workflows/' + runId + '/approve-terraform', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  }).then(res => res.json()).then(data => {
+    activeStage.value = 'applying_terraform'
+    if (data.apply_output) {
+      applyOutput.value = data.apply_output
+    }
+  }).catch(err => console.error('Approve terraform error:', err))
 }
 
 function reset() {
@@ -173,6 +185,7 @@ function reset() {
   diagramSource.value = ''
   terraformSource.value = ''
   applyOutput.value = ''
+  runId = null
 }
 </script>
 
