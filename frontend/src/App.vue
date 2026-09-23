@@ -111,6 +111,8 @@ async function startWorkflow() {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let currentEvent = null
+    let currentData = []
 
     while (true) {
       const { done, value } = await reader.read()
@@ -122,8 +124,14 @@ async function startWorkflow() {
 
       for (const line of lines) {
         if (line.startsWith('event: ')) {
-          const eventType = line.slice(7)
-          handleSSEEvent(eventType, lines)
+          currentEvent = line.slice(7)
+        } else if (line.startsWith('data: ')) {
+          currentData.push(line.slice(6))
+        } else if (line === '' && currentEvent) {
+          const data = JSON.parse(currentData.join(''))
+          handleSSEEvent(currentEvent, data)
+          currentEvent = null
+          currentData = []
         }
       }
     }
@@ -132,15 +140,13 @@ async function startWorkflow() {
   }
 }
 
-function handleSSEEvent(eventType, lines) {
-  let dataLine = lines.find(l => l.startsWith('data: '))
-  if (!dataLine) return
-
-  const data = JSON.parse(dataLine.slice(6))
+function handleSSEEvent(eventType, data) {
+  console.log('SSE Event:', eventType, data)
 
   if (eventType === 'stage_start') {
     activeStage.value = data.stage
   } else if (eventType === 'stage_complete') {
+    completedStages.value.push(data.stage)
     if (data.stage === 'generating_diagram') {
       diagramSource.value = data.data?.diagram || ''
     } else if (data.stage === 'generating_terraform') {
