@@ -1,0 +1,130 @@
+<h2>Frontend Component Design</h2>
+<p class="subtitle">Vue3 components and their responsibilities</p>
+
+<div class="section">
+  <h3>Components</h3>
+  <div class="mockup">
+    <div class="mockup-header">Frontend component architecture</div>
+    <div class="mockup-body">
+      <table style="width:100%; font-size:0.9rem; border-collapse:collapse;">
+        <tr style="border-bottom:1px solid #333;">
+          <th style="text-align:left; padding:8px; color:#4af62c;">Component</th>
+          <th style="text-align:left; padding:8px; color:#4af62c;">Responsibility</th>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>App.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Main app, layout, routing</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>WorkflowTimeline.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Vertical stage timeline with status indicators</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>StageItem.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Single stage: label, status dot, connecting line</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>StageContent.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Right-side content area for active stage</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>RequirementsEditor.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Markdown editor for requirements</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>DiagramPreview.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Mermaid diagram rendering with live preview</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>TerraformViewer.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Code viewer for generated Terraform</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>ApplyOutput.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Terraform apply output display</td>
+        </tr>
+        <tr>
+          <td style="padding:8px;"><code>Spinner.vue</code></td>
+          <td style="padding:8px; color:#aaa;">Reusable loading spinner component</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Workflow Timeline Layout</h3>
+  <div class="mockup">
+    <div class="mockup-header">Vertical timeline with left labels and right content</div>
+    <div class="mockup-body">
+      <div style="display:flex; padding:16px; gap:16px;">
+        <!-- Left: Timeline -->
+        <div style="width:180px;">
+          <div style="display:flex; align-items:center; margin-bottom:40px;">
+            <div style="width:12px; height:12px; background:#4af62c; border-radius:50%; margin-right:8px;"></div>
+            <span style="color:#8bc34a; font-size:0.9rem;">Requirements</span>
+          </div>
+          <div style="border-left:2px solid #333; height:40px; margin-left:5px;"></div>
+          <div style="display:flex; align-items:center; margin-bottom:40px;">
+            <div style="width:12px; height:12px; background:#f0f0f0; border-radius:50%; margin-right:8px; border:2px solid #4af62c;"></div>
+            <span style="color:#fff; font-size:0.9rem; font-weight:bold;">Diagram</span>
+            <span style="margin-left:8px; color:#4af62c; font-size:0.8rem;">processing...</span>
+          </div>
+          <div style="border-left:2px solid #333; height:40px; margin-left:5px;"></div>
+          <div style="display:flex; align-items:center; margin-bottom:40px;">
+            <div style="width:12px; height:12px; background:#333; border-radius:50%; margin-right:8px;"></div>
+            <span style="color:#666; font-size:0.9rem;">Terraform</span>
+          </div>
+          <div style="border-left:2px solid #333; height:40px; margin-left:5px;"></div>
+          <div style="display:flex; align-items:center;">
+            <div style="width:12px; height:12px; background:#333; border-radius:50%; margin-right:8px;"></div>
+            <span style="color:#666; font-size:0.9rem;">Apply</span>
+          </div>
+        </div>
+        <!-- Right: Content -->
+        <div style="flex:1; background:#1e1e1e; border-radius:8px; padding:16px;">
+          <div style="color:#888; font-size:0.8rem; text-transform:uppercase; margin-bottom:8px;">Current Stage: Diagram</div>
+          <div style="color:#4af62c; font-size:0.9rem; margin-bottom:8px;">⚡ Generating architecture diagram...</div>
+          <div style="color:#666; font-size:0.8rem;">LLM is processing your requirements. This may take a moment.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>SSE Event Handling</h3>
+  <div class="mockup">
+    <div class="mockup-header">Frontend SSE client pattern</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#e0e0e0; padding:16px; border-radius:8px; font-size:0.85rem;">
+// Establish SSE connection
+const eventSource = new EventSource(
+  `/api/workflows/${runId}/events`
+);
+
+eventSource.addEventListener("stage_start", (e) => {
+  const data = JSON.parse(e.data);
+  updateStageStatus(data.stage, "in_progress");
+  showSpinner(data.stage);
+});
+
+eventSource.addEventListener("stage_complete", (e) => {
+  const data = JSON.parse(e.data);
+  updateStageStatus(data.stage, "complete");
+  hideSpinner(data.stage);
+  if (data.data.diagram) {
+    renderDiagram(data.data.diagram);
+  }
+});
+
+eventSource.addEventListener("complete", () => {
+  eventSource.close();
+  markWorkflowComplete();
+});
+      </pre>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle">Does the frontend component design look correct?</p>

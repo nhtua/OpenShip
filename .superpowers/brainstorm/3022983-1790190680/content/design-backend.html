@@ -1,0 +1,100 @@
+<h2>Backend Component Design</h2>
+<p class="subtitle">Detailed component architecture for the backend</p>
+
+<div class="section">
+  <h3>Components</h3>
+  <div class="mockup">
+    <div class="mockup-header">Backend modules and their responsibilities</div>
+    <div class="mockup-body">
+      <table style="width:100%; font-size:0.9rem; border-collapse:collapse;">
+        <tr style="border-bottom:1px solid #333;">
+          <th style="text-align:left; padding:8px; color:#4af62c;">Module</th>
+          <th style="text-align:left; padding:8px; color:#4af62c;">Responsibility</th>
+          <th style="text-align:left; padding:8px; color:#4af62c;">Key Functions</th>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>api.py</code></td>
+          <td style="padding:8px; color:#aaa;">REST endpoints + SSE streaming</td>
+          <td style="padding:8px; color:#aaa;">create_workflow, stream_events, approve_diagram</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>workflow.py</code></td>
+          <td style="padding:8px; color:#aaa;">LangGraph state machine</td>
+          <td style="padding:8px; color:#aaa;">compile_graph, run_workflow, resume_workflow</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>events.py</code></td>
+          <td style="padding:8px; color:#aaa;">Event types and serialization</td>
+          <td style="padding:8px; color:#aaa;">WorkflowEvent class, to_sse()</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>state.py</code></td>
+          <td style="padding:8px; color:#aaa;">Workflow state definition</td>
+          <td style="padding:8px; color:#aaa;">WorkflowState TypedDict</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;"><code>checkpoints.py</code></td>
+          <td style="padding:8px; color:#aaa;">Checkpoint management</td>
+          <td style="padding:8px; color:#aaa;">get_checkpointer, list_checkpoints</td>
+        </tr>
+        <tr>
+          <td style="padding:8px;"><code>llm.py</code></td>
+          <td style="padding:8px; color:#aaa;">LLM integration</td>
+          <td style="padding:8px; color:#aaa;">generate_diagram, generate_terraform</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Event Types</h3>
+  <div class="mockup">
+    <div class="mockup-header">Events emitted during workflow execution</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#e0e0e0; padding:16px; border-radius:8px; font-size:0.85rem;">
+class WorkflowEvent:
+    type: str  # "stage_start" | "stage_complete" | "llm_thinking" | "error" | "complete"
+    stage: str  # "generating_diagram" | "generating_terraform" | "applying"
+    message: str  # Human-readable description
+    data: dict  # Optional additional data (e.g., diagram source)
+    timestamp: float
+      </pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>SSE Endpoint</h3>
+  <div class="mockup">
+    <div class="mockup-header">Streaming endpoint implementation</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#e0e0e0; padding:16px; border-radius:8px; font-size:0.85rem;">
+@router.get("/workflows/{run_id}/events")
+async def stream_events(run_id: str):
+    async def event_generator():
+        config = {"configurable": {"thread_id": run_id}}
+        async for chunk in graph.astream(req, config=config):
+            event = WorkflowEvent(
+                type="checkpoint",
+                stage=chunk.get("stage", "unknown"),
+                message="Processing...",
+                data=chunk,
+                timestamp=time.time()
+            )
+            yield event.to_sse()
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+      </pre>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle">Does the backend component design look correct?</p>

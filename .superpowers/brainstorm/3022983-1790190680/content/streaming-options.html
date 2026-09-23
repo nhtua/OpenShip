@@ -1,0 +1,101 @@
+<h2>Backend Progress Streaming Options</h2>
+<p class="subtitle">How should the backend communicate LangGraph progress to the frontend?</p>
+
+<div class="section">
+  <h3>Option A: Server-Sent Events (SSE)</h3>
+  <div class="mockup">
+    <div class="mockup-header">Backend pushes events via /api/workflows/{id}/events</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#4af62c; padding:12px; border-radius:6px; font-size:0.8rem;">POST /api/workflows → returns run_id
+GET /api/workflows/{run_id}/events → SSE stream
+
+Event: {type: "stage_start", stage: "generating_diagram"}
+Event: {type: "llm_thinking", stage: "generating_diagram"}
+Event: {type: "stage_complete", stage: "generating_diagram"}
+Event: {type: "stage_start", stage: "generating_terraform"}
+...</pre>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>Pros</h4>
+      <ul>
+        <li>Simple, one-way communication</li>
+        <li>Built into FastAPI and browsers</li>
+        <li>Automatic reconnect support</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>Cons</h4>
+      <ul>
+        <li>One stream per workflow</li>
+        <li>No bidirectional communication</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Option B: WebSocket</h3>
+  <div class="mockup">
+    <div class="mockup-header">Bidirectional socket with persistent connection</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#4af62c; padding:12px; border-radius:6px; font-size:0.8rem;">ws://host/ws/workflows/{run_id}
+
+Backend → Frontend: {stage: "generating_diagram", status: "in_progress"}
+Backend → Frontend: {stage: "generating_diagram", status: "complete"}
+Frontend → Backend: {action: "approve_diagram", run_id: "..."}</pre>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>Pros</h4>
+      <ul>
+        <li>Bidirectional communication</li>
+        <li>Lower latency than SSE</li>
+        <li>Can send approve commands over same channel</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>Cons</h4>
+      <ul>
+        <li>More complex setup</li>
+        <li>Requires WebSocket support in reverse proxy</li>
+        <li>Need to manage connection lifecycle</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Option C: Polling</h3>
+  <div class="mockup">
+    <div class="mockup-header">Frontend polls /api/workflows/{id} every few seconds</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#4af62c; padding:12px; border-radius:6px; font-size:0.8rem;">Every 3 seconds:
+GET /api/workflows/{run_id}
+→ {stage: "generating_diagram", status: "in_progress", message: "Thinking..."}
+
+Backend stores current state in DB, frontend checks periodically.</pre>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>Pros</h4>
+      <ul>
+        <li>Simplest implementation</li>
+        <li>Works with any HTTP setup</li>
+        <li>Easier to debug</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>Cons</h4>
+      <ul>
+        <li>Latency up to poll interval (3s)</li>
+        <li>Wasteful if nothing changes</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle">Which streaming approach do you prefer? My recommendation is SSE for simplicity with real-time updates.</p>

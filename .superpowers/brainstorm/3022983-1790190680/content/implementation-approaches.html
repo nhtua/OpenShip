@@ -1,0 +1,124 @@
+<h2>Implementation Approaches</h2>
+<p class="subtitle">How to integrate SSE streaming with the LangGraph workflow</p>
+
+<div class="section">
+  <h3>Approach 1: Inline SSE with Synchronous Execution</h3>
+  <div class="mockup">
+    <div class="mockup-header">Simple, but blocks during LLM processing</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#4af62c; padding:12px; border-radius:6px; font-size:0.8rem;">@router.get("/workflows/{id}/events")
+async def stream_events(run_id: str):
+    async def event_generator():
+        yield event("stage_start", "generating_diagram")
+        diagram = generate_diagram_llm(requirements)
+        yield event("stage_complete", "generating_diagram")
+        yield event("stage_start", "generating_terraform")
+        terraform = generate_terraform_llm(...)
+        yield event("stage_complete", "generating_terraform")
+    return StreamingResponse(event_generator(), media_type="text/event-stream")</pre>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>Pros</h4>
+      <ul>
+        <li>Simplest implementation</li>
+        <li>Direct control over event emission</li>
+        <li>No state management needed</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>Cons</h4>
+      <ul>
+        <li>Connection must be kept open entire time</li>
+        <li>If client disconnects, no way to resume</li>
+        <li>LLM calls block event emission</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Approach 2: Async Task with Shared State + SSE</h3>
+  <div class="mockup">
+    <div class="mockup-header">LangGraph runs as background task, events via shared state</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#4af62c; padding:12px; border-radius:6px; font-size:0.8rem;"># Backend: Start workflow as async task
+async def run_workflow_background(run_id):
+    graph = compile_langgraph_workflow(on_event=emit_event)
+    result = graph.invoke({"requirements": req})
+    store_result(run_id, result)
+
+# SSE endpoint reads from shared event queue
+@router.get("/workflows/{id}/events")
+async def stream_events(run_id: str):
+    async def event_generator():
+        while True:
+            event = await event_queue.get(run_id)
+            if event.type == "complete":
+                break
+            yield event</pre>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>Pros</h4>
+      <ul>
+        <li>Workflow can run independently</li>
+        <li>Client can reconnect and catch up</li>
+        <li>LLM processing doesn't block event loop</li>
+        <li>More resilient to connection issues</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>Cons</h4>
+      <ul>
+        <li>More complex (requires event queue)</li>
+        <li>Need to manage shared state</li>
+        <li>More moving parts to debug</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Approach 3: LangGraph Checkpointing + SSE Callbacks</h3>
+  <div class="mockup">
+    <div class="mockup-header">Use LangGraph's built-in checkpointing for state persistence</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#4af62c; padding:12px; border-radius:6px; font-size:0.8rem;"># Use LangGraph's checkpoint saver to persist state
+checkpointer = SqliteSaver("checkpoints.db")
+graph = StateGraph(WorkflowState)
+graph.compile(checkpointer=checkpointer)
+
+# Stream events from checkpoint transitions
+@router.get("/workflows/{id}/events")
+async def stream_events(run_id: str):
+    async def event_generator():
+        config = {"configurable": {"thread_id": run_id}}
+        async for chunk in graph.astream(req, config=config):
+            yield event("checkpoint", chunk)</pre>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>Pros</h4>
+      <ul>
+        <li>Uses LangGraph's native streaming</li>
+        <li>State automatically persisted</li>
+        <li>Can resume from any checkpoint</li>
+        <li>Most robust long-term solution</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>Cons</h4>
+      <ul>
+        <li>Requires learning LangGraph's checkpointing API</li>
+        <li>More setup (checkpoint database)</li>
+        <li>Overkill for PoC stage</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle">My recommendation: Approach 2 (Async Task + SSE) balances complexity with real-time updates and resilience. Approach 1 is simplest but less robust.</p>

@@ -1,0 +1,84 @@
+<h2>Error Handling & Testing</h2>
+<p class="subtitle">Robustness and verification strategies</p>
+
+<div class="section">
+  <h3>Error Handling Strategy</h3>
+  <div class="mockup">
+    <div class="mockup-header">Error recovery and retry patterns</div>
+    <div class="mockup-body">
+      <table style="width:100%; font-size:0.9rem; border-collapse:collapse;">
+        <tr style="border-bottom:1px solid #333;">
+          <th style="text-align:left; padding:8px; color:#4af62c;">Error Type</th>
+          <th style="text-align:left; padding:8px; color:#4af62c;">Handling</th>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">LLM API timeout</td>
+          <td style="padding:8px; color:#aaa;">Retry 3x with exponential backoff, then emit error event</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">LLM API error</td>
+          <td style="padding:8px; color:#aaa;">Capture error, emit error event with details, allow resume</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">Terraform validation error</td>
+          <td style="padding:8px; color:#aaa;">Emit error with terraform output, pause for user review</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">SSE connection lost</td>
+          <td style="padding:8px; color:#aaa;">Frontend auto-reconnects, requests missed events from last checkpoint</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">Checkpoint restore failure</td>
+          <td style="padding:8px; color:#aaa;">Log error, start fresh workflow, notify user</td>
+        </tr>
+        <tr>
+          <td style="padding:8px;">Database lock</td>
+          <td style="padding:8px; color:#aaa;">Retry with short delay, log if persistent</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Testing Strategy</h3>
+  <div class="mockup">
+    <div class="mockup-header">Test pyramid for OpenShip</div>
+    <div class="mockup-body">
+      <div style="display:flex; flex-direction:column; align-items:center; gap:8px; padding:16px;">
+        <div style="width:200px; background:#f6e22c; color:#1a1a1a; text-align:center; padding:8px; border-radius:4px; font-size:0.85rem; font-weight:bold;">E2E Tests</div>
+        <div style="width:300px; background:#f6a02c; color:#1a1a1a; text-align:center; padding:8px; border-radius:4px; font-size:0.85rem;">Integration Tests</div>
+        <div style="width:400px; background:#4af62c; color:#1a1a1a; text-align:center; padding:8px; border-radius:4px; font-size:0.85rem; font-weight:bold;">Unit Tests</div>
+      </div>
+      <div style="padding:16px; font-size:0.85rem; color:#aaa;">
+        <p><strong>Unit tests:</strong> Workflow state transitions, event serialization, LLM prompt generation</p>
+        <p><strong>Integration tests:</strong> End-to-end workflow with mock LLM, SSE streaming, checkpoint save/restore</p>
+        <p><strong>E2E tests:</strong> Full workflow with real LLM (optional, slower)</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Mock LLM for Testing</h3>
+  <div class="mockup">
+    <div class="mockup-header">Test double for LLM calls</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#e0e0e0; padding:16px; border-radius:8px; font-size:0.85rem;">
+class MockLLMClient:
+    def generate_diagram(self, requirements):
+        return "graph TD\\nA-->B\\nB-->C"
+
+    def generate_terraform(self, requirements, diagram):
+        return 'resource "aws_instance" "test" {}'
+
+# Use in tests
+workflow = WorkflowEngine(llm_client=MockLLMClient())
+result = workflow.run("Simple web app")
+assert result["diagram"] == "graph TD\\nA-->B\\nB-->C"
+      </pre>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle">Does the error handling and testing strategy look correct?</p>

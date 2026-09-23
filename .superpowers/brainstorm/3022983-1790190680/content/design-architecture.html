@@ -1,0 +1,80 @@
+<h2>Design: OpenShip LangGraph Streaming</h2>
+<p class="subtitle">Architecture overview with LangGraph checkpointing and SSE streaming</p>
+
+<div class="section">
+  <h3>System Architecture</h3>
+  <div class="mockup">
+    <div class="mockup-header">Component diagram</div>
+    <div class="mockup-body">
+      <div style="display:flex; gap:16px; padding:16px;">
+        <!-- Frontend -->
+        <div style="flex:1; background:#2a2a2a; border-radius:8px; padding:16px;">
+          <div style="color:#4af62c; font-weight:bold; margin-bottom:12px;">Frontend (Vue3)</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• Workflow UI</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• EventSource SSE client</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• Mermaid diagram rendering</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• Approval buttons per stage</div>
+        </div>
+        <!-- Backend -->
+        <div style="flex:2; background:#2a2a2a; border-radius:8px; padding:16px;">
+          <div style="color:#4af62c; font-weight:bold; margin-bottom:12px;">Backend (FastAPI)</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• REST API endpoints</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• SSE streaming endpoint</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• LangGraph workflow orchestrator</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• SQLite checkpoint saver</div>
+        </div>
+        <!-- External -->
+        <div style="flex:1; background:#2a2a2a; border-radius:8px; padding:16px;">
+          <div style="color:#4af62c; font-weight:bold; margin-bottom:12px;">External Services</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• LLM API (OpenAI/Ollama)</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• Terraform CLI</div>
+          <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">• Cloud APIs (AWS/GCP)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Data Flow</h3>
+  <div class="mockup">
+    <div class="mockup-header">Request/response flow</div>
+    <div class="mockup-body">
+      <pre style="background:#111; color:#e0e0e0; padding:16px; border-radius:8px; font-size:0.85rem; line-height:1.6;">
+Frontend                Backend                 LangGraph              External
+    |                        |                        |                    |
+    |--POST /workflows------>|                        |                    |
+    |                        |--compile graph------->|                    |
+    |                        |--invoke(req)--------->|                    |
+    |                        |                        |--LLM call--------->|
+    |                        |                        |<--diagram---------|
+    |                        |                        |--checkpoint------>|
+    |                        |<--SSE:stage_complete--|                    |
+    |<--SSE event-----------|                        |                    |
+    |                        |                        |                    |
+    |--GET /workflows/{id}/events------------------>|                    |
+    |<--SSE stream of events|<--astream()-----------|                    |
+    |                        |                        |                    |
+    |--POST /approve-diagram>|                        |                    |
+    |                        |--resume graph------->|                    |
+    |                        |                        |--LLM call--------->|
+    |                        |                        |<--terraform-------|
+    |                        |<--SSE:stage_complete--|                    |
+    |<--SSE event-----------|                        |                    |
+      </pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Key Design Decisions</h3>
+  <ul style="color:#aaa; font-size:0.9rem;">
+    <li><strong>LangGraph StateGraph</strong> for workflow orchestration with explicit state transitions</li>
+    <li><strong>SQLite Checkpoint Saver</strong> for durable state persistence across restarts</li>
+    <li><strong>SSE Streaming</strong> via FastAPI's StreamingResponse for real-time updates</li>
+    <li><strong>Event-driven architecture</strong> with explicit events for stage transitions</li>
+    <li><strong>Separation of concerns</strong>: workflow logic in backend, UI in frontend, no coupling</li>
+  </ul>
+</div>
+
+<p class="subtitle">Does this architecture look correct to you? Let me know before I detail the components.</p>

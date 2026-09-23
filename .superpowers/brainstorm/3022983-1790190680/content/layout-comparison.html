@@ -1,0 +1,76 @@
+<h2>Workflow Progress Layout Options</h2>
+<p class="subtitle">Current layout is horizontal pills at the top. How should we evolve it?</p>
+
+<div class="section">
+  <h3>Current: Horizontal Pills</h3>
+  <div class="mockup">
+    <div class="mockup-header">Current implementation</div>
+    <div class="mockup-body">
+      <div style="display:flex; gap:10px; padding:16px; justify-content:center;">
+        <div style="background:#2d5a27; color:#8bc34a; padding:8px 16px; border-radius:20px; font-size:0.9rem;">Requirements</div>
+        <div style="background:#4af62c; color:#1a1a1a; padding:8px 16px; border-radius:20px; font-size:0.9rem; font-weight:bold;">Diagram</div>
+        <div style="background:#2a2a2a; color:#666; padding:8px 16px; border-radius:20px; font-size:0.9rem;">Terraform</div>
+        <div style="background:#2a2a2a; color:#666; padding:8px 16px; border-radius:20px; font-size:0.9rem;">Apply</div>
+      </div>
+      <div style="padding:16px; text-align:center; color:#666; font-size:0.8rem;">⚠️ Limited space for stage status text</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Option A: Vertical Timeline (Left Labels, Right Content)</h3>
+  <div class="mockup">
+    <div class="mockup-header">Proposed: Vertical layout with status indicators</div>
+    <div class="mockup-body" style="display:flex; padding:16px;">
+      <!-- Left: Stage labels with connecting lines -->
+      <div style="width:180px; margin-right:16px;">
+        <div style="display:flex; align-items:center; margin-bottom:40px;">
+          <div style="width:12px; height:12px; background:#4af62c; border-radius:50%; margin-right:8px;"></div>
+          <span style="color:#8bc34a; font-size:0.9rem;">Requirements</span>
+        </div>
+        <div style="border-left:2px solid #333; height:40px; margin-left:5px;"></div>
+        <div style="display:flex; align-items:center; margin-bottom:40px;">
+          <div style="width:12px; height:12px; background:#f0f0f0; border-radius:50%; margin-right:8px; border:2px solid #4af62c; animation:spin 1s linear infinite;"></div>
+          <span style="color:#fff; font-size:0.9rem; font-weight:bold;">Diagram <small style="color:#4af62c;">processing...</small></span>
+        </div>
+        <div style="border-left:2px solid #333; height:40px; margin-left:5px;"></div>
+        <div style="display:flex; align-items:center; margin-bottom:40px;">
+          <div style="width:12px; height:12px; background:#333; border-radius:50%; margin-right:8px;"></div>
+          <span style="color:#666; font-size:0.9rem;">Terraform</span>
+        </div>
+        <div style="border-left:2px solid #333; height:40px; margin-left:5px;"></div>
+        <div style="display:flex; align-items:center;">
+          <div style="width:12px; height:12px; background:#333; border-radius:50%; margin-right:8px;"></div>
+          <span style="color:#666; font-size:0.9rem;">Apply</span>
+        </div>
+      </div>
+      <!-- Right: Content area -->
+      <div style="flex:1; background:#1e1e1e; border-radius:8px; padding:16px; min-height:200px;">
+        <div style="color:#888; font-size:0.8rem; text-transform:uppercase; margin-bottom:8px;">Current Stage: Diagram</div>
+        <div style="color:#4af62c; font-size:0.9rem; margin-bottom:8px;">⚡ Generating architecture diagram from requirements...</div>
+        <div style="color:#666; font-size:0.8rem;">This may take a few moments while the LLM processes your requirements.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Option B: Horizontal with Expandable Stage Panels</h3>
+  <div class="mockup">
+    <div class="mockup-header">Alternative: Keep horizontal, expand active stage</div>
+    <div class="mockup-body" style="padding:16px;">
+      <div style="display:flex; gap:10px; margin-bottom:16px;">
+        <div style="background:#2d5a27; color:#8bc34a; padding:8px 16px; border-radius:20px; font-size:0.9rem;">✓ Requirements</div>
+        <div style="background:#4af62c; color:#1a1a1a; padding:8px 16px; border-radius:20px; font-size:0.9rem; font-weight:bold;">⚡ Diagram</div>
+        <div style="background:#2a2a2a; color:#666; padding:8px 16px; border-radius:20px; font-size:0.9rem;">Terraform</div>
+        <div style="background:#2a2a2a; color:#666; padding:8px 16px; border-radius:20px; font-size:0.9rem;">Apply</div>
+      </div>
+      <div style="background:#1e1e1e; border-radius:8px; padding:16px;">
+        <div style="color:#888; font-size:0.8rem; text-transform:uppercase; margin-bottom:8px;">Stage Status</div>
+        <div style="color:#4af62c; font-size:0.9rem;">⚡ Generating architecture diagram from requirements...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle">Which layout direction do you prefer? Option A matches your description of vertical stages with labels on the left.</p>

@@ -1,0 +1,68 @@
+<h2>Migrating from Approach 2 to Approach 3</h2>
+<p class="subtitle">How hard is it to upgrade later?</p>
+
+<div class="section">
+  <h3>Migration Effort: Moderate</h3>
+  <div class="mockup">
+    <div class="mockup-header">What changes, what stays the same</div>
+    <div class="mockup-body">
+      <table style="width:100%; font-size:0.9rem; border-collapse:collapse;">
+        <tr style="border-bottom:1px solid #333;">
+          <th style="text-align:left; padding:8px;">Component</th>
+          <th style="text-align:left; padding:8px;">Approach 2</th>
+          <th style="text-align:left; padding:8px;">Approach 3</th>
+          <th style="text-align:left; padding:8px;">Change?</th>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">SSE Endpoint</td>
+          <td style="padding:8px;">Custom generator</td>
+          <td style="padding:8px;">LangGraph astream()</td>
+          <td style="padding:8px; color:#f6e22c;">Yes</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">State Management</td>
+          <td style="padding:8px;">In-memory + DB</td>
+          <td style="padding:8px;">LangGraph checkpoint</td>
+          <td style="padding:8px; color:#f6e22c;">Yes</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">LangGraph Graph Code</td>
+          <td style="padding:8px;">StateGraph(...)</td>
+          <td style="padding:8px;">StateGraph(...)</td>
+          <td style="padding:8px; color:#8bc34a;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid #333;">
+          <td style="padding:8px;">Frontend SSE Client</td>
+          <td style="padding:8px;">EventSource API</td>
+          <td style="padding:8px;">EventSource API</td>
+          <td style="padding:8px; color:#8bc34a;">No</td>
+        </tr>
+        <tr>
+          <td style="padding:8px;">Event Format</td>
+          <td style="padding:8px;">Custom JSON</td>
+          <td style="padding:8px;">LangGraph chunks</td>
+          <td style="padding:8px; color:#f6e22c;">Yes</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Estimated Migration Effort</h3>
+  <p><span style="color:#f6e22c; font-weight:bold;">~1-2 days of development</span></p>
+  <ul>
+    <li>Replace custom event queue with LangGraph's astream()</li>
+    <li>Add checkpoint saver (SqliteSaver or PostgresSaver)</li>
+    <li>Update SSE endpoint to yield LangGraph chunks</li>
+    <li>Update frontend to handle LangGraph's event format</li>
+    <li>Test resumption from checkpoints</li>
+  </ul>
+</div>
+
+<div class="section">
+  <h3>Key Consideration</h3>
+  <p>Approach 3 provides <span style="color:#4af62c;">resume capability</span> (restart from last checkpoint after crash). Approach 2 must restart the entire workflow. If you plan to run long workflows (30+ min), Approach 3 is worth starting with directly.</p>
+</div>
+
+<p class="subtitle">Given your PoC is quick workflows, Approach 2 is fine for now. Migration to 3 later is straightforward.</p>
