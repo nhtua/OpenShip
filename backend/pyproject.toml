@@ -1,0 +1,23 @@
+[project]
+name = "openship"
+version = "0.1.0"
+description = "OpenShip agentic DevOps workflow engine"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.0",
+    "langchain>=0.2.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "pydantic>=2.6.0",
+    "sqlalchemy>=2.0.0",
+]
+
+[project.scripts]
+openship = "openship.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openship"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

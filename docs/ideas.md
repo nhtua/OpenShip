@@ -142,7 +142,7 @@ When the agent creates concrete cloud resources from abstract objects, it must m
 - **Cross-platform consistency:** Same tracking mechanism works whether resources are on AWS, GCP, Azure, or elsewhere
 - **Versioned history:** Mappings are tracked in Git, enabling rollback and change history
 
-**Implementation:** See [architects.md](./architects.md) for detailed architecture including state management, tagging conventions, and execution context handling.
+**Implementation:** See [docs/architects.md](./docs/architects.md) for detailed architecture including state management, tagging conventions, and execution context handling.
 
 ---
 
