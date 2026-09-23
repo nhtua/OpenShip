@@ -3,100 +3,55 @@
     <header class="header">
       <h1>OpenShip</h1>
       <p>Agentic DevOps Workflow</p>
-      <div class="config-info">
-        <span class="config-item">
-          <span class="config-label">Cloud:</span>
-          {{ config.cloud_provider }} ({{ config.cloud_region }})
-        </span>
-        <span class="config-item">
-          <span class="config-label">LLM:</span>
-          {{ config.llm_provider }}/{{ config.llm_model }}
-        </span>
-      </div>
     </header>
 
-    <div class="workflow">
-      <!-- Step indicator -->
-      <div class="steps">
-        <div
-          v-for="step in steps"
-          :key="step"
-          class="step"
-          :class="{
-            active: currentStep === step,
-            completed: completedSteps.includes(step)
-          }"
-        >
-          {{ step }}
-        </div>
-      </div>
-
-      <!-- Requirements Step -->
-      <div v-if="currentStep === 'Requirements'" class="step-panel">
-        <h2>Requirements Document</h2>
-        <p>Describe the infrastructure you want to build.</p>
-        <md-editor
-          v-model="requirements"
-          theme="dark"
-          preview-theme="dark"
+    <div class="workflow-layout">
+      <div class="timeline-sidebar">
+        <WorkflowTimeline
+          :stages="stages"
+          :active-stage="activeStage"
+          :completed-stages="completedStages"
         />
-        <button class="btn btn-primary" @click="generateDiagram">
-          Generate Diagram
-        </button>
       </div>
 
-      <!-- Diagram Step -->
-      <div v-if="currentStep === 'Diagram'" class="step-panel">
-        <h2>Architecture Diagram</h2>
-        <div class="editor-container">
-          <div class="editor-pane">
-            <h3>Diagram Source</h3>
-            <textarea
-              v-model="diagramSource"
-              class="code-editor"
-              spellcheck="false"
-            ></textarea>
-          </div>
-          <div class="preview-pane">
-            <h3>Preview</h3>
+      <div class="content-area">
+        <div v-if="activeStage === 'requirements'" class="stage-panel">
+          <h2>Requirements</h2>
+          <textarea v-model="requirements" class="requirements-editor" rows="10"
+                    placeholder="Describe your infrastructure requirements..."></textarea>
+          <button class="btn btn-primary" @click="startWorkflow">Generate</button>
+        </div>
+
+        <div v-else-if="activeStage === 'generating_diagram'" class="stage-panel">
+          <h2>Generating Diagram</h2>
+          <p v-if="!diagramSource">Waiting for diagram...</p>
+          <div v-else class="diagram-container">
             <div ref="mermaidPreview" class="mermaid-preview"></div>
           </div>
+          <button v-if="diagramSource" class="btn btn-primary" @click="approveDiagram">Approve Diagram</button>
         </div>
-        <div class="step-actions">
-          <button class="btn" @click="approveDiagram">Approve Diagram</button>
-        </div>
-      </div>
 
-      <!-- Terraform Step -->
-      <div v-if="currentStep === 'Terraform'" class="step-panel">
-        <h2>Terraform Code</h2>
-        <div class="editor-container">
-          <div class="editor-pane">
-            <h3>Terraform Source</h3>
-            <textarea
-              v-model="terraformSource"
-              class="code-editor"
-              spellcheck="false"
-            ></textarea>
+        <div v-else-if="activeStage === 'generating_terraform'" class="stage-panel">
+          <h2>Generating Terraform</h2>
+          <p v-if="!terraformSource">Waiting for Terraform code...</p>
+          <div v-else class="terraform-container">
+            <pre>{{ terraformSource }}</pre>
+          </div>
+          <button v-if="terraformSource" class="btn btn-primary" @click="approveTerraform">Approve Terraform</button>
+        </div>
+
+        <div v-else-if="activeStage === 'applying_terraform'" class="stage-panel">
+          <h2>Applying Terraform</h2>
+          <p v-if="!applyOutput">Applying...</p>
+          <div v-else class="output-container">
+            <pre>{{ applyOutput }}</pre>
           </div>
         </div>
-        <div class="step-actions">
-          <button class="btn btn-primary" @click="approveTerraform">
-            Approve & Apply
-          </button>
-        </div>
-      </div>
 
-      <!-- Apply Step -->
-      <div v-if="currentStep === 'Apply'" class="step-panel">
-        <h2>Applying Terraform</h2>
-        <div class="output-panel">
-          <pre>{{ applyOutput }}</pre>
-        </div>
-        <div class="step-actions" v-if="workflowComplete">
-          <button class="btn btn-primary" @click="resetWorkflow">
-            Start New Workflow
-          </button>
+        <div v-else-if="activeStage === 'done'" class="stage-panel">
+          <h2>Complete</h2>
+          <p>Workflow completed successfully!</p>
+          <button class="btn btn-primary" @click="reset">Start New</button>
         </div>
       </div>
     </div>
@@ -105,450 +60,131 @@
 
 <script setup>
 import { ref, watch, onMounted, nextTick } from 'vue'
-import { MdEditor } from 'md-editor-v3'
-import 'md-editor-v3/lib/style.css'
+import WorkflowTimeline from './components/WorkflowTimeline.vue'
 import mermaid from 'mermaid'
 
-// Workflow state
-const currentStep = ref('Requirements')
-const completedSteps = ref([])
-const steps = ['Requirements', 'Diagram', 'Terraform', 'Apply']
+const stages = [
+  { id: 'requirements', label: 'Requirements' },
+  { id: 'generating_diagram', label: 'Diagram' },
+  { id: 'generating_terraform', label: 'Terraform' },
+  { id: 'applying_terraform', label: 'Apply' },
+  { id: 'done', label: 'Complete' }
+]
 
-// Data
-const requirements = ref(`# Web Application Infrastructure
-
-## Requirements
-- Web server load-balanced across 2 instances
-- PostgreSQL database
-- Redis cache
-- All resources in us-east-1
-- Tags: env=production, app=webapp
-
-## Networking
-- Private subnet for database
-- Public subnet for web servers
-- Security groups for each tier
-`)
-
+const activeStage = ref('requirements')
+const completedStages = ref([])
+const requirements = ref('')
 const diagramSource = ref('')
 const terraformSource = ref('')
 const applyOutput = ref('')
-const workflowComplete = ref(false)
 
-let runId = null
-const config = ref({
-  cloud_provider: 'aws',
-  cloud_region: 'us-east-1',
-  llm_provider: 'openai',
-  llm_model: 'gpt-4',
-  terraform_backend: 'local',
-})
-
-async function fetchConfig() {
-  try {
-    const response = await fetch('/api/config')
-    config.value = await response.json()
-  } catch (error) {
-    console.error('Error fetching config:', error)
-  }
-}
-
-// Initialize mermaid
 onMounted(() => {
-  mermaid.initialize({
-    theme: 'dark',
-    startOnLoad: false,
-  })
-  fetchConfig()
+  mermaid.initialize({ theme: 'dark' })
 })
 
-async function generateDiagram() {
+watch(diagramSource, async () => {
+  if (diagramSource.value) {
+    await nextTick()
+    const preview = document.querySelector('.mermaid-preview')
+    if (preview) {
+      preview.innerHTML = ''
+      try {
+        const { svg } = await mermaid.render('diagram', diagramSource.value)
+        preview.innerHTML = svg
+      } catch (e) {
+        preview.innerHTML = '<div class="error">' + e.message + '</div>'
+      }
+    }
+  }
+})
+
+async function startWorkflow() {
   try {
-    // Create workflow
     const response = await fetch('/api/workflows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requirements: requirements.value }),
-    })
-    const data = await response.json()
-    runId = data.run_id
-
-    // Simulate diagram generation (in PoC, we use a hardcoded diagram)
-    diagramSource.value = `graph TD
-    A[User] --> B[Load Balancer]
-    B --> C[Web Server 1]
-    B --> D[Web Server 2]
-    C --> E[Database]
-    D --> E
-    C --> F[Redis Cache]
-    D --> F`
-
-    currentStep.value = 'Diagram'
-    completedSteps.value.push('Requirements')
-
-    // Render mermaid after step change
-    await nextTick()
-    renderMermaid()
-  } catch (error) {
-    console.error('Error generating diagram:', error)
-  }
-}
-
-async function renderMermaid() {
-  const preview = document.querySelector('.mermaid-preview')
-  if (!preview || !diagramSource.value) return
-
-  preview.innerHTML = ''
-  try {
-    const { svg } = await mermaid.render('diagram-' + Date.now(), diagramSource.value)
-    preview.innerHTML = svg
-  } catch (error) {
-    preview.innerHTML = '<div class="error">' + error.message + '</div>'
-  }
-}
-
-watch(diagramSource, () => {
-  renderMermaid()
-})
-
-async function approveDiagram() {
-  try {
-    await fetch(`/api/workflows/${runId}/approve-diagram`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ requirements: requirements.value })
     })
 
-    // Simulate Terraform generation
-    terraformSource.value = `terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
+    if (!response.ok) throw new Error('Failed to start workflow')
 
-provider "aws" {
-  region = "us-east-1"
-}
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
 
-# VPC
-resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
-  tags = {
-    Name = "openship-vpc"
-  }
-}
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
 
-# Load Balancer
-resource "aws_lb" "web" {
-  name               = "openship-lb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.lb.id]
-  subnets            = [aws_subnet.public_1.id, aws_subnet.public_2.id]
-}
+      buffer += decoder.decode(value)
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
 
-    # Web Servers
-    resource "aws_instance" "web" {
-      ami           = "ami-0c55b159cbfafe1f0"
-      instance_type = "t2.micro"
-      count         = 2
-      tags = {
-        Name = "openship-web-\${count.index}"
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          const eventType = line.slice(7)
+          handleSSEEvent(eventType, lines)
+        }
       }
     }
-
-# Database
-resource "aws_db_instance" "postgres" {
-  identifier     = "openship-db"
-  engine         = "postgres"
-  engine_version = "14.6"
-  instance_class = "db.t3.micro"
-  username       = "admin"
-  password       = var.db_password
-  db_name        = "webapp"
-}`
-
-    currentStep.value = 'Terraform'
-    completedSteps.value.push('Diagram')
   } catch (error) {
-    console.error('Error approving diagram:', error)
+    console.error('Workflow error:', error)
   }
 }
 
-async function approveTerraform() {
-  try {
-    await fetch(`/api/workflows/${runId}/approve-terraform`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    })
+function handleSSEEvent(eventType, lines) {
+  let dataLine = lines.find(l => l.startsWith('data: '))
+  if (!dataLine) return
 
-    currentStep.value = 'Apply'
-    completedSteps.value.push('Terraform')
+  const data = JSON.parse(dataLine.slice(6))
 
-    // Simulate apply output
-    applyOutput.value = `Terraform used the selected providers to generate the following execution plan.
-Resource actions are indicated with the following symbols:
-  + create
-
-Terraform will perform the following actions:
-
-  # aws_vpc.main will be created
-  + resource "aws_vpc" "main" {
-      + cidr_block = "10.0.0.0/16"
-      + id         = (known after apply)
-      + tags       = {
-          + "Name" = "openship-vpc"
-        }
+  if (eventType === 'stage_start') {
+    activeStage.value = data.stage
+  } else if (eventType === 'stage_complete') {
+    if (data.stage === 'generating_diagram') {
+      diagramSource.value = data.data?.diagram || ''
+    } else if (data.stage === 'generating_terraform') {
+      terraformSource.value = data.data?.terraform || ''
+    } else if (data.stage === 'applying_terraform') {
+      applyOutput.value = data.data?.output || ''
     }
-
-  # aws_lb.web will be created
-  + resource "aws_lb" "web" {
-      + arn                          = (known after apply)
-      + dns_name                     = (known after apply)
-      + id                           = (known after apply)
-      + internal                     = false
-      + load_balancer_type           = "application"
-      + name                         = "openship-lb"
-    }
-
-  # aws_instance.web[0] will be created
-  # aws_instance.web[1] will be created
-  + 2 (known after apply)
-
-  # aws_db_instance.postgres will be created
-  + resource "aws_db_instance" "postgres" {
-      + db_name        = "webapp"
-      + engine         = "postgres"
-      + engine_version = "14.6"
-      + identifier     = "openship-db"
-      + instance_class = "db.t3.micro"
-    }
-
-Plan: 6 to add, 0 to change, 0 to destroy.
-
-aws_vpc.main: Creating...
-aws_vpc.main: Creation complete after 2s [id=vpc-0123456789abcdef0]
-aws_subnet.public_1: Creating...
-aws_subnet.public_2: Creating...
-aws_subnet.public_1: Creation complete after 1s [id=subnet-0123456789abcdef0]
-aws_subnet.public_2: Creation complete after 1s [id=subnet-0123456789abcdef1]
-aws_lb.web: Creating...
-aws_lb.web: Creation complete after 8s [id=arn:aws:elasticloadbalancing:us-east-1:123456789:loadbalancer/app/openship-lb/123456789]
-aws_instance.web[0]: Creating...
-aws_instance.web[1]: Creating...
-aws_instance.web[0]: Creation complete after 12s [id=i-0123456789abcdef0]
-aws_instance.web[1]: Creation complete after 12s [id=i-0123456789abcdef1]
-aws_db_instance.postgres: Creating...
-aws_db_instance.postgres: Creation complete after 45s [id=openship-db]
-
-Apply complete! Resources: 6 added, 0 changed, 0 destroyed.
-
-Outputs:
-
-lb_dns = "openship-lb-123456789.us-east-1.elb.amazonaws.com"
-db_endpoint = "openship-db.abcdefgh.us-east-1.rds.amazonaws.com:5432"`
-
-    workflowComplete.value = true
-    completedSteps.value.push('Apply')
-  } catch (error) {
-    console.error('Error applying terraform:', error)
+  } else if (eventType === 'complete') {
+    activeStage.value = 'done'
   }
 }
 
-function resetWorkflow() {
-  currentStep.value = 'Requirements'
-  completedSteps.value = []
+function approveDiagram() {
+  // Continue to next stage
+}
+
+function approveTerraform() {
+  // Continue to next stage
+}
+
+function reset() {
+  activeStage.value = 'requirements'
+  completedStages.value = []
   diagramSource.value = ''
   terraformSource.value = ''
   applyOutput.value = ''
-  workflowComplete.value = false
-  runId = null
 }
 </script>
 
 <style>
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #1a1a1a;
-  color: #e0e0e0;
-}
-
-.app {
-  min-height: 100vh;
-  padding: 20px;
-}
-
-.header {
-  text-align: center;
-  margin-bottom: 30px;
-}
-
-.header h1 {
-  font-size: 2rem;
-  color: #4af62c;
-}
-
-.header p {
-  color: #888;
-  margin-top: 5px;
-}
-
-.config-info {
-  display: flex;
-  gap: 16px;
-  margin-top: 10px;
-  justify-content: center;
-}
-
-.config-item {
-  font-size: 0.8rem;
-  color: #666;
-}
-
-.config-label {
-  color: #4af62c;
-  font-weight: bold;
-}
-
-.steps {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 30px;
-  justify-content: center;
-}
-
-.step {
-  padding: 8px 16px;
-  background: #2a2a2a;
-  border-radius: 20px;
-  font-size: 0.9rem;
-  color: #666;
-}
-
-.step.active {
-  background: #4af62c;
-  color: #1a1a1a;
-  font-weight: bold;
-}
-
-.step.completed {
-  background: #2d5a27;
-  color: #8bc34a;
-}
-
-.step-panel {
-  max-width: 1200px;
-  margin: 0 auto;
-  background: #252525;
-  border-radius: 12px;
-  padding: 24px;
-}
-
-.step-panel h2 {
-  margin-bottom: 16px;
-  color: #fff;
-}
-
-.step-panel p {
-  margin-bottom: 16px;
-  color: #aaa;
-}
-
-.editor-container {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-.editor-pane, .preview-pane {
-  background: #1e1e1e;
-  border-radius: 8px;
-  padding: 16px;
-}
-
-.editor-pane h3, .preview-pane h3 {
-  margin-bottom: 12px;
-  font-size: 0.9rem;
-  color: #888;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
-.code-editor {
-  width: 100%;
-  min-height: 400px;
-  background: transparent;
-  border: none;
-  color: #e0e0e0;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  resize: vertical;
-  outline: none;
-}
-
-.mermaid-preview {
-  min-height: 400px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.output-panel {
-  background: #1e1e1e;
-  border-radius: 8px;
-  padding: 16px;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 13px;
-  line-height: 1.4;
-  max-height: 500px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-}
-
-.step-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 20px;
-  justify-content: flex-end;
-}
-
-.btn {
-  padding: 10px 24px;
-  border: none;
-  border-radius: 6px;
-  font-size: 1rem;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.btn-primary {
-  background: #4af62c;
-  color: #1a1a1a;
-  font-weight: bold;
-}
-
-.btn-primary:hover {
-  background: #5df842;
-}
-
-.btn {
-  background: #333;
-  color: #e0e0e0;
-}
-
-.btn:hover {
-  background: #444;
-}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a1a; color: #e0e0e0; }
+.app { min-height: 100vh; padding: 20px; }
+.header { text-align: center; margin-bottom: 30px; }
+.header h1 { font-size: 2rem; color: #4af62c; }
+.header p { color: #888; margin-top: 5px; }
+.workflow-layout { display: flex; max-width: 1200px; margin: 0 auto; gap: 24px; }
+.timeline-sidebar { width: 200px; flex-shrink: 0; }
+.content-area { flex: 1; }
+.stage-panel { background: #252525; border-radius: 12px; padding: 24px; }
+.stage-panel h2 { margin-bottom: 16px; color: #fff; }
+.btn { padding: 10px 24px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+.btn-primary { background: #4af62c; color: #1a1a1a; font-weight: bold; }
+.requirements-editor { width: 100%; padding: 12px; background: #1e1e1e; border: 1px solid #333; border-radius: 8px; color: #e0e0e0; font-family: monospace; resize: vertical; }
+pre { background: #1e1e1e; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.4; }
+.mermaid-preview { min-height: 300px; display: flex; align-items: center; justify-content: center; background: #1e1e1e; border-radius: 8px; padding: 16px; }
 </style>
