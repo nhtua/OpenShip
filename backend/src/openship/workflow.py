@@ -10,7 +10,7 @@ from openship.events import WorkflowEvent
 from openship.checkpoints import get_checkpointer
 
 
-def compile_graph() -> StateGraph:
+async def compile_graph() -> StateGraph:
     graph = StateGraph(WorkflowState)
 
     def parse_requirements(state):
@@ -42,13 +42,13 @@ def compile_graph() -> StateGraph:
     graph.add_edge("generate_terraform", "apply_terraform")
     graph.add_edge("apply_terraform", END)
 
-    checkpointer = get_checkpointer()
+    checkpointer = await get_checkpointer()
     return graph.compile(checkpointer=checkpointer)
 
 
 async def run_workflow(requirements: str) -> AsyncGenerator[WorkflowEvent, None]:
     run_id = str(uuid.uuid4())
-    graph = compile_graph()
+    graph = await compile_graph()
 
     config_obj = {"configurable": {"thread_id": run_id}}
 
