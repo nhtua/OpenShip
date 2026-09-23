@@ -26,6 +26,11 @@ venv/
 env/
 ENV/
 
+
+# Configuration
+.env 
+
+
 # uv
 uv.lock
 

@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import uuid
 from typing import AsyncGenerator
 
@@ -53,11 +56,60 @@ async def approve_terraform(run_id: str):
     workflow = workflows[run_id]
     workflow["step"] = "applying_terraform"
 
-    # Apply Terraform
-    if config.CLOUD_MOCK or not config.TERRAFORM_APPLY:
-        output = "[Mocked] Running terraform plan\n\nTerraform plan completed successfully."
-    else:
-        output = "Running terraform apply...\n\nApply completed successfully."
+    terraform_code = workflow.get("terraform", "")
+
+    try:
+        # Create temporary directory for terraform
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Write terraform code to file
+            tf_file = os.path.join(tmpdir, "main.tf")
+            with open(tf_file, "w") as f:
+                f.write(terraform_code)
+
+            # Run terraform init
+            init_result = subprocess.run(
+                ["terraform", "init", "-backend=false"],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            # Run terraform plan
+            plan_result = subprocess.run(
+                ["terraform", "plan", "-no-color"],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if config.CLOUD_MOCK or not config.TERRAFORM_APPLY:
+                # Just show plan
+                output = init_result.stdout + "\n"
+                output += plan_result.stdout
+                if plan_result.returncode != 0:
+                    output += "\n" + plan_result.stderr
+            else:
+                # Run terraform apply
+                apply_result = subprocess.run(
+                    ["terraform", "apply", "-auto-approve", "-no-color"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                output = init_result.stdout + "\n"
+                output += apply_result.stdout
+                if apply_result.returncode != 0:
+                    output += "\n" + apply_result.stderr
+
+    except FileNotFoundError:
+        output = "Error: terraform CLI not found. Please install Terraform."
+    except subprocess.TimeoutExpired as e:
+        output = f"Error: Terraform command timed out: {e.cmd}"
+    except Exception as e:
+        output = f"Error running Terraform: {str(e)}"
 
     workflow["apply_output"] = output
     workflow["step"] = "done"

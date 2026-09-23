@@ -6,6 +6,7 @@
       :label="stage.label"
       :is-active="activeStage === stage.id"
       :is-completed="completedStages.includes(stage.id)"
+      :is-processing="processingStage === stage.id"
       :status-message="activeStage === stage.id ? stage.statusMessage : null"
       :show-connector="index < stages.length - 1"
     />
@@ -18,7 +19,8 @@ import StageItem from './StageItem.vue'
 const props = defineProps({
   stages: Array,
   activeStage: String,
-  completedStages: Array
+  completedStages: Array,
+  processingStage: String
 })
 </script>
 

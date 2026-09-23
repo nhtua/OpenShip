@@ -2,7 +2,7 @@
   <div class="stage-item" :class="{ active: isActive, completed: isCompleted }">
     <div class="stage-indicator">
       <div v-if="isCompleted" class="indicator-dot completed">✓</div>
-      <div v-else-if="isActive" class="indicator-dot active">
+      <div v-else-if="isProcessing" class="indicator-dot processing">
         <svg class="spinner" viewBox="0 0 20 20">
           <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="2" fill="none"
                   stroke-dasharray="40" stroke-dashoffset="10">
@@ -11,6 +11,7 @@
           </circle>
         </svg>
       </div>
+      <div v-else-if="isActive" class="indicator-dot active"></div>
       <div v-else class="indicator-dot pending"></div>
     </div>
     <div class="stage-label">
@@ -26,6 +27,7 @@ defineProps({
   label: String,
   isActive: Boolean,
   isCompleted: Boolean,
+  isProcessing: Boolean,
   statusMessage: String,
   showConnector: Boolean
 })
@@ -56,9 +58,14 @@ defineProps({
   color: #1a1a1a;
 }
 
-.indicator-dot.active {
+.indicator-dot.processing {
   background: rgba(74, 246, 44, 0.2);
   color: #4af62c;
+}
+
+.indicator-dot.active {
+  background: #4af62c;
+  color: #1a1a1a;
 }
 
 .indicator-dot.pending {

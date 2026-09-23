@@ -11,24 +11,38 @@
           :stages="stages"
           :active-stage="activeStage"
           :completed-stages="completedStages"
+          :processing-stage="processingStage"
         />
       </div>
 
       <div class="content-area">
         <div v-if="activeStage === 'requirements'" class="stage-panel">
           <h2>Requirements</h2>
-          <textarea v-model="requirements" class="requirements-editor" rows="10"
-                    placeholder="Describe your infrastructure requirements..."></textarea>
-          <button class="btn btn-primary" @click="startWorkflow">Generate</button>
+          <MdEditor v-model="requirements" placeholder="Describe your infrastructure requirements..." />
+          <div style="margin-top: 16px;">
+            <button class="btn btn-primary" @click="startWorkflow">Generate</button>
+          </div>
         </div>
 
         <div v-else-if="activeStage === 'generating_diagram'" class="stage-panel">
-          <h2>Generating Diagram</h2>
+          <h2>Diagram</h2>
           <p v-if="!diagramSource">Waiting for diagram...</p>
           <div v-else class="diagram-container">
-            <div ref="mermaidPreview" class="mermaid-preview"></div>
+            <div v-if="showDiagramSource" class="diagram-source">
+              <h3>Source</h3>
+              <pre>{{ diagramSource }}</pre>
+            </div>
+            <div class="diagram-preview">
+              <h3>Preview</h3>
+              <div ref="mermaidPreview" class="mermaid-preview"></div>
+            </div>
           </div>
-          <button v-if="diagramSource" class="btn btn-primary" @click="approveDiagram">Approve Diagram</button>
+          <div v-if="diagramSource" style="margin-top: 16px; display: flex; gap: 8px;">
+            <button class="btn" @click="showDiagramSource = !showDiagramSource">
+              {{ showDiagramSource ? 'Hide Source' : 'Show Source' }}
+            </button>
+            <button class="btn btn-primary" @click="approveDiagram">Approve Diagram</button>
+          </div>
         </div>
 
         <div v-else-if="activeStage === 'generating_terraform'" class="stage-panel">
@@ -61,6 +75,8 @@
 <script setup>
 import { ref, watch, onMounted, nextTick } from 'vue'
 import WorkflowTimeline from './components/WorkflowTimeline.vue'
+import { MdEditor } from 'md-editor-v3'
+import 'md-editor-v3/lib/style.css'
 import mermaid from 'mermaid'
 
 const stages = [
@@ -73,6 +89,7 @@ const stages = [
 
 const activeStage = ref('requirements')
 const completedStages = ref([])
+const processingStage = ref(null)
 let runId = null
 
 const requirements = ref(`# Web Application Infrastructure
@@ -90,6 +107,7 @@ const requirements = ref(`# Web Application Infrastructure
 - Security groups for each tier
 `)
 const diagramSource = ref('')
+const showDiagramSource = ref(true)
 const terraformSource = ref('')
 const applyOutput = ref('')
 
@@ -114,6 +132,7 @@ watch(diagramSource, async () => {
 })
 
 async function startWorkflow() {
+  processingStage.value = 'generating_diagram'
   try {
     const response = await fetch('/api/workflows', {
       method: 'POST',
@@ -126,10 +145,12 @@ async function startWorkflow() {
     const data = await response.json()
     runId = data.run_id
     diagramSource.value = data.diagram || ''
+    processingStage.value = null
     completedStages.value.push('requirements')
     activeStage.value = 'generating_diagram'
   } catch (error) {
     console.error('Workflow error:', error)
+    processingStage.value = null
   }
 }
 
@@ -154,29 +175,41 @@ function handleSSEEvent(eventType, data) {
 }
 
 function approveDiagram() {
+  processingStage.value = 'generating_terraform'
+  completedStages.value.push('generating_diagram')
+  activeStage.value = 'generating_terraform'
   fetch('/api/workflows/' + runId + '/approve-diagram', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({})
   }).then(res => res.json()).then(data => {
-    activeStage.value = 'generating_terraform'
+    processingStage.value = null
     if (data.terraform) {
       terraformSource.value = data.terraform
     }
-  }).catch(err => console.error('Approve diagram error:', err))
+  }).catch(err => {
+    processingStage.value = null
+    console.error('Approve diagram error:', err)
+  })
 }
 
 function approveTerraform() {
+  processingStage.value = 'applying_terraform'
+  completedStages.value.push('generating_terraform')
+  activeStage.value = 'applying_terraform'
   fetch('/api/workflows/' + runId + '/approve-terraform', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({})
   }).then(res => res.json()).then(data => {
-    activeStage.value = 'applying_terraform'
+    processingStage.value = null
     if (data.apply_output) {
       applyOutput.value = data.apply_output
     }
-  }).catch(err => console.error('Approve terraform error:', err))
+  }).catch(err => {
+    processingStage.value = null
+    console.error('Approve terraform error:', err)
+  })
 }
 
 function reset() {
@@ -201,9 +234,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .content-area { flex: 1; }
 .stage-panel { background: #252525; border-radius: 12px; padding: 24px; }
 .stage-panel h2 { margin-bottom: 16px; color: #fff; }
-.btn { padding: 10px 24px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+.btn { padding: 10px 24px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; background: #333; color: #e0e0e0; }
 .btn-primary { background: #4af62c; color: #1a1a1a; font-weight: bold; }
-.requirements-editor { width: 100%; padding: 12px; background: #1e1e1e; border: 1px solid #333; border-radius: 8px; color: #e0e0e0; font-family: monospace; resize: vertical; }
+.btn:hover { opacity: 0.8; }
 pre { background: #1e1e1e; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.4; }
-.mermaid-preview { min-height: 300px; display: flex; align-items: center; justify-content: center; background: #1e1e1e; border-radius: 8px; padding: 16px; }
+.diagram-container { display: flex; gap: 16px; min-height: 400px; }
+.diagram-source { flex: 0 0 400px; display: flex; flex-direction: column; }
+.diagram-source h3, .diagram-preview h3 { margin-bottom: 8px; color: #fff; }
+.diagram-source pre { flex: 1; }
+.diagram-preview { flex: 1; display: flex; flex-direction: column; }
+.mermaid-preview { min-height: 300px; flex: 1; display: flex; align-items: center; justify-content: center; background: #1e1e1e; border-radius: 8px; padding: 16px; }
+.output-container pre { white-space: pre-wrap; }
 </style>
