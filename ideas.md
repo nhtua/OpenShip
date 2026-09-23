@@ -194,6 +194,13 @@ OpenShip supports multiple workflow templates, each modeling a distinct DevOps p
 - Example: An investigation workflow may invoke a build workflow to test a proposed fix.
 - This enables building complex automation from reusable, simpler building blocks.
 
+**Workflow Execution Sessions:**
+
+- Each workflow execution is a discrete session with its own execution context.
+- The session tracks objects created, updated, and deleted during execution.
+- Sessions are persisted to Git for continuity and enable immediate follow-up operations.
+- A single project may have multiple concurrent or sequential workflow sessions.
+
 **Benefits:**
 
 - **Reusability:** Workflow templates can be shared, versioned, and reused across projects.
@@ -338,6 +345,32 @@ OpenShip should include comprehensive hotkeys and key bindings for efficient, lo
 - Enable power users to navigate, edit, and interact with OpenShip quickly.
 - Reduce reliance on mouse interactions to minimize fatigue during extended sessions.
 - Support a keyboard-first workflow for engineers accustomed to terminal-based tools.
+
+---
+
+## Slack Integration (Optional)
+
+OpenShip provides optional, highly integrated Slack connectivity for teams that prefer to monitor and interact through their existing communication channels.
+
+**Capabilities via Slack:**
+
+- **Monitor process:** View real-time status of running workflows from Slack.
+- **Conversation:** Interact with the agent via Slack messages — ask questions, request changes, get updates.
+- **Notifications:** Receive alerts on workflow completion, errors, or when approval is needed.
+- **Approve actions:** Review and approve execution plans directly from Slack notifications or messages.
+
+**Optional by Design:**
+
+- Slack integration is entirely optional and configured per OpenShip instance.
+- If not connected to an OpenShip instance, users continue to use the OpenShip UI without any Slack dependency.
+- Provides flexibility: teams can choose their preferred interaction channel (UI, Slack, or both).
+
+**Benefits:**
+
+- **Reduced context switching:** Engineers can stay in Slack for monitoring and approvals without switching to the OpenShip UI.
+- **Team collaboration:** Workflow status and decisions can be discussed in shared Slack channels.
+- **Mobile-friendly:** Slack's mobile app enables monitoring and approvals on the go.
+- **Familiar interface:** Leverages a tool engineers already use daily.
 
 ---
 
