@@ -94,4 +94,9 @@ defineProps({
 .stage-item:last-child .stage-connector {
   display: none;
 }
+
+.spinner {
+  width: 16px;
+  height: 16px;
+}
 </style>
