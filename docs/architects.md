@@ -1,3 +1,9 @@
+type: architecture
+summary:
+status: drafting
+date: 2026-09-24
+---
+
 # OpenShip Architecture
 
 Detailed architectural decisions and implementation patterns for OpenShip.
@@ -9,6 +15,7 @@ Detailed architectural decisions and implementation patterns for OpenShip.
 ### The Problem
 
 OpenShip agents create concrete cloud resources from abstract objects. Once provisioned, the agent must be able to:
+
 - Locate the exact resource later for modification or inspection
 - Report to engineers what was created
 - Handle resource lifecycle operations (update, scale, delete)
@@ -19,12 +26,14 @@ OpenShip agents create concrete cloud resources from abstract objects. Once prov
 OpenShip uses two complementary state layers:
 
 **1. Abstract State (OpenShip-managed)**
+
 - Stored in Git as part of project versioning
 - Maps abstract objects to their intended configuration
 - Contains OpenShip identifiers for all objects
 - Source of truth for *what should exist*
 
 **2. Concrete State (Platform-managed)**
+
 - Terraform state files for Terraform-managed resources
 - OpenShip-managed mapping store for direct API resources
 - Contains actual cloud resource identifiers
@@ -33,12 +42,14 @@ OpenShip uses two complementary state layers:
 ### Identity Model
 
 **OpenShip Object ID:**
+
 ```
 openship://{project_id}/{object_type}/{unique_id}
 Example: openship://proj-123/deployment/web-service-abc
 ```
 
 **Resource Mapping Record:**
+
 ```json
 {
   "openship_id": "openship://proj-123/deployment/web-service-abc",
@@ -57,18 +68,21 @@ Example: openship://proj-123/deployment/web-service-abc
 ### State Management by Resource Type
 
 **Terraform-managed resources:**
+
 - Agent generates and maintains Terraform configuration
 - Terraform state file is the source of truth for concrete state
 - OpenShip maintains abstract state + mapping to Terraform state
 - Drift detected via `terraform plan`
 
 **Direct API resources:**
+
 - Agent calls cloud APIs directly (no Terraform)
 - OpenShip maintains both abstract and concrete state
 - Mappings stored in project's Git repository
 - Drift detected by comparing stored state with live API queries
 
 **Hybrid approach:**
+
 - Projects can mix Terraform and direct API resources
 - Each resource type uses its appropriate state management strategy
 - Agent handles both transparently
@@ -85,6 +99,7 @@ openship:version={version}
 ```
 
 **Platform-specific implementations:**
+
 - AWS: Resource tags
 - GCP: Resource labels
 - Azure: Resource tags
@@ -107,6 +122,7 @@ During workflow execution, the agent maintains a runtime execution context:
 ```
 
 This context:
+
 - Enables immediate follow-up operations ("deploy to the cluster you just created")
 - Is persisted to Git at workflow completion
 - Is loaded at the start of new sessions for continuity
@@ -125,11 +141,13 @@ When the engineer requests an operation on a resource:
 ### Drift Detection and Recovery
 
 **Detection:**
+
 - Periodic comparison of concrete state vs. abstract state
 - `terraform plan` for Terraform resources
 - API queries for direct API resources
 
 **Recovery options:**
+
 - **Refresh:** Update concrete state to match abstract (re-apply)
 - **Sync:** Update abstract state to match concrete (adopt current state)
 - **Report:** Alert engineer without taking action
@@ -137,16 +155,19 @@ When the engineer requests an operation on a resource:
 ### Error Handling
 
 **Mapping not found:**
+
 - Agent searches by tags/labels across platforms
 - Agent queries Terraform state for matching resources
 - Agent reports to engineer with search results
 
 **Resource deleted externally:**
+
 - Drift detection identifies missing resource
 - Agent reports discrepancy
 - Engineer decides: recreate, update abstract state, or ignore
 
 **State corruption:**
+
 - Git history enables rollback to previous state
 - Agent can reconstruct mapping from Terraform state + tags
 - Last resort: manual mapping by engineer

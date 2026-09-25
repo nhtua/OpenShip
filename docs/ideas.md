@@ -1,3 +1,9 @@
+type: story
+summary:
+status: in-progress
+date: 2026-09-20
+---
+
 # OpenShip — Ideas
 
 Recorded ideas, features, and improvements for OpenShip.
@@ -137,6 +143,7 @@ When the agent creates concrete cloud resources from abstract objects, it must m
 **Core Concept:** Every abstract object (job, deployment, load balancer) created by the agent is assigned a unique OpenShip identifier. When the corresponding concrete resource is provisioned, the mapping is recorded: `openship://job-abc123 → aws_ecs_service.my-service`.
 
 **Key Capabilities:**
+
 - **Traceability:** Engineers can see which cloud resources were created by which OpenShip objects
 - **Targeted operations:** The agent can find and modify specific resources without ambiguity
 - **Cross-platform consistency:** Same tracking mechanism works whether resources are on AWS, GCP, Azure, or elsewhere
@@ -291,10 +298,12 @@ When users first open OpenShip, the default home page provides a familiar, chat-
 ## New Project UI: Simple Entry Points
 
 The new project page offers two big, simple buttons:
+
 - **[Describe your project]** — Start with a text-based requirements document.
 - **[Build with Diagram]** — Start with a visual diagram.
 
 **Diagram Entry Flow:**
+
 - Users begin with basic shapes (square, diamond, circle, oval) and simple connectors (lines, arrows).
 - They write component names or step descriptions inside shapes — no need to select specialized components.
 - This creates a "drafting diagram" (version 0).
@@ -396,17 +405,20 @@ The main features of OpenShip, ordered from high-level to detailed:
 OpenShip requires comprehensive Git integration at multiple levels:
 
 **Project Versioning:**
+
 - Each OpenShip project is stored in a Git repository.
 - Version tracking for all project artifacts: documentation, diagrams, agent-generated code, and configuration changes.
 - Enables rollback, history inspection, and change management.
 
 **External Repository Connectivity:**
+
 - The OpenShip agent platform connects to and works with external Git repositories.
 - Agents can check out application code to inspect, modify, or automate.
 - Agents can add automation (e.g., GitHub Actions workflows) to existing projects.
 - Agents can interact with applications, trigger builds, and work on existing codebases.
 
 **Use Cases:**
+
 - Track all changes made by the agent over time.
 - Collaborate on projects with version history and branching.
 - Integrate with existing development workflows and CI/CD pipelines.

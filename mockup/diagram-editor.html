@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenShip — Diagram Editor</title>
+  <base href="./">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            'os-bg': '#0d1117',
+            'os-surface': '#161b22',
+            'os-border': '#30363d',
+            'os-primary': '#58a6ff',
+            'os-accent': '#238636',
+            'os-text': '#c9d1d9',
+            'os-text-muted': '#8b949e',
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-os-bg text-os-text min-h-screen font-sans">
+  <!-- Top Navigation Bar -->
+  <nav class="bg-os-surface border-b border-os-border px-6 py-3">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      <a href="homepage.html" class="flex items-center gap-3">
+        <span class="text-2xl">⚓</span>
+        <span class="text-xl font-bold text-os-primary">OpenShip</span>
+      </a>
+      <div class="flex items-center gap-4">
+        <button class="flex items-center gap-2 bg-os-bg border border-os-border rounded-lg px-4 py-2 text-sm hover:border-os-primary transition-colors">
+          <span class="font-semibold">my-project</span>
+          <i class="fas fa-chevron-down text-xs text-os-text-muted"></i>
+        </button>
+        <a href="new-project.html" class="bg-os-bg border border-os-border rounded-lg px-4 py-2 text-sm hover:border-os-primary transition-colors">
+          <i class="fas fa-plus mr-2"></i>New Project
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Diagram Editor Page -->
+  <main class="max-w-6xl mx-auto px-6 py-8">
+    <!-- Editor Header -->
+    <div class="flex items-center justify-between mb-6">
+      <div class="flex items-center gap-4">
+        <a href="new-project.html" class="text-os-text-muted hover:text-os-primary transition-colors">
+          <i class="fas fa-arrow-left"></i>
+        </a>
+        <h1 class="text-xl font-bold">System Diagram</h1>
+        <span class="bg-os-primary/20 text-os-primary text-xs px-2 py-1 rounded-full">v0 (Draft)</span>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="document-editor.html" class="bg-os-bg border border-os-border rounded-lg px-4 py-2 text-sm hover:border-os-primary transition-colors">
+          <i class="fas fa-file-lines mr-2"></i>View Document
+        </a>
+        <button class="bg-os-accent hover:bg-green-600 text-white rounded-lg px-4 py-2 text-sm font-medium transition-colors">
+          <i class="fas fa-robot mr-2"></i>Review & Refine
+        </button>
+      </div>
+    </div>
+
+    <!-- Split View: Code + Preview -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- Mermaid Code Editor -->
+      <div class="bg-os-surface border border-os-border rounded-xl">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-os-border bg-os-bg/50">
+          <span class="text-sm font-medium">Diagram Code (Mermaid)</span>
+          <button class="text-xs text-os-primary hover:underline">
+            <i class="fas fa-magic mr-1"></i>Auto-format
+          </button>
+        </div>
+        <textarea class="w-full h-96 bg-transparent px-4 py-4 font-mono text-sm text-os-text resize-none focus:outline-none" spellcheck="false">graph TD
+    A[API Gateway] --> B[Frontend Service]
+    A --> C[Backend Services]
+    C --> D[User Service]
+    C --> E[Product Service]
+    C --> F[Order Service]
+    C --> G[Payment Service]
+    D --> H[(RDS PostgreSQL)]
+    E --> H
+    F --> H
+    G --> I[(ElastiCache Redis)]
+    B --> J[CloudFront CDN]</textarea>
+      </div>
+
+      <!-- Diagram Preview -->
+      <div class="bg-os-surface border border-os-border rounded-xl">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-os-border bg-os-bg/50">
+          <span class="text-sm font-medium">Preview</span>
+          <button class="text-xs text-os-primary hover:underline">
+            <i class="fas fa-expand mr-1"></i>Full screen
+          </button>
+        </div>
+        <div class="h-96 bg-os-bg/30 flex items-center justify-center">
+          <!-- Simplified ASCII diagram representation -->
+          <div class="text-center font-mono text-sm">
+            <div class="mb-4 p-3 bg-os-primary/10 border border-os-primary/30 rounded-lg inline-block">
+              <i class="fas fa-network-wired text-2xl text-os-primary mb-2"></i>
+              <div>Diagram preview renders here</div>
+            </div>
+            <div class="text-os-text-muted text-xs">
+              Your Mermaid diagram will be rendered<br>as an interactive SVG visualization
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent Status -->
+    <div class="mt-6 bg-os-surface border border-os-border rounded-lg px-4 py-3 flex items-center gap-3">
+      <div class="w-8 h-8 rounded-full bg-os-primary/20 flex items-center justify-center">
+        <i class="fas fa-robot text-os-primary"></i>
+      </div>
+      <div>
+        <div class="text-sm font-medium">Agent has reviewed your draft diagram</div>
+        <div class="text-xs text-os-text-muted">3 suggestions for improvement available</div>
+      </div>
+      <button class="ml-auto bg-os-bg border border-os-border rounded-lg px-3 py-1.5 text-xs hover:border-os-primary transition-colors">
+        <i class="fas fa-comments mr-1"></i>Discuss
+      </button>
+    </div>
+  </main>
+</body>
+</html>
