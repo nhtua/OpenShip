@@ -1,0 +1,35 @@
+{
+  "name": "openship-mockup",
+  "version": "1.0.0",
+  "description": "OpenShip UI mockups - Agentic DevOps co-pilot",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.22.0",
+      "onFail": "download"
+    }
+  },
+  "type": "module",
+  "dependencies": {
+    "@vueuse/core": "^15.0.0",
+    "vue": "^3.5.43",
+    "vue-router": "^5.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "lucide-vue-next": "^1.0.0",
+    "shadcn-vue": "^2.8.2",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.1"
+  }
+}

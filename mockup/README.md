@@ -1,31 +1,37 @@
 # OpenShip UI Mockups
 
-Static HTML mockups demonstrating the OpenShip agentic DevOps platform UI. Uses Tailwind CSS and Lucide icons following the shadcn-vue design language.
+Vue 3 mockups demonstrating the OpenShip agentic DevOps platform UI. Uses Vite, Vue Router, Tailwind CSS v4, and Lucide icons.
 
-## How to View
-
-Run a local HTTP server in this directory:
+## How to Run
 
 ```bash
-python -m http.server 8000
+pnpm install
+pnpm dev
 ```
 
-Then open <http://localhost:8000/homepage.html> in your browser.
+Open <http://localhost:5173> in your browser.
 
-## Mockups
+To build for production:
 
-| Mockup | File | Description |
+```bash
+pnpm build
+pnpm preview
+```
+
+## Pages
+
+| Page | Route | Description |
 | ------ | ------ | ------------- |
-| **Home** | [homepage.html](homepage.html) | Chat-first entry with workflow template cards and recent projects |
-| **Agent Workspace** | [agent-workspace.html](agent-workspace.html) | Three-zone layout with chat stream, reasoning blocks, tool call cards, and approval cards |
-| **Artifact Inspector** | [artifact-inspector.html](artifact-inspector.html) | Code editor with tabs for code, diagram, and terminal output |
-| **Workflow builder** | [workflow-builder.html](workflow-builder.html) | Agent conversation that helps justify the requirements, explain the process and discover tools to build new workflow. Offer buttons [Save] [Run in project] and [Export workflow file] after finished |
-| **Tool Registry** | [tool-registry.html](tool-registry.html) | Browse available tools, connectors tools (MCP), and custom scripts |
-| **Connectors** | [connectors.html](connectors.html) | Browse available connectors, allow user to manage the authentication to 3rd platform |
-| New Project | [new-project.html](new-project.html) | Two entry points: text descriptwe |
-| Infrastructure Setup | [infrastructure-workflow.html](infrastructure-workflow.html) | Infrastructure - built-in workflow: repo connection, write infrastructure specification, generate components/connections diagrams, generating Terraform code, apply to create cloud resources |
-| CI/CD Setup | [cicd-workflow.html](cicd-workflow.html) | CI/CD - built-in workflow: repo connection, workflow generation, run management |
-| Investigate & Debug | [debug-workflow.html](debug-workflow.html) | Debug - built-in workflow: symptom description, telemetry gathering, hypothesis testing, fix proposal |
+| **Home** | `/` | Chat-first entry with workflow template cards and recent projects |
+| **New Project** | `/new-project` | Two entry points: text requirements or diagram-as-code |
+| **Agent Workspace** | `/agent-workspace` | Three-zone layout with chat stream, reasoning blocks, tool call cards, and approval cards |
+| **Artifact Inspector** | `/artifact-inspector` | Code editor with tabs for code, diagram, and terminal output |
+| **Workflow Builder** | `/workflow-builder` | Agent conversation that helps justify requirements, explain process, discover tools. Offers [Save] [Run in project] and [Export workflow file] |
+| **Tool Registry** | `/tool-registry` | Browse available tools, connectors (MCP), and custom scripts |
+| **Connectors** | `/connectors` | Browse available connectors and manage authentication to 3rd-party platforms |
+| **Infrastructure Setup** | `/infrastructure` | Built-in workflow: repo connection, requirements doc, architecture diagram, Terraform generation, and apply |
+| **CI/CD Setup** | `/cicd` | Built-in workflow: repo connection, workflow generation, run management |
+| **Investigate & Debug** | `/debug` | Built-in workflow: symptom description, telemetry gathering, hypothesis testing, fix proposal |
 
 ## Design Principles
 

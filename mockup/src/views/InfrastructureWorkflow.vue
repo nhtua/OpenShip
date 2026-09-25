@@ -1,0 +1,198 @@
+<template>
+  <div class="h-full flex flex-col">
+    <!-- Header -->
+    <div class="border-b border-[#30363d] px-6 py-4 bg-[#161b22]">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-lg font-semibold text-gray-100">Infrastructure Setup</h1>
+          <p class="text-sm text-gray-400">web-platform • Session #1043</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="flex items-center gap-2 text-sm text-yellow-400">
+            <span class="w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></span>
+            Waiting for approval
+          </span>
+          <button class="bg-[#0d1117] border border-[#30363d] hover:border-[#58a6ff] text-gray-300 px-3 py-1.5 rounded text-sm transition-colors">
+            Export
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Stream -->
+    <div class="flex-1 overflow-y-auto p-6 space-y-4">
+      <!-- User message -->
+      <div class="flex justify-end">
+        <div class="max-w-2xl bg-[#238636]/20 border border-[#238636]/30 rounded-lg px-4 py-3">
+          <p class="text-sm text-gray-100">I need a production-ready web platform with an API server, PostgreSQL database, and Redis cache. Load balance the API across multiple instances.</p>
+        </div>
+      </div>
+
+      <!-- Agent: repo connection -->
+      <div class="flex gap-3">
+        <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center flex-shrink-0">
+          <span class="text-white text-xs font-bold">AI</span>
+        </div>
+        <div class="max-w-2xl">
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg px-4 py-3 mb-3">
+            <p class="text-sm text-gray-100">I'll help you set up this infrastructure. First, let me connect to your GitHub repository.</p>
+          </div>
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-2 h-2 bg-green-400 rounded-full"></span>
+              <span class="text-sm text-gray-100 font-medium">GitHub connected</span>
+            </div>
+            <p class="text-xs text-gray-400">Repository: web-platform-team/web-platform</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent: requirements doc -->
+      <div class="flex gap-3">
+        <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center flex-shrink-0">
+          <span class="text-white text-xs font-bold">AI</span>
+        </div>
+        <div class="max-w-2xl space-y-3">
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg px-4 py-3">
+            <p class="text-sm text-gray-100">I've written the infrastructure requirements document. Please review:</p>
+          </div>
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+            <div class="bg-[#0d1117] px-4 py-2 flex items-center justify-between border-b border-[#30363d]">
+              <span class="text-xs text-gray-400">requirements.md</span>
+              <button class="text-xs text-[#58a6ff] hover:text-[#79b8ff]">Open editor</button>
+            </div>
+            <div class="p-4 font-mono text-xs text-gray-300">
+<pre># Infrastructure Requirements
+
+## Components
+- **API Server**: Go HTTP server, port 8080
+  - 3 instances minimum, auto-scale to 6
+  - Health check at /health
+  
+- **Database**: PostgreSQL 15
+  - Managed RDS cluster
+  - Multi-AZ for high availability
+  
+- **Cache**: Redis 7
+  - ElastiCache cluster
+  - For session and data caching
+
+## Networking
+- Application Load Balancer
+- VPC with public/private subnets
+- Security groups for each component</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent: architecture diagram -->
+      <div class="flex gap-3">
+        <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center flex-shrink-0">
+          <span class="text-white text-xs font-bold">AI</span>
+        </div>
+        <div class="max-w-2xl space-y-3">
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg px-4 py-3">
+            <p class="text-sm text-gray-100">Here's the architecture diagram based on your requirements:</p>
+          </div>
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+            <div class="bg-[#0d1117] px-4 py-2 flex items-center justify-between border-b border-[#30363d]">
+              <span class="text-xs text-gray-400">architecture.mmd</span>
+              <button class="text-xs text-[#58a6ff] hover:text-[#79b8ff]">Open diagram editor</button>
+            </div>
+            <div class="p-6 bg-[#0d1117] text-center">
+              <pre class="text-xs text-gray-400 font-mono">
+    [Internet]
+        |
+    [ALB]
+    /   |   \
+[API-1] [API-2] [API-3]
+  \     |     /
+    [PostgreSQL]
+    [Redis]</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent: generated Terraform -->
+      <div class="flex gap-3">
+        <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center flex-shrink-0">
+          <span class="text-white text-xs font-bold">AI</span>
+        </div>
+        <div class="max-w-2xl space-y-3">
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg px-4 py-3">
+            <p class="text-sm text-gray-100">I've generated the Terraform code. Let me validate it:</p>
+          </div>
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+            <div class="bg-[#0d1117] px-4 py-2 flex items-center justify-between border-b border-[#30363d]">
+              <span class="text-xs text-gray-400">main.tf</span>
+              <button class="text-xs text-[#58a6ff] hover:text-[#79b8ff]">Inspect code</button>
+            </div>
+            <div class="p-4 font-mono text-xs text-gray-300">
+<pre>resource "aws_alb" "web" {
+  name               = "web-platform-alb"
+  internal           = false
+  load_balancer_type = "application"
+  subnets            = module.vpc.public_subnets
+}
+
+resource "aws_rds_cluster" "postgres" {
+  cluster_identifier = "web-platform-db"
+  engine             = "aurora-postgresql"
+  engine_mode        = "serverlessv2"
+}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Approval card -->
+      <div class="flex gap-3">
+        <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center flex-shrink-0">
+          <span class="text-white text-xs font-bold">AI</span>
+        </div>
+        <div class="max-w-2xl">
+          <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+            <div class="bg-[#0d1117] px-4 py-2 flex items-center gap-2 border-b border-[#30363d]">
+              <svg class="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+              <span class="text-xs text-gray-400">Approval Required</span>
+            </div>
+            <div class="p-4">
+              <p class="text-sm text-gray-100 mb-3">The Terraform code has been validated and is ready to apply. This will create:</p>
+              <ul class="text-sm text-gray-300 list-disc list-inside mb-4 space-y-1">
+                <li>VPC with public/private subnets</li>
+                <li>Application Load Balancer</li>
+                <li>Auto-scaling group (2-6 instances)</li>
+                <li>Aurora PostgreSQL cluster</li>
+                <li>ElastiCache Redis cluster</li>
+              </ul>
+              <div class="flex gap-2">
+                <button class="bg-[#238636] hover:bg-[#2ea043] text-white px-4 py-2 rounded text-sm font-medium transition-colors">
+                  Apply to Cloud
+                </button>
+                <button class="bg-[#0d1117] border border-[#30363d] hover:border-[#58a6ff] text-gray-300 px-4 py-2 rounded text-sm transition-colors">
+                  Modify
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat input -->
+    <div class="border-t border-[#30363d] p-4 bg-[#161b22]">
+      <div class="flex gap-3">
+        <input
+          type="text"
+          placeholder="Adjust requirements, parameters, or approve..."
+          class="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#58a6ff]"
+        />
+        <button class="bg-[#238636] hover:bg-[#2ea043] text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          Send
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
