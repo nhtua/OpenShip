@@ -66,5 +66,5 @@ You may use any available tools to complete tasks efficiently. However, keep in 
 
 ## Project directories
 
-- `docs/` : contains all documents. It could have several child dirs for different purposes so you may need to scan with depth. Each document always have meta data in the head which includes (type/summary/date/status). You should always scan first 4 lines of each documents for quick search, only deep search when really needed.
+- `docs/` : contains all documents. It could have several child dirs for different purposes so you may need to scan with depth. Each document always have meta data in the head which includes (type/summary/date/status). You should always scan first 6 lines of each documents for quick search, only deep search when really needed.
 - `mockup/` : contains HTML files that aims to quickly show the UI/UX prototyping
