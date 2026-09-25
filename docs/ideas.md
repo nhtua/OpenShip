@@ -161,18 +161,9 @@ To support wide platform coverage, OpenShip provides an abstraction layer that s
 
 ## Resource Identity Tracking
 
-When the agent creates concrete cloud resources from abstract objects, it must maintain a persistent mapping between the two so engineers can later reference, modify, or delete specific resources.
+When the agent creates concrete cloud resources from abstract objects, it maintains a persistent mapping between the two so engineers can later reference, modify, or delete specific resources.
 
-**Core Concept:** Every abstract object (job, deployment, load balancer) created by the agent is assigned a unique OpenShip identifier. When the corresponding concrete resource is provisioned, the mapping is recorded: `openship://job-abc123 → aws_ecs_service.my-service`.
-
-**Key Capabilities:**
-
-- **Traceability:** Engineers can see which cloud resources were created by which OpenShip objects
-- **Targeted operations:** The agent can find and modify specific resources without ambiguity
-- **Cross-platform consistency:** Same tracking mechanism works whether resources are on AWS, GCP, Azure, or elsewhere
-- **Versioned history:** Mappings are tracked in Git, enabling rollback and change history
-
-**Implementation:** See [architects.md](./architects.md) for detailed architecture including state management, tagging conventions, and execution context handling.
+**See:** [architects.md](./architects.md) for detailed architecture including the dual-state model, identity model, state management, tagging conventions, and execution context handling.
 
 ---
 
