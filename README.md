@@ -33,6 +33,20 @@ In OpenShip, every automation task is expressed as a workflow — a sequence of 
 
 **Extensible by design:** Build custom workflows for your specific needs, compose existing workflows, or import community-shared ones from the workflow registry. The same execution model powers built-in features and user-created automations — everything is a workflow.
 
+## Where to Start
+
+**Read the ideas first.** Understand the project's philosophy, design principles, and roadmap by reading [`docs/ideas.md`](docs/ideas.md). This document captures the core vision, workflow patterns, and architectural decisions.
+
+**Explore the mockups.** See the intended user experience through our interactive mockups:
+
+```bash
+cd mockup
+pnpm install
+pnpm dev
+```
+
+Open `http://localhost:5173` to see the chat-first interface, agent workspace, and workflow builder designs. These are static demonstrations — no functionality yet.
+
 ## Open Source Roadmap
 
 OpenShip is developed in transparent phases:
@@ -54,18 +68,6 @@ We're actively defining the problem space and exploring solution approaches. Thi
 - **Phase 3:** Built-in workflow templates and tool registry
 - **Phase 4:** Expanded tool/connector ecosystem and production deployment
 - **Phase 5:** Community workflow sharing and ecosystem growth
-
-## Try the Mockups
-
-Explore the intended user experience through our interactive mockups:
-
-```bash
-cd mockup
-pnpm install
-pnpm dev
-```
-
-Open `http://localhost:5173` to see the chat-first interface, agent workspace, and workflow builder designs.
 
 ## Contributing
 

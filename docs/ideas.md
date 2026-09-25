@@ -275,6 +275,34 @@ OpenShip workflows fall into two categories with distinct provenance, UI treatme
 
 ---
 
+## Project: Core Organizational Unit
+
+A Project in OpenShip is a logical container that groups related workflow executions, associated resources, and tags together. Projects provide isolation, organization, and navigation for all OpenShip activities.
+
+**What a Project Contains:**
+- Workflow executions (runs, sessions, and their state)
+- Referenced resources (cloud infrastructure, artifacts, generated code)
+- Tags and metadata for organization and filtering
+- Chat conversations associated with workflows
+- Artifacts and outputs from workflow execution
+
+**Purpose and Benefits:**
+- **Isolation:** Separates different systems, environments, or teams' work from each other.
+- **Organization:** Groups related workflows and resources for easier management.
+- **Navigation:** Provides context for users and agents to find and manage related work.
+
+**Execution Context:**
+- Every workflow execution happens within a project context.
+- The project provides scope for resource access, state persistence, and conversation history.
+- Users and agents reference project resources by name within the project context (e.g., "deploy to staging in the web-platform project").
+
+**Project Management:**
+- Users can create, switch between, and manage multiple projects.
+- Projects can be shared within teams, with appropriate access controls.
+- The agent is aware of the active project and uses it as context for all operations.
+
+---
+
 ## Home Page: Chat-First Entry
 
 When users first open OpenShip, the default home page provides a familiar, chat-first experience with workflow visibility.
@@ -318,19 +346,13 @@ When users first open OpenShip, the default home page provides a familiar, chat-
 
 ## Project UI: Workflow-Centric Entry Points
 
-A project in OpenShip is a logical container that groups workflow executions and referenced resources together, making it easy for users and agents to find and manage related work.
+See [Project: Core Organizational Unit](#project-core-organizational-unit) for the definition of what a Project is.
 
 The project page offers simple entry points for starting work:
 
 - **Chat input:** Users can type a natural language query to start a workflow or interact with the agent.
 - **Workflow template list:** Users can browse and select available workflow templates.
 - **Resource browser:** Users can browse resources associated with the project (workflows, executions, artifacts, etc.).
-
-**Project as Context:**
-
-- The project provides context for workflow execution — the agent knows which resources and workflows are relevant.
-- Users can switch between projects to work on different systems or environments.
-- The agent can reference project resources (e.g., "deploy to the staging cluster in the web-platform project").
 
 ---
 
