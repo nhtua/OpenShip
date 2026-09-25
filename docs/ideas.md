@@ -194,7 +194,13 @@ OpenShip supports multiple workflow templates, each modeling a distinct DevOps p
 - **Provision/Build:** Linear, deterministic flow — requirements → design → validate → implement. The primary template described in existing ideas.
 - **Investigation/Debug:** Non-linear, exploratory — observe symptom → gather telemetry → hypothesize → test hypothesis → fix. Multiple branches and loop-backs.
 - **CI/CD Creation:** Iterative with testing — define job → generate code → test run → debug → validate.
-- **Additional patterns:** Optimization, migration, cost analysis, and more as needed.
+- **Alert Response:** Triggered by monitoring alarms — receive alert → gather context → classify severity → execute remediation or escalate → notify.
+- **Scheduled Reporting:** Cron-triggered — pull metrics/data → aggregate and analyze → generate dashboard report → distribute to stakeholders.
+- **Cost Optimization:** Analyze resource usage → identify waste → propose right-sizing → approve and apply changes → validate savings.
+- **Capacity Planning:** Monitor growth trends → forecast demand → recommend scaling → simulate impact → implement.
+- **Security Scanning:** Run vulnerability scans → correlate findings → prioritize by risk → generate remediation plan → track closure.
+- **Incident Response:** Detect incident → blast radius assessment → coordinate response → implement fix → post-mortem analysis.
+- **Migration:** Assess current state → plan migration steps → execute in phases → validate → decommission old systems.
 
 **Template Selection:**
 
@@ -599,6 +605,49 @@ Workflows execute with durable state persistence, supporting pauses of any durat
 - **Scheduled:** Workflows run on a schedule (e.g., daily cost report, weekly cleanup).
 - **Event-driven:** Workflows trigger on external events (webhook, file change, API call, etc.).
 - This enables reactive automation where the agent responds to real-world events.
+
+---
+
+## Event-Driven Workflow Triggers
+
+OpenShip supports event-driven execution where workflows are automatically triggered by various event sources, enabling reactive automation that responds to real-world signals without manual initiation.
+
+**Trigger Event Types:**
+
+- **Manual:** User explicitly triggers a workflow through chat or the UI.
+- **Scheduled (Cron):** Workflows run on a time-based schedule (e.g., daily cost report, weekly resource cleanup, monthly compliance check).
+- **Webhook:** HTTP POST endpoints that external systems can call to trigger workflows. Each workflow can expose a unique webhook URL with optional authentication (API key, JWT, or HMAC signature).
+- **Slack Messages:** Commands or mentions in Slack channels or direct messages trigger workflows (e.g., `/openship deploy --env staging`, "OpenShip, investigate this error" in #alerts).
+- **Email:** Incoming emails matching configured rules trigger workflows (e.g., bug reports sent to bugs@example.com trigger a Jira ticket creation workflow, incident notifications trigger investigation workflows).
+- **File Changes:** Workflows trigger when specific files or directories change (e.g., new config files pushed to a Git repo, changes to Terraform modules).
+- **API Calls:** Direct REST API invocations trigger workflows with structured JSON payloads.
+- **State Changes:** Workflows trigger when monitored resources change state (e.g., instance health check fails, deployment status changes, cost threshold exceeded).
+
+**Trigger Configuration:**
+
+- Triggers are defined in the workflow's metadata (YAML frontmatter).
+- Each trigger specifies its type, configuration parameters, and optional input mapping.
+- Workflows can have multiple triggers of different types.
+
+**Input Mapping from Events:**
+
+- Event data is mapped to workflow inputs through trigger configuration.
+- Webhook payloads, Slack message content, email bodies, etc. are parsed and transformed into the workflow's expected input schema.
+- Default values are applied for inputs not provided by the event.
+
+**Trigger Authentication & Security:**
+
+- Webhooks support authentication via API keys, JWT tokens, or HMAC signatures to prevent unauthorized triggers.
+- Slack integration uses Slack's bot token and event subscription verification.
+- Email triggers validate sender addresses or use IMAP authentication.
+- All trigger endpoints support TLS/SSL for transport security.
+
+**Benefits:**
+
+- **Reactive automation:** Workflows respond immediately to real-world events without waiting for manual initiation.
+- **Reduced toil:** Repetitive tasks are automated based on signals rather than schedules or manual triggers.
+- **Faster incident response:** State changes and alerts can trigger investigation and remediation workflows automatically.
+- **Integration with existing tools:** Teams can trigger workflows from tools they already use (Slack, email, CI/CD systems).
 
 **Input Passing:**
 - Workflows support both JSON payloads (for programmatic triggers) and chat inputs (for manual triggers).

@@ -1,3 +1,41 @@
-.superpowers
+# Environment & Configuration
 .env
-.venv
+.env.local
+.env.*.local
+
+# Node.js / Vue3
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# AI Agent Artifacts
+.superpowers/
+*.session
+*.conversation
+agent_logs/
+agent_history/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
