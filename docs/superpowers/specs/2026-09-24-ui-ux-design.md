@@ -1,4 +1,5 @@
 type: specification
+summary: Chat-centric UI/UX design spec for OpenShip agentic DevOps co-pilot with embedded artifacts and dark IDE aesthetic.
 status: approved
 date: 2026-09-24
 ---

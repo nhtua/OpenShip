@@ -1,5 +1,5 @@
 type: story
-summary:
+summary: Research and comparison of AI agent frameworks and technologies for building OpenShip's agentic DevOps platform.
 status: in-progress
 date: 2026-09-22
 ---

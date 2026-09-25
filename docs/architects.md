@@ -1,5 +1,5 @@
 type: architecture
-summary:
+summary: Detailed architectural decisions for OpenShip including resource identity, state management, and infrastructure mapping.
 status: drafting
 date: 2026-09-24
 ---

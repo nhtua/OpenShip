@@ -1,5 +1,5 @@
 type: design
-summary:
+summary: Frontend UI design exploring chat-centric agentic interface with embedded artifacts, document editors, and autonomous workflow capabilities.
 status: in-progress
 date: 2026-09-24
 ---

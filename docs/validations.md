@@ -1,5 +1,5 @@
 type: story
-summary:
+summary: Community validation of OpenShip concepts against DevOps pain points gathered from Reddit, Hacker News, and developer forums.
 status: approved
 date: 2026-09-22
 ---
