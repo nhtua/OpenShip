@@ -1,3 +1,4 @@
+---
 type: story
 summary: Community validation of OpenShip concepts against DevOps pain points gathered from Reddit, Hacker News, and developer forums.
 status: approved

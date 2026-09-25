@@ -1,3 +1,4 @@
+---
 type: architecture
 summary: Detailed architectural decisions for OpenShip including resource identity, state management, and infrastructure mapping.
 status: drafting

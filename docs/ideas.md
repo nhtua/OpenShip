@@ -1,3 +1,4 @@
+---
 type: story
 summary: Collected ideas, features, and design principles for OpenShip as a co-pilot for DevOps and platform engineers.
 status: in-progress
