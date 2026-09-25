@@ -20,10 +20,12 @@ Then open <http://localhost:8000/homepage.html> in your browser.
 | **Agent Workspace** | [agent-workspace.html](agent-workspace.html) | Three-zone layout with chat stream, reasoning blocks, tool call cards, and approval cards |
 | **Artifact Inspector** | [artifact-inspector.html](artifact-inspector.html) | Code editor with tabs for code, diagram, and terminal output |
 | **Workflow builder** | [workflow-builder.html](workflow-builder.html) | Agent conversation that helps justify the requirements, explain the process and discover tools to build new workflow. Offer buttons [Save] [Run in project] and [Export workflow file] after finished |
-| **Tool Registry** | [tool-registry.html](tool-registry.html) | Browse available tools, connectors, and custom scripts |
+| **Tool Registry** | [tool-registry.html](tool-registry.html) | Browse available tools, connectors tools (MCP), and custom scripts |
+| **Connectors** | [connectors.html](connectors.html) | Browse available connectors, allow user to manage the authentication to 3rd platform |
 | New Project | [new-project.html](new-project.html) | Two entry points: text descriptwe |
-| CI/CD Setup | [cicd-workflow.html](cicd-workflow.html) | CI/CD workflow: repo connection, workflow generation, run management |
-| Investigate & Debug | [debug-workflow.html](debug-workflow.html) | Debug workflow: symptom description, telemetry gathering, hypothesis testing, fix proposal |
+| Infrastructure Setup | [infrastructure-workflow.html](infrastructure-workflow.html) | Infrastructure - built-in workflow: repo connection, write infrastructure specification, generate components/connections diagrams, generating Terraform code, apply to create cloud resources |
+| CI/CD Setup | [cicd-workflow.html](cicd-workflow.html) | CI/CD - built-in workflow: repo connection, workflow generation, run management |
+| Investigate & Debug | [debug-workflow.html](debug-workflow.html) | Debug - built-in workflow: symptom description, telemetry gathering, hypothesis testing, fix proposal |
 
 ## Design Principles
 
