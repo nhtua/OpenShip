@@ -16,3 +16,16 @@ class LLMClient:
             max_tokens=max_tokens,
         )
         return response.choices[0].message.content
+
+    def stream_chat(self, messages, temperature=0.7, max_tokens=1024):
+        """Stream chat completion chunks, yielding each content delta."""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content

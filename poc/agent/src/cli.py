@@ -1,4 +1,5 @@
 import argparse
+import sys
 from .agent import Agent
 from langgraph.types import Command
 
@@ -6,6 +7,8 @@ from langgraph.types import Command
 def main():
     parser = argparse.ArgumentParser(description="OpenShip Workflow PoC")
     parser.add_argument("workflow", help="Path to workflow markdown file")
+    parser.add_argument("--show-thinking", action="store_true",
+                        help="Stream LLM reasoning/thinking process to terminal")
     args = parser.parse_args()
 
     agent = Agent()
@@ -13,9 +16,19 @@ def main():
     print(f"Loaded workflow from: {args.workflow}")
 
     # Generate plan using LLM
-    print("\nGenerating plan with LLM...")
-    plan = agent.generate_plan()
-    print("Plan generated.")
+    if args.show_thinking:
+        print("\nGenerating plan with LLM (streaming reasoning)...")
+        plan_parts = []
+        for chunk in agent.generate_plan_stream():
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+            plan_parts.append(chunk)
+        plan = "".join(plan_parts)
+        print()  # Newline after streaming completes
+    else:
+        print("\nGenerating plan with LLM...")
+        plan = agent.generate_plan()
+        print("Plan generated.")
 
     # Approval loop with LLM-based regeneration
     while True:
@@ -27,24 +40,35 @@ def main():
             import json
             import re
             json_match = re.search(r'```json\s*(.*?)\s*```', plan, re.DOTALL)
-            if json_match:
-                plan_json = json.loads(json_match.group(1))
-            else:
-                plan_json = json.loads(plan)
+            json_str = json_match.group(1) if json_match else plan
+            # Fix common JSON issues: unescaped quotes in args
+            json_str = re.sub(r'"args":\s*"\+"([^"]*)"(\s*)"', r'"args": "+\1"', json_str)
+            json_str = re.sub(r'"args":\s*"(\+[^"]*)"', r'"args": "\1"', json_str)
+            plan_json = json.loads(json_str)
             steps = plan_json.get("steps", [])
             print("\nSteps:")
             for step in steps:
                 print(f"  {step.get('order', '?')}. {step.get('description', 'N/A')} [{step.get('tool', 'N/A')}]")
-        except Exception:
-            print("\n(Unable to parse plan JSON for display)")
+        except Exception as e:
+            print(f"\n(Unable to parse plan JSON for display: {e})")
 
         response = input("\nApprove plan? [yes/no]: ").lower().strip()
         if response == "yes" or response == "y":
             break
         elif response == "no" or response == "n":
             feedback = input("What would you like to change? ")
-            print("Regenerating plan with LLM based on feedback...")
-            plan = agent.generate_plan(feedback)
+            if args.show_thinking:
+                print("Regenerating plan with LLM based on feedback (streaming)...")
+                plan_parts = []
+                for chunk in agent.generate_plan_stream(feedback):
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                    plan_parts.append(chunk)
+                plan = "".join(plan_parts)
+                print()  # Newline after streaming completes
+            else:
+                print("Regenerating plan with LLM based on feedback...")
+                plan = agent.generate_plan(feedback)
             print("Plan regenerated.")
         else:
             print("Invalid response. Please enter 'yes' or 'no'.")
