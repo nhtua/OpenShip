@@ -36,6 +36,9 @@ agent_history/
 .DS_Store
 Thumbs.db
 
+# Worktrees
+.worktrees/
+
 # Logs
 *.log
 logs/
