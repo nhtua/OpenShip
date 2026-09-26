@@ -33,16 +33,17 @@ def main():
             import json
             import re
             json_match = re.search(r'```json\s*(.*?)\s*```', plan, re.DOTALL)
-            if json_match:
-                plan_json = json.loads(json_match.group(1))
-            else:
-                plan_json = json.loads(plan)
+            json_str = json_match.group(1) if json_match else plan
+            # Fix common JSON issues: unescaped quotes in args
+            json_str = re.sub(r'"args":\s*"\+"([^"]*)"(\s*)"', r'"args": "+\1"', json_str)
+            json_str = re.sub(r'"args":\s*"(\+[^"]*)"', r'"args": "\1"', json_str)
+            plan_json = json.loads(json_str)
             steps = plan_json.get("steps", [])
             print("\nSteps:")
             for step in steps:
                 print(f"  {step.get('order', '?')}. {step.get('description', 'N/A')} [{step.get('tool', 'N/A')}]")
-        except Exception:
-            print("\n(Unable to parse plan JSON for display)")
+        except Exception as e:
+            print(f"\n(Unable to parse plan JSON for display: {e})")
 
         response = input("\nApprove plan? [yes/no]: ").lower().strip()
         if response == "yes" or response == "y":

@@ -214,10 +214,11 @@ Generate an execution plan.
             import re
             # Extract JSON from markdown code block
             json_match = re.search(r'```json\s*(.*?)\s*```', plan, re.DOTALL)
-            if json_match:
-                plan_json = json.loads(json_match.group(1))
-            else:
-                plan_json = json.loads(plan)
+            json_str = json_match.group(1) if json_match else plan
+            # Fix common JSON issues: unescaped quotes in args
+            json_str = re.sub(r'"args":\s*"\+"([^"]*)"(\s*)"', r'"args": "+\1"', json_str)
+            json_str = re.sub(r'"args":\s*"(\+[^"]*)"', r'"args": "\1"', json_str)
+            plan_json = json.loads(json_str)
             self.graph = compile_to_langgraph(plan_json, checkpointer=self.checkpointer)
         elif self.workflow:
             self.graph = compile_to_langgraph(self.workflow, checkpointer=self.checkpointer)
