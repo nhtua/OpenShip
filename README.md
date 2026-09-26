@@ -37,6 +37,16 @@ In OpenShip, every automation task is expressed as a workflow — a sequence of 
 
 **Read the ideas first.** Understand the project's philosophy, design principles, and roadmap by reading [`docs/ideas.md`](docs/ideas.md). This document captures the core vision, workflow patterns, and architectural decisions.
 
+**Explore the Agent PoC.** Try our working proof-of-concept that demonstrates the core workflow compilation engine:
+
+```bash
+cd poc/agent
+pip install -r requirements.txt  # or use uv
+python -m src.cli examples/freeform-greeting.md
+```
+
+The PoC takes a free-form markdown description, uses an LLM to generate an executable plan, presents it for your approval, and executes it. See [`poc/agent/examples/`](poc/agent/examples/) for workflow examples.
+
 **Explore the mockups.** See the intended user experience through our interactive mockups:
 
 ```bash
@@ -80,6 +90,24 @@ OpenShip is in its early days and we'd love your help shaping its future. Here's
 - **🔨 Submit pull requests** — Help build features, fix bugs, or improve documentation
 
 All contributions are welcome, no matter your experience level. We're building this together.
+
+## Repository Layout
+
+```
+openship/
+├── poc/
+│   └── agent/              # Agent workflow compilation PoC (Python)
+├── apps/
+│   ├── web/                # Frontend app (Vue.js) — planned
+│   ├── api/                # API service (FastAPI) — planned
+│   └── agent/              # Agent service — after PoC graduation
+├── packages/
+│   ├── shared/             # Shared Python modules — planned
+│   └── ui/                 # Shared frontend components — planned
+├── docs/                   # Documentation, ideas, and design specs
+├── mockup/                 # UI/UX prototypes (static HTML)
+└── README.md
+```
 
 ## License
 
