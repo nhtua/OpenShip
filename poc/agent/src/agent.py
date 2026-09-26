@@ -27,12 +27,14 @@ class Agent:
         cached = self.cache.load(checksum)
         if cached:
             print("Using cached graph")
-            return cached
-        self.graph = compile_to_langgraph(self.workflow)
-        self.cache.save(checksum, {"compiled": True})
+        else:
+            self.graph = compile_to_langgraph(self.workflow)
+            self.cache.save(checksum, {"compiled": True})
         return self.graph
 
     def execute(self, inputs: dict = None):
         if not self.graph:
             self.compile_graph()
+        if inputs is None:
+            inputs = {}
         return self.graph.invoke({"inputs": inputs, "outputs": {}})
