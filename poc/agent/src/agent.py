@@ -30,37 +30,61 @@ class Agent:
         return self.workflow
 
     def generate_plan(self, feedback=None):
-        """Use LLM to generate or regenerate the plan."""
+        """Use LLM to generate or regenerate the plan with tool selection."""
         workflow_desc = self.workflow["raw"]
 
+        tools = """Available tools (choose the best one for each step):
+- shell.echo: Print text to stdout. Usage: echo "message"
+- shell.date: Get current date/time. Usage: date "+%Y-%m-%d"
+- shell.xargs: Execute command with piped input. Usage: echo "text" | xargs -I{} command {}
+- exec.curl: HTTP requests. Usage: curl -s -L https://example.com
+
+IMPORTANT: For each step, you MUST select one of these tools. Do not output "auto" or "None"."""
+
         if feedback:
-            prompt = f"""Based on this workflow description and user feedback, generate a revised execution plan.
+            prompt = f"""You are an AI agent that converts workflow descriptions into executable plans.
 
-Workflow:
+Workflow description:
 {workflow_desc}
 
-User feedback: {feedback}
+User feedback on previous plan: {feedback}
 
-Available tools:
-- shell.echo: Print text to stdout
-- shell.date: Get current date/time
-- shell.xargs: Execute command with arguments
-- exec.curl: HTTP requests via curl
+{tools}
 
-Output the plan as JSON with steps array, each step having: order, description, tool, args"""
+Generate a revised execution plan that incorporates the user's feedback. For each step, select the most appropriate tool from the available tools list.
+
+Output format (JSON):
+{{
+  "steps": [
+    {{
+      "order": 1,
+      "description": "Step description",
+      "tool": "shell.echo",
+      "args": "command arguments"
+    }}
+  ]
+}}"""
         else:
-            prompt = f"""Analyze this workflow description and generate an execution plan.
+            prompt = f"""You are an AI agent that converts workflow descriptions into executable plans.
 
-Workflow:
+Workflow description:
 {workflow_desc}
 
-Available tools:
-- shell.echo: Print text to stdout
-- shell.date: Get current date/time
-- shell.xargs: Execute command with arguments
-- exec.curl: HTTP requests via curl
+{tools}
 
-Output the plan as JSON with steps array, each step having: order, description, tool, args"""
+Generate an execution plan. For each step in the workflow, select the most appropriate tool from the available tools list.
+
+Output format (JSON):
+{{
+  "steps": [
+    {{
+      "order": 1,
+      "description": "Step description",
+      "tool": "shell.echo",
+      "args": "command arguments"
+    }}
+  ]
+}}"""
 
         response = self.llm.chat(
             [{"role": "user", "content": prompt}],
@@ -70,11 +94,23 @@ Output the plan as JSON with steps array, each step having: order, description, 
         self.plan = response
         return self.plan
 
-    def compile_graph(self):
-        """Compile the workflow to LangGraph."""
-        if not self.workflow:
-            raise ValueError("No workflow loaded")
-        self.graph = compile_to_langgraph(self.workflow)
+    def compile_graph(self, plan=None):
+        """Compile a plan to LangGraph. Uses LLM-generated plan if provided, otherwise original workflow."""
+        if plan:
+            # Parse the LLM-generated JSON plan
+            import json
+            import re
+            # Extract JSON from markdown code block
+            json_match = re.search(r'```json\s*(.*?)\s*```', plan, re.DOTALL)
+            if json_match:
+                plan_json = json.loads(json_match.group(1))
+            else:
+                plan_json = json.loads(plan)
+            self.graph = compile_to_langgraph(plan_json)
+        elif self.workflow:
+            self.graph = compile_to_langgraph(self.workflow)
+        else:
+            raise ValueError("No workflow or plan available")
         return self.graph
 
     def execute(self, inputs=None):
