@@ -62,7 +62,7 @@ Each step MUST include these fields:
 - tool: the tool to use
 - args: the arguments for the tool
 
-Output ONLY the JSON plan, nothing else. Example:
+First, think through the workflow and explain your reasoning for each step. Then, output the JSON plan wrapped in ```json and ``` code fences. Example:
 {
   "steps": [
     {
@@ -149,7 +149,7 @@ Each step MUST include these fields:
 - tool: the tool to use
 - args: the arguments for the tool
 
-Output ONLY the JSON plan, nothing else. Example:
+First, think through the workflow and explain your reasoning for each step. Then, output the JSON plan wrapped in ```json and ``` code fences. Example:
 {
   "steps": [
     {
