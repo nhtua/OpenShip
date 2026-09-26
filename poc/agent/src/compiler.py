@@ -54,7 +54,16 @@ def resolve_template(template: str, state: WorkflowState) -> str:
 
 
 def compile_to_langgraph(workflow, checkpointer=None):
-    steps = workflow["steps"]
+    # Handle both object with "steps" field and plain list
+    if isinstance(workflow, dict):
+        steps = workflow.get("steps", [])
+    else:
+        steps = workflow
+
+    # Add order numbers if missing
+    for i, step in enumerate(steps):
+        if "order" not in step:
+            step["order"] = i + 1
 
     def build_node(step):
         def node(state: WorkflowState) -> WorkflowState:
