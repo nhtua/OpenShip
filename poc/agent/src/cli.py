@@ -12,18 +12,21 @@ def main():
     print(f"Loaded workflow: {workflow['title']}")
     print(f"Steps: {len(workflow['steps'])}")
 
-    # Approval loop
-    print("\nPlan:")
-    for step in workflow["steps"]:
-        print(f"  {step['order']}. {step['description']} ({step['tool']})")
-
+    # Approval loop with regeneration
     while True:
+        print("\nPlan:")
+        for step in workflow["steps"]:
+            print(f"  {step['order']}. {step['description']} ({step['tool']})")
+
         response = input("\nApprove plan? [yes/no]: ").lower().strip()
         if response == "yes" or response == "y":
             break
         elif response == "no" or response == "n":
-            print("Plan rejected. Exiting.")
-            return
+            feedback = input("What would you like to change? ")
+            # Regenerate plan based on feedback (future: LLM-based)
+            print(f"Regenerating plan with feedback: {feedback}")
+            # For now, just reload the workflow
+            workflow = agent.load_workflow(args.workflow)
         else:
             print("Invalid response. Please enter 'yes' or 'no'.")
 
