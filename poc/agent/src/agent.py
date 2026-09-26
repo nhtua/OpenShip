@@ -11,8 +11,9 @@ class Agent:
         local_url = os.getenv("LOCAL_LLM_URL")
         if local_url:
             # Use local model (Llama.cpp, vLLM, etc.)
-            self.llm = LLMClient(api_key="local", base_url=local_url, model="local-model")
-            print(f"Using local LLM at {local_url}")
+            model_name = os.getenv("MODEL_NAME", "local-model")
+            self.llm = LLMClient(api_key="local", base_url=local_url, model=model_name)
+            print(f"Using local LLM at {local_url} (model: {model_name})")
         else:
             # Use OpenAI API
             api_key = os.getenv("OPENAI_API_KEY")
