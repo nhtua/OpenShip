@@ -8,9 +8,18 @@ from .llm_client import LLMClient
 class Agent:
     def __init__(self):
         load_dotenv()
-        api_key = os.getenv("OPENAI_API_KEY", "sk-test")
-        base_url = os.getenv("LOCAL_LLM_URL")
-        self.llm = LLMClient(api_key=api_key, base_url=base_url)
+        local_url = os.getenv("LOCAL_LLM_URL")
+        if local_url:
+            # Use local model (Llama.cpp, vLLM, etc.)
+            self.llm = LLMClient(api_key="local", base_url=local_url, model="local-model")
+            print(f"Using local LLM at {local_url}")
+        else:
+            # Use OpenAI API
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise EnvironmentError("Set either OPENAI_API_KEY or LOCAL_LLM_URL")
+            self.llm = LLMClient(api_key=api_key)
+            print("Using OpenAI API")
         self.workflow = None
         self.graph = None
         self.plan = None
