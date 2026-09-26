@@ -1,5 +1,7 @@
 import os
+import uuid
 from dotenv import load_dotenv
+from langgraph.checkpoint.memory import InMemorySaver
 from .parser import parse_workflow
 from .compiler import compile_to_langgraph
 from .llm_client import LLMClient
@@ -24,6 +26,8 @@ class Agent:
         self.workflow = None
         self.graph = None
         self.plan = None
+        self.checkpointer = InMemorySaver()
+        self.config = {"configurable": {"thread_id": str(uuid.uuid4())}}
 
     def load_workflow(self, path: str):
         self.workflow = parse_workflow(path)
@@ -38,6 +42,8 @@ class Agent:
 - shell.date: Get current date/time. Usage: date "+%Y-%m-%d"
 - shell.xargs: Execute command with piped input. Usage: echo "text" | xargs -I{} command {}
 - exec.curl: HTTP requests. Usage: curl -s -L https://example.com
+- user.ask: Ask the user a question and wait for their response. Usage: "What is your name?"
+  The user's response is stored as the step output and can be referenced as {step_N} in later steps.
 
 IMPORTANT: For each step, you MUST select one of these tools. Do not output "auto" or "None"."""
 
@@ -106,9 +112,9 @@ Output format (JSON):
                 plan_json = json.loads(json_match.group(1))
             else:
                 plan_json = json.loads(plan)
-            self.graph = compile_to_langgraph(plan_json)
+            self.graph = compile_to_langgraph(plan_json, checkpointer=self.checkpointer)
         elif self.workflow:
-            self.graph = compile_to_langgraph(self.workflow)
+            self.graph = compile_to_langgraph(self.workflow, checkpointer=self.checkpointer)
         else:
             raise ValueError("No workflow or plan available")
         return self.graph
@@ -119,4 +125,4 @@ Output format (JSON):
             self.compile_graph()
         if inputs is None:
             inputs = {}
-        return self.graph.invoke({"inputs": inputs, "outputs": {}})
+        return self.graph.invoke({"inputs": inputs, "outputs": {}}, self.config)

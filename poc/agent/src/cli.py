@@ -1,5 +1,6 @@
 import argparse
 from .agent import Agent
+from langgraph.types import Command
 
 
 def main():
@@ -34,10 +35,37 @@ def main():
 
     print("\nExecuting workflow...")
     agent.compile_graph(plan)
-    result = agent.execute()
+
+    # Execute with interrupt handling
+    is_resuming = False
+    while True:
+        if is_resuming:
+            # Resume from previous interrupt
+            interrupt_info = result["__interrupt__"][0]
+            question = interrupt_info.value["question"]
+            print(f"\n[Agent asks] {question}")
+            user_response = input("Your response: ")
+            print(f"  [Resuming with: {user_response}]")
+            result = agent.graph.invoke(Command(resume=user_response), agent.config)
+        else:
+            # Start new execution
+            result = agent.graph.invoke({"inputs": {}, "outputs": {}}, agent.config)
+
+        # Check if graph is paused at an interrupt
+        if "__interrupt__" in result:
+            is_resuming = True
+            continue
+        else:
+            # Graph completed
+            break
+
     print("\nResults:")
-    for step_order, output in result["outputs"].items():
-        print(f"  Step {step_order}: {output}")
+    if isinstance(result, dict):
+        for step_order, output in result.get("outputs", {}).items():
+            print(f"  Step {step_order}: {output}")
+    else:
+        print(f"  Result type: {type(result)}")
+        print(f"  Result: {result}")
 
 
 if __name__ == "__main__":
