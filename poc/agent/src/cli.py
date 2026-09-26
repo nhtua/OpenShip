@@ -10,11 +10,16 @@ def main():
     agent = Agent()
     workflow = agent.load_workflow(args.workflow)
     print(f"Loaded workflow: {workflow['title']}")
-    print(f"Steps: {len(workflow['steps'])}")
 
-    # Approval loop with regeneration
+    # Generate plan using LLM
+    print("\nGenerating plan with LLM...")
+    plan = agent.generate_plan()
+    print("Plan generated.")
+
+    # Approval loop with LLM-based regeneration
     while True:
         print("\nPlan:")
+        # For now, print the parsed workflow steps
         for step in workflow["steps"]:
             print(f"  {step['order']}. {step['description']} ({step['tool']})")
 
@@ -23,10 +28,9 @@ def main():
             break
         elif response == "no" or response == "n":
             feedback = input("What would you like to change? ")
-            # Regenerate plan based on feedback (future: LLM-based)
-            print(f"Regenerating plan with feedback: {feedback}")
-            # For now, just reload the workflow
-            workflow = agent.load_workflow(args.workflow)
+            print("Regenerating plan with LLM...")
+            plan = agent.generate_plan(feedback)
+            print("Plan regenerated.")
         else:
             print("Invalid response. Please enter 'yes' or 'no'.")
 
