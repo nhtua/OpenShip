@@ -1,4 +1,5 @@
 import argparse
+import sys
 from .agent import Agent
 from langgraph.types import Command
 
@@ -12,10 +13,15 @@ def main():
     workflow = agent.load_workflow(args.workflow)
     print(f"Loaded workflow from: {args.workflow}")
 
-    # Generate plan using LLM
-    print("\nGenerating plan with LLM...")
-    plan = agent.generate_plan()
-    print("Plan generated.")
+    # Generate plan using LLM with streaming
+    print("\nGenerating plan with LLM (streaming)...")
+    plan_parts = []
+    for chunk in agent.generate_plan_stream():
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
+        plan_parts.append(chunk)
+    plan = "".join(plan_parts)
+    print()  # Newline after streaming completes
 
     # Approval loop with LLM-based regeneration
     while True:
@@ -43,8 +49,14 @@ def main():
             break
         elif response == "no" or response == "n":
             feedback = input("What would you like to change? ")
-            print("Regenerating plan with LLM based on feedback...")
-            plan = agent.generate_plan(feedback)
+            print("Regenerating plan with LLM based on feedback (streaming)...")
+            plan_parts = []
+            for chunk in agent.generate_plan_stream(feedback):
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+                plan_parts.append(chunk)
+            plan = "".join(plan_parts)
+            print()  # Newline after streaming completes
             print("Plan regenerated.")
         else:
             print("Invalid response. Please enter 'yes' or 'no'.")
