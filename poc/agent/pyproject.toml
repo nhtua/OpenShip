@@ -1,0 +1,18 @@
+[project]
+name = "openship-poc-agent"
+version = "0.1.0"
+description = "OpenShip workflow compilation PoC"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.1.0",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.scripts]
+openship-poc = "poc.agent.src.cli:main"

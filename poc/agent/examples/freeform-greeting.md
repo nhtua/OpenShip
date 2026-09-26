@@ -1,0 +1,1 @@
+Create a greeting workflow that asks the user for their name, gets today's date, and then greets them with their name and the date.
