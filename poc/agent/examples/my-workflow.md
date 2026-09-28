@@ -1,15 +1,19 @@
-# Standardized Workflow
+# Greeting Workflow
 
-## Step 1: Ask the user for their name.
-- tool: user.ask
-- args: what is your name?
+Greet the user with their name and today's date.
 
-## Step 2: Get the current date.
-- tool: shell.date
-- args: +"%Y-%m-%d"
+## Inputs
 
-## Step 3: Greet the user with their name and today's date.
-- tool: shell.echo
-- args: Hello {step_1}, today is {step_2}
+- name: [required] Your name
 
-Modified workflow
+## Steps
+
+1. Ask their name
+   - tool: user.ask
+   - args: what is your name?
+2. Get current date
+   - tool: shell.date
+   - args: +"%Y-%m-%d"
+3. Greet the user
+   - tools: auto
+   - args: Hello {step1}, today is {step2}
