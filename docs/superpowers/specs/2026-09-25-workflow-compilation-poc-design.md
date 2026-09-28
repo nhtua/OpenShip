@@ -1,8 +1,11 @@
-# Workflow Compilation PoC — Design
+---
+type: spec
+summary: Design specification for the workflow compilation PoC, demonstrating compilation of markdown workflows into executable LangGraph state machines. Superseded by the LangGraph agent redesign.
+status: outdated
+date: 2026-09-28
+---
 
-> **Status:** Approved
-> **Date:** 2026-09-28
-> **Author:** OpenShip Team
+# Workflow Compilation PoC — Design
 
 ## Overview
 

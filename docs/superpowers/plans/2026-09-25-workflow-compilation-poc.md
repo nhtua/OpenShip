@@ -1,3 +1,10 @@
+---
+type: plan
+summary: Implementation plan for the workflow compilation PoC, covering environment setup, tool registry, parser, compiler, executor, caching, LLM integration, CLI, and testing. Superseded by the LangGraph agent redesign.
+status: outdated
+date: 2026-09-25
+---
+
 # Workflow Compilation PoC — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
