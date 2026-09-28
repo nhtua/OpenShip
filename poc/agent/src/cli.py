@@ -187,33 +187,35 @@ def execute_workflow(workflow_path: str):
     print(f"Executing workflow from: {workflow_path}")
     
     # Compute hash of input file
-    content_hash = compute_checksum(workflow_path)
-    print(f"Content hash: {content_hash[:16]}")
+    input_hash = compute_checksum(workflow_path)
+    print(f"Input hash: {input_hash[:16]}")
     
-    # Look for cached standardized workflow
+    # Look for cached standardized workflow using input hash
     workflows_dir = get_workflows_dir()
-    cache_file = workflows_dir / f"{content_hash}.md"
+    cache_file = workflows_dir / f"{input_hash}.md"
     
     if not cache_file.exists():
-        print(f"No cached standardized workflow found for hash: {content_hash[:16]}")
+        print(f"No cached standardized workflow found for hash: {input_hash[:16]}")
         print("Please run 'openship build' first to standardize and cache this workflow.")
         sys.exit(1)
     
-    print(f"Using cached standardized workflow: {cache_file}")
+    print(f"Found cached standardized workflow: {cache_file}")
     
-    # Verify content matches
-    input_content = Path(workflow_path).read_text()
-    cached_content = cache_file.read_text()
+    # Compute hash of cached standardized file
+    cached_hash = compute_checksum(cache_file)
+    print(f"Cached hash: {cached_hash[:16]}")
     
-    if input_content != cached_content:
-        print("Verification failed: cached content does not match input file.")
+    # Verify hashes match
+    if input_hash != cached_hash:
+        print("Verification failed: input hash does not match cached hash.")
         print("The workflow may have been tampered with.")
         print("Please run 'openship build' again to regenerate the standardized workflow.")
         sys.exit(1)
     
-    print("Verification passed: cached content matches input file")
+    print("Verification passed: input hash matches cached hash")
     
-    # Parse the standardized workflow back to plan JSON
+    # Load and parse the cached standardized workflow
+    cached_content = cache_file.read_text()
     plan_json = parse_standardized_workflow(cached_content)
     print(f"Parsed {len(plan_json['steps'])} steps from cached workflow")
     
