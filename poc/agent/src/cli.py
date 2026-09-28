@@ -61,27 +61,7 @@ def compute_checksum(file_path: str) -> str:
             sha256.update(chunk)
     return sha256.hexdigest()
 
-def save_standardized_workflow(input_path: str, plan_str: str) -> str:
-    """Save standardized workflow to cache. Returns cache file path."""
-    checksum = compute_checksum(input_path)
-    workflows_dir = get_workflows_dir()
-    cache_file = workflows_dir / f"{checksum}.md"
-    
-    # Convert plan JSON to standardized workflow.md
-    json_match = re.search(r'```json\s*(.*?)\s*```', plan_str, re.DOTALL)
-    json_str = json_match.group(1) if json_match else plan_str
-    plan_json = json.loads(json_str)
-    
-    # Generate standardized workflow.md
-    standardized = "# Standardized Workflow\n\n"
-    for step in plan_json.get("steps", []):
-        standardized += f"## Step {step.get('order', '?')}: {step.get('description', '')}\n"
-        standardized += f"- tool: {step.get('tool', '')}\n"
-        standardized += f"- args: {step.get('args', '')}\n\n"
-    
-    cache_file.write_text(standardized)
-    print(f"Standardized workflow cached to: {cache_file}")
-    return str(cache_file)
+
 
 def load_standardized_workflow(input_path: str):
     """Load standardized workflow from cache. Returns (cache_file, content) or None."""
@@ -176,9 +156,31 @@ def build_workflow(workflow_path: str, show_thinking: bool = False):
         {"workflow_path": workflow_path, "workflow_content": ""}
     )
 
-    # Cache the standardized workflow
-    cache_path = save_standardized_workflow(workflow_path, builder_result["llm_plan"])
-    print(f"Workflow built and cached to: {cache_path}")
+    # Save standardized workflow back to input file
+    json_match = re.search(r'```json\s*(.*?)\s*```', builder_result["llm_plan"], re.DOTALL)
+    json_str = json_match.group(1) if json_match else builder_result["llm_plan"]
+    plan_json = json.loads(json_str)
+    
+    # Generate standardized workflow.md content
+    standardized = "# Standardized Workflow\n\n"
+    for step in plan_json.get("steps", []):
+        standardized += f"## Step {step.get('order', '?')}: {step.get('description', '')}\n"
+        standardized += f"- tool: {step.get('tool', '')}\n"
+        standardized += f"- args: {step.get('args', '')}\n\n"
+    
+    # Save back to input file
+    Path(workflow_path).write_text(standardized)
+    print(f"Standardized workflow saved to: {workflow_path}")
+    
+    # Compute hash from updated content
+    checksum = compute_checksum(workflow_path)
+    print(f"Computed checksum from updated content: {checksum[:16]}")
+    
+    # Cache the standardized workflow with updated hash
+    workflows_dir = get_workflows_dir()
+    cache_file = workflows_dir / f"{checksum}.md"
+    cache_file.write_text(standardized)
+    print(f"Workflow cached to: {cache_file}")
 
 def execute_workflow(workflow_path: str):
     """Execute cached standardized workflow."""
