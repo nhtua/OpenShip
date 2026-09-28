@@ -1,235 +1,160 @@
-import os
+import json
+import re
 import uuid
-from dotenv import load_dotenv
-from langgraph.checkpoint.memory import InMemorySaver
-from .parser import parse_workflow
+from pathlib import Path
+from .builder import compile_builder_workflow, generate_plan_node
 from .compiler import compile_to_langgraph
-from .llm_client import LLMClient
+from .state import BuilderState
+from langgraph.types import Command
+from langgraph.checkpoint.memory import InMemorySaver
 
 
 class Agent:
+    """
+    OpenShip Agent - orchestrates workflow building and execution.
+    
+    Encapsulates the builder and executor workflows, providing a clean API
+    for CLI, web API, and other interfaces.
+    """
+    
     def __init__(self):
-        load_dotenv()
-        local_url = os.getenv("LOCAL_LLM_URL")
-        if local_url:
-            # Use local model (Llama.cpp, vLLM, etc.)
-            model_name = os.getenv("MODEL_NAME", "local-model")
-            self.llm = LLMClient(api_key="local", base_url=local_url, model=model_name)
-            print(f"Using local LLM at {local_url} (model: {model_name})")
-        else:
-            # Use OpenAI API
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise EnvironmentError("Set either OPENAI_API_KEY or LOCAL_LLM_URL")
-            self.llm = LLMClient(api_key=api_key)
-            print("Using OpenAI API")
         self.workflow = None
+        self.workflow_path = None
         self.graph = None
         self.plan = None
-        self.checkpointer = InMemorySaver()
-        self.config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-
+        self.builder = compile_builder_workflow()
+        self.builder_config = {"configurable": {"thread_id": f"builder-{uuid.uuid4()}"}}
+    
     def load_workflow(self, path: str):
-        self.workflow = parse_workflow(path)
+        """Load a workflow markdown file."""
+        self.workflow_path = path
+        self.workflow = Path(path).read_text()
         return self.workflow
-
+    
     def generate_plan(self, feedback=None):
-        """Use LLM to generate or regenerate the plan with tool selection and variable passing."""
-        workflow_desc = self.workflow["raw"]
-
-        tools = """Available tools (choose the best one for each step):
-- shell.echo: Print text to stdout. args: the text to print (no "echo" prefix)
-- shell.date: Get current date/time. args: date format string quoted (e.g. "+%Y-%m-%d", no "date" prefix)
-- shell.xargs: Execute command with piped input. args: the command to execute
-- exec.curl: HTTP requests. args: the URL and options (no "curl" prefix)
-- user.ask: Ask the user a question and wait for their response. args: the question text
-  The user's response is stored as the step output and can be referenced as {step_N} in later steps.
-
-IMPORTANT: For each step, you MUST select one of these tools. Do not output "auto" or "None".
-The "args" field should only contain the arguments, not the tool name itself.
-When an argument contains spaces, enclose it in quotes. Example: "+%Y-%m-%d %H:%M:%S" not +%Y-%m-%d %H:%M:%S"""
-
-        plan_instructions = """
-Read the workflow description carefully. Break it down into individual steps and select the appropriate tool for each.
-
-When steps need to share data, use {step_N} placeholders where N is the step number. For example:
-- Step 1: Ask user their name → output stored as step 1
-- Step 2: Use that name → args: "Hello {step_1}!"
-
-Each step MUST include these fields:
-- order: step number (1, 2, 3...)
-- description: human-readable description of what this step does
-- tool: the tool to use
-- args: the arguments for the tool
-
-First, think through the workflow and explain your reasoning for each step. Then, output the JSON plan wrapped in ```json and ``` code fences. Example:
-{
-  "steps": [
-    {
-      "order": 1,
-      "description": "Ask user for their name",
-      "tool": "user.ask",
-      "args": "What is your name?"
-    },
-    {
-      "order": 2,
-      "description": "Get today's date",
-      "tool": "shell.date",
-      "args": "+\"%Y-%m-%d\""
-    },
-    {
-      "order": 3,
-      "description": "Greet user with their name and date",
-      "tool": "shell.echo",
-      "args": "Hello {step_1}, today is {step_2}"
-    }
-  ]
-}
-"""
-
-        if feedback:
-            prompt = f"""You are an AI agent that converts workflow descriptions into executable plans.
-
-Workflow description:
-{workflow_desc}
-
-User feedback on previous plan: {feedback}
-
-{tools}
-{plan_instructions}
-
-Generate a revised execution plan that incorporates the user's feedback.
-"""
-        else:
-            prompt = f"""You are an AI agent that converts workflow descriptions into executable plans.
-
-Workflow description:
-{workflow_desc}
-
-{tools}
-{plan_instructions}
-
-Generate an execution plan.
-"""
-
-        response = self.llm.chat(
-            [{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=1024
+        """
+        Generate or regenerate the execution plan using LLM.
+        
+        Args:
+            feedback: Optional user feedback for plan revision
+        
+        Returns:
+            The generated plan JSON string
+        """
+        state = BuilderState(
+            workflow_path="",
+            workflow_content=self.workflow,
+            user_feedback=feedback or ""
         )
-        self.plan = response
+        
+        result = generate_plan_node(state)
+        self.plan = result.llm_plan
         return self.plan
 
-    def generate_plan_stream(self, feedback=None):
-        """Stream the plan generation, yielding chunks as they arrive."""
-        workflow_desc = self.workflow["raw"]
-
-        tools = """Available tools (choose the best one for each step):
-- shell.echo: Print text to stdout. args: the text to print (no "echo" prefix)
-- shell.date: Get current date/time. args: date format string quoted (e.g. "+%Y-%m-%d", no "date" prefix)
-- shell.xargs: Execute command with piped input. args: the command to execute
-- exec.curl: HTTP requests. args: the URL and options (no "curl" prefix)
-- user.ask: Ask the user a question and wait for their response. args: the question text
-  The user's response is stored as the step output and can be referenced as {step_N} in later steps.
-
-IMPORTANT: For each step, you MUST select one of these tools. Do not output "auto" or "None".
-The "args" field should only contain the arguments, not the tool name itself.
-When an argument contains spaces, enclose it in quotes. Example: "+%Y-%m-%d %H:%M:%S" not +%Y-%m-%d %H:%M:%S"""
-
-        plan_instructions = """
-Read the workflow description carefully. Break it down into individual steps and select the appropriate tool for each.
-
-When steps need to share data, use {step_N} placeholders where N is the step number. For example:
-- Step 1: Ask user their name → output stored as step 1
-- Step 2: Use that name → args: "Hello {step_1}!"
-
-Each step MUST include these fields:
-- order: step number (1, 2, 3...)
-- description: human-readable description of what this step does
-- tool: the tool to use
-- args: the arguments for the tool
-
-First, think through the workflow and explain your reasoning for each step. Then, output the JSON plan wrapped in ```json and ``` code fences. Example:
-{
-  "steps": [
-    {
-      "order": 1,
-      "description": "Ask user for their name",
-      "tool": "user.ask",
-      "args": "What is your name?"
-    },
-    {
-      "order": 2,
-      "description": "Get today's date",
-      "tool": "shell.date",
-      "args": "+\"%Y-%m-%d\""
-    },
-    {
-      "order": 3,
-      "description": "Greet user with their name and date",
-      "tool": "shell.echo",
-      "args": "Hello {step_1}, today is {step_2}"
-    }
-  ]
-}
-"""
-
-        if feedback:
-            prompt = f"""You are an AI agent that converts workflow descriptions into executable plans.
-
-Workflow description:
-{workflow_desc}
-
-User feedback on previous plan: {feedback}
-
-{tools}
-{plan_instructions}
-
-Generate a revised execution plan that incorporates the user's feedback.
-"""
-        else:
-            prompt = f"""You are an AI agent that converts workflow descriptions into executable plans.
-
-Workflow description:
-{workflow_desc}
-
-{tools}
-{plan_instructions}
-
-Generate an execution plan.
-"""
-
-        for chunk in self.llm.stream_chat(
-            [{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=1024
-        ):
-            yield chunk
-
-    def compile_graph(self, plan=None):
-        """Compile a plan to LangGraph. Uses LLM-generated plan if provided, otherwise original workflow."""
-        if plan:
-            # Parse the LLM-generated JSON plan
-            import json
-            import re
-            # Extract JSON from markdown code block
-            json_match = re.search(r'```json\s*(.*?)\s*```', plan, re.DOTALL)
-            json_str = json_match.group(1) if json_match else plan
-            # Fix common JSON issues: unescaped quotes in args
-            json_str = re.sub(r'"args":\s*"\+"([^"]*)"(\s*)"', r'"args": "+\1"', json_str)
-            json_str = re.sub(r'"args":\s*"(\+[^"]*)"', r'"args": "\1"', json_str)
-            plan_json = json.loads(json_str)
-            self.graph = compile_to_langgraph(plan_json, checkpointer=self.checkpointer)
-        elif self.workflow:
-            self.graph = compile_to_langgraph(self.workflow, checkpointer=self.checkpointer)
-        else:
-            raise ValueError("No workflow or plan available")
+    def build_workflow(self):
+        """
+        Run the complete builder workflow including approval loop and source update check.
+        
+        Returns:
+            The builder state with approved plan and potentially updated source
+        """
+        from langgraph.types import Command
+        
+        state = BuilderState(
+            workflow_path=self.workflow_path,
+            workflow_content=self.workflow
+        )
+        
+        result = self.builder.invoke(state, self.builder_config)
+        
+        while "__interrupt__" in result:
+            interrupt_info = result["__interrupt__"][0]
+            interrupt_type = interrupt_info.value.get("type", "")
+            
+            if interrupt_type == "approval":
+                response = input("\nApprove plan? [yes/no]: ").lower().strip()
+                result = self.builder.invoke(Command(resume=response), self.builder_config)
+            elif interrupt_type == "update_source":
+                response = input(f"\n{interrupt_info.value.get('question', 'Update source?')} [yes/no]: ").lower().strip()
+                result = self.builder.invoke(Command(resume=response), self.builder_config)
+            else:
+                print(f"\n[interrupt] {interrupt_info.value}")
+                response = input("Response: ")
+                result = self.builder.invoke(Command(resume=response), self.builder_config)
+        
+        # Result is a dict with state values
+        if isinstance(result, dict):
+            self.plan = result.get("llm_plan", "")
+            return BuilderState(**result)
+        
+        self.plan = result.llm_plan
+        return result
+    
+    def parse_plan(self):
+        """Parse the plan JSON string to a dict."""
+        json_match = re.search(r'```json\s*(.*?)\s*```', self.plan, re.DOTALL)
+        json_str = json_match.group(1) if json_match else self.plan
+        return json.loads(json_str)
+    
+    def show_plan(self):
+        """Display the current plan to the user."""
+        print("\nPlan (generated by LLM):")
+        print(self.plan)
+        
+        try:
+            plan_json = self.parse_plan()
+            steps = plan_json.get("steps", [])
+            print("\nSteps:")
+            for step in steps:
+                print(f"  {step.get('order', '?')}. {step.get('description', 'N/A')} [{step.get('tool', 'N/A')}]")
+        except Exception as e:
+            print(f"\n(Unable to parse plan JSON for display: {e})")
+    
+    def compile_graph(self, plan_json=None):
+        """
+        Compile a plan to LangGraph.
+        
+        Args:
+            plan_json: Optional plan JSON dict. Uses self.plan if not provided.
+        
+        Returns:
+            The compiled LangGraph
+        """
+        if plan_json is None:
+            if not self.plan:
+                raise ValueError("No plan available")
+            plan_json = self.parse_plan()
+        
+        checkpointer = InMemorySaver()
+        self.graph = compile_to_langgraph(plan_json, checkpointer=checkpointer)
         return self.graph
-
+    
     def execute(self, inputs=None):
-        """Execute the compiled graph."""
+        """
+        Execute the compiled graph with human-in-the-loop.
+        
+        Args:
+            inputs: Optional input values
+        
+        Returns:
+            The execution results
+        """
         if not self.graph:
             self.compile_graph()
+        
         if inputs is None:
             inputs = {}
-        return self.graph.invoke({"inputs": inputs, "outputs": {}}, self.config)
+        
+        config = {"configurable": {"thread_id": f"exec-{uuid.uuid4()}"}}
+        result = self.graph.invoke({"inputs": inputs, "outputs": {}}, config)
+        
+        # Handle interrupts
+        while "__interrupt__" in result:
+            interrupt_info = result["__interrupt__"][0]
+            question = interrupt_info.value.get("question", "Question from agent:")
+            print(f"\n[Agent asks] {question}")
+            user_response = input("Your response: ")
+            print(f"  [Resuming with: {user_response}]")
+            result = self.graph.invoke(Command(resume=user_response), config)
+        
+        return result

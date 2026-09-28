@@ -1,8 +1,9 @@
+import json
 import re
 from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
 from typing import Dict, Any
-from .executor import execute_tool
+from .tool_executor import execute_tool
 
 
 class WorkflowState(BaseModel):
@@ -69,7 +70,21 @@ def compile_to_langgraph(workflow, checkpointer=None):
         def node(state: WorkflowState) -> WorkflowState:
             # Resolve template variables from state
             args = step["args"] or ""
-            resolved_args = resolve_template(args, state)
+            # Handle both string and object args
+            if isinstance(args, dict):
+                # Convert object to string (use first value or stringify)
+                args_str = json.dumps(args)
+                # Try to extract a meaningful value
+                if "question" in args:
+                    args_str = args["question"]
+                elif "text" in args:
+                    args_str = args["text"]
+                elif "format string quoted" in args:
+                    args_str = args["format string quoted"]
+            else:
+                args_str = args
+            
+            resolved_args = resolve_template(args_str, state)
             
             result = execute_tool(step["tool"], resolved_args)
             state.outputs[step["order"]] = result
