@@ -82,3 +82,29 @@ def wait_for_approval_node(state: BuilderState):
         return state.model_copy(update={"approved": True})
     else:
         return state.model_copy(update={"approved": False, "user_feedback": response})
+
+from langgraph.graph import StateGraph, END
+
+def should_approve(state: BuilderState):
+    if state.approved:
+        return "approved"
+    return "revise"
+
+def compile_builder_workflow():
+    workflow = StateGraph(BuilderState)
+    
+    workflow.add_node("load_workflow", load_workflow_node)
+    workflow.add_node("generate_plan", generate_plan_node)
+    workflow.add_node("show_plan", show_plan_node)
+    workflow.add_node("wait_for_approval", wait_for_approval_node)
+    
+    workflow.set_entry_point("load_workflow")
+    workflow.add_edge("load_workflow", "generate_plan")
+    workflow.add_edge("generate_plan", "show_plan")
+    workflow.add_edge("show_plan", "wait_for_approval")
+    workflow.add_conditional_edges("wait_for_approval", should_approve, {
+        "approved": END,
+        "revise": "generate_plan"
+    })
+    
+    return workflow.compile()

@@ -38,3 +38,8 @@ def test_wait_for_approval_node_rejected():
         result = wait_for_approval_node(state)
     assert result.approved == False
     assert result.user_feedback == "change tool"
+
+def test_compile_builder_workflow():
+    from src.builder import compile_builder_workflow
+    builder = compile_builder_workflow()
+    assert builder is not None
