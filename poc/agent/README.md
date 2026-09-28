@@ -19,7 +19,6 @@ The agent consists of two LangGraph workflows:
 
 **Shared Components**
 - `compiler.py`: Compiles plan JSON to LangGraph StateGraph
-- `parser.py`: Parses workflow markdown files
 - `tools.py`: Tool registry (shell.echo, shell.date, shell.xargs, exec.curl, user.ask)
 - `tool_executor.py`: Executes tools with shell command safety
 - `llm_client.py`: OpenAI-compatible API client
@@ -126,9 +125,6 @@ uv run python -m pytest tests/ -v
 See `examples/` for sample workflow files:
 - `my-workflow.md` - Explicit step format with user input
 - `freeform-greeting.md` - Freeform natural language description
-- `simple_echo.md` - Simple echo workflow
-- `data_flow.md` - Data flow between steps
-- `multi_tool.md` - Multiple tools in one workflow
 
 ## Design Principles
 
