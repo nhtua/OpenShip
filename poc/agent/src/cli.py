@@ -33,23 +33,12 @@ def build_workflow(workflow_path: str, show_thinking: bool = False):
     agent = Agent()
     agent.load_workflow(workflow_path)
     
-    # Generate plan
     print("Generating plan with LLM...")
-    agent.generate_plan()
+    result = agent.build_workflow()
     
-    # Approval loop
-    while True:
-        agent.show_plan()
-        
-        response = input("\nApprove plan? [yes/no]: ").lower().strip()
-        if response in ["yes", "y"]:
-            break
-        elif response in ["no", "n"]:
-            feedback = input("What would you like to change? ")
-            print("Regenerating plan...")
-            agent.generate_plan(feedback)
-        else:
-            print("Invalid response. Please enter 'yes' or 'no'.")
+    if not result.approved:
+        print("Plan not approved. Build cancelled.")
+        return
     
     # Save compiled workflow to cache with integrity signature
     plan_json = agent.parse_plan()

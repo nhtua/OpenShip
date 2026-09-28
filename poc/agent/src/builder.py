@@ -136,12 +136,7 @@ def update_source_node(state: BuilderState) -> BuilderState:
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 
-def should_approve(state: BuilderState):
-    if state.approved:
-        return "approved"
-    return "revise"
-
-def should_check_update(state: BuilderState):
+def should_approve_or_check_update(state: BuilderState):
     if not state.approved:
         return "revise"
     if should_update_source(state):
@@ -163,7 +158,7 @@ def compile_builder_workflow():
     workflow.add_edge("load_workflow", "generate_plan")
     workflow.add_edge("generate_plan", "show_plan")
     workflow.add_edge("show_plan", "wait_for_approval")
-    workflow.add_conditional_edges("wait_for_approval", should_check_update, {
+    workflow.add_conditional_edges("wait_for_approval", should_approve_or_check_update, {
         "revise": "generate_plan",
         "ask_update": "ask_update_source",
         "end": END
