@@ -2,10 +2,13 @@ from pydantic import BaseModel, Field
 from typing import Dict, Any
 
 class BuilderState(BaseModel):
-    workflow_path: str
-    workflow_content: str
+    workflow_path: str = ""
+    workflow_content: str = ""
     llm_plan: str = ""
+    approved: bool = False
     user_feedback: str = ""
+    standardized_workflow: str = ""
+    update_source: bool = False
     approved: bool = False
 
 class ExecutorState(BaseModel):

@@ -86,6 +86,53 @@ def wait_for_approval_node(state: BuilderState):
     else:
         return state.model_copy(update={"approved": False, "user_feedback": response})
 
+def generate_standardized_workflow(state: BuilderState) -> BuilderState:
+    """Generate standardized workflow markdown from plan JSON."""
+    json_match = re.search(r'```json\s*(.*?)\s*```', state.llm_plan, re.DOTALL)
+    json_str = json_match.group(1) if json_match else state.llm_plan
+    plan_json = json.loads(json_str)
+    
+    # Extract workflow title from original content
+    title_match = re.match(r"^#\s+(.+)$", state.workflow_content, re.MULTILINE)
+    title = title_match.group(1) if title_match else "Workflow"
+    
+    # Generate standardized workflow in original style
+    standardized = f"# {title}\n\n"
+    for step in plan_json.get("steps", []):
+        standardized += f"## Step {step.get('order', '?')}: {step.get('description', '')}\n"
+        standardized += f"- tool: {step.get('tool', '')}\n"
+        standardized += f"- args: {step.get('args', '')}\n\n"
+    
+    return state.model_copy(update={"standardized_workflow": standardized})
+
+def should_update_source(state: BuilderState):
+    """Check if source file needs updating."""
+    # Compare original workflow with generated plan
+    json_match = re.search(r'```json\s*(.*?)\s*```', state.llm_plan, re.DOTALL)
+    json_str = json_match.group(1) if json_match else state.llm_plan
+    plan_json = json.loads(json_str)
+    
+    # Simple heuristic: if plan has different number of steps than original, changes were made
+    original_steps = len(re.findall(r"^(\d+)\.", state.workflow_content, re.MULTILINE))
+    plan_steps = len(plan_json.get("steps", []))
+    
+    return original_steps != plan_steps
+
+def ask_update_source_node(state: BuilderState):
+    """Ask user if they want to update source file."""
+    from langgraph.types import interrupt
+    response = interrupt({"type": "update_source", "question": "Update source file with changes?"})
+    
+    if response in ["yes", "y"]:
+        return state.model_copy(update={"update_source": True})
+    return state.model_copy(update={"update_source": False})
+
+def update_source_node(state: BuilderState) -> BuilderState:
+    """Write standardized workflow back to source file."""
+    Path(state.workflow_path).write_text(state.standardized_workflow)
+    print(f"Updated source file: {state.workflow_path}")
+    return state
+
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -94,6 +141,13 @@ def should_approve(state: BuilderState):
         return "approved"
     return "revise"
 
+def should_check_update(state: BuilderState):
+    if not state.approved:
+        return "revise"
+    if should_update_source(state):
+        return "ask_update"
+    return "end"
+
 def compile_builder_workflow():
     workflow = StateGraph(BuilderState)
     
@@ -101,15 +155,24 @@ def compile_builder_workflow():
     workflow.add_node("generate_plan", generate_plan_node)
     workflow.add_node("show_plan", show_plan_node)
     workflow.add_node("wait_for_approval", wait_for_approval_node)
+    workflow.add_node("generate_standardized", generate_standardized_workflow)
+    workflow.add_node("ask_update_source", ask_update_source_node)
+    workflow.add_node("update_source", update_source_node)
     
     workflow.set_entry_point("load_workflow")
     workflow.add_edge("load_workflow", "generate_plan")
     workflow.add_edge("generate_plan", "show_plan")
     workflow.add_edge("show_plan", "wait_for_approval")
-    workflow.add_conditional_edges("wait_for_approval", should_approve, {
-        "approved": END,
-        "revise": "generate_plan"
+    workflow.add_conditional_edges("wait_for_approval", should_check_update, {
+        "revise": "generate_plan",
+        "ask_update": "ask_update_source",
+        "end": END
     })
+    workflow.add_conditional_edges("ask_update_source", lambda s: "update" if s.update_source else "end", {
+        "update": "update_source",
+        "end": END
+    })
+    workflow.add_edge("update_source", END)
     
     checkpointer = InMemorySaver()
     return workflow.compile(checkpointer=checkpointer)
