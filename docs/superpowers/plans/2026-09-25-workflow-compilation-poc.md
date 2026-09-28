@@ -1,7 +1,7 @@
 ---
 type: plan
-summary: Implementation plan for the workflow compilation PoC, covering environment setup, tool registry, parser, compiler, executor, caching, LLM integration, CLI, and testing.
-status: completed
+summary: Implementation plan for the workflow compilation PoC, covering environment setup, tool registry, parser, compiler, executor, caching, LLM integration, CLI, and testing. Superseded by the LangGraph agent redesign.
+status: outdated
 date: 2026-09-25
 ---
 
