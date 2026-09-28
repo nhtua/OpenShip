@@ -13,3 +13,8 @@ def compile_node(state: ExecutorState) -> ExecutorState:
     graph = compile_to_langgraph(plan_json, checkpointer=checkpointer)
     
     return state.model_copy(update={"graph": graph})
+
+def execute_node(state: ExecutorState) -> ExecutorState:
+    config = {"configurable": {"thread_id": state.thread_id}}
+    result = state.graph.invoke({"inputs": {}, "outputs": {}}, config)
+    return state.model_copy(update={"outputs": result.get("outputs", {})})
