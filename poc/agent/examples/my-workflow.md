@@ -12,3 +12,4 @@
 - tool: shell.echo
 - args: Hello {step_1}, today is {step_2}
 
+Modified workflow

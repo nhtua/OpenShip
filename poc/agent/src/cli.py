@@ -1,7 +1,7 @@
 import argparse
-import json
 import sys
 from .agent import Agent
+from .workflow_cache import save_cached_workflow, load_cached_workflow
 
 
 def main():
@@ -51,59 +51,30 @@ def build_workflow(workflow_path: str, show_thinking: bool = False):
         else:
             print("Invalid response. Please enter 'yes' or 'no'.")
     
-    # Save standardized workflow back to input file
-    import json
-    import re
-    json_match = re.search(r'```json\s*(.*?)\s*```', agent.plan, re.DOTALL)
-    json_str = json_match.group(1) if json_match else agent.plan
-    plan_json = json.loads(json_str)
+    # Save compiled workflow to cache with integrity signature
+    plan_json = agent.parse_plan()
+    print("Compiling workflow to LangGraph...")
+    agent.compile_graph(plan_json)
+    print("Compiled successfully.")
     
-    standardized = "# Standardized Workflow\n\n"
-    for step in plan_json.get("steps", []):
-        standardized += f"## Step {step.get('order', '?')}: {step.get('description', '')}\n"
-        standardized += f"- tool: {step.get('tool', '')}\n"
-        standardized += f"- args: {step.get('args', '')}\n\n"
-    
-    from pathlib import Path
-    Path(workflow_path).write_text(standardized)
-    print(f"Standardized workflow saved to: {workflow_path}")
-    
-    # Cache the standardized workflow
-    from .workflow_cache import save_standardized_workflow, compute_checksum
-    cache_path = save_standardized_workflow(workflow_path, agent.plan)
-    print(f"Workflow cached to: {cache_path}")
+    # Cache the compiled workflow
+    save_cached_workflow(workflow_path, plan_json)
 
 
 def execute_workflow(workflow_path: str):
     """Execute cached standardized workflow using Agent."""
-    from .workflow_cache import load_standardized_workflow, compute_checksum, parse_standardized_workflow
-    
-    # Load cached standardized workflow
-    cached = load_standardized_workflow(workflow_path)
+    # Load cached workflow by input file hash
+    cached = load_cached_workflow(workflow_path)
     if not cached:
-        content_hash = compute_checksum(workflow_path)
-        print(f"No cached standardized workflow found for hash: {content_hash[:16]}")
-        print("Please run 'openship build' first to standardize and cache this workflow.")
+        print("No cached compiled workflow found. Run 'openship build' first.")
         sys.exit(1)
     
-    cache_file, content = cached
-    print(f"Using cached standardized workflow: {cache_file}")
-    
-    # Verify hashes
-    input_hash = compute_checksum(workflow_path)
-    cached_hash = compute_checksum(cache_file)
-    if input_hash != cached_hash:
-        print("Verification failed: input hash does not match cached hash.")
-        sys.exit(1)
-    print("Verification passed")
-    
-    # Parse the standardized workflow back to plan JSON
-    plan_json = parse_standardized_workflow(content)
-    print(f"Parsed {len(plan_json['steps'])} steps from cached workflow")
+    cache_file, plan_json = cached
+    print(f"Using cached compiled workflow: {cache_file}")
     
     # Create agent and compile/execute
     agent = Agent()
-    agent.compile_graph(json.dumps(plan_json))
+    agent.compile_graph(plan_json)
     
     # Execute with human-in-the-loop
     result = agent.execute()

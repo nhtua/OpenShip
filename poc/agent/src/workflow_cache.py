@@ -12,80 +12,100 @@ def get_workflows_dir():
     return workflows_dir
 
 
-def compute_checksum(file_path: str) -> str:
+def compute_checksum(content: bytes) -> str:
+    """Compute SHA-256 checksum of bytes."""
+    return hashlib.sha256(content).hexdigest()
+
+
+def compute_file_checksum(file_path: str) -> str:
     """Compute SHA-256 checksum of a file."""
-    sha256 = hashlib.sha256()
     with open(file_path, 'rb') as f:
-        for chunk in iter(lambda: f.read(4096), b''):
-            sha256.update(chunk)
-    return sha256.hexdigest()
+        content = f.read()
+    return compute_checksum(content)
 
 
-def save_standardized_workflow(input_path: str, plan_str: str) -> str:
-    """Save standardized workflow to cache. Returns cache file path."""
-    checksum = compute_checksum(input_path)
+def compute_signature(input_path: str, json_content: str) -> str:
+    """
+    Compute signature binding input file and JSON cache content.
+    
+    Signature = SHA-256(input_file_content + json_cache_content)
+    
+    This ensures that if either the input file or the cached JSON changes,
+    the signature will no longer match.
+    """
+    with open(input_path, 'rb') as f:
+        input_content = f.read()
+    
+    signature_input = input_content + json_content.encode()
+    return compute_checksum(signature_input)
+
+
+def save_cached_workflow(input_path: str, plan_json: dict) -> str:
+    """
+    Save compiled workflow to cache with integrity signature.
+    
+    Args:
+        input_path: Path to the input workflow file
+        plan_json: The compiled plan JSON to cache
+    
+    Returns:
+        The cache file path
+    """
+    # Compute input file hash (for lookup)
+    input_hash = compute_file_checksum(input_path)
+    
+    # Compute signature binding input and JSON content
+    json_content = json.dumps(plan_json)
+    signature = compute_signature(input_path, json_content)
+    
+    # Build cache filename: <input_hash>.<signature>.json
     workflows_dir = get_workflows_dir()
-    cache_file = workflows_dir / f"{checksum}.md"
+    cache_file = workflows_dir / f"{input_hash}.{signature}.json"
     
-    # Convert plan JSON to standardized workflow.md
-    json_match = re.search(r'```json\s*(.*?)\s*```', plan_str, re.DOTALL)
-    json_str = json_match.group(1) if json_match else plan_str
-    plan_json = json.loads(json_str)
-    
-    # Generate standardized workflow.md
-    standardized = "# Standardized Workflow\n\n"
-    for step in plan_json.get("steps", []):
-        standardized += f"## Step {step.get('order', '?')}: {step.get('description', '')}\n"
-        standardized += f"- tool: {step.get('tool', '')}\n"
-        standardized += f"- args: {step.get('args', '')}\n\n"
-    
-    cache_file.write_text(standardized)
+    # Save cached workflow
+    cache_file.write_text(json_content)
+    print(f"Workflow cached to: {cache_file}")
     return str(cache_file)
 
 
-def load_standardized_workflow(input_path: str):
-    """Load standardized workflow from cache. Returns (cache_file, content) or None."""
-    checksum = compute_checksum(input_path)
-    workflows_dir = get_workflows_dir()
-    cache_file = workflows_dir / f"{checksum}.md"
+def load_cached_workflow(input_path: str):
+    """
+    Load cached workflow by input file hash.
     
-    if not cache_file.exists():
+    Uses glob search to find the cache file, then verifies the signature.
+    
+    Args:
+        input_path: Path to the input workflow file
+    
+    Returns:
+        Tuple of (cache_file, plan_json) if found and valid, None otherwise
+    """
+    # Compute input file hash
+    input_hash = compute_file_checksum(input_path)
+    
+    # Glob search for cache file with matching input hash
+    workflows_dir = get_workflows_dir()
+    pattern = f"{input_hash}.*.json"
+    matches = list(workflows_dir.glob(pattern))
+    
+    if not matches:
         return None
     
-    content = cache_file.read_text()
-    return (str(cache_file), content)
-
-
-def parse_standardized_workflow(content: str) -> dict:
-    """Parse standardized workflow.md back to plan JSON."""
-    steps = []
-    current_step = None
+    # Check each match for valid signature
+    for cache_file in matches:
+        # Parse signature from filename
+        filename_parts = cache_file.name.split(".")
+        # Filename format: <input_hash>.<signature>.json
+        if len(filename_parts) >= 3 and filename_parts[0] == input_hash:
+            signature = filename_parts[1]
+            
+            # Read JSON content
+            json_content = cache_file.read_text()
+            
+            # Verify signature
+            computed_signature = compute_signature(input_path, json_content)
+            if computed_signature == signature:
+                plan_json = json.loads(json_content)
+                return (str(cache_file), plan_json)
     
-    for line in content.split("\n"):
-        # Match step header
-        step_match = re.match(r"## Step (\d+): (.+)", line)
-        if step_match:
-            if current_step:
-                steps.append(current_step)
-            current_step = {
-                "order": int(step_match.group(1)),
-                "description": step_match.group(2)
-            }
-            continue
-        
-        # Match tool line
-        tool_match = re.match(r"- tool: (.+)", line)
-        if tool_match and current_step:
-            current_step["tool"] = tool_match.group(1).strip()
-            continue
-        
-        # Match args line
-        args_match = re.match(r"- args: (.+)", line)
-        if args_match and current_step:
-            current_step["args"] = args_match.group(1).strip()
-            continue
-    
-    if current_step:
-        steps.append(current_step)
-    
-    return {"steps": steps}
+    return None

@@ -2,7 +2,7 @@ import json
 import re
 import uuid
 from pathlib import Path
-from .builder import compile_builder_workflow
+from .builder import compile_builder_workflow, generate_plan_node
 from .compiler import compile_to_langgraph
 from .state import BuilderState
 from langgraph.types import Command
@@ -39,18 +39,21 @@ class Agent:
         Returns:
             The generated plan JSON string
         """
-        # Reset state for new plan generation
         state = BuilderState(
             workflow_path="",
             workflow_content=self.workflow,
             user_feedback=feedback or ""
         )
         
-        # Use builder workflow's generate_plan node directly
-        from .builder import generate_plan_node
         result = generate_plan_node(state)
         self.plan = result.llm_plan
         return self.plan
+    
+    def parse_plan(self):
+        """Parse the plan JSON string to a dict."""
+        json_match = re.search(r'```json\s*(.*?)\s*```', self.plan, re.DOTALL)
+        json_str = json_match.group(1) if json_match else self.plan
+        return json.loads(json_str)
     
     def show_plan(self):
         """Display the current plan to the user."""
@@ -58,9 +61,7 @@ class Agent:
         print(self.plan)
         
         try:
-            json_match = re.search(r'```json\s*(.*?)\s*```', self.plan, re.DOTALL)
-            json_str = json_match.group(1) if json_match else self.plan
-            plan_json = json.loads(json_str)
+            plan_json = self.parse_plan()
             steps = plan_json.get("steps", [])
             print("\nSteps:")
             for step in steps:
@@ -68,24 +69,20 @@ class Agent:
         except Exception as e:
             print(f"\n(Unable to parse plan JSON for display: {e})")
     
-    def compile_graph(self, plan=None):
+    def compile_graph(self, plan_json=None):
         """
         Compile a plan to LangGraph.
         
         Args:
-            plan: Optional plan JSON string. Uses self.plan if not provided.
+            plan_json: Optional plan JSON dict. Uses self.plan if not provided.
         
         Returns:
             The compiled LangGraph
         """
-        plan_str = plan or self.plan
-        if not plan_str:
-            raise ValueError("No plan available")
-        
-        # Parse plan JSON
-        json_match = re.search(r'```json\s*(.*?)\s*```', plan_str, re.DOTALL)
-        json_str = json_match.group(1) if json_match else plan_str
-        plan_json = json.loads(json_str)
+        if plan_json is None:
+            if not self.plan:
+                raise ValueError("No plan available")
+            plan_json = self.parse_plan()
         
         checkpointer = InMemorySaver()
         self.graph = compile_to_langgraph(plan_json, checkpointer=checkpointer)
