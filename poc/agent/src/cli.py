@@ -4,7 +4,6 @@ import json
 import os
 import re
 import sys
-import time
 import uuid
 from pathlib import Path
 from .builder import compile_builder_workflow
@@ -61,52 +60,6 @@ def compute_checksum(file_path: str) -> str:
         for chunk in iter(lambda: f.read(4096), b''):
             sha256.update(chunk)
     return sha256.hexdigest()
-
-def save_manifest(input_path: str, input_hash: str, standardized_hash: str):
-    """Save verification manifest linking input hash to standardized hash."""
-    workflows_dir = get_workflows_dir()
-    manifest_file = workflows_dir / f"{standardized_hash}.manifest.json"
-    
-    manifest = {
-        "input_path": input_path,
-        "input_hash": input_hash,
-        "standardized_hash": standardized_hash,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-    
-    with open(manifest_file, 'w') as f:
-        json.dump(manifest, f, indent=2)
-    
-    print(f"Verification manifest saved to: {manifest_file}")
-
-def verify_manifest(standardized_hash: str, input_hash: str):
-    """Verify that the manifest matches the computed hashes."""
-    workflows_dir = get_workflows_dir()
-    manifest_file = workflows_dir / f"{standardized_hash}.manifest.json"
-    
-    if not manifest_file.exists():
-        print(f"No verification manifest found for hash: {standardized_hash[:16]}")
-        return False
-    
-    with open(manifest_file, 'r') as f:
-        manifest = json.load(f)
-    
-    # Verify standardized hash matches
-    if manifest["standardized_hash"] != standardized_hash:
-        print(f"Standardized hash mismatch!")
-        print(f"  Expected: {manifest['standardized_hash'][:16]}")
-        print(f"  Actual:   {standardized_hash[:16]}")
-        return False
-    
-    # Verify input hash matches
-    if manifest["input_hash"] != input_hash:
-        print(f"Input hash mismatch!")
-        print(f"  Expected: {manifest['input_hash'][:16]}")
-        print(f"  Actual:   {input_hash[:16]}")
-        return False
-    
-    print("Verification passed: input and standardized hashes match manifest")
-    return True
 
 
 
@@ -190,12 +143,8 @@ def main():
         parser.print_help()
 
 def build_workflow(workflow_path: str, show_thinking: bool = False):
-    """Build and cache standardized workflow with verification manifest."""
+    """Build and cache standardized workflow."""
     print(f"Building workflow from: {workflow_path}")
-    
-    # Compute hash of original input file
-    input_hash = compute_checksum(workflow_path)
-    print(f"Input file hash: {input_hash[:16]}")
     
     # Run builder workflow
     builder = compile_builder_workflow()
@@ -224,44 +173,48 @@ def build_workflow(workflow_path: str, show_thinking: bool = False):
     print(f"Standardized workflow saved to: {workflow_path}")
     
     # Compute hash from updated content
-    standardized_hash = compute_checksum(workflow_path)
-    print(f"Standardized content hash: {standardized_hash[:16]}")
+    content_hash = compute_checksum(workflow_path)
+    print(f"Content hash: {content_hash[:16]}")
     
-    # Cache the standardized workflow with updated hash
+    # Cache the standardized workflow
     workflows_dir = get_workflows_dir()
-    cache_file = workflows_dir / f"{standardized_hash}.md"
+    cache_file = workflows_dir / f"{content_hash}.md"
     cache_file.write_text(standardized)
     print(f"Workflow cached to: {cache_file}")
-    
-    # Save verification manifest
-    save_manifest(workflow_path, input_hash, standardized_hash)
 
 def execute_workflow(workflow_path: str):
     """Execute cached standardized workflow with verification."""
     print(f"Executing workflow from: {workflow_path}")
     
-    # Load cached standardized workflow
-    cached = load_standardized_workflow(workflow_path)
-    if not cached:
-        checksum = compute_checksum(workflow_path)
-        print(f"No cached standardized workflow found for checksum: {checksum[:16]}")
+    # Compute hash of input file
+    content_hash = compute_checksum(workflow_path)
+    print(f"Content hash: {content_hash[:16]}")
+    
+    # Look for cached standardized workflow
+    workflows_dir = get_workflows_dir()
+    cache_file = workflows_dir / f"{content_hash}.md"
+    
+    if not cache_file.exists():
+        print(f"No cached standardized workflow found for hash: {content_hash[:16]}")
         print("Please run 'openship build' first to standardize and cache this workflow.")
         sys.exit(1)
     
-    cache_file, content = cached
     print(f"Using cached standardized workflow: {cache_file}")
     
-    # Verify hashes
-    input_hash = compute_checksum(workflow_path)
-    standardized_hash = compute_checksum(cache_file)
+    # Verify content matches
+    input_content = Path(workflow_path).read_text()
+    cached_content = cache_file.read_text()
     
-    if not verify_manifest(standardized_hash, input_hash):
-        print("Verification failed. The workflow may have been tampered with.")
+    if input_content != cached_content:
+        print("Verification failed: cached content does not match input file.")
+        print("The workflow may have been tampered with.")
         print("Please run 'openship build' again to regenerate the standardized workflow.")
         sys.exit(1)
     
+    print("Verification passed: cached content matches input file")
+    
     # Parse the standardized workflow back to plan JSON
-    plan_json = parse_standardized_workflow(content)
+    plan_json = parse_standardized_workflow(cached_content)
     print(f"Parsed {len(plan_json['steps'])} steps from cached workflow")
     
     # Compile the plan to a graph
