@@ -11,8 +11,9 @@ def compile_node(state: ExecutorState) -> ExecutorState:
     
     checkpointer = InMemorySaver()
     graph = compile_to_langgraph(plan_json, checkpointer=checkpointer)
-    
-    return state.model_copy(update={"graph": graph})
+    state.graph = graph
+    state.checkpointer = checkpointer
+    return state
 
 def execute_node(state: ExecutorState) -> ExecutorState:
     config = {"configurable": {"thread_id": state.thread_id}}
