@@ -1,9 +1,12 @@
 import argparse
+import json
+import re
 import sys
 import uuid
 from .builder import compile_builder_workflow
-from .executor import compile_executor_workflow
+from .compiler import compile_to_langgraph
 from langgraph.types import Command
+from langgraph.checkpoint.memory import InMemorySaver
 
 def handle_builder_interrupts(builder, config, initial_input):
     """Run builder workflow, handling approval interrupts."""
@@ -27,9 +30,9 @@ def handle_builder_interrupts(builder, config, initial_input):
     
     return result
 
-def handle_executor_interrupts(executor, config, initial_input):
-    """Run executor workflow, handling execution interrupts."""
-    result = executor.invoke(initial_input, config)
+def handle_graph_interrupts(graph, config, initial_input):
+    """Run compiled graph, handling execution interrupts."""
+    result = graph.invoke(initial_input, config)
     
     while "__interrupt__" in result:
         interrupt_info = result["__interrupt__"][0]
@@ -37,9 +40,19 @@ def handle_executor_interrupts(executor, config, initial_input):
         print(f"\n[Agent asks] {question}")
         user_response = input("Your response: ")
         print(f"  [Resuming with: {user_response}]")
-        result = executor.invoke(Command(resume=user_response), config)
+        result = graph.invoke(Command(resume=user_response), config)
     
     return result
+
+def compile_plan_to_graph(plan_str):
+    """Compile a plan string to a LangGraph."""
+    json_match = re.search(r'```json\s*(.*?)\s*```', plan_str, re.DOTALL)
+    json_str = json_match.group(1) if json_match else plan_str
+    plan_json = json.loads(json_str)
+    
+    checkpointer = InMemorySaver()
+    graph = compile_to_langgraph(plan_json, checkpointer=checkpointer)
+    return graph
 
 def main():
     parser = argparse.ArgumentParser(description="OpenShip Workflow PoC")
@@ -60,19 +73,16 @@ def main():
         {"workflow_path": args.workflow, "workflow_content": ""}
     )
 
-    # Run executor workflow
+    # Compile the approved plan to a graph
     print("\nExecuting workflow...")
-    executor = compile_executor_workflow()
-    executor_config = {"configurable": {"thread_id": f"executor-{uuid.uuid4()}"}}
+    graph = compile_plan_to_graph(builder_result["llm_plan"])
     
-    executor_result = handle_executor_interrupts(
-        executor,
-        executor_config,
-        {"plan": builder_result["llm_plan"], "thread_id": executor_config["configurable"]["thread_id"]}
-    )
+    # Execute the graph with interrupt handling
+    graph_config = {"configurable": {"thread_id": f"exec-{uuid.uuid4()}"}}
+    result = handle_graph_interrupts(graph, graph_config, {"inputs": {}, "outputs": {}})
 
     print("\nResults:")
-    for step_order, output in executor_result.get("outputs", {}).items():
+    for step_order, output in result.get("outputs", {}).items():
         print(f"  Step {step_order}: {output}")
 
 if __name__ == "__main__":

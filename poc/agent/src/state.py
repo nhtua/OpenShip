@@ -11,6 +11,7 @@ class BuilderState(BaseModel):
 class ExecutorState(BaseModel):
     plan: str
     graph: Any = None
+    checkpointer: Any = None
     inputs: Dict[str, Any] = Field(default_factory=dict)
     outputs: Dict[str, Any] = Field(default_factory=dict)
     thread_id: str
