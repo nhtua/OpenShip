@@ -41,11 +41,16 @@ In OpenShip, every automation task is expressed as a workflow — a sequence of 
 
 ```bash
 cd poc/agent
-pip install -r requirements.txt  # or use uv
-python -m src.cli examples/freeform-greeting.md
+uv sync  # Install dependencies
+
+# Build: Generate plan, approve, compile, and cache
+uv run python -m src.cli build examples/my-workflow.md
+
+# Execute: Load cached compiled workflow and run
+uv run python -m src.cli execute examples/my-workflow.md
 ```
 
-The PoC takes a free-form markdown description, uses an LLM to generate an executable plan, presents it for your approval, and executes it. See [`poc/agent/examples/`](poc/agent/examples/) for workflow examples.
+The PoC uses two LangGraph workflows: a **builder** (plan generation + HITL approval) and an **executor** (compile + execute). Workflows are cached as JSON with integrity signatures for drift detection. See [`poc/agent/examples/`](poc/agent/examples/) for workflow examples.
 
 **Explore the mockups.** See the intended user experience through our interactive mockups:
 

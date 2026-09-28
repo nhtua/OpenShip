@@ -1,7 +1,7 @@
 # Workflow Compilation PoC — Design
 
 > **Status:** Approved
-> **Date:** 2026-09-25
+> **Date:** 2026-09-28
 > **Author:** OpenShip Team
 
 ## Overview
@@ -19,13 +19,15 @@ openship/
 ├── poc/
 │   └── agent/
 │       ├── src/
-│       │   ├── agent.py        # Agent class (state management)
-│       │   ├── parser.py       # parse_workflow() - extract inputs/steps/tools
-│       │   ├── compiler.py     # compile_to_langgraph() - build graph
-│       │   ├── executor.py     # execute_tool() - run commands
-│       │   ├── llm_client.py   # LLMClient - OpenAI-compatible API
-│       │   ├── cache.py        # GraphCache - checksum-based caching
-│       │   └── cli.py          # main() - CLI entry point
+│       │   ├── agent.py            # Agent class (state management & orchestration)
+│       │   ├── builder.py          # Builder LangGraph workflow (plan generation & approval)
+│       │   ├── executor.py         # Executor LangGraph workflow (compile & execute)
+│       │   ├── compiler.py         # compile_to_langgraph() - build graph from plan
+│       │   ├── tools.py            # Tool registry (shell/exec)
+│       │   ├── llm_client.py       # LLMClient - OpenAI-compatible API
+│       │   ├── state.py            # Typed state models (BuilderState, ExecutorState)
+│       │   ├── workflow_cache.py   # JSON caching with integrity signature
+│       │   └── cli.py              # CLI entry point (interface to Agent)
 │       ├── tests/
 │       ├── examples/
 │       └── pyproject.toml
@@ -37,28 +39,53 @@ openship/
 
 ### Agent Class
 
-The `Agent` class manages the complete workflow lifecycle:
+The `Agent` class orchestrates the complete workflow lifecycle, encapsulating the builder and executor workflows:
 
 ```python
 class Agent:
-    def __init__(self, llm_client, tool_registry, cache_dir):
-        self.llm = llm_client
-        self.tools = tool_registry
-        self.cache = GraphCache(cache_dir)
+    def __init__(self):
         self.workflow = None
         self.graph = None
+        self.plan = None
+        self.builder = compile_builder_workflow()
 
     def load_workflow(self, path):
-        """Parse workflow.md, validate, extract inputs/steps/tools"""
+        """Load workflow markdown file."""
 
-    def compile_graph(self):
-        """Compile parsed workflow to LangGraph. Check cache first."""
+    def generate_plan(self, feedback=None):
+        """Generate or regenerate execution plan using LLM. Returns plan JSON string."""
 
-    def execute(self, inputs):
-        """Run the compiled graph with provided inputs"""
+    def show_plan(self):
+        """Display current plan to user."""
 
-    def approval_loop(self):
-        """Ask user to approve plan [Yes/No]. Loop until approved."""
+    def compile_graph(self, plan_json=None):
+        """Compile plan to LangGraph. Uses self.plan if not provided."""
+
+    def execute(self, inputs=None):
+        """Execute compiled graph with human-in-the-loop. Returns results."""
+```
+
+### Builder Workflow (LangGraph)
+
+The builder workflow uses LangGraph nodes with `interrupt()` for human-in-the-loop approval:
+
+```python
+builder_workflow = StateGraph(BuilderState)
+builder_workflow.add_node("load_workflow", load_workflow_node)
+builder_workflow.add_node("generate_plan", generate_plan_node)
+builder_workflow.add_node("show_plan", show_plan_node)
+builder_workflow.add_node("wait_for_approval", wait_for_approval_node)
+# ... compile and save workflow
+```
+
+### Executor Workflow (LangGraph)
+
+The executor workflow compiles and executes the workflow with `interrupt()` for runtime questions:
+
+```python
+executor_workflow = StateGraph(ExecutorState)
+executor_workflow.add_node("compile", compile_node)
+executor_workflow.add_node("execute", execute_node)
 ```
 
 ### Tool Registry
@@ -111,20 +138,29 @@ The agent uses an OpenAI-compatible API:
   - `LOCAL_LLM_URL` — Local model URL (e.g., Llama.cpp)
 - **Client:** OpenAI Python SDK with configurable base URL
 
-### Graph Caching
+### Workflow Caching & Integrity
 
-Compiled LangGraph instances are cached to disk:
+Compiled workflows are cached as JSON with filename-embedded integrity signatures:
 
-- Cache key: SHA-256 checksum of workflow.md content
-- Cache location: `.openship-poc-cache/`
-- On load: compute checksum, check cache, recompile if missing or stale
+- **Cache location:** `~/.openship/workflows/`
+- **Filename format:** `<input_hash>.<signature>.json`
+  - `input_hash`: SHA-256 of input workflow file content
+  - `signature`: SHA-256 of (input_content + json_cache_content)
+- **Lookup:** Glob search by input hash to find cached file
+- **Integrity check:** Recompute signature and verify match
+- **Drift detection:** If either input or cache changes, signature won't match
+
+This design provides:
+- Exact workflow steps and tools without parsing text
+- Integrity checking without extra storage
+- Binds input file and cached JSON together
 
 ### Execution Model
 
 1. **Parse** workflow.md → extract inputs, steps, tool references
 2. **Compile** to LangGraph → nodes for tools, edges for flow
-3. **Approve** → present plan to user, wait for Yes/No
-4. **Execute** → run the graph, capture outputs
+3. **Approve** → present plan to user, wait for Yes/No (interrupt)
+4. **Execute** → run the graph, capture outputs (interrupt for runtime questions)
 5. **Report** → show results to user
 
 ### Error Handling
@@ -135,7 +171,7 @@ Compiled LangGraph instances are cached to disk:
 
 ### Testing Strategy
 
-- Unit tests for parser, compiler, executor
+- Unit tests for builder, executor, compiler, tools
 - Integration tests for agent workflow
 - Example workflow files for manual testing
 
@@ -146,8 +182,9 @@ Compiled LangGraph instances are cached to disk:
 - LangGraph compilation and caching
 - OpenAI-compatible LLM integration
 - Shell and exec tool execution
-- Human-in-the-loop approval
+- Human-in-the-loop approval (interrupt)
 - CLI interface
+- Workflow caching with integrity signature
 
 **Out of scope:**
 - Sandbox execution
