@@ -84,6 +84,7 @@ def wait_for_approval_node(state: BuilderState):
         return state.model_copy(update={"approved": False, "user_feedback": response})
 
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import InMemorySaver
 
 def should_approve(state: BuilderState):
     if state.approved:
@@ -107,4 +108,5 @@ def compile_builder_workflow():
         "revise": "generate_plan"
     })
     
-    return workflow.compile()
+    checkpointer = InMemorySaver()
+    return workflow.compile(checkpointer=checkpointer)

@@ -68,7 +68,7 @@ def main():
     executor_result = handle_executor_interrupts(
         executor,
         executor_config,
-        {"plan": builder_result["llm_plan"]}
+        {"plan": builder_result["llm_plan"], "thread_id": executor_config["configurable"]["thread_id"]}
     )
 
     print("\nResults:")
