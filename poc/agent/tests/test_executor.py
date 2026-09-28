@@ -16,3 +16,8 @@ def test_executor_execute_node():
     result = execute_node(state)
     assert result.outputs is not None
     assert 1 in result.outputs
+
+def test_compile_executor_workflow():
+    from src.executor import compile_executor_workflow
+    executor = compile_executor_workflow()
+    assert executor is not None
