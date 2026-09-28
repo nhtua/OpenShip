@@ -1,10 +1,9 @@
-def test_execute_shell_command():
-    from src.executor import execute_tool
-    result = execute_tool("shell.echo", "hello world")
-    assert "hello world" in result
+import json
+from src.state import ExecutorState
 
-
-def test_execute_exec_command():
-    from src.executor import execute_tool
-    result = execute_tool("shell.date", "")
-    assert len(result) > 0
+def test_executor_compile_node():
+    from src.executor import compile_node
+    plan_json = {"steps": [{"order": 1, "description": "test", "tool": "shell.echo", "args": "hello"}]}
+    state = ExecutorState(plan=json.dumps(plan_json), thread_id="test")
+    result = compile_node(state)
+    assert result.graph is not None

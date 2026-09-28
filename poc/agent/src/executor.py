@@ -1,15 +1,15 @@
-import subprocess
-from .tools import TOOL_REGISTRY
+import json
+import re
+from langgraph.checkpoint.memory import InMemorySaver
+from .state import ExecutorState
+from .compiler import compile_to_langgraph
 
-
-def execute_tool(tool_name: str, args: str = "") -> str:
-    tool = TOOL_REGISTRY[tool_name]
-    if tool["type"] == "shell":
-        cmd = f"{tool['cmd']} {args}"
-        result = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
-    elif tool["type"] == "interrupt":
-        from langgraph.types import interrupt
-        return interrupt({"question": args})
-    else:
-        result = subprocess.run([tool["cmd"], args], capture_output=True, text=True)
-    return result.stdout + result.stderr
+def compile_node(state: ExecutorState) -> ExecutorState:
+    json_match = re.search(r'```json\s*(.*?)\s*```', state.plan, re.DOTALL)
+    json_str = json_match.group(1) if json_match else state.plan
+    plan_json = json.loads(json_str)
+    
+    checkpointer = InMemorySaver()
+    graph = compile_to_langgraph(plan_json, checkpointer=checkpointer)
+    
+    return state.model_copy(update={"graph": graph})
