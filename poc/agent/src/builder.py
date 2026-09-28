@@ -94,7 +94,12 @@ def generate_standardized_workflow(state: BuilderState) -> BuilderState:
     
     # Extract workflow title from original content
     title_match = re.match(r"^#\s+(.+)$", state.workflow_content, re.MULTILINE)
-    title = title_match.group(1) if title_match else "Workflow"
+    if title_match:
+        title = title_match.group(1)
+    else:
+        # Use first line as title if no explicit title
+        first_line = state.workflow_content.split("\n")[0].strip()
+        title = first_line if first_line else "Workflow"
     
     # Generate standardized workflow in original style
     standardized = f"# {title}\n\n"
@@ -163,10 +168,11 @@ def compile_builder_workflow():
         "ask_update": "ask_update_source",
         "end": END
     })
-    workflow.add_conditional_edges("ask_update_source", lambda s: "update" if s.update_source else "end", {
-        "update": "update_source",
+    workflow.add_conditional_edges("ask_update_source", lambda s: "generate" if s.update_source else "end", {
+        "generate": "generate_standardized",
         "end": END
     })
+    workflow.add_edge("generate_standardized", "update_source")
     workflow.add_edge("update_source", END)
     
     checkpointer = InMemorySaver()
