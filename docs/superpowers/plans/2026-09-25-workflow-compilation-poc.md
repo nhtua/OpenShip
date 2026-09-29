@@ -20,9 +20,9 @@ date: 2026-09-25
 ### Task 1: Project Setup
 
 **Files:**
-- Create: `poc/agent/pyproject.toml`
-- Create: `poc/agent/src/__init__.py`
-- Create: `poc/agent/tests/__init__.py`
+- Create: `apps/agent/pyproject.toml`
+- Create: `apps/agent/src/__init__.py`
+- Create: `apps/agent/tests/__init__.py`
 
 - [ ] **Step 1: Create pyproject.toml**
 
@@ -49,15 +49,15 @@ Create empty `__init__.py` files for `src/` and `tests/`.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add poc/agent/pyproject.toml poc/agent/src/__init__.py poc/agent/tests/__init__.py
-git commit -m "chore: setup poc/agent project structure"
+git add apps/agent/pyproject.toml apps/agent/src/__init__.py apps/agent/tests/__init__.py
+git commit -m "chore: setup apps/agent project structure"
 ```
 
 ### Task 2: Tool Registry
 
 **Files:**
-- Create: `poc/agent/src/tools.py`
-- Create: `poc/agent/tests/test_tools.py`
+- Create: `apps/agent/src/tools.py`
+- Create: `apps/agent/tests/test_tools.py`
 
 - [ ] **Step 1: Write failing test for tool registry**
 
@@ -71,7 +71,7 @@ def test_tool_registry_has_shell_commands():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run python -m pytest poc/agent/tests/test_tools.py::test_tool_registry_has_shell_commands -v`
+Run: `uv run python -m pytest apps/agent/tests/test_tools.py::test_tool_registry_has_shell_commands -v`
 Expected: FAIL with "module not found" or "name not defined"
 
 - [ ] **Step 3: Write tool registry implementation**
@@ -87,7 +87,7 @@ TOOL_REGISTRY = {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_tools.py::test_tool_registry_has_shell_commands -v`
+Run: `uv run python -m pytest apps/agent/tests/test_tools.py::test_tool_registry_has_shell_commands -v`
 Expected: PASS
 
 - [ ] **Step 5: Write failing test for exec commands**
@@ -101,21 +101,21 @@ def test_tool_registry_has_exec_commands():
 
 - [ ] **Step 6: Run test and verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_tools.py::test_tool_registry_has_exec_commands -v`
+Run: `uv run python -m pytest apps/agent/tests/test_tools.py::test_tool_registry_has_exec_commands -v`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add poc/agent/src/tools.py poc/agent/tests/test_tools.py
+git add apps/agent/src/tools.py apps/agent/tests/test_tools.py
 git commit -m "feat: add tool registry with shell and exec commands"
 ```
 
 ### Task 3: Tool Executor
 
 **Files:**
-- Create: `poc/agent/src/executor.py`
-- Create: `poc/agent/tests/test_executor.py`
+- Create: `apps/agent/src/executor.py`
+- Create: `apps/agent/tests/test_executor.py`
 
 - [ ] **Step 1: Write failing test for shell execution**
 
@@ -128,7 +128,7 @@ def test_execute_shell_command():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run python -m pytest poc/agent/tests/test_executor.py::test_execute_shell_command -v`
+Run: `uv run python -m pytest apps/agent/tests/test_executor.py::test_execute_shell_command -v`
 Expected: FAIL with "module not found"
 
 - [ ] **Step 3: Write executor implementation**
@@ -149,7 +149,7 @@ def execute_tool(tool_name: str, args: str = "") -> str:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_executor.py::test_execute_shell_command -v`
+Run: `uv run python -m pytest apps/agent/tests/test_executor.py::test_execute_shell_command -v`
 Expected: PASS
 
 - [ ] **Step 5: Write failing test for exec command**
@@ -163,22 +163,22 @@ def test_execute_exec_command():
 
 - [ ] **Step 6: Run test and verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_executor.py::test_execute_exec_command -v`
+Run: `uv run python -m pytest apps/agent/tests/test_executor.py::test_execute_exec_command -v`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add poc/agent/src/executor.py poc/agent/tests/test_executor.py
+git add apps/agent/src/executor.py apps/agent/tests/test_executor.py
 git commit -m "feat: add tool executor for shell and exec commands"
 ```
 
 ### Task 4: Workflow Parser
 
 **Files:**
-- Create: `poc/agent/src/parser.py`
-- Create: `poc/agent/tests/test_parser.py`
-- Create: `poc/agent/tests/fixtures/simple_workflow.md`
+- Create: `apps/agent/src/parser.py`
+- Create: `apps/agent/tests/test_parser.py`
+- Create: `apps/agent/tests/fixtures/simple_workflow.md`
 
 - [ ] **Step 1: Create test fixture workflow file**
 
@@ -201,7 +201,7 @@ A simple test workflow.
 ```python
 def test_parse_workflow():
     from poc.agent.src.parser import parse_workflow
-    workflow = parse_workflow("poc/agent/tests/fixtures/simple_workflow.md")
+    workflow = parse_workflow("apps/agent/tests/fixtures/simple_workflow.md")
     assert workflow["title"] == "Test Workflow"
     assert "name" in workflow["inputs"]
     assert len(workflow["steps"]) == 1
@@ -210,7 +210,7 @@ def test_parse_workflow():
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `uv run python -m pytest poc/agent/tests/test_parser.py::test_parse_workflow -v`
+Run: `uv run python -m pytest apps/agent/tests/test_parser.py::test_parse_workflow -v`
 Expected: FAIL with "module not found"
 
 - [ ] **Step 4: Write parser implementation**
@@ -258,21 +258,21 @@ def parse_workflow(path: str):
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_parser.py::test_parse_workflow -v`
+Run: `uv run python -m pytest apps/agent/tests/test_parser.py::test_parse_workflow -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add poc/agent/src/parser.py poc/agent/tests/test_parser.py poc/agent/tests/fixtures/simple_workflow.md
+git add apps/agent/src/parser.py apps/agent/tests/test_parser.py apps/agent/tests/fixtures/simple_workflow.md
 git commit -m "feat: add workflow parser for markdown files"
 ```
 
 ### Task 5: LLM Client
 
 **Files:**
-- Create: `poc/agent/src/llm_client.py`
-- Create: `poc/agent/tests/test_llm_client.py`
+- Create: `apps/agent/src/llm_client.py`
+- Create: `apps/agent/tests/test_llm_client.py`
 
 - [ ] **Step 1: Write failing test for LLM client initialization**
 
@@ -286,7 +286,7 @@ def test_llm_client_initialization():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run python -m pytest poc/agent/tests/test_llm_client.py::test_llm_client_initialization -v`
+Run: `uv run python -m pytest apps/agent/tests/test_llm_client.py::test_llm_client_initialization -v`
 Expected: FAIL with "module not found"
 
 - [ ] **Step 3: Write LLM client implementation**
@@ -313,21 +313,21 @@ class LLMClient:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_llm_client.py::test_llm_client_initialization -v`
+Run: `uv run python -m pytest apps/agent/tests/test_llm_client.py::test_llm_client_initialization -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add poc/agent/src/llm_client.py poc/agent/tests/test_llm_client.py
+git add apps/agent/src/llm_client.py apps/agent/tests/test_llm_client.py
 git commit -m "feat: add LLM client for OpenAI-compatible APIs"
 ```
 
 ### Task 6: Graph Compiler
 
 **Files:**
-- Create: `poc/agent/src/compiler.py`
-- Create: `poc/agent/tests/test_compiler.py`
+- Create: `apps/agent/src/compiler.py`
+- Create: `apps/agent/tests/test_compiler.py`
 
 - [ ] **Step 1: Write failing test for graph compilation**
 
@@ -347,7 +347,7 @@ def test_compile_simple_workflow():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run python -m pytest poc/agent/tests/test_compiler.py::test_compile_simple_workflow -v`
+Run: `uv run python -m pytest apps/agent/tests/test_compiler.py::test_compile_simple_workflow -v`
 Expected: FAIL with "module not found"
 
 - [ ] **Step 3: Write compiler implementation**
@@ -384,21 +384,21 @@ def compile_to_langgraph(workflow):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_compiler.py::test_compile_simple_workflow -v`
+Run: `uv run python -m pytest apps/agent/tests/test_compiler.py::test_compile_simple_workflow -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add poc/agent/src/compiler.py poc/agent/tests/test_compiler.py
+git add apps/agent/src/compiler.py apps/agent/tests/test_compiler.py
 git commit -m "feat: add LangGraph compiler for workflow execution"
 ```
 
 ### Task 7: Graph Cache
 
 **Files:**
-- Create: `poc/agent/src/cache.py`
-- Create: `poc/agent/tests/test_cache.py`
+- Create: `apps/agent/src/cache.py`
+- Create: `apps/agent/tests/test_cache.py`
 
 - [ ] **Step 1: Write failing test for graph cache**
 
@@ -412,7 +412,7 @@ def test_graph_cache_checksum():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run python -m pytest poc/agent/tests/test_cache.py::test_graph_cache_checksum -v`
+Run: `uv run python -m pytest apps/agent/tests/test_cache.py::test_graph_cache_checksum -v`
 Expected: FAIL with "module not found"
 
 - [ ] **Step 3: Write cache implementation**
@@ -447,7 +447,7 @@ class GraphCache:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_cache.py::test_graph_cache_checksum -v`
+Run: `uv run python -m pytest apps/agent/tests/test_cache.py::test_graph_cache_checksum -v`
 Expected: PASS
 
 - [ ] **Step 5: Write failing test for cache save/load**
@@ -466,21 +466,21 @@ def test_graph_cache_save_load():
 
 - [ ] **Step 6: Run test and verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_cache.py::test_graph_cache_save_load -v`
+Run: `uv run python -m pytest apps/agent/tests/test_cache.py::test_graph_cache_save_load -v`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add poc/agent/src/cache.py poc/agent/tests/test_cache.py
+git add apps/agent/src/cache.py apps/agent/tests/test_cache.py
 git commit -m "feat: add graph cache with checksum-based invalidation"
 ```
 
 ### Task 8: Agent Class
 
 **Files:**
-- Create: `poc/agent/src/agent.py`
-- Create: `poc/agent/tests/test_agent.py`
+- Create: `apps/agent/src/agent.py`
+- Create: `apps/agent/tests/test_agent.py`
 
 - [ ] **Step 1: Write failing test for agent initialization**
 
@@ -493,7 +493,7 @@ def test_agent_initialization():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run python -m pytest poc/agent/tests/test_agent.py::test_agent_initialization -v`
+Run: `uv run python -m pytest apps/agent/tests/test_agent.py::test_agent_initialization -v`
 Expected: FAIL with "module not found"
 
 - [ ] **Step 3: Write agent implementation**
@@ -540,7 +540,7 @@ class Agent:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_agent.py::test_agent_initialization -v`
+Run: `uv run python -m pytest apps/agent/tests/test_agent.py::test_agent_initialization -v`
 Expected: PASS
 
 - [ ] **Step 5: Write failing test for workflow loading**
@@ -549,26 +549,26 @@ Expected: PASS
 def test_agent_load_workflow():
     from poc.agent.src.agent import Agent
     agent = Agent()
-    workflow = agent.load_workflow("poc/agent/tests/fixtures/simple_workflow.md")
+    workflow = agent.load_workflow("apps/agent/tests/fixtures/simple_workflow.md")
     assert workflow["title"] == "Test Workflow"
 ```
 
 - [ ] **Step 6: Run test and verify it passes**
 
-Run: `uv run python -m pytest poc/agent/tests/test_agent.py::test_agent_load_workflow -v`
+Run: `uv run python -m pytest apps/agent/tests/test_agent.py::test_agent_load_workflow -v`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add poc/agent/src/agent.py poc/agent/tests/test_agent.py
+git add apps/agent/src/agent.py apps/agent/tests/test_agent.py
 git commit -m "feat: add Agent class with workflow loading and compilation"
 ```
 
 ### Task 9: CLI Entry Point
 
 **Files:**
-- Create: `poc/agent/src/cli.py`
+- Create: `apps/agent/src/cli.py`
 
 - [ ] **Step 1: Write CLI entry point**
 
@@ -615,22 +615,22 @@ if __name__ == "__main__":
 - [ ] **Step 2: Make CLI executable**
 
 ```bash
-chmod +x poc/agent/src/cli.py
+chmod +x apps/agent/src/cli.py
 ```
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add poc/agent/src/cli.py
+git add apps/agent/src/cli.py
 git commit -m "feat: add CLI entry point with approval loop"
 ```
 
 ### Task 10: Example Workflows
 
 **Files:**
-- Create: `poc/agent/examples/simple_echo.md`
-- Create: `poc/agent/examples/multi_tool.md`
-- Create: `poc/agent/examples/data_flow.md`
+- Create: `apps/agent/examples/simple_echo.md`
+- Create: `apps/agent/examples/multi_tool.md`
+- Create: `apps/agent/examples/data_flow.md`
 
 - [ ] **Step 1: Create simple_echo.md example**
 
@@ -699,14 +699,14 @@ Demonstrate data passing between steps.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add poc/agent/examples/
+git add apps/agent/examples/
 git commit -m "docs: add example workflow files"
 ```
 
 ### Task 11: Environment Configuration
 
 **Files:**
-- Create: `poc/agent/.env.example`
+- Create: `apps/agent/.env.example`
 
 - [ ] **Step 1: Create .env.example**
 
@@ -721,13 +721,13 @@ LOCAL_LLM_URL=http://localhost:8080/v1
 - [ ] **Step 2: Create .env file for local development**
 
 ```bash
-cp poc/agent/.env.example poc/agent/.env
+cp apps/agent/.env.example apps/agent/.env
 ```
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add poc/agent/.env.example
+git add apps/agent/.env.example
 git commit -m "chore: add environment configuration example"
 ```
 
@@ -735,7 +735,7 @@ git commit -m "chore: add environment configuration example"
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `cd poc/agent && uv run python -m pytest tests/ -v`
+Run: `cd apps/agent && uv run python -m pytest tests/ -v`
 Expected: All tests pass
 
 - [ ] **Step 2: Fix any failing tests**

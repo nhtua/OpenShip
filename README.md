@@ -40,7 +40,7 @@ In OpenShip, every automation task is expressed as a workflow — a sequence of 
 **Explore the Agent PoC.** Try our working proof-of-concept that demonstrates the core workflow compilation engine:
 
 ```bash
-cd poc/agent
+cd apps/agent
 uv sync  # Install dependencies
 
 # Build: Generate plan, approve, compile, and cache
@@ -50,7 +50,7 @@ uv run python -m src.cli build examples/my-workflow.md
 uv run python -m src.cli execute examples/my-workflow.md
 ```
 
-The PoC uses two LangGraph workflows: a **builder** (plan generation + HITL approval) and an **executor** (compile + execute). Workflows are cached as JSON with integrity signatures for drift detection. See [`poc/agent/examples/`](poc/agent/examples/) for workflow examples.
+The PoC uses two LangGraph workflows: a **builder** (plan generation + HITL approval) and an **executor** (compile + execute). Workflows are cached as JSON with integrity signatures for drift detection. See [`apps/agent/examples/`](apps/agent/examples/) for workflow examples.
 
 **Explore the mockups.** See the intended user experience through our interactive mockups:
 
