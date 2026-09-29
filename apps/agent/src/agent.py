@@ -2,11 +2,13 @@ import json
 import re
 import uuid
 from pathlib import Path
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
 from .builder import compile_builder_workflow, generate_plan_node
 from .compiler import compile_to_langgraph
 from .state import BuilderState
-from langgraph.types import Command
-from langgraph.checkpoint.memory import InMemorySaver
 
 
 class Agent:
@@ -107,7 +109,7 @@ class Agent:
             print("\nSteps:")
             for step in steps:
                 print(f"  {step.get('order', '?')}. {step.get('description', 'N/A')} [{step.get('tool', 'N/A')}]")
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError) as e:
             print(f"\n(Unable to parse plan JSON for display: {e})")
     
     def compile_graph(self, plan_json=None):

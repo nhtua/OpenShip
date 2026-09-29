@@ -1,4 +1,4 @@
-from src.compiler import resolve_template, WorkflowState
+from src.compiler import WorkflowState, resolve_template
 
 
 def test_resolve_input_variable():
