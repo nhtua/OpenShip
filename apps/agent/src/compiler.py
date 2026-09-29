@@ -1,14 +1,16 @@
 import json
 import re
-from langgraph.graph import StateGraph, START, END
+from typing import Any
+
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
-from typing import Dict, Any
+
 from .tool_executor import execute_tool
 
 
 class WorkflowState(BaseModel):
-    inputs: Dict[str, Any] = Field(default_factory=dict)
-    outputs: Dict[int, Any] = Field(default_factory=dict)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    outputs: dict[int, Any] = Field(default_factory=dict)
 
 
 def resolve_template(template: str, state: WorkflowState) -> str:

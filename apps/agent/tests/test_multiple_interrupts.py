@@ -1,14 +1,15 @@
 import uuid
-from langgraph.graph import StateGraph, START, END
-from langgraph.types import interrupt, Command
+from typing import Any
+
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
-from typing import Dict, Any
 
 
 class State(BaseModel):
-    inputs: Dict[str, Any] = Field(default_factory=dict)
-    outputs: Dict[int, Any] = Field(default_factory=dict)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    outputs: dict[int, Any] = Field(default_factory=dict)
 
 
 def step1(state: State) -> State:

@@ -1,0 +1,33 @@
+name: Python CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: cd apps/agent && uv sync --extra dev
+      - run: cd apps/agent && uv run pytest tests/ -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv tool install ruff
+      - run: cd apps/agent && ruff check .

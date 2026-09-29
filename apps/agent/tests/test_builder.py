@@ -1,5 +1,7 @@
+from unittest.mock import MagicMock, patch
+
 from src.state import BuilderState
-from unittest.mock import patch, MagicMock
+
 
 def test_load_workflow_node():
     from src.builder import load_workflow_node
@@ -24,8 +26,8 @@ def test_show_plan_node():
     assert result.approved == False
 
 def test_wait_for_approval_node_approved():
+
     from src.builder import wait_for_approval_node
-    from langgraph.types import interrupt
     state = BuilderState(workflow_path="test.md", workflow_content="test", llm_plan="plan")
     with patch("langgraph.types.interrupt", return_value="yes"):
         result = wait_for_approval_node(state)

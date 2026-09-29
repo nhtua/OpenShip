@@ -1,5 +1,7 @@
 import json
+
 from src.state import ExecutorState
+
 
 def test_executor_compile_node():
     from src.executor import compile_node

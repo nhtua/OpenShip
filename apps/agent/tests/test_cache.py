@@ -6,8 +6,9 @@ def test_graph_cache_checksum():
 
 
 def test_graph_cache_save_load():
-    from src.cache import GraphCache
     import tempfile
+
+    from src.cache import GraphCache
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = GraphCache(tmpdir)
         checksum = cache.compute_checksum("test")
