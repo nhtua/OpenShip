@@ -29,5 +29,5 @@ jobs:
         with:
           python-version: "3.13"
           enable-cache: true
-      - run: cd apps/agent && uv pip install ruff
-      - run: cd apps/agent && uv run ruff check .
+      - run: uv tool install ruff
+      - run: cd apps/agent && ruff check .
