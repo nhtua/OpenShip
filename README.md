@@ -12,32 +12,40 @@ Built by DevOps and platform engineers for software engineers — practical auto
 
 ## How It Works
 
-In OpenShip, every automation task is expressed as a workflow — a sequence of steps executed by AI agents using tools and connectors.
+In OpenShip, every automation task is expressed as a workflow — a sequence of steps executed by AI agents using tools and connectors. The system uses two LangGraph workflows that work together:
 
-**Workflow Execution Model:**
+### Builder Workflow
 
-1. **Describe** — Define your task through conversation or a requirements document
-2. **Plan** — The agent builds an execution plan, selecting appropriate tools and steps
-3. **Validate** — Review the plan, approve critical decisions through human-in-the-loop cards
-4. **Execute** — The agent runs the workflow, handling errors and adapting as needed
-5. **Report** — Receive structured results and conversational summaries
+The builder turns natural language descriptions into executable plans:
 
-**Built-in workflow templates** cover common DevOps patterns:
+1. **Describe** — Provide a workflow description in markdown (freeform or structured)
+2. **Plan** — The builder uses an LLM to generate a structured execution plan with tool selection
+3. **Validate** — Review the plan through human-in-the-loop approval (approve, reject with feedback, regenerate)
+4. **Compile** — The approved plan is compiled to a LangGraph state machine and cached
 
-- **Provision/Build** — Infrastructure from requirements to deployment
-- **Investigation/Debug** — Telemetry gathering, hypothesis testing, remediation
-- **CI/CD Setup** — Pipeline generation and deployment management
-- **Alert Response** — Automated reaction to monitoring alarms
-- **Scheduled Reporting** — Periodic data collection and dashboard updates
-- **Cost Optimization** — Resource usage analysis and right-sizing recommendations
+### Executor Workflow
 
-**Extensible by design:** Build custom workflows for your specific needs, compose existing workflows, or import community-shared ones from the workflow registry. The same execution model powers built-in features and user-created automations — everything is a workflow.
+The executor runs compiled workflows with human-in-the-loop at runtime:
+
+1. **Load** — Load a cached compiled workflow by input file hash with integrity verification
+2. **Execute** — Run the workflow steps, invoking tools (shell commands, executables, etc.)
+3. **Interact** — Pause at runtime for human input when needed (e.g., asking questions)
+4. **Report** — Return structured results for each step
+
+### Integrity & Drift Detection
+
+Compiled workflows are cached as JSON with filename-embedded signatures:
+- **Lookup:** By input file hash (SHA-256 of workflow content)
+- **Verification:** Signature binds input file and cached JSON together
+- **Drift detection:** If either changes, the signature won't match
+
+This architecture implements the "everything is a workflow" principle — the agent lifecycle itself (plan → approve → compile → execute) is modeled as LangGraph workflows, not just the user-defined tasks.
 
 ## Where to Start
 
 **Read the ideas first.** Understand the project's philosophy, design principles, and roadmap by reading [`docs/ideas.md`](docs/ideas.md). This document captures the core vision, workflow patterns, and architectural decisions.
 
-**Explore the Agent PoC.** Try our working proof-of-concept that demonstrates the core workflow compilation engine:
+**Try the Agent.** Run our workflow agent:
 
 ```bash
 cd apps/agent
@@ -50,7 +58,7 @@ uv run python -m src.cli build examples/my-workflow.md
 uv run python -m src.cli execute examples/my-workflow.md
 ```
 
-The PoC uses two LangGraph workflows: a **builder** (plan generation + HITL approval) and an **executor** (compile + execute). Workflows are cached as JSON with integrity signatures for drift detection. See [`apps/agent/examples/`](apps/agent/examples/) for workflow examples.
+See [`apps/agent/examples/`](apps/agent/examples/) for workflow examples.
 
 **Explore the mockups.** See the intended user experience through our interactive mockups:
 
