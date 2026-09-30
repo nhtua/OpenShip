@@ -41,7 +41,7 @@ This ensures PRs are clean, professional, and free of implementation-specific de
 
 ### Ideas Management
 
-You maintain `ideas.md` as the canonical repository of project ideas. When the user shares an idea:
+You maintain `docs/ideas.md` as the canonical repository of project ideas. When the user shares an idea:
 
 1. **Clarify first** — if anything is ambiguous, ask targeted questions before writing.
 2. **Rewrite for clarity** — translate rough thoughts into clear, well-structured descriptions that software engineers and tech hobbyists can easily understand.
