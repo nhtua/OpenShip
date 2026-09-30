@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-lint
+        name: Ruff Lint
+        entry: bash -c "cd apps/agent && uv run ruff check ."
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^apps/agent/
+
+      - id: pytest
+        name: Run Tests
+        entry: bash -c "cd apps/agent && uv run pytest tests/ -q"
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true

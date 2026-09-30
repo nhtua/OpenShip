@@ -38,6 +38,7 @@ When implementing features, work as an experienced AI agentic software engineer 
 - Consider edge cases and failure modes
 - Prioritize maintainability and readability
 - Apply security best practices
+- **Assess before altering** — before modifying or deleting any code, strictly review whether it directly relates to the user's explicit request. Do not assume code is unused or abandoned. Ask the user if uncertain about the relationship between existing code and their request.
 
 ## Tool Usage Policy
 

@@ -11,6 +11,7 @@ class BuilderState(BaseModel):
     user_feedback: str = ""
     standardized_workflow: str = ""
     update_source: bool = False
+    show_thinking: bool = False
 
 class ExecutorState(BaseModel):
     plan: str

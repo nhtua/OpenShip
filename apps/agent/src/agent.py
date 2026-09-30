@@ -33,12 +33,13 @@ class Agent:
         self.workflow = Path(path).read_text()
         return self.workflow
     
-    def generate_plan(self, feedback=None):
+    def generate_plan(self, feedback=None, show_thinking=False):
         """
         Generate or regenerate the execution plan using LLM.
         
         Args:
             feedback: Optional user feedback for plan revision
+            show_thinking: Stream LLM reasoning to terminal
         
         Returns:
             The generated plan JSON string
@@ -46,16 +47,20 @@ class Agent:
         state = BuilderState(
             workflow_path="",
             workflow_content=self.workflow,
-            user_feedback=feedback or ""
+            user_feedback=feedback or "",
+            show_thinking=show_thinking
         )
         
         result = generate_plan_node(state)
         self.plan = result.llm_plan
         return self.plan
 
-    def build_workflow(self):
+    def build_workflow(self, show_thinking=False):
         """
         Run the complete builder workflow including approval loop and source update check.
+        
+        Args:
+            show_thinking: Stream LLM reasoning to terminal
         
         Returns:
             The builder state with approved plan and potentially updated source
@@ -64,7 +69,8 @@ class Agent:
         
         state = BuilderState(
             workflow_path=self.workflow_path,
-            workflow_content=self.workflow
+            workflow_content=self.workflow,
+            show_thinking=show_thinking
         )
         
         result = self.builder.invoke(state, self.builder_config)

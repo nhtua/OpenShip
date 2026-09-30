@@ -14,6 +14,8 @@ def main():
     build_parser.add_argument("workflow", help="Path to workflow markdown file")
     build_parser.add_argument("--show-thinking", action="store_true",
                               help="Stream LLM reasoning/thinking process to terminal")
+    build_parser.add_argument("--show-thinking", action="store_true",
+                              help="Stream LLM reasoning/thinking process to terminal")
     
     # Execute command
     exec_parser = subparsers.add_parser("execute", help="Execute cached standardized workflow")
@@ -35,7 +37,7 @@ def build_workflow(workflow_path: str, show_thinking: bool = False):
     agent.load_workflow(workflow_path)
     
     print("Generating plan with LLM...")
-    result = agent.build_workflow()
+    result = agent.build_workflow(show_thinking=show_thinking)
     
     if not result.approved:
         print("Plan not approved. Build cancelled.")

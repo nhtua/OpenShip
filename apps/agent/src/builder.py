@@ -25,6 +25,7 @@ def load_workflow_node(state: BuilderState) -> BuilderState:
     return state.model_copy(update={"workflow_content": content})
 
 def generate_plan_node(state: BuilderState) -> BuilderState:
+    show_thinking = state.show_thinking
     llm = get_llm_client()
     
     tools = """Available tools:
@@ -56,7 +57,17 @@ Workflow:
 {plan_instructions}
 """
 
-    plan = llm.chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=1024)
+    if show_thinking:
+        print("Thinking...")
+        chunks = []
+        for chunk in llm.stream_chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=1024):
+            chunks.append(chunk)
+            print(chunk, end="", flush=True)
+        print()
+        plan = "".join(chunks)
+    else:
+        plan = llm.chat([{"role": "user", "content": prompt}], temperature=0.7, max_tokens=1024)
+    
     return state.model_copy(update={"llm_plan": plan})
 
 
