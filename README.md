@@ -104,21 +104,39 @@ OpenShip is in its early days and we'd love your help shaping its future. Here's
 
 All contributions are welcome, no matter your experience level. We're building this together.
 
+### Pre-commit Hooks
+
+We use pre-commit hooks to enforce code quality before commits are created. The hooks run `ruff` linting and `pytest` on every commit.
+
+To install:
+
+```bash
+# From repo root
+apps/agent/.venv/bin/pre-commit install
+```
+
+To run hooks manually on all files:
+
+```bash
+apps/agent/.venv/bin/pre-commit run --all-files
+```
+
 ## Repository Layout
 
 ```
 openship/
 ├── poc/
-│   └── agent/              # Agent workflow compilation PoC (Python)
+│   ├── mockup/             # UI/UX prototypes (static HTML)
+│   └── PLACEHOLDER         # Keeps poc/ from being auto-removed
 ├── apps/
 │   ├── web/                # Frontend app (Vue.js) — planned
 │   ├── api/                # API service (FastAPI) — planned
-│   └── agent/              # Agent service — after PoC graduation
+│   └── agent/              # Agent service (graduated from PoC)
 ├── packages/
 │   ├── shared/             # Shared Python modules — planned
 │   └── ui/                 # Shared frontend components — planned
 ├── docs/                   # Documentation, ideas, and design specs
-├── mockup/                 # UI/UX prototypes (static HTML)
+├── .pre-commit-config.yaml # Pre-commit hooks for lint and tests
 └── README.md
 ```
 
