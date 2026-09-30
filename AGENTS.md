@@ -38,7 +38,7 @@ When implementing features, work as an experienced AI agentic software engineer 
 - Consider edge cases and failure modes
 - Prioritize maintainability and readability
 - Apply security best practices
-- **Stay within scope** — do only what was explicitly asked. When cleaning up code, do not remove features that appear unused unless you've confirmed with the user they're intentional. Prefer adding tests or asking questions over deleting code or making assumptions about what's "abandoned."
+- **Assess before altering** — before modifying or deleting any code, strictly review whether it directly relates to the user's explicit request. Do not assume code is unused or abandoned. Ask the user if uncertain about the relationship between existing code and their request.
 
 ## Tool Usage Policy
 
