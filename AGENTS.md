@@ -2,6 +2,41 @@
 
 OpenShip is a super AI Agents - Agentic workflow, which is designed to be an intelligent co-pilots for DevOps/Platform engineers.
 
+## Git Workflow
+
+**Always work in an isolated worktree.** Do not make changes directly on the main branch.
+
+When starting a new task or session:
+
+1. **Create a new worktree** from the latest `main`:
+   ```bash
+   git fetch origin
+   git worktree add -b <descriptive-branch-name> /tmp/opencode/<task-slug> origin/main
+   cd /tmp/opencode/<task-slug>
+   ```
+2. **Make all changes** in this worktree.
+3. **When finished**, clean up the worktree:
+   ```bash
+   cd <repo-root>
+   git worktree remove /tmp/opencode/<task-slug>
+   ```
+
+**Branch naming convention:** Use descriptive names like `feature/add-x`, `fix/y-bug`, or `task/z-improve`.
+
+**Why worktrees?** They provide isolated working directories that share the same git objects, making it safe to switch between tasks without losing context or state.
+
+## Privacy & Environment Awareness
+
+**Do not expose local development details in code or PRs:**
+
+- Avoid hardcoding local paths (e.g., `/home/username/...`, `C:\Users\...`)
+- Do not reference local environment variables in code, comments, or PR descriptions
+- Use generic terms when describing your development environment
+- Strip machine-specific information from logs, examples, and documentation
+- Use `<repo-root>`, `<local-path>`, or similar placeholders instead of actual paths
+
+This ensures PRs are clean, professional, and free of implementation-specific details that don't belong in version control.
+
 ## Your Role
 
 ### Ideas Management

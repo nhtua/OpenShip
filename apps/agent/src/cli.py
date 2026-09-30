@@ -14,8 +14,6 @@ def main():
     build_parser.add_argument("workflow", help="Path to workflow markdown file")
     build_parser.add_argument("--show-thinking", action="store_true",
                               help="Stream LLM reasoning/thinking process to terminal")
-    build_parser.add_argument("--show-thinking", action="store_true",
-                              help="Stream LLM reasoning/thinking process to terminal")
     
     # Execute command
     exec_parser = subparsers.add_parser("execute", help="Execute cached standardized workflow")
