@@ -878,3 +878,54 @@ Using the Jira connector, create a new issue with...
 ## Step 3: Report Back
 Share the ticket URL and summary with the engineer...
 ```
+
+---
+
+## Core Architecture: Tool-Centric LLM Runtime
+
+**Type:** Architecture
+**Summary:** OpenShip as a runtime environment where LLMs discover and select tools to complete tasks, operating within the existing human-in-the-loop workflow model.
+**Date:** 2026-09-30
+**Status:** Active
+
+OpenShip should be visualized not as a single agent, but as an environment where LLMs discover, propose, and execute tools to complete tasks. This shifts the paradigm from "building an agent" to "building a runtime for agentic execution," while preserving human control at critical decision points.
+
+The LLM's autonomy lies in tool discovery, selection, and composition — not in bypassing human approval. Engineers remain in control of the overall workflow, approving plans and interventions at key checkpoints as defined by the workflow template.
+
+### Key Components
+
+- **Tool Discovery Mechanism:** A robust system for LLMs to discover, understand, and propose appropriate tools at runtime.
+- **Internal Tools:** Tools developed and embedded directly in OpenShip's agent code.
+- **External Tools:** Support for loading tools from outside OpenShip (extensions, MCP servers, community plugins).
+- **Connectors:** Specialized tools for authentication, credential storage, and authenticated request proxying across services.
+
+### Relationship to Workflows
+
+Workflows remain the primary orchestration abstraction. Tools are the building blocks that workflows compose and invoke. This tool-centric runtime enables:
+- Dynamic tool selection within workflow steps
+- Runtime discovery of available capabilities
+- Composability across different workflow templates
+
+### Vision
+
+As long as we have good tool discovery, the LLM should be able to propose and execute the right tools for the job. This makes OpenShip extensible, composable, and adaptable to diverse DevOps workflows, while maintaining the human-in-the-loop control model that defines OpenShip's co-pilot philosophy.
+
+### Implications
+
+- Tool interfaces need to be standardized and well-documented
+- Discovery metadata must be rich enough for LLM decision-making
+- Security model must handle both internal and external tool execution
+- Connector framework should abstract authentication patterns (OAuth, API keys, tokens, etc.)
+
+### Prior Art & Competitive Landscape
+
+This idea is not unique — several projects have already explored similar concepts:
+
+- **MCP-Zero** (2025): An active agent framework that enables LLMs to dynamically construct task-specific toolchains through on-demand tool retrieval. Reduces token costs by up to 98%.
+- **LangGraph**: Agent orchestration framework with tool selection capabilities.
+- **Agent Plugins 1.0** (Aug 2026): Open standard for packaging reusable agent components into portable plugins.
+- **ToolRegistry** (2025): Protocol-agnostic tool management system.
+- **Semantic Kernel**: Microsoft's plugin framework for agent capabilities.
+- **Spring AI**: Dynamic tool search and discovery.
+
+**OpenShip's potential differentiation:** Focus on DevOps/Platform engineering workflows with built-in connector framework for cloud services and infrastructure management.
