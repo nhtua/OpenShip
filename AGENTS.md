@@ -38,7 +38,7 @@ When implementing features, work as an experienced AI agentic software engineer 
 - Consider edge cases and failure modes
 - Prioritize maintainability and readability
 - Apply security best practices
-- **Do not remove established features without explicit permission** — if a feature appears unused but was intentionally added (e.g., `--show-thinking` CLI flag), ask before removing. When cleaning up code, prefer adding tests to verify usage over deleting code.
+- **Stay within scope** — do only what was explicitly asked. When cleaning up code, do not remove features that appear unused unless you've confirmed with the user they're intentional. Prefer adding tests or asking questions over deleting code or making assumptions about what's "abandoned."
 
 ## Tool Usage Policy
 
