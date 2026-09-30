@@ -6,7 +6,19 @@ OpenShip is a super AI Agents - Agentic workflow, which is designed to be an int
 
 **Always work in an isolated worktree.** Do not make changes directly on the main branch.
 
-When starting a new task or session:
+### Task Lifecycle
+
+One worktree per feature/fix, not per user request. Multiple user requests for the same feature should reuse the same worktree and branch.
+
+**Check for existing worktrees before creating new ones:**
+```bash
+git worktree list
+```
+If a relevant worktree already exists, reuse it. Only create a new worktree when starting a fundamentally different task.
+
+### Creating a Worktree
+
+When starting a new task:
 
 1. **Create a new worktree** from the latest `main`:
    ```bash
@@ -15,13 +27,45 @@ When starting a new task or session:
    cd /tmp/opencode/<task-slug>
    ```
 2. **Make all changes** in this worktree.
-3. **When finished**, clean up the worktree:
+
+### Sync Strategy
+
+To avoid drift and keep PRs clean:
+
+- **Before starting a new sub-task** within a worktree, sync with latest `main`:
+  ```bash
+  git fetch origin
+  git rebase origin/main
+  ```
+- **Rebase, not merge** — keeps history linear and PR diffs clean.
+
+### Commit Strategy
+
+- **Commit often** with clear messages after each logical change
+- **One feature = one branch** — group related changes, don't open PRs after every small edit
+- Only open a PR when the complete feature/fix is ready for review
+
+### Completing a Task
+
+When the task is fully complete and reviewed:
+
+1. **Push the branch** to remote:
+   ```bash
+   git push -u origin <branch-name>
+   ```
+2. **Clean up the worktree** (branch is preserved on remote):
    ```bash
    cd <repo-root>
    git worktree remove /tmp/opencode/<task-slug>
    ```
 
-**Branch naming convention:** Use descriptive names like `feature/add-x`, `fix/y-bug`, or `task/z-improve`.
+### Branch Naming Convention
+
+Use descriptive names that link to issues/tasks when applicable:
+
+- `feature/<issue-id>-<short-description>` — e.g., `feature/42-add-metrics`
+- `fix/<issue-id>-<short-description>` — e.g., `fix/38-memory-leak`
+- `task/<short-description>` — when no issue ID exists
 
 **Why worktrees?** They provide isolated working directories that share the same git objects, making it safe to switch between tasks without losing context or state.
 
