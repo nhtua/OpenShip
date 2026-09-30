@@ -7,6 +7,8 @@ def test_stream_chat_method_exists():
 def test_stream_chat_yields_chunks():
     """Test that stream_chat is a generator function."""
     import inspect
+
     from src.llm_client import LLMClient
+
     client = LLMClient(api_key="test-key", base_url="http://localhost:8080")
     assert inspect.isgeneratorfunction(client.stream_chat)

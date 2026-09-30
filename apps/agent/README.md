@@ -133,3 +133,4 @@ See `examples/` for sample workflow files:
 - **Human-in-the-loop**: Interactive approval at key decision points
 - **Tamper detection**: SHA-256 checksums verify workflow integrity
 - **Tool safety**: Shell command quoting prevents injection attacks
+# Test
