@@ -12,85 +12,162 @@ Built by DevOps and platform engineers for software engineers — practical auto
 
 ## How It Works
 
-In OpenShip, every automation task is expressed as a workflow — a sequence of steps executed by AI agents using tools and connectors. The system uses two LangGraph workflows that work together:
+OpenShip uses a tool-centric runtime architecture with flat registries, sandboxed execution environments, and LangGraph-based orchestration.
 
-### Builder Workflow
+### Architecture
 
-The builder turns natural language descriptions into executable plans:
+```
+CLI / Web UI
+     ↓
+FastAPI Backend (REST API)
+     ↓
+Orchestration Engine (LangGraph)
+     ↓
+Tool Registry + Workflow Registry (SQLite)
+     ↓
+Sandboxed Execution (process isolation)
+```
 
-1. **Describe** — Provide a workflow description in markdown (freeform or structured)
-2. **Plan** — The builder uses an LLM to generate a structured execution plan with tool selection
-3. **Validate** — Review the plan through human-in-the-loop approval (approve, reject with feedback, regenerate)
-4. **Compile** — The approved plan is compiled to a LangGraph state machine and cached
+- **Flat Registries**: Tools and workflows are registered without internal/exposed namespace splits. All tools are addressable by any workflow.
+- **Sandboxed Execution**: Each workflow execution runs in a dedicated sandbox, enabling parallel execution and easy cleanup.
+- **Human-in-the-Loop**: LangGraph's `interrupt` mechanism enables pause/resume at any step for human approval or input.
+- **Conditional Branching**: Workflows can branch based on step results, enabling approval/rejection flows and decision logic.
 
-### Executor Workflow
+### Workflow Execution
 
-The executor runs compiled workflows with human-in-the-loop at runtime:
+1. **Register** — Define tools and workflow templates in the registries
+2. **Run** — Execute a workflow with input parameters
+3. **Interact** — Pause at runtime for human approval or input
+4. **Resume** — Continue execution after human decision
+5. **Monitor** — Track execution status and results
 
-1. **Load** — Load a cached compiled workflow by input file hash with integrity verification
-2. **Execute** — Run the workflow steps, invoking tools (shell commands, executables, etc.)
-3. **Interact** — Pause at runtime for human input when needed (e.g., asking questions)
-4. **Report** — Return structured results for each step
+## Quick Start
 
-### Integrity & Drift Detection
+### Prerequisites
 
-Compiled workflows are cached as JSON with filename-embedded signatures:
-- **Lookup:** By input file hash (SHA-256 of workflow content)
-- **Verification:** Signature binds input file and cached JSON together
-- **Drift detection:** If either changes, the signature won't match
+- Python 3.12+
+- [uv](https://github.com/astral-sh/uv) package manager
 
-This architecture implements the "everything is a workflow" principle — the agent lifecycle itself (plan → approve → compile → execute) is modeled as LangGraph workflows, not just the user-defined tasks.
-
-## Where to Start
-
-**Read the ideas first.** Understand the project's philosophy, design principles, and roadmap by reading [`docs/ideas.md`](docs/ideas.md). This document captures the core vision, workflow patterns, and architectural decisions.
-
-**Try the Agent.** Run our workflow agent:
+### Backend
 
 ```bash
 cd apps/agent
 uv sync  # Install dependencies
-
-# Build: Generate plan, approve, compile, and cache
-uv run python -m src.cli build examples/my-workflow.md
-
-# Execute: Load cached compiled workflow and run
-uv run python -m src.cli execute examples/my-workflow.md
+uv run python -m src.main  # Start FastAPI server on :8000
 ```
 
-See [`apps/agent/examples/`](apps/agent/examples/) for workflow examples.
+The API will be available at `http://localhost:8000/api`.
 
-**Explore the mockups.** See the intended user experience through our interactive mockups:
+### CLI
 
 ```bash
-cd mockup
-pnpm install
-pnpm dev
+cd apps/cli
+uv sync
+uv run python -m src.main --help
 ```
 
-Open `http://localhost:5173` to see the chat-first interface, agent workspace, and workflow builder designs. These are static demonstrations — no functionality yet.
+Run a workflow:
 
-## Open Source Roadmap
+```bash
+uv run python -m src.main workflow run my-workflow --inputs '{"param": "value"}'
+```
 
-OpenShip is developed in transparent phases:
+Monitor status:
 
-### 🔴 Current Phase: Addressing Problems & Brainstorming Solutions
+```bash
+uv run python -m src.main workflow status <execution-id>
+```
 
-We're actively defining the problem space and exploring solution approaches. This phase includes:
+Resume paused execution:
 
-- Collecting and validating ideas from real DevOps pain points
-- Designing the agent architecture and workflow orchestration
-- Building UI/UX mockups to demonstrate concepts
-- Selecting the technology stack and building core components
+```bash
+uv run python -m src.main workflow resume <execution-id> --response '{"decision": "approve"}'
+```
 
-**What's available now:** Draft HTML mockups in the [`mockup/`](mockup/) directory that demonstrate the intended UI/UX and interaction patterns. These are static demonstrations — no functionality yet.
+### Web Interface
 
-### Upcoming Phases (Planned)
+```bash
+cd apps/web
+npm install
+npm run dev  # Start dev server on :5173
+```
 
-- **Phase 2:** Core agent implementation with basic workflow execution
-- **Phase 3:** Built-in workflow templates and tool registry
-- **Phase 4:** Expanded tool/connector ecosystem and production deployment
-- **Phase 5:** Community workflow sharing and ecosystem growth
+The web app proxies API requests to the backend at `http://localhost:8000`.
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENSHIP_API_URL` | Backend API URL for CLI | `http://localhost:8000/api` |
+| `OPENSHIP_DB_PATH` | SQLite database path | `:memory:` |
+| `OPENAI_API_KEY` | OpenAI API key for LLM features | (required for LLM features) |
+| `OPENAI_BASE_URL` | Custom OpenAI API base URL | (uses OpenAI default) |
+| `OPENAI_MODEL` | OpenAI model to use | `gpt-4o` |
+
+### Database
+
+By default, OpenShip uses an in-memory SQLite database. For persistent storage, set `OPENSHIP_DB_PATH` to a file path:
+
+```bash
+export OPENSHIP_DB_PATH=/path/to/openship.db
+```
+
+### Tool Configuration
+
+Tools can be configured through the CLI:
+
+```bash
+# List registered tools
+uv run python -m src.main tool list
+
+# Describe a specific tool
+uv run python -m src.main tool describe file.read
+
+# Search tools by category
+uv run python -m src.main tool search --category "file"
+```
+
+Built-in tools include:
+- `file.read` — Read file contents
+- `file.write` — Write content to a file
+- `shell.exec` — Execute shell commands
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/workflows/run` | Run a workflow |
+| `GET` | `/api/workflows/status/:id` | Get execution status |
+| `GET` | `/api/workflows` | List workflows |
+| `GET` | `/api/workflows/search` | Search workflows by metadata |
+| `POST` | `/api/workflows/resume/:id` | Resume paused execution |
+| `GET` | `/api/tools` | List tools |
+| `GET` | `/api/tools/search` | Search tools by metadata |
+| `POST` | `/api/sandbox/create` | Create sandbox |
+| `POST` | `/api/sandbox/execute` | Execute in sandbox |
+| `DELETE` | `/api/sandbox/cleanup` | Cleanup sandbox |
+
+## Where to Start
+
+**Read the ideas first.** Understand the project's philosophy, design principles, and roadmap by reading [`docs/ideas.md`](docs/ideas.md).
+
+**Try the CLI.** Run a workflow:
+
+```bash
+cd apps/cli
+uv sync
+uv run python -m src.main workflow list
+```
+
+**Explore the web interface.** Start the dev server:
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
 
 ## Contributing
 
@@ -125,17 +202,12 @@ apps/agent/.venv/bin/pre-commit run --all-files
 
 ```
 openship/
-├── poc/
-│   ├── mockup/             # UI/UX prototypes (static HTML)
-│   └── PLACEHOLDER         # Keeps poc/ from being auto-removed
 ├── apps/
-│   ├── web/                # Frontend app (Vue.js) — planned
-│   ├── api/                # API service (FastAPI) — planned
-│   └── agent/              # Agent service (graduated from PoC)
-├── packages/
-│   ├── shared/             # Shared Python modules — planned
-│   └── ui/                 # Shared frontend components — planned
+│   ├── web/                # Frontend app (Vue.js 3)
+│   ├── cli/                # CLI interface (Typer)
+│   └── agent/              # Backend service (FastAPI + LangGraph)
 ├── docs/                   # Documentation, ideas, and design specs
+├── mockup/                 # UI/UX prototypes (static HTML)
 ├── .pre-commit-config.yaml # Pre-commit hooks for lint and tests
 └── README.md
 ```
