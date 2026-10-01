@@ -13,3 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "ruff>=0.4.0"]
+
+[tool.ruff]
+# BLE001: Blind exception catching is intentional in API error handlers
+# TRY401: logging.exception already includes the traceback
+ignore = ["BLE001", "TRY401"]
