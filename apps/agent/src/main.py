@@ -11,20 +11,23 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
-# Load environment variables from .env file
-load_dotenv()
-
-from src.api.middleware import add_middleware
-from src.api.routes import router
-from src.database.schema import init_db
-from src.registry.tools import init_registry as init_tool_registry
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("openship")
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Log that environment variables are loaded
+logger.info("Loaded environment variables")
+
+from src.api.middleware import add_middleware
+from src.api.routes import router
+from src.database.schema import init_db
+from src.registry.tools import init_registry as init_tool_registry
 
 # Create FastAPI application
 app = FastAPI(

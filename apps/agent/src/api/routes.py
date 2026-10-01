@@ -255,9 +255,14 @@ async def route_endpoint(body: RouteRequest) -> dict:
     try:
         from src.llm_client import LLMClient
         
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        model = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        
+        logger.info("Routing message using OpenAI API (model: %s)", model)
+        
         client = LLMClient(
-            api_key=os.environ.get("OPENAI_API_KEY", ""),
-            model=os.environ.get("OPENAI_MODEL", "gpt-4o")
+            api_key=api_key,
+            model=model
         )
         
         # Build the system prompt
