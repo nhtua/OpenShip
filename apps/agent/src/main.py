@@ -193,6 +193,18 @@ def initialize_app() -> None:
                     {"order": 1, "tool": "shell.exec", "args": {"command": "{{command}}"}}
                 ]
             }"""
+        },
+        {
+            "name": "build-workflow",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Build a new workflow from a natural language description",
+            "tags": ["build", "create", "workflow"],
+            "definition": """{
+                "steps": [
+                    {"order": 1, "tool": "shell.exec", "args": {"command": "echo Building workflow: {{description}}"}}
+                ]
+            }"""
         }
     ]
     for workflow in builtin_workflows:

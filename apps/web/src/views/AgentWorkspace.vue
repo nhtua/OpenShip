@@ -62,10 +62,6 @@ function handleSendMessage(content: string) {
   store.sendMessage(content)
 }
 
-async function handleBuild(description: string) {
-  await store.buildWorkflow(description)
-}
-
 function handleResume() {
   const current = store.currentExecution
   if (current) {
@@ -111,20 +107,12 @@ function handleReject() {
 
     <!-- Chat Input -->
     <div class="workspace-input">
-      <div class="input-row">
-        <ChatInput
-          :loading="store.loading"
-          :disabled="store.isRunning"
-          placeholder="Interact with the agent..."
-          @send="handleSendMessage"
-        />
-        <button
-          class="btn btn-secondary"
-          @click="handleBuild('Build a workflow')"
-        >
-          Build Workflow
-        </button>
-      </div>
+      <ChatInput
+        :loading="store.loading"
+        :disabled="store.isRunning"
+        placeholder="Interact with the agent..."
+        @send="handleSendMessage"
+      />
     </div>
   </div>
 </template>
@@ -211,25 +199,5 @@ function handleReject() {
 .workspace-input {
   border-top: 1px solid var(--border);
   padding: 1rem 0 0.5rem;
-}
-
-.input-row {
-  display: flex;
-  gap: 0.5rem;
-  align-items: flex-end;
-}
-
-.input-row .chat-input {
-  flex: 1;
-}
-
-.btn-secondary {
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-}
-
-.btn-secondary:hover {
-  background: var(--surface);
 }
 </style>
