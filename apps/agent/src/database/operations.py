@@ -114,6 +114,26 @@ def list_workflows(conn: sqlite3.Connection, origin: str | None = None) -> list[
     return [_row_to_dict(row) for row in rows]
 
 
+def find_workflows(conn: sqlite3.Connection, query: str) -> list[dict]:
+    """Find workflows matching a query string.
+
+    Searches workflow names and descriptions for the query term.
+
+    Args:
+        conn: Database connection.
+        query: Query string to search for.
+
+    Returns:
+        list[dict]: List of matching workflow definitions.
+    """
+    search_term = f"%{query}%"
+    rows = conn.execute(
+        "SELECT * FROM workflows WHERE name LIKE ? OR description LIKE ? ORDER BY name",
+        (search_term, search_term),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
 # Tool operations
 
 def register_tool(conn: sqlite3.Connection, tool: dict) -> str:
