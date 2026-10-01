@@ -62,6 +62,141 @@ def initialize_app() -> None:
     except RuntimeError:
         logger.info("Workflow registry already initialized")
 
+    # Register built-in tools
+    logger.info("Registering built-in tools")
+    from src.registry.tools import register_tool
+    builtin_tools = [
+        {
+            "name": "file.read",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Read contents of a file",
+            "category": "file",
+            "inputs": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to file to read"}
+                },
+                "required": ["path"]
+            },
+            "outputs": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "content": {"type": "string"}
+                }
+            }
+        },
+        {
+            "name": "file.write",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Write content to a file",
+            "category": "file",
+            "inputs": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to file to write"},
+                    "content": {"type": "string", "description": "Content to write"}
+                },
+                "required": ["path", "content"]
+            },
+            "outputs": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"}
+                }
+            }
+        },
+        {
+            "name": "shell.exec",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Execute a shell command",
+            "category": "shell",
+            "inputs": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds"}
+                },
+                "required": ["command"]
+            },
+            "outputs": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "output": {"type": "string"}
+                }
+            }
+        }
+    ]
+    for tool in builtin_tools:
+        try:
+            register_tool(tool)
+            logger.info("Registered tool: %s", tool["name"])
+        except Exception as e:
+            logger.warning("Failed to register tool %s: %s", tool["name"], e)
+
+    # Register built-in workflows
+    logger.info("Registering built-in workflows")
+    builtin_workflows = [
+        {
+            "name": "hello",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Say hello - a simple demonstration workflow",
+            "tags": ["demo", "hello"],
+            "definition": """{
+                "steps": [
+                    {"order": 1, "tool": "shell.exec", "args": "echo Hello from OpenShip!"}
+                ]
+            }"""
+        },
+        {
+            "name": "read-file",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Read the contents of a file",
+            "tags": ["file", "read"],
+            "definition": """{
+                "steps": [
+                    {"order": 1, "tool": "file.read", "args": "{{path}}"}
+                ]
+            }"""
+        },
+        {
+            "name": "write-file",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Write content to a file",
+            "tags": ["file", "write"],
+            "definition": """{
+                "steps": [
+                    {"order": 1, "tool": "file.write", "args": {"path": "{{path}}", "content": "{{content}}"}}
+                ]
+            }"""
+        },
+        {
+            "name": "run-command",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Execute a shell command",
+            "tags": ["shell", "exec"],
+            "definition": """{
+                "steps": [
+                    {"order": 1, "tool": "shell.exec", "args": {"command": "{{command}}"}}
+                ]
+            }"""
+        }
+    ]
+    for workflow in builtin_workflows:
+        try:
+            register_workflow(workflow)
+            logger.info("Registered workflow: %s", workflow["name"])
+        except Exception as e:
+            logger.warning("Failed to register workflow %s: %s", workflow["name"], e)
+
     # Add middleware
     add_middleware(app)
 
