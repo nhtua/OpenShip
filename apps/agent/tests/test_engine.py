@@ -3,16 +3,23 @@
 Covers:
 - Graph construction from workflow definitions
 - Graph execution with inputs
-- Human-in-the-loop pause/resume
+- Human-in-the-loop pause/resume via LangGraph's interrupt mechanism
+- Conditional routing with build_condition_edge
+- Async execution with wait=False
 - Error handling during execution
 """
 
+import time
+
 from src.core.engine import (
+    build_condition_edge,
     build_graph,
-    pause_graph,
+    get_execution,
+    reset_executions,
     resume_graph,
     run_graph,
 )
+from src.core.state import WorkflowState
 from src.tools.implementations import register_tool_implementation
 
 
@@ -24,15 +31,15 @@ class EchoTool:
         return {"output": inputs.get("args", "")}
 
 
-class HumanApproveTool:
-    """Test tool that simulates human approval."""
+class FailTool:
+    """Test tool that always fails."""
 
     def execute(self, inputs):
-        return {"approved": True}
+        raise RuntimeError("Intentional failure")
 
 
 register_tool_implementation("echo", EchoTool)
-register_tool_implementation("human_approve", HumanApproveTool)
+register_tool_implementation("fail", FailTool)
 
 
 def test_build_graph_from_steps():
@@ -50,7 +57,6 @@ def test_build_graph_from_steps():
 
     graph = build_graph(workflow)
     assert graph is not None
-    # Compiled graph has get_graph() method for inspecting structure
     graph_spec = graph.get_graph()
     assert len(graph_spec.nodes) == 4  # START + 2 steps + END
 
@@ -87,9 +93,9 @@ def test_run_graph_executes_steps():
 
     graph = build_graph(workflow)
     result = run_graph(graph, inputs={})
-    # Result should have step outputs
     assert "step_outputs" in result
     assert result["step_outputs"] is not None
+    assert result["status"] == "completed"
 
 
 def test_run_graph_with_inputs():
@@ -107,10 +113,13 @@ def test_run_graph_with_inputs():
     graph = build_graph(workflow)
     result = run_graph(graph, inputs={"key": "value"})
     assert "step_outputs" in result
+    assert result["status"] == "completed"
 
 
 def test_pause_and_resume():
-    """Test pausing and resuming graph execution."""
+    """Test pausing and resuming graph execution with interrupt mechanism."""
+    reset_executions()
+
     # Create a workflow with a human-in-the-loop step
     workflow = {
         "name": "pause_test",
@@ -121,8 +130,8 @@ def test_pause_and_resume():
             {"order": 1, "tool": "echo", "args": "before"},
             {
                 "order": 2,
-                "tool": "human_approve",
-                "args": "Proceed?",
+                "tool": "echo",
+                "args": "decision needed",
                 "on_approve": 3,
                 "on_reject": 4,
             },
@@ -133,13 +142,65 @@ def test_pause_and_resume():
 
     graph = build_graph(workflow)
 
-    # Run until first interrupt
+    # Run the graph - it should pause at step 2 due to interrupt
     graph_id = run_graph(graph, inputs={}, wait=False)
     assert graph_id is not None
 
-    # Pause and resume
-    pause_graph(graph_id)
-    resume_graph(graph_id, response="approve")
+    # Wait briefly for the graph to reach the interrupt point
+    time.sleep(0.1)
+
+    # Check that the execution is paused
+    exec_ctx = get_execution(graph_id)
+    assert exec_ctx is not None
+    assert exec_ctx["status"] == "paused"
+
+    # Resume with "approve" decision
+    result = resume_graph(graph_id, response="approve")
+
+    # Should have completed
+    assert result is not None
+    assert result["status"] == "completed"
+
+    # Verify step 3 (approved path) was executed
+    assert 3 in result["step_outputs"]
+
+
+def test_pause_and_resume_reject():
+    """Test pausing and resuming with reject decision."""
+    reset_executions()
+
+    workflow = {
+        "name": "reject_test",
+        "version": "1.0.0",
+        "origin": "custom",
+        "definition": "Reject test",
+        "steps": [
+            {"order": 1, "tool": "echo", "args": "before"},
+            {
+                "order": 2,
+                "tool": "echo",
+                "args": "decision needed",
+                "on_approve": 3,
+                "on_reject": 4,
+            },
+            {"order": 3, "tool": "echo", "args": "approved"},
+            {"order": 4, "tool": "echo", "args": "rejected"},
+        ],
+    }
+
+    graph = build_graph(workflow)
+
+    graph_id = run_graph(graph, inputs={}, wait=False)
+    time.sleep(0.1)
+
+    # Resume with "reject" decision
+    result = resume_graph(graph_id, response="reject")
+
+    assert result is not None
+    assert result["status"] == "completed"
+
+    # Verify step 4 (rejected path) was executed
+    assert 4 in result["step_outputs"]
 
 
 def test_graph_error_handling():
@@ -156,8 +217,11 @@ def test_graph_error_handling():
 
     graph = build_graph(workflow)
     result = run_graph(graph, inputs={}, wait=True)
+
     # Should have error information
-    assert "error" in result or "step_outputs" in result
+    assert result["status"] == "failed"
+    assert "error" in result
+    assert result["error"] is not None
 
 
 def test_empty_workflow():
@@ -177,7 +241,10 @@ def test_empty_workflow():
 
 
 def test_graph_with_branching():
-    """Test conditional branching in graph."""
+    """Test conditional branching in graph using build_condition_edge."""
+    reset_executions()
+
+    # Test approve path
     workflow = {
         "name": "branch_test",
         "version": "1.0.0",
@@ -188,17 +255,75 @@ def test_graph_with_branching():
             {
                 "order": 2,
                 "tool": "echo",
-                "args": "branch_a",
-                "condition": "state.get('choice') == 'a'",
+                "args": "decision",
+                "on_approve": 3,
+                "on_reject": 4,
             },
-            {
-                "order": 3,
-                "tool": "echo",
-                "args": "branch_b",
-                "condition": "state.get('choice') == 'b'",
-            },
+            {"order": 3, "tool": "echo", "args": "approved_path"},
+            {"order": 4, "tool": "echo", "args": "rejected_path"},
         ],
     }
 
     graph = build_graph(workflow)
-    assert graph is not None
+
+    # Run and approve
+    graph_id = run_graph(graph, inputs={}, wait=False)
+    time.sleep(0.1)
+    result = resume_graph(graph_id, response="approve")
+
+    assert result is not None
+    assert result["status"] == "completed"
+    # Verify approve path was taken
+    assert 3 in result["step_outputs"]
+    assert 4 not in result["step_outputs"]
+
+
+def test_build_condition_edge():
+    """Test that build_condition_edge produces a working router function."""
+    step = {"order": 2, "on_approve": 3, "on_reject": 4}
+    router = build_condition_edge(step)
+
+    # Test approve routing
+    state_approved = WorkflowState(
+        step_outputs={2: {"approved": True, "rejected": False}}
+    )
+    assert router(state_approved) == "step_3"
+
+    # Test reject routing
+    state_rejected = WorkflowState(
+        step_outputs={2: {"approved": False, "rejected": True}}
+    )
+    assert router(state_rejected) == "step_4"
+
+    # Test default routing
+    state_default = WorkflowState(step_outputs={2: {}})
+    assert router(state_default) == "end"
+
+
+def test_async_execution():
+    """Test that wait=False actually runs in background."""
+    reset_executions()
+
+    workflow = {
+        "name": "async_test",
+        "version": "1.0.0",
+        "origin": "custom",
+        "definition": "Async test",
+        "steps": [
+            {"order": 1, "tool": "echo", "args": "async"},
+        ],
+    }
+
+    graph = build_graph(workflow)
+
+    # Start async execution
+    graph_id = run_graph(graph, inputs={}, wait=False)
+    assert graph_id is not None
+
+    # Wait for completion
+    time.sleep(0.1)
+
+    # Check status
+    exec_ctx = get_execution(graph_id)
+    assert exec_ctx is not None
+    assert exec_ctx["status"] == "completed"
