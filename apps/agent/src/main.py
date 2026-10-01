@@ -62,7 +62,12 @@ def initialize_app() -> None:
     except RuntimeError:
         logger.info("Workflow registry already initialized")
 
-    # Register built-in tools
+    # Register built-in tool implementations
+    logger.info("Registering built-in tool implementations")
+    from src.tools.builtin import register_builtin_tools
+    register_builtin_tools()
+
+    # Register built-in tools in registry
     logger.info("Registering built-in tools")
     from src.registry.tools import register_tool
     builtin_tools = [
@@ -149,7 +154,7 @@ def initialize_app() -> None:
             "tags": ["demo", "hello"],
             "definition": """{
                 "steps": [
-                    {"order": 1, "tool": "shell.exec", "args": "echo Hello from OpenShip!"}
+                    {"order": 1, "tool": "shell.exec", "args": {"command": "echo Hello from OpenShip!"}}
                 ]
             }"""
         },

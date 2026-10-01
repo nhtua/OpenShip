@@ -27,14 +27,14 @@ from src.tools.implementations import register_tool_implementation
 class EchoTool:
     """Test tool that echoes back input."""
 
-    def execute(self, inputs):
+    def execute(self, inputs, context=None):
         return {"output": inputs.get("args", "")}
 
 
 class FailTool:
     """Test tool that always fails."""
 
-    def execute(self, inputs):
+    def execute(self, inputs, context=None):
         raise RuntimeError("Intentional failure")
 
 

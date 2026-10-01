@@ -84,7 +84,15 @@ def build_step_node(step: dict, workflow: dict):
             return state
 
         # Resolve template variables
-        resolved_args = resolve_template(str(args), state)
+        if isinstance(args, dict):
+            resolved_args = {}
+            for key, value in args.items():
+                if isinstance(value, str):
+                    resolved_args[key] = resolve_template(value, state)
+                else:
+                    resolved_args[key] = value
+        else:
+            resolved_args = resolve_template(str(args), state)
 
         # Execute the tool
         tool_impl = get_tool_implementation(tool_name)
@@ -93,7 +101,10 @@ def build_step_node(step: dict, workflow: dict):
 
         try:
             tool_instance = tool_impl()
-            result = tool_instance.execute({"args": resolved_args})
+            if isinstance(resolved_args, dict):
+                result = tool_instance.execute(resolved_args, {})
+            else:
+                result = tool_instance.execute({"args": resolved_args}, {})
             state.step_outputs[step_order] = result
         except RuntimeError as e:
             state.error = f"Step {step_order} ({tool_name}) failed: {e!s}"

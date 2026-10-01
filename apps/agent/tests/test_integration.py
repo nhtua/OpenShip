@@ -46,7 +46,7 @@ def setup_and_teardown(tmp_path):
     # Register an echo tool that matches the engine's expected interface
     class EchoTool:
         """Echo tool for integration tests."""
-        def execute(self, inputs):
+        def execute(self, inputs, context=None):
             return {"success": True, "output": inputs.get("args", "")}
 
     register_tool_implementation("echo", EchoTool)
