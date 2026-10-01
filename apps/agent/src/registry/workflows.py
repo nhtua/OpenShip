@@ -120,5 +120,5 @@ def close_registry() -> None:
     """Close the registry database connection."""
     global _conn
     if _conn is not None:
-        db_ops.close_db(_conn)
+        close_db(_conn)
         _conn = None
