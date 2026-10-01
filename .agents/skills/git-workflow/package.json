@@ -1,0 +1,9 @@
+{
+  "name": "openship-git-workflow",
+  "version": "0.1.0",
+  "description": "Git workflow conventions for OpenShip: isolated worktrees, branch naming, commit strategy, and PR completion.",
+  "type": "module",
+  "exports": {
+    ".": "./SKILL.md"
+  }
+}
