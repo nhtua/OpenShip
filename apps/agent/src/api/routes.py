@@ -6,6 +6,7 @@ and sandbox management through a REST API.
 
 import json
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -47,6 +48,12 @@ class BuildWorkflowRequest(BaseModel):
     """Request model for building a workflow."""
     description: str
     feedback: str = ""
+
+
+class RouteRequest(BaseModel):
+    """Request model for routing a user message."""
+    message: str
+    history: list[str] = []
 
 
 class RegisterWorkflowRequest(BaseModel):
@@ -230,6 +237,81 @@ async def resume_workflow_endpoint(execution_id: str, body: ResumeWorkflowReques
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to resume execution: {e}")
+
+
+@router.post("/agent/route")
+async def route_endpoint(body: RouteRequest) -> dict:
+    """Route a user message to the appropriate workflow or tool.
+    
+    Uses the LLM to analyze the user's message and decide which workflow
+    or tool to invoke.
+    
+    Args:
+        body: Route request with user message and conversation history.
+    
+    Returns:
+        dict: Routing decision with action, target, and parameters.
+    """
+    try:
+        from src.llm_client import LLMClient
+        
+        client = LLMClient(
+            api_key=os.environ.get("OPENAI_API_KEY", ""),
+            model=os.environ.get("OPENAI_MODEL", "gpt-4o")
+        )
+        
+        # Build the system prompt
+        workflows = list_workflows()
+        workflow_names = [w["name"] for w in workflows]
+        
+        system_prompt = f"""You are a routing agent for OpenShip.
+Given a user message, decide which action to take.
+
+Available workflows: {", ".join(workflow_names)}
+
+Respond with a JSON object:
+{{
+    "action": "run_workflow" | "build_workflow" | "chat",
+    "workflow_name": "name of workflow to run",
+    "parameters": {{}},
+    "reasoning": "why this decision was made"
+}}
+
+If the user wants to build a new workflow, use "build_workflow" action.
+If the user wants to run an existing workflow, use "run_workflow" action.
+If the user is just chatting, use "chat" action."""
+        
+        messages = [
+            {"role": "system", "content": system_prompt}
+        ]
+        
+        # Add conversation history
+        for msg in body.history:
+            messages.append({"role": "user", "content": msg})
+        
+        # Add current message
+        messages.append({"role": "user", "content": body.message})
+        
+        # Get LLM response
+        response = client.chat(messages, temperature=0)
+        
+        # Parse the response
+        import json
+        import re
+        
+        # Extract JSON from response
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            decision = json.loads(json_match.group())
+            return decision
+        else:
+            return {
+                "action": "chat",
+                "reasoning": "Could not parse LLM response"
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to route message: {e}")
 
 
 @router.post("/workflows/build")

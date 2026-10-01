@@ -74,32 +74,31 @@ export const useAgentStore = defineStore('agent', () => {
 
     loading.value = true
     try {
-      // Check if this starts a new workflow
-      const availableWorkflows = await listWorkflows()
-      console.log('Available workflows:', availableWorkflows)
+      // Use LLM to route the message
+      const decision = await routeMessage(content)
+      console.log('Routing decision:', decision)
       
-      // Try exact match first, then substring match
-      let match = availableWorkflows.find((wf: Workflow) =>
-        wf.name.toLowerCase() === content.toLowerCase().trim()
-      )
-      
-      if (!match) {
-        match = availableWorkflows.find((wf: Workflow) =>
-          wf.name.toLowerCase().includes(content.toLowerCase().trim())
-        )
-      }
-
-      if (match) {
-        console.log('Matched workflow:', match.name)
-        const execution = await runWorkflow(match.name)
+      if (decision.action === 'run_workflow') {
+        const execution = await runWorkflow(decision.workflow_name, decision.parameters || {})
         currentExecution.value = execution
+        
+        // Add system message about execution
+        const sysMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'system',
+          content: `Running workflow: ${decision.workflow_name}`,
+          timestamp: Date.now()
+        }
+        messages.value.push(sysMsg)
+      } else if (decision.action === 'build_workflow') {
+        const result = await buildWorkflow(content, '')
+        console.log('Build result:', result)
       } else {
-        console.log('No workflow match found for:', content)
-        // Add agent response placeholder
+        // Chat response
         const agentMsg: ChatMessage = {
           id: crypto.randomUUID(),
           role: 'agent',
-          content: 'I can help with that. Would you like me to start a workflow?',
+          content: decision.reasoning || 'I can help with that. Would you like me to start a workflow?',
           timestamp: Date.now()
         }
         messages.value.push(agentMsg)
@@ -109,6 +108,33 @@ export const useAgentStore = defineStore('agent', () => {
       error.value = e instanceof Error ? e.message : String(e)
     } finally {
       loading.value = false
+    }
+  }
+
+  async function routeMessage(message: string) {
+    try {
+      const response = await fetch('/api/agent/route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          history: messages.value
+            .filter((m: ChatMessage) => m.role !== 'system')
+            .map((m: ChatMessage) => `${m.role}: ${m.content}`)
+        })
+      })
+      return await response.json()
+    } catch (e) {
+      console.error('Error routing message:', e)
+      // Fall back to text matching
+      const availableWorkflows = await listWorkflows()
+      const match = availableWorkflows.find((wf: Workflow) =>
+        wf.name.toLowerCase().includes(message.toLowerCase().trim())
+      )
+      if (match) {
+        return { action: 'run_workflow', workflow_name: match.name, parameters: {} }
+      }
+      return { action: 'chat', reasoning: 'I can help with that.' }
     }
   }
 
@@ -269,6 +295,7 @@ export const useAgentStore = defineStore('agent', () => {
     isPaused,
     // Actions
     sendMessage,
+    routeMessage,
     listWorkflows,
     runWorkflow,
     getExecutionStatus,
