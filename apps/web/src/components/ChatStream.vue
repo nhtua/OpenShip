@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import type { ChatMessage } from '../stores/useAgentStore'
+import ToolCallCard from './ToolCallCard.vue'
 
 const props = defineProps<{
   messages: ChatMessage[]
@@ -48,24 +49,11 @@ function formatTime(timestamp: number) {
           
           <!-- Tool calls in message -->
           <template v-if="msg.tool_calls && msg.tool_calls.length > 0">
-            <div class="tool-calls">
-              <div
-                v-for="tool in msg.tool_calls"
-                :key="tool.id"
-                class="tool-call"
-              >
-                <div class="tool-call-header">
-                  <span class="tool-call-name">{{ tool.name }}</span>
-                  <span class="tool-call-status" :class="`status-${tool.status}`">
-                    {{ tool.status }}
-                  </span>
-                </div>
-                <pre class="tool-call-args">{{ JSON.stringify(tool.args, null, 2) }}</pre>
-                <div v-if="tool.result !== undefined" class="tool-call-result">
-                  <pre>{{ JSON.stringify(tool.result, null, 2) }}</pre>
-                </div>
-              </div>
-            </div>
+            <ToolCallCard
+              v-for="tool in msg.tool_calls"
+              :key="tool.id"
+              :tool-call="tool"
+            />
           </template>
           
           <div class="message-meta">{{ formatTime(msg.timestamp) }}</div>

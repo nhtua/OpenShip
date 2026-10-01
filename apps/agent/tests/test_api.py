@@ -196,6 +196,42 @@ class TestToolsList:
         assert len(data) == 1
         assert data[0]["name"] == "builtin.tool"
 
+    def test_list_tools_with_name_filter(self, client):
+        """Test listing tools with name filter."""
+        from src.registry.tools import register_tool
+        tool1 = {
+            "name": "test.tool1",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Test tool 1",
+            "category": "test",
+            "inputs": {},
+            "outputs": {}
+        }
+        tool2 = {
+            "name": "test.tool2",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Test tool 2",
+            "category": "test",
+            "inputs": {},
+            "outputs": {}
+        }
+        register_tool(tool1)
+        register_tool(tool2)
+
+        response = client.get("/api/tools?name=test.tool1")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "test.tool1"
+
+        # Test non-matching name
+        response = client.get("/api/tools?name=test.nonexistent")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 0
+
 
 class TestWorkflowRun:
     def test_run_workflow_invalid_name(self, client):

@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useAgentStore } from '../stores/useAgentStore'
 import ChatStream from '../components/ChatStream.vue'
 import ChatInput from '../components/ChatInput.vue'
+import ApprovalCard from '../components/ApprovalCard.vue'
 
 const route = useRoute()
 const store = useAgentStore()
@@ -67,6 +68,17 @@ function handleResume() {
     store.resumeWorkflow(current.id)
   }
 }
+
+function handleApprove() {
+  handleResume()
+}
+
+function handleReject() {
+  const current = store.currentExecution
+  if (current) {
+    store.resumeWorkflow(current.id, { approved: false })
+  }
+}
 </script>
 
 <template>
@@ -81,15 +93,13 @@ function handleResume() {
           {{ store.currentExecution.status }}
         </span>
       </div>
-      <div class="execution-actions">
-        <button
-          v-if="store.isPaused"
-          class="btn btn-primary"
-          @click="handleResume"
-        >
-          Resume
-        </button>
-      </div>
+      <ApprovalCard
+        v-if="store.isPaused"
+        title="Awaiting Approval"
+        description="The workflow is paused and waiting for your approval to continue."
+        @approve="handleApprove"
+        @reject="handleReject"
+      />
     </div>
 
     <!-- Chat Stream -->

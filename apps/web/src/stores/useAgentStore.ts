@@ -75,8 +75,8 @@ export const useAgentStore = defineStore('agent', () => {
     loading.value = true
     try {
       // Check if this starts a new workflow
-      const workflows = await listWorkflows()
-      const match = workflows.find((wf: Workflow) =>
+      const availableWorkflows = await listWorkflows()
+      const match = availableWorkflows.find((wf: Workflow) =>
         wf.name.toLowerCase().includes(content.toLowerCase())
       )
 

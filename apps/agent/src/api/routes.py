@@ -256,17 +256,21 @@ async def register_workflow_endpoint(body: RegisterWorkflowRequest) -> dict:
 async def list_tools_endpoint(
     category: str | None = Query(None),
     origin: str | None = Query(None),
+    name: str | None = Query(None),
 ) -> list[dict]:
     """List available tools.
 
     Args:
         category: Optional filter by category (e.g., "file", "shell").
         origin: Optional filter by origin (e.g., "builtin", "custom").
+        name: Optional filter by tool name.
 
     Returns:
         list[dict]: List of tool definitions.
     """
     tools = list_tools(category=category, origin=origin)
+    if name:
+        tools = [t for t in tools if t.get("name") == name]
     return [serialize_tool(t) for t in tools]
 
 

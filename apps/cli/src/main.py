@@ -29,7 +29,7 @@ DEFAULT_API_URL = "http://localhost:8000"
 
 def get_api_url() -> str:
     """Get the API URL from environment or default."""
-    return os.environ.get("OPENSUP_API_URL", DEFAULT_API_URL)
+    return os.environ.get("OPENSHIP_API_URL", DEFAULT_API_URL)
 
 
 def api_get(path: str, params: dict | None = None) -> dict | list:
@@ -46,7 +46,7 @@ def api_get(path: str, params: dict | None = None) -> dict | list:
     except httpx.RequestError as e:
         console.print(f"[red]Connection error:[/red] Could not reach API at {url}")
         console.print(f"  Error: {e}")
-        console.print("  Check that the backend is running and OPENSUP_API_URL is correct.")
+        console.print("  Check that the backend is running and OPENSHIP_API_URL is correct.")
         raise typer.Exit(1)
 
 
@@ -226,8 +226,8 @@ def tool_list(
 @tool_app.command("describe")
 def tool_describe(name: str):
     """Get detailed information about a tool."""
-    tools = api_get("/api/tools")
-    tool = next((t for t in tools if t.get("name") == name), None)
+    tools = api_get("/api/tools", params={"name": name})
+    tool = tools[0] if tools else None
 
     if not tool:
         console.print(f"[red]Tool not found:[/red] {name}")

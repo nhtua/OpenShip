@@ -21,7 +21,7 @@ class TestApiHelperFunctions:
 
     def test_get_api_url_from_env(self):
         """Test API URL from environment variable."""
-        with patch.dict("os.environ", {"OPENSUP_API_URL": "http://custom:9000"}):
+        with patch.dict("os.environ", {"OPENSHIP_API_URL": "http://custom:9000"}):
             assert get_api_url() == "http://custom:9000"
 
 
@@ -141,16 +141,16 @@ class TestToolCommands:
         result = runner.invoke(app, ["tool", "describe", "test-tool"])
         assert result.exit_code == 0
         assert "test-tool" in result.output
+        mock_api_get.assert_called_once_with("/api/tools", params={"name": "test-tool"})
 
     @patch("src.main.api_get")
     def test_tool_describe_not_found(self, mock_api_get):
         """Test tool describe command - tool not found."""
-        mock_api_get.return_value = [
-            {"name": "other-tool", "version": "1.0.0", "category": "test", "origin": "builtin", "description": "Other"}
-        ]
+        mock_api_get.return_value = []
         result = runner.invoke(app, ["tool", "describe", "test-tool"])
         assert result.exit_code == 1
         assert "Tool not found" in result.output
+        mock_api_get.assert_called_once_with("/api/tools", params={"name": "test-tool"})
 
     @patch("src.main.api_get")
     def test_tool_search(self, mock_api_get):
