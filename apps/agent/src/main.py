@@ -257,10 +257,19 @@ if __name__ == "__main__":
     parser.add_argument("--hot-reload", action="store_true", help="Enable hot reload")
     args = parser.parse_args()
 
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level="info",
-        reload=args.hot_reload,
-    )
+    # When using reload, uvicorn needs an import string to spawn a new process
+    if args.hot_reload:
+        uvicorn.run(
+            "src.main:app",
+            host=args.host,
+            port=args.port,
+            log_level="info",
+            reload=True,
+        )
+    else:
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="info",
+        )
