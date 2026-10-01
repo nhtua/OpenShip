@@ -176,37 +176,52 @@ export const useAgentStore = defineStore('agent', () => {
       const sysMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'system',
-        content: `Started workflow: ${name} (${execution.id})`,
+        content: `Running workflow: ${name}`,
         timestamp: Date.now()
       }
       messages.value.push(sysMsg)
 
-      // Add workflow output
-      if (data.status === 'completed' || data.status === 'failed') {
-        // Format step outputs
-        let outputText = ''
-        if (data.step_outputs) {
-          const steps = Object.keys(data.step_outputs).sort()
-          for (const step of steps) {
-            const stepOutput = data.step_outputs[step]
-            if (stepOutput.output) {
-              outputText += `Step ${step}: ${stepOutput.output.trim()}\n`
-            } else if (stepOutput.error) {
-              outputText += `Step ${step} (error): ${stepOutput.error.trim()}\n`
-            }
-          }
-        }
-        
-        if (outputText) {
-          const resultMsg: ChatMessage = {
+      // Stream step outputs
+      if (data.step_outputs) {
+        const steps = Object.keys(data.step_outputs).sort()
+        for (const step of steps) {
+          const stepOutput = data.step_outputs[step]
+          const stepMsg: ChatMessage = {
             id: crypto.randomUUID(),
             role: 'agent',
-            content: `Workflow completed:\n\n\`\`\`\n${outputText.trim()}\n\`\`\``,
+            content: `Step ${step}:`,
             timestamp: Date.now()
           }
-          messages.value.push(resultMsg)
+          messages.value.push(stepMsg)
+          
+          if (stepOutput.output) {
+            const outputMsg: ChatMessage = {
+              id: crypto.randomUUID(),
+              role: 'agent',
+              content: `\`\`\`\n${stepOutput.output.trim()}\n\`\`\``,
+              timestamp: Date.now()
+            }
+            messages.value.push(outputMsg)
+          } else if (stepOutput.error) {
+            const errorMsg: ChatMessage = {
+              id: crypto.randomUUID(),
+              role: 'agent',
+              content: `Error: ${stepOutput.error.trim()}`,
+              timestamp: Date.now()
+            }
+            messages.value.push(errorMsg)
+          }
         }
       }
+
+      // Add completion message
+      const statusMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'system',
+        content: `Workflow ${data.status}`,
+        timestamp: Date.now()
+      }
+      messages.value.push(statusMsg)
 
       return execution
     } catch (e) {
