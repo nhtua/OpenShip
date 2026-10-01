@@ -16,12 +16,28 @@ onMounted(async () => {
   }
 })
 
-function handleSendMessage(content: string) {
-  store.sendMessage(content)
+async function handleSendMessage(content: string) {
+  await store.sendMessage(content)
+  
+  // If a workflow was started, navigate to the agent workspace
+  if (store.currentExecution) {
+    router.push({
+      name: 'agent-workspace',
+      params: { executionId: store.currentExecution.id }
+    })
+  }
 }
 
-function handleWorkflowClick(workflow: any) {
-  store.runWorkflow(workflow.name)
+async function handleWorkflowClick(workflow: any) {
+  await store.runWorkflow(workflow.name)
+  
+  // Navigate to the agent workspace
+  if (store.currentExecution) {
+    router.push({
+      name: 'agent-workspace',
+      params: { executionId: store.currentExecution.id }
+    })
+  }
 }
 </script>
 
