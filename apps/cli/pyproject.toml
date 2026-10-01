@@ -1,0 +1,13 @@
+[project]
+name = "openship-cli"
+version = "0.1.0"
+description = "OpenShip CLI interface"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "httpx>=0.27.0"
+]
+
+[project.scripts]
+openship = "src.main:app"
