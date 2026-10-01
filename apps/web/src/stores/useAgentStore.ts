@@ -181,6 +181,33 @@ export const useAgentStore = defineStore('agent', () => {
       }
       messages.value.push(sysMsg)
 
+      // Add workflow output
+      if (data.status === 'completed' || data.status === 'failed') {
+        // Format step outputs
+        let outputText = ''
+        if (data.step_outputs) {
+          const steps = Object.keys(data.step_outputs).sort()
+          for (const step of steps) {
+            const stepOutput = data.step_outputs[step]
+            if (stepOutput.output) {
+              outputText += `Step ${step}: ${stepOutput.output.trim()}\n`
+            } else if (stepOutput.error) {
+              outputText += `Step ${step} (error): ${stepOutput.error.trim()}\n`
+            }
+          }
+        }
+        
+        if (outputText) {
+          const resultMsg: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: 'agent',
+            content: `Workflow completed:\n\n\`\`\`\n${outputText.trim()}\n\`\`\``,
+            timestamp: Date.now()
+          }
+          messages.value.push(resultMsg)
+        }
+      }
+
       return execution
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
