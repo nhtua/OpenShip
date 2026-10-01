@@ -43,6 +43,12 @@ class ResumeWorkflowRequest(BaseModel):
     response: Any = None
 
 
+class BuildWorkflowRequest(BaseModel):
+    """Request model for building a workflow."""
+    description: str
+    feedback: str = ""
+
+
 class RegisterWorkflowRequest(BaseModel):
     """Request model for registering a workflow."""
     name: str
@@ -224,6 +230,65 @@ async def resume_workflow_endpoint(execution_id: str, body: ResumeWorkflowReques
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to resume execution: {e}")
+
+
+@router.post("/workflows/build")
+async def build_workflow_endpoint(body: BuildWorkflowRequest) -> dict:
+    """Build a workflow from a natural language description.
+    
+    Uses the LLM to generate an execution plan from the description.
+    
+    Args:
+        body: Build request with workflow description.
+    
+    Returns:
+        dict: Generated plan JSON.
+    """
+    try:
+        from src.agent import Agent
+        
+        agent = Agent()
+        agent.workflow = body.description
+        
+        # Generate plan with LLM
+        plan = agent.generate_plan(feedback=body.feedback)
+        
+        return {
+            "plan": plan,
+            "status": "generated"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build workflow: {e}")
+
+
+@router.post("/workflows/compile")
+async def compile_workflow_endpoint(body: BuildWorkflowRequest) -> dict:
+    """Compile a generated plan to a LangGraph workflow.
+    
+    Args:
+        body: Compile request with workflow description and plan.
+    
+    Returns:
+        dict: Compiled workflow information.
+    """
+    try:
+        from src.agent import Agent
+        
+        agent = Agent()
+        agent.workflow = body.description
+        
+        # Parse the plan
+        plan_json = agent.parse_plan()
+        
+        # Compile to LangGraph
+        graph = agent.compile_graph(plan_json)
+        
+        return {
+            "status": "compiled",
+            "graph_id": id(graph)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compile workflow: {e}")
 
 
 @router.post("/workflows/register")

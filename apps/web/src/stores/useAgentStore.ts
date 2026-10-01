@@ -164,6 +164,52 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
+  async function buildWorkflow(description: string, feedback: string = '') {
+    loading.value = true
+    try {
+      const response = await fetch('/api/workflows/build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description, feedback })
+      })
+      const data = await response.json()
+      
+      // Add the plan as an agent message
+      const agentMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'agent',
+        content: `Here's the plan I generated:\n\n${data.plan}`,
+        timestamp: Date.now()
+      }
+      messages.value.push(agentMsg)
+      
+      return data
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e)
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function compileWorkflow(description: string) {
+    loading.value = true
+    try {
+      const response = await fetch('/api/workflows/compile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description })
+      })
+      const data = await response.json()
+      return data
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e)
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function getExecutionStatus(executionId: string) {
     try {
       const response = await fetch(`/api/workflows/status/${executionId}`)
@@ -227,6 +273,8 @@ export const useAgentStore = defineStore('agent', () => {
     runWorkflow,
     getExecutionStatus,
     resumeWorkflow,
+    buildWorkflow,
+    compileWorkflow,
     addMessage,
     clearMessages
   }

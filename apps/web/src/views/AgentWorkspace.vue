@@ -62,6 +62,10 @@ function handleSendMessage(content: string) {
   store.sendMessage(content)
 }
 
+async function handleBuild(description: string) {
+  await store.buildWorkflow(description)
+}
+
 function handleResume() {
   const current = store.currentExecution
   if (current) {
@@ -84,12 +88,12 @@ function handleReject() {
 <template>
   <div class="agent-workspace">
     <!-- Header -->
-    <div v-if="store.currentExecution" class="workspace-header">
+    <div class="workspace-header">
       <div class="execution-info">
         <h2 class="execution-title">
-          {{ store.currentExecution.workflow_id }}
+          {{ store.currentExecution ? store.currentExecution.workflow_id : 'Agent Workspace' }}
         </h2>
-        <span class="execution-status" :class="`status-${store.currentExecution.status}`">
+        <span v-if="store.currentExecution" class="execution-status" :class="`status-${store.currentExecution.status}`">
           {{ store.currentExecution.status }}
         </span>
       </div>
@@ -107,12 +111,20 @@ function handleReject() {
 
     <!-- Chat Input -->
     <div class="workspace-input">
-      <ChatInput
-        :loading="store.loading"
-        :disabled="store.isRunning"
-        placeholder="Interact with the agent..."
-        @send="handleSendMessage"
-      />
+      <div class="input-row">
+        <ChatInput
+          :loading="store.loading"
+          :disabled="store.isRunning"
+          placeholder="Interact with the agent..."
+          @send="handleSendMessage"
+        />
+        <button
+          class="btn btn-secondary"
+          @click="handleBuild('Build a workflow')"
+        >
+          Build Workflow
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -199,5 +211,25 @@ function handleReject() {
 .workspace-input {
   border-top: 1px solid var(--border);
   padding: 1rem 0 0.5rem;
+}
+
+.input-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+
+.input-row .chat-input {
+  flex: 1;
+}
+
+.btn-secondary {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background: var(--surface);
 }
 </style>
