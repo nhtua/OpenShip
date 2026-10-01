@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { RouterView, RouterLink, useRoute } from 'vue-router'
+
+const route = useRoute()
 </script>
 
 <template>
@@ -8,9 +10,9 @@ import { RouterView } from 'vue-router'
       <div class="header-content">
         <h1 class="app-title">OpenShip</h1>
         <nav class="header-nav">
-          <button class="nav-btn active">Home</button>
-          <button class="nav-btn">Workflows</button>
-          <button class="nav-btn">Tools</button>
+          <RouterLink to="/" class="nav-btn" :class="{ active: route.name === 'home' }">Home</RouterLink>
+          <RouterLink to="/" class="nav-btn" :class="{ active: route.name === 'home' }">Workflows</RouterLink>
+          <RouterLink to="/" class="nav-btn" :class="{ active: route.name === 'home' }">Tools</RouterLink>
         </nav>
       </div>
     </header>

@@ -76,14 +76,25 @@ export const useAgentStore = defineStore('agent', () => {
     try {
       // Check if this starts a new workflow
       const availableWorkflows = await listWorkflows()
-      const match = availableWorkflows.find((wf: Workflow) =>
-        wf.name.toLowerCase().includes(content.toLowerCase())
+      console.log('Available workflows:', availableWorkflows)
+      
+      // Try exact match first, then substring match
+      let match = availableWorkflows.find((wf: Workflow) =>
+        wf.name.toLowerCase() === content.toLowerCase().trim()
       )
+      
+      if (!match) {
+        match = availableWorkflows.find((wf: Workflow) =>
+          wf.name.toLowerCase().includes(content.toLowerCase().trim())
+        )
+      }
 
       if (match) {
+        console.log('Matched workflow:', match.name)
         const execution = await runWorkflow(match.name)
         currentExecution.value = execution
       } else {
+        console.log('No workflow match found for:', content)
         // Add agent response placeholder
         const agentMsg: ChatMessage = {
           id: crypto.randomUUID(),
@@ -94,6 +105,7 @@ export const useAgentStore = defineStore('agent', () => {
         messages.value.push(agentMsg)
       }
     } catch (e) {
+      console.error('Error in sendMessage:', e)
       error.value = e instanceof Error ? e.message : String(e)
     } finally {
       loading.value = false
