@@ -247,11 +247,20 @@ async def root() -> dict:
 
 # Run with uvicorn when executed directly
 if __name__ == "__main__":
+    import argparse
+
     import uvicorn
+
+    parser = argparse.ArgumentParser(description="OpenShip Agent Backend")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("--hot-reload", action="store_true", help="Enable hot reload")
+    args = parser.parse_args()
 
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8000,
+        host=args.host,
+        port=args.port,
         log_level="info",
+        reload=args.hot_reload,
     )
