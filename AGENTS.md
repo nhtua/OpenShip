@@ -61,12 +61,15 @@ opencode skill load openship-git-workflow
 
 Use any available tools to complete tasks efficiently.
 
-**Privacy (project is incubating):**
-- Sanitize search queries — avoid mentioning "OpenShip" by name
-- Use generic terms like "agentic DevOps tool" or "AI infrastructure
-  automation" instead
-- Do not leak project-specific details to external services
-- Be mindful of what you disclose in GitHub issues or discussions
+## Privacy & Security
+
+**OpenShip is now public.** Protect sensitive information from accidental exposure:
+
+- **Never commit secrets, credentials, or keys** to version control
+- Use environment variables or secret managers for sensitive values
+- Review code and commit messages before pushing for accidental credential leaks
+- Be careful with external tools (APIs, online services) — they may store or expose data
+- When in doubt, treat information as potentially public
 
 ## Project Context
 
