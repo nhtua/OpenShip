@@ -141,6 +141,28 @@ def initialize_app() -> None:
                     "output": {"type": "string"}
                 }
             }
+        },
+        {
+            "name": "llm.generate-plan",
+            "version": "1.0.0",
+            "origin": "builtin",
+            "description": "Generate a workflow plan using LLM",
+            "category": "ai",
+            "inputs": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Workflow description"},
+                    "feedback": {"type": "string", "description": "User feedback for revision"}
+                },
+                "required": ["description"]
+            },
+            "outputs": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "plan": {"type": "string"}
+                }
+            }
         }
     ]
     for tool in builtin_tools:
@@ -209,7 +231,7 @@ def initialize_app() -> None:
             "tags": ["build", "create", "workflow"],
             "definition": """{
                 "steps": [
-                    {"order": 1, "tool": "shell.exec", "args": {"command": "echo Building workflow: {{description}}"}}
+                    {"order": 1, "tool": "llm.generate-plan", "args": {"description": "{{description}}"}}
                 ]
             }"""
         }
