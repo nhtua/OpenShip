@@ -53,7 +53,7 @@ def _stream_response(
     conversation: Conversation,
     user_content: str,
     db: Session,
-) -> list[str]:
+) -> tuple[list[str], str]:
     """Stream response from OpenAI and persist both user and assistant messages."""
     # Save user message
     user_msg = Message(
