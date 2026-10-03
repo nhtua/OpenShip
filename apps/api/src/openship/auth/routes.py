@@ -1,12 +1,72 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from ..auth.models import User
-from ..auth.service import create_jwt, hash_password, verify_password
+from ..auth.service import create_jwt, hash_password, verify_password, verify_jwt
 from ..database.session import get_db
 from .schemas import LoginRequest, RegisterRequest
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def require_jwt(request: Request) -> User:
+    """Extract and verify JWT token, return the authenticated user."""
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "Missing or invalid authorization header",
+                }
+            },
+        )
+
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = verify_jwt(token)
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "Invalid or expired token",
+                }
+            },
+        )
+
+    user_id_str = payload.get("sub")
+    if not user_id_str:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "Token missing user ID",
+                }
+            },
+        )
+
+    import uuid as _uuid
+
+    db = next(get_db())
+    try:
+        user = db.query(User).filter(User.id == _uuid.UUID(user_id_str)).first()
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "code": "unauthorized",
+                        "message": "User not found",
+                    }
+                },
+            )
+        return user
+    finally:
+        db.close()
 
 
 @router.post("/register", status_code=201)
