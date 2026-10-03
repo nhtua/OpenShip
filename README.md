@@ -92,6 +92,64 @@ We're actively defining the problem space and exploring solution approaches. Thi
 - **Phase 4:** Expanded tool/connector ecosystem and production deployment
 - **Phase 5:** Community workflow sharing and ecosystem growth
 
+## Local Development
+
+### Prerequisites
+
+- Python 3.11+ with [uv](https://docs.astral.sh/uv/) package manager
+- Node.js 18+ with [pnpm](https://pnpm.io/installation)
+- PostgreSQL 15+ running locally
+
+### Database Setup
+
+Create the OpenShip database:
+
+```bash
+createdb -U postgres openship
+```
+
+### Backend (FastAPI)
+
+```bash
+cd apps/api
+uv sync
+cp .env.example .env  # Edit to add OPENAI_API_KEY
+uv run alembic upgrade head
+uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+API docs available at [http://localhost:8000/docs](http://localhost:8000/docs).
+
+### Frontend (Vue.js)
+
+```bash
+cd apps/web
+pnpm install
+pnpm dev
+```
+
+Frontend available at [http://localhost:5173](http://localhost:5173) (proxies API to :8000).
+
+### Docker Compose
+
+Alternative: run the full stack in containers:
+
+```bash
+docker compose up --build
+```
+
+This starts PostgreSQL, API, and frontend services. Access at [http://localhost:8080](http://localhost:8080).
+
+### Running Tests
+
+```bash
+# Backend
+cd apps/api && uv run pytest tests/ -v
+
+# Frontend
+cd apps/web && pnpm exec vitest run
+```
+
 ## Contributing
 
 OpenShip is in its early days and we'd love your help shaping its future. Here's how to get involved:
