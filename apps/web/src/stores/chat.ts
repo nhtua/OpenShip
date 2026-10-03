@@ -106,7 +106,8 @@ export const useChatStore = defineStore('chat', () => {
 
       // Open SSE connection using fetch
       const token = localStorage.getItem('access_token')
-      const url = `/api/chat/stream`
+      const convId = conversationId || 'new'
+      const url = `/api/chat/${convId}/messages`
       const response = await fetch(url, {
         method: 'POST',
         headers: {
