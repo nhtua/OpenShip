@@ -23,13 +23,24 @@ class ConversationCreateRequest(TypedDict):
 
 @router.post("/chat/{conversation_id}/messages")
 async def send_message(
-    conversation_id: uuid.UUID,
+    conversation_id: str,
     req: MessageRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
+    # Parse conversation_id: accept "new" or a valid UUID
+    parsed_conversation_id: uuid.UUID | None = None
+    if conversation_id != "new":
+        try:
+            parsed_conversation_id = uuid.UUID(conversation_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": {"code": "invalid_conversation_id", "message": "Invalid conversation ID format"}},
+            )
+
     # Get or create conversation
-    conversation = _get_or_create_conversation(db, user, conversation_id)
+    conversation = _get_or_create_conversation(db, user, parsed_conversation_id)
 
     # Check API key availability
     if not settings.openai_api_key:
