@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
 
     # Database
-    database_url: str = "postgresql+psycopg2://openship:openship@localhost:5432/openship"
+    database_url: str = "postgresql+psycopg2://postgres:mysecretpassword@localhost:5432/openship"
 
     # JWT
     jwt_secret: str = "dev-secret-change-in-production"
