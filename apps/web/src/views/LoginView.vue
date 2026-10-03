@@ -3,83 +3,85 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
-const router = useRouter()
 const auth = useAuthStore()
+const router = useRouter()
 
 const username = ref('')
 const password = ref('')
-const localError = ref<string | null>(null)
+const error = ref('')
 
 async function handleLogin() {
-  localError.value = null
-  const result = await auth.login({
-    username: username.value,
-    password: password.value,
-  })
-  if (result.success) {
+  error.value = ''
+  try {
+    await auth.login(username.value, password.value)
     router.push('/')
-  } else {
-    localError.value = result.error ?? auth.error
+  } catch (err: unknown) {
+    const axiosErr = err as { response?: { data?: { detail?: string } } }
+    error.value = axiosErr.response?.data?.detail ?? 'Login failed'
   }
 }
 </script>
 
 <template>
-  <div class="flex min-h-[60vh] items-center justify-center">
-    <div class="w-full max-w-md space-y-6 rounded-lg border bg-card p-8 shadow-sm">
-      <div class="space-y-2 text-center">
-        <h2 class="text-2xl font-bold">Sign In</h2>
-        <p class="text-sm text-muted-foreground">
-          Enter your credentials to access your account
+  <div class="min-h-screen flex items-center justify-center bg-[#0d1117]">
+    <div class="w-full max-w-md bg-[#161b22] border border-[#30363d] rounded-lg shadow-xl p-8">
+      <div class="text-center mb-8">
+        <div class="w-12 h-12 bg-[#58a6ff] rounded-lg flex items-center justify-center mx-auto mb-4">
+          <i class="pi pi-anchor text-white text-xl"></i>
+        </div>
+        <h1 class="text-2xl font-bold text-[#e6edf3]">OpenShip</h1>
+        <p class="text-[#8b949e] text-sm mt-2">Agentic DevOps Co-Pilot</p>
+      </div>
+
+      <form @submit.prevent="handleLogin">
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-[#e6edf3] mb-2">Username</label>
+          <div class="relative">
+            <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-[#8b949e]">
+              <i class="pi pi-user"></i>
+            </span>
+            <input
+              v-model="username"
+              type="text"
+              placeholder="Your username"
+              class="w-full bg-[#0d1117] border border-[#30363d] rounded-lg pl-10 pr-3 py-2 text-sm text-[#e6edf3] placeholder-[#8b949e] focus:outline-none focus:ring-2 focus:ring-[#58a6ff]"
+            />
+          </div>
+        </div>
+
+        <div class="mb-6">
+          <label class="block text-sm font-medium text-[#e6edf3] mb-2">Password</label>
+          <div class="relative">
+            <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-[#8b949e]">
+              <i class="pi pi-lock"></i>
+            </span>
+            <input
+              v-model="password"
+              type="password"
+              placeholder="Your password"
+              class="w-full bg-[#0d1117] border border-[#30363d] rounded-lg pl-10 pr-3 py-2 text-sm text-[#e6edf3] placeholder-[#8b949e] focus:outline-none focus:ring-2 focus:ring-[#58a6ff]"
+            />
+          </div>
+        </div>
+
+        <p v-if="error" class="text-sm text-[#f85149] mb-4 bg-[#da3633]/10 border border-[#da3633]/30 rounded-lg px-3 py-2">
+          <i class="pi pi-info-circle mr-2"></i>{{ error }}
         </p>
-      </div>
 
-      <div
-        v-if="localError || auth.error"
-        class="rounded-md bg-destructive/15 p-3 text-sm text-destructive"
-      >
-        {{ localError ?? auth.error }}
-      </div>
-
-      <form @submit.prevent="handleLogin" class="space-y-4">
-        <div class="space-y-2">
-          <label class="text-sm font-medium" for="username">Username</label>
-          <input
-            id="username"
-            name="username"
-            v-model="username"
-            type="text"
-            placeholder="your username"
-            class="flex w-full rounded-md border bg-background px-3 py-2 text-sm"
-            required
-          />
-        </div>
-        <div class="space-y-2">
-          <label class="text-sm font-medium" for="password">Password</label>
-          <input
-            id="password"
-            name="password"
-            v-model="password"
-            type="password"
-            placeholder="••••••••"
-            class="flex w-full rounded-md border bg-background px-3 py-2 text-sm"
-            required
-          />
-        </div>
         <button
           type="submit"
-          :disabled="auth.isLoading"
-          class="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+          class="w-full bg-[#238636] hover:bg-[#2ea043] text-white font-medium py-2 rounded-lg transition-colors"
         >
-          {{ auth.isLoading ? 'Signing in...' : 'Sign In' }}
+          Sign In
         </button>
       </form>
-      <p class="text-center text-sm text-muted-foreground">
-        Don't have an account?
-        <RouterLink to="/register" class="text-primary underline">
-          Register
-        </RouterLink>
-      </p>
+
+      <div class="mt-6 text-center">
+        <p class="text-sm text-[#8b949e]">
+          Don't have an account?
+          <router-link to="/register" class="text-[#58a6ff] hover:text-[#79b8ff]">Sign up</router-link>
+        </p>
+      </div>
     </div>
   </div>
 </template>

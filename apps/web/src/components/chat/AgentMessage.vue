@@ -3,35 +3,19 @@ import type { ChatMessage } from '@/types'
 
 defineProps<{
   message: ChatMessage
-  isStreaming?: boolean
+  isStreaming: boolean
 }>()
 </script>
 
 <template>
-  <div class="message flex justify-start">
-    <div
-      class="max-w-[70%] space-y-1 rounded-2xl border bg-card px-4 py-3 shadow-sm"
-    >
-      <div class="flex items-center gap-2 text-xs text-muted-foreground">
-        <span class="font-medium">Agent</span>
-        <span v-if="isStreaming" class="flex gap-1">
-          <span
-            class="inline-block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60"
-            style="animation-delay: 0ms"
-          ></span>
-          <span
-            class="inline-block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60"
-            style="animation-delay: 150ms"
-          ></span>
-          <span
-            class="inline-block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60"
-            style="animation-delay: 300ms"
-          ></span>
-        </span>
+  <div class="flex gap-3">
+    <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center flex-shrink-0">
+      <span class="text-white text-xs font-bold">AI</span>
+    </div>
+    <div class="max-w-2xl space-y-3">
+      <div class="bg-[#161b22] border border-[#30363d] rounded-lg px-4 py-3">
+        <p class="text-sm text-[#e6edf3] whitespace-pre-wrap">{{ message.content }}</p>
       </div>
-      <p class="whitespace-pre-wrap break-words text-sm">
-        {{ message.content }}<span v-if="isStreaming" class="inline-block h-[1em] w-0.5 animate-pulse bg-foreground"></span>
-      </p>
     </div>
   </div>
 </template>
