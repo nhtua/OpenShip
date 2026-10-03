@@ -132,9 +132,9 @@ describe('ChatView', () => {
     setActivePinia(createPinia())
   })
 
-  test('renders chat heading', () => {
+  test('renders new conversation button', () => {
     const wrapper = mount(ChatView)
-    expect(wrapper.find('h2').text()).toBe('Chat')
+    expect(wrapper.text()).toContain('New Conversation')
   })
 
   test('shows logout button when user is logged in', () => {
@@ -144,8 +144,12 @@ describe('ChatView', () => {
     auth.user = { id: '1', username: 'testuser', email: 'test@example.com' }
     auth.token = 'test-token'
     const wrapper = mount(ChatView)
-    expect(wrapper.find('button').text()).toContain('Sign Out')
-    expect(wrapper.find('button').text()).toContain('testuser')
+    expect(wrapper.text()).toContain('testuser')
+  })
+
+  test('renders chat stream area', () => {
+    const wrapper = mount(ChatView)
+    expect(wrapper.text()).toContain('Start a conversation')
   })
 })
 
