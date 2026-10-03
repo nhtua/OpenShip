@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .auth.routes import router as auth_router
-from .config import settings
 
 app = FastAPI(title="OpenShip API")
 
