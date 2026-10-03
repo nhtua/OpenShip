@@ -1,0 +1,1 @@
+# OpenShip Authentication module
