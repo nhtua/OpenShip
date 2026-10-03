@@ -9,6 +9,8 @@ const auth = useAuthStore()
 const chat = useChatStore()
 const newConvTitle = ref('')
 const showNewConv = ref(false)
+const searchQuery = ref('')
+const showNotifications = ref(false)
 
 function handleLogout() {
   auth.logout()
@@ -41,6 +43,15 @@ function handleStop() {
   // TODO: Stop current streaming
 }
 
+const navItems = [
+  { icon: 'pi-home', label: 'Home', active: true },
+  { icon: 'pi-plus', label: 'New Project' },
+  { icon: 'pi-comments', label: 'Agent Workspace', active: true },
+  { icon: 'pi-sitemap', label: 'Workflow Builder' },
+  { icon: 'pi-th-large', label: 'Tool Registry' },
+  { icon: 'pi-link', label: 'Connectors' },
+]
+
 onMounted(() => {
   chat.getConversations()
 })
@@ -62,7 +73,7 @@ onMounted(() => {
 
       <!-- Workspace Selector -->
       <div class="p-3">
-        <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-3 py-2 text-sm text-[#e6edf3] focus:outline-none focus:ring-2 focus:ring-[#58a6ff]">
+        <select class="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-[#e6edf3] focus:outline-none focus:ring-2 focus:ring-[#58a6ff]">
           <option>web-platform</option>
           <option>staging-env</option>
           <option>prod-infra</option>
@@ -71,35 +82,24 @@ onMounted(() => {
 
       <!-- Navigation -->
       <nav class="flex-1 p-2 space-y-1">
-        <div class="flex items-center gap-2 px-3 py-2 rounded text-sm text-[#e6edf3] bg-[#0d1117]">
-          <i class="pi pi-home text-[#58a6ff]"></i>
-          Home
-        </div>
-        <div class="flex items-center gap-2 px-3 py-2 rounded text-sm text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3] cursor-pointer">
-          <i class="pi pi-plus"></i>
-          New Project
-        </div>
-        <div class="flex items-center gap-2 px-3 py-2 rounded text-sm text-[#e6edf3] bg-[#0d1117]">
-          <i class="pi pi-comments"></i>
-          Agent Workspace
-        </div>
-        <div class="flex items-center gap-2 px-3 py-2 rounded text-sm text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3] cursor-pointer">
-          <i class="pi pi-sitemap"></i>
-          Workflow Builder
-        </div>
-        <div class="flex items-center gap-2 px-3 py-2 rounded text-sm text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3] cursor-pointer">
-          <i class="pi pi-th-large"></i>
-          Tool Registry
-        </div>
-        <div class="flex items-center gap-2 px-3 py-2 rounded text-sm text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3] cursor-pointer">
-          <i class="pi pi-link"></i>
-          Connectors
+        <div
+          v-for="item in navItems"
+          :key="item.label"
+          :class="[
+            'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer',
+            item.active
+              ? 'bg-[#0d1117] text-[#e6edf3]'
+              : 'text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3]'
+          ]"
+        >
+          <i :class="['pi', item.icon, item.active ? 'text-[#58a6ff]' : '']"></i>
+          {{ item.label }}
         </div>
       </nav>
 
       <!-- Settings -->
       <div class="p-3 border-t border-[#30363d]">
-        <button @click="handleLogout" class="w-full flex items-center gap-2 px-3 py-2 rounded text-sm text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3]">
+        <button @click="handleLogout" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3] transition-colors">
           <i class="pi pi-sign-out"></i>
           Sign Out
         </button>
@@ -108,27 +108,33 @@ onMounted(() => {
 
     <!-- Main Chat Area -->
     <main class="flex-1 flex flex-col">
-      <!-- Conversation Header -->
-      <div class="border-b border-[#30363d] px-6 py-4 bg-[#161b22]">
-        <div class="flex items-center justify-between">
-          <div>
-            <h1 class="text-lg font-semibold text-[#e6edf3]">
-              {{ chat.currentConversation?.title || 'Provision & Build' }}
-            </h1>
-            <p class="text-sm text-[#8b949e]">web-platform • Session #{{ chat.currentConversation?.id?.substring(0, 4) || '1042' }}</p>
+      <!-- Header -->
+      <div class="border-b border-[#30363d] bg-[#161b22]">
+        <!-- Top bar -->
+        <div class="flex items-center justify-between px-6 py-3">
+          <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+              <h1 class="text-lg font-semibold text-[#e6edf3]">
+                {{ chat.currentConversation?.title || 'Provision & Build' }}
+              </h1>
+              <span class="flex items-center gap-2 text-sm text-green-400">
+                <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                Running
+              </span>
+            </div>
           </div>
           <div class="flex items-center gap-3">
-            <span class="flex items-center gap-2 text-sm text-green-400">
-              <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-              Running
-            </span>
-            <button @click="handleExport" class="bg-[#0d1117] border border-[#30363d] hover:border-[#58a6ff] text-[#e6edf3] px-3 py-1.5 rounded text-sm">
-              <i class="pi pi-download mr-1"></i>Export
+            <button @click="handleExport" class="flex items-center gap-2 bg-[#0d1117] border border-[#30363d] hover:border-[#58a6ff] text-[#e6edf3] px-3 py-1.5 rounded-lg text-sm transition-colors">
+              <i class="pi pi-download"></i>Export
             </button>
-            <button @click="handleStop" class="bg-[#da3633] hover:bg-[#f85149] text-white px-3 py-1.5 rounded text-sm">
-              <i class="pi pi-stop mr-1"></i>Stop
+            <button @click="handleStop" class="flex items-center gap-2 bg-[#da3633] hover:bg-[#f85149] text-white px-3 py-1.5 rounded-lg text-sm transition-colors">
+              <i class="pi pi-stop"></i>Stop
             </button>
           </div>
+        </div>
+        <!-- Breadcrumb -->
+        <div class="px-6 py-2 text-sm text-[#8b949e] border-t border-[#30363d]">
+          web-platform • Session #{{ chat.currentConversation?.id?.substring(0, 4) || '1042' }}
         </div>
       </div>
 

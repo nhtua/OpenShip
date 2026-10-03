@@ -41,9 +41,10 @@ function handleKeydown(event: KeyboardEvent) {
       <button
         @click="handleSend"
         :disabled="disabled || !content.trim()"
-        class="bg-[#238636] hover:bg-[#2ea043] text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+        class="flex items-center gap-2 bg-[#238636] hover:bg-[#2ea043] text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         <i class="pi pi-send"></i>
+        Send
       </button>
     </div>
   </div>

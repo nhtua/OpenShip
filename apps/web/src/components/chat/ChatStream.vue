@@ -10,13 +10,13 @@ defineProps<{
 </script>
 
 <template>
-  <div class="flex-1 overflow-y-auto p-6 space-y-4">
+  <div class="flex-1 overflow-y-auto p-6 space-y-6">
     <template v-for="msg in messages" :key="msg.id || msg.created_at">
       <UserMessage v-if="msg.role === 'user'" :message="msg" />
       <AgentMessage v-else-if="msg.role === 'assistant'" :message="msg" :is-streaming="isStreaming && msg.id === ''" />
     </template>
 
-    <div v-if="isStreaming && !messages.at(-1)?.id" class="flex gap-3">
+    <div v-if="isStreaming && !messages.at(-1)?.id" class="flex gap-4">
       <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center flex-shrink-0">
         <span class="text-white text-xs font-bold">AI</span>
       </div>

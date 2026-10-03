@@ -8,7 +8,7 @@ defineProps<{
 </script>
 
 <template>
-  <div class="flex gap-3">
+  <div class="flex gap-4">
     <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center flex-shrink-0">
       <span class="text-white text-xs font-bold">AI</span>
     </div>
