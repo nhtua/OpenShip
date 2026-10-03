@@ -1,11 +1,26 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
-const email = ref('')
+const router = useRouter()
+const auth = useAuthStore()
+
+const username = ref('')
 const password = ref('')
+const localError = ref<string | null>(null)
 
-function handleLogin() {
-  console.log('Login attempt:', email.value)
+async function handleLogin() {
+  localError.value = null
+  const result = await auth.login({
+    username: username.value,
+    password: password.value,
+  })
+  if (result.success) {
+    router.push('/')
+  } else {
+    localError.value = result.error ?? auth.error
+  }
 }
 </script>
 
@@ -18,14 +33,23 @@ function handleLogin() {
           Enter your credentials to access your account
         </p>
       </div>
+
+      <div
+        v-if="localError || auth.error"
+        class="rounded-md bg-destructive/15 p-3 text-sm text-destructive"
+      >
+        {{ localError ?? auth.error }}
+      </div>
+
       <form @submit.prevent="handleLogin" class="space-y-4">
         <div class="space-y-2">
-          <label class="text-sm font-medium" for="email">Email</label>
+          <label class="text-sm font-medium" for="username">Username</label>
           <input
-            id="email"
-            v-model="email"
-            type="email"
-            placeholder="you@example.com"
+            id="username"
+            name="username"
+            v-model="username"
+            type="text"
+            placeholder="your username"
             class="flex w-full rounded-md border bg-background px-3 py-2 text-sm"
             required
           />
@@ -34,6 +58,7 @@ function handleLogin() {
           <label class="text-sm font-medium" for="password">Password</label>
           <input
             id="password"
+            name="password"
             v-model="password"
             type="password"
             placeholder="••••••••"
@@ -43,9 +68,10 @@ function handleLogin() {
         </div>
         <button
           type="submit"
-          class="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          :disabled="auth.isLoading"
+          class="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
         >
-          Sign In
+          {{ auth.isLoading ? 'Signing in...' : 'Sign In' }}
         </button>
       </form>
       <p class="text-center text-sm text-muted-foreground">
