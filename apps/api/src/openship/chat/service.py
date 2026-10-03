@@ -19,9 +19,10 @@ def _get_or_create_conversation(
             Conversation.id == conversation_id,
             Conversation.user_id == user.id,
         ).first()
-        if not conv:
-            raise ValueError("not_found")
-        return conv
+        if conv:
+            return conv
+        # Unknown conversation_id: create a new one
+        pass
 
     conv = Conversation(
         user_id=user.id,
