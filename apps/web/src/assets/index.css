@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import '@primeuix/themes/primeicons/primeicons.css';
+@import 'primeicons/primeicons.css';
 
 :root {
   --background: 222 47% 11%;    /* #0d1117 */
