@@ -1,12 +1,58 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+import type { RegisterRequest } from '@/types'
 
+const router = useRouter()
+const auth = useAuthStore()
+
+const username = ref('')
 const email = ref('')
 const password = ref('')
 const confirmPassword = ref('')
+const localError = ref<string | null>(null)
 
-function handleRegister() {
-  console.log('Registration attempt:', email.value)
+function validate(): RegisterRequest | null {
+  localError.value = null
+
+  if (!username.value.trim()) {
+    localError.value = 'Username is required'
+    return null
+  }
+
+  if (!email.value.trim() || !/\S+@\S+\.\S+/.test(email.value)) {
+    localError.value = 'A valid email is required'
+    return null
+  }
+
+  if (password.value.length < 8) {
+    localError.value = 'Password must be at least 8 characters'
+    return null
+  }
+
+  if (password.value !== confirmPassword.value) {
+    localError.value = 'Passwords do not match'
+    return null
+  }
+
+  return {
+    username: username.value.trim(),
+    email: email.value.trim(),
+    password: password.value,
+  }
+}
+
+async function handleRegister() {
+  const data = validate()
+  if (!data) return
+
+  const result = await auth.register(data)
+  if (result.success) {
+    router.push('/')
+  } else {
+    localError.value = result.error ?? auth.error
+  }
 }
 </script>
 
@@ -19,11 +65,32 @@ function handleRegister() {
           Sign up to get started with OpenShip
         </p>
       </div>
+
+      <div
+        v-if="localError || auth.error"
+        class="rounded-md bg-destructive/15 p-3 text-sm text-destructive"
+      >
+        {{ localError ?? auth.error }}
+      </div>
+
       <form @submit.prevent="handleRegister" class="space-y-4">
+        <div class="space-y-2">
+          <label class="text-sm font-medium" for="username">Username</label>
+          <input
+            id="username"
+            name="username"
+            v-model="username"
+            type="text"
+            placeholder="choose a username"
+            class="flex w-full rounded-md border bg-background px-3 py-2 text-sm"
+            required
+          />
+        </div>
         <div class="space-y-2">
           <label class="text-sm font-medium" for="email">Email</label>
           <input
             id="email"
+            name="email"
             v-model="email"
             type="email"
             placeholder="you@example.com"
@@ -35,6 +102,7 @@ function handleRegister() {
           <label class="text-sm font-medium" for="password">Password</label>
           <input
             id="password"
+            name="password"
             v-model="password"
             type="password"
             placeholder="••••••••"
@@ -48,6 +116,7 @@ function handleRegister() {
           </label>
           <input
             id="confirmPassword"
+            name="confirmPassword"
             v-model="confirmPassword"
             type="password"
             placeholder="••••••••"
@@ -57,9 +126,10 @@ function handleRegister() {
         </div>
         <button
           type="submit"
-          class="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          :disabled="auth.isLoading"
+          class="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
         >
-          Create Account
+          {{ auth.isLoading ? 'Creating account...' : 'Create Account' }}
         </button>
       </form>
       <p class="text-center text-sm text-muted-foreground">
