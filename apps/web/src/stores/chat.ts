@@ -18,7 +18,7 @@ export const useChatStore = defineStore('chat', () => {
 
   async function getConversations() {
     try {
-      const res = await api.get('/conversations')
+      const res = await api.get('/workspace/conversations')
       conversations.value = res.data as unknown as Conversation[]
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } } }
