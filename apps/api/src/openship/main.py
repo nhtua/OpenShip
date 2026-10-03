@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .auth.routes import router as auth_router
-from .chat.routes import conversations_router, router as chat_router
+from .chat.routes import router as chat_router
 
 app = FastAPI(title="OpenShip API")
 
@@ -26,7 +26,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 app.include_router(auth_router)
 app.include_router(chat_router)
-app.include_router(conversations_router)
 
 
 @app.get("/api/health")
