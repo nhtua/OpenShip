@@ -1,407 +1,145 @@
 # OpenShip
 
-An agentic DevOps co-pilot for developers and platform engineers.
+An agentic DevOps workflow platform where everything is a workflow. OpenShip orchestrates multi-step automation tasks through AI-driven agents — from infrastructure provisioning and debugging to CI/CD and custom business processes. Describe what you need, collaborate with the agent through conversation, and watch it plan, execute, and report — with you in control at every step.
 
-## Features
+## Philosophy
 
-- **Authentication** — User registration and login with JWT tokens (24-hour expiry)
-- **Real-time Chat** — AI-powered conversations via SSE (Server-Sent Events) streaming
-- **Conversation Management** — Multiple conversations with sidebar navigation
-- **Docker Deployment** — Full-stack orchestration with PostgreSQL, FastAPI, and Vue.js
+OpenShip is built on a simple principle: **AI as co-pilot, not replacement**. You articulate the requirements, the agent handles the heavy lifting of design, validation, and execution. You retain control at critical decision points through human-in-the-loop approval cards.
 
-## Quick Start — Docker Compose
+Built by DevOps and platform engineers for software engineers — practical automation tools from people who understand the daily challenges.
 
-The fastest way to run OpenShip locally is with Docker Compose. This starts a PostgreSQL database, the FastAPI backend, and the Vue.js frontend.
+**Self-hosted by design.** You own your data, you control the environment, you choose the AI model provider. No vendor lock-in, no data sent to third-party services unless you explicitly configure it.
 
-### Prerequisites
+## How It Works
 
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/) installed
-- [OpenAI API Key](https://platform.openai.com/api-keys) (optional — app runs without it but shows a configuration message)
+In OpenShip, every automation task is expressed as a workflow — a sequence of steps executed by AI agents using tools and connectors. The system uses two LangGraph workflows that work together:
 
-### Run the Stack
+### Builder Workflow
 
-```bash
-# Build and start all services
-docker compose up --build
+The builder turns natural language descriptions into executable plans:
 
-# Or run in the background
-docker compose up --build -d
-```
+1. **Describe** — Provide a workflow description in markdown (freeform or structured)
+2. **Plan** — The builder uses an LLM to generate a structured execution plan with tool selection
+3. **Validate** — Review the plan through human-in-the-loop approval (approve, reject with feedback, regenerate)
+4. **Compile** — The approved plan is compiled to a LangGraph state machine and cached
 
-This starts three services:
+### Executor Workflow
 
-| Service | Port | Description |
-|---------|------|-------------|
-| **PostgreSQL** | 5432 | Database (data persisted in a named volume) |
-| **API** | 8000 | FastAPI backend with REST and SSE endpoints |
-| **Web** | 8080 | Vue 3 frontend served by Nginx |
+The executor runs compiled workflows with human-in-the-loop at runtime:
 
-Open your browser to **[http://localhost:8080](http://localhost:8080)** to get started.
+1. **Load** — Load a cached compiled workflow by input file hash with integrity verification
+2. **Execute** — Run the workflow steps, invoking tools (shell commands, executables, etc.)
+3. **Interact** — Pause at runtime for human input when needed (e.g., asking questions)
+4. **Report** — Return structured results for each step
 
-### Services
+### Integrity & Drift Detection
 
-- **Register** a new account
-- **Send a chat message** and see streaming AI responses
-- **Manage conversations** from the sidebar
+Compiled workflows are cached as JSON with filename-embedded signatures:
+- **Lookup:** By input file hash (SHA-256 of workflow content)
+- **Verification:** Signature binds input file and cached JSON together
+- **Drift detection:** If either changes, the signature won't match
 
-### API Documentation
+This architecture implements the "everything is a workflow" principle — the agent lifecycle itself (plan → approve → compile → execute) is modeled as LangGraph workflows, not just the user-defined tasks.
 
-When the API is running, interactive docs are available at **[http://localhost:8000/docs](http://localhost:8000/docs)** (Swagger UI) and **[http://localhost:8000/redoc](http://localhost:8000/redoc)** (ReDoc).
+## Where to Start
 
-### Stopping the Stack
+**Read the ideas first.** Understand the project's philosophy, design principles, and roadmap by reading [`docs/ideas.md`](docs/ideas.md). This document captures the core vision, workflow patterns, and architectural decisions.
+
+**Try the Agent.** Run our workflow agent:
 
 ```bash
-docker compose down          # Stop and remove containers
-docker compose down -v       # Stop, remove containers, and delete the database volume
+cd apps/agent
+uv sync  # Install dependencies
+
+# Build: Generate plan, approve, compile, and cache
+uv run python -m src.cli build examples/my-workflow.md
+
+# Execute: Load cached compiled workflow and run
+uv run python -m src.cli execute examples/my-workflow.md
 ```
 
-### Environment Configuration
+See [`apps/agent/examples/`](apps/agent/examples/) for workflow examples.
 
-The `docker-compose.yml` uses these defaults:
-
-| Setting | Value |
-|---------|-------|
-| Database name | `openship` |
-| Database user | `openship` |
-| Database password | `openship` |
-| DATABASE_URL | `postgresql://openship:openship@postgres:5432/openship` |
-| JWT secret | `dev-secret-change-in-production` (change in production) |
-| JWT expiry | 24 hours |
-| OpenAI model | `gpt-4o` |
-
-#### Setting the OpenAI API Key
-
-To enable AI chat responses, set the `OPENAI_API_KEY` environment variable:
+**Explore the mockups.** See the intended user experience through our interactive mockups:
 
 ```bash
-# Via docker-compose.yml
-docker compose up --build -d
-# Or override on the command line:
-OPENAI_API_KEY=sk-xxx docker compose up --build
-```
-
-You can also pass additional environment variables via a `.env` file in the project root:
-
-```env
-OPENAI_API_KEY=sk-your-key-here
-DATABASE_URL=postgresql://openship:openship@postgres:5432/openship
-```
-
----
-
-## Development (Local)
-
-### 1. Database
-
-Create the OpenShip database:
-
-```bash
-createdb -U postgres openship
-```
-
-Or with psql:
-
-```bash
-psql -U postgres -c "CREATE DATABASE openship;"
-```
-
-### 2. Backend
-
-Set up environment variables:
-
-```bash
-cd apps/api
-cp .env.example .env
-# Edit .env to add your OPENAI_API_KEY
-```
-
-Install dependencies and run migrations:
-
-```bash
-uv sync
-uv run alembic upgrade head
-```
-
-Start the API server:
-
-```bash
-uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-The API will be available at **http://localhost:8000**. Interactive docs at **[http://localhost:8000/docs](http://localhost:8000/docs)**.
-
-Run tests:
-
-```bash
-uv run pytest tests/ -v
-```
-
-### 3. Frontend
-
-Install dependencies and start the dev server:
-
-```bash
-cd apps/web
+cd mockup
 pnpm install
 pnpm dev
 ```
 
-The frontend will be available at **http://localhost:5173** (Vite dev server). It proxies `/api` requests to `http://localhost:8000`.
+Open `http://localhost:5173` to see the chat-first interface, agent workspace, and workflow builder designs. These are static demonstrations — no functionality yet.
 
----
+## Open Source Roadmap
 
-## API Reference
+OpenShip is developed in transparent phases:
 
-### Authentication Endpoints
+### 🔴 Current Phase: Addressing Problems & Brainstorming Solutions
 
-#### `POST /api/auth/register`
+We're actively defining the problem space and exploring solution approaches. This phase includes:
 
-Register a new user account.
+- Collecting and validating ideas from real DevOps pain points
+- Designing the agent architecture and workflow orchestration
+- Building UI/UX mockups to demonstrate concepts
+- Selecting the technology stack and building core components
 
-**Request body:**
+**What's available now:** Draft HTML mockups in the [`mockup/`](mockup/) directory that demonstrate the intended UI/UX and interaction patterns. These are static demonstrations — no functionality yet.
 
-```json
-{
-  "username": "string (3-50 chars, required)",
-  "email": "string, valid email (required)",
-  "password": "string (min 8 chars, required)"
-}
-```
+### Upcoming Phases (Planned)
 
-**Success response (201):**
+- **Phase 2:** Core agent implementation with basic workflow execution
+- **Phase 3:** Built-in workflow templates and tool registry
+- **Phase 4:** Expanded tool/connector ecosystem and production deployment
+- **Phase 5:** Community workflow sharing and ecosystem growth
 
-```json
-{
-  "access_token": "eyJ...",
-  "user": {
-    "id": "uuid",
-    "username": "string"
-  }
-}
-```
+## Contributing
 
-**Error responses:**
+OpenShip is in its early days and we'd love your help shaping its future. Here's how to get involved:
 
-| Status | Code | Description |
-|--------|------|-------------|
-| 400 | `username_taken` | Username already exists |
-| 400 | `email_taken` | Email already registered |
-| 422 | validation error | Invalid input data |
+- **⭐ Star the repo** — Let us know you're following the development
+- **💬 Share feedback** — Join discussions on the project's design and features
+- **🐛 Report issues** — Found a bug or have an improvement suggestion? Open an issue
+- **📝 Contribute ideas** — Add your thoughts to [`docs/ideas.md`](docs/ideas.md)
+- **🔨 Submit pull requests** — Help build features, fix bugs, or improve documentation
 
-#### `POST /api/auth/login`
+All contributions are welcome, no matter your experience level. We're building this together.
 
-Authenticate and receive a JWT token.
+### Pre-commit Hooks
 
-**Request body:**
+We use pre-commit hooks to enforce code quality before commits are created. The hooks run `ruff` linting and `pytest` on every commit.
 
-```json
-{
-  "username": "string (required)",
-  "password": "string (required)"
-}
-```
-
-**Success response (200):**
-
-```json
-{
-  "access_token": "eyJ...",
-  "user": {
-    "id": "uuid",
-    "username": "string"
-  }
-}
-```
-
-**Error responses:**
-
-| Status | Code | Description |
-|--------|------|-------------|
-| 401 | `invalid_credentials` | Wrong username or password |
-
-### Chat Endpoints
-
-> All chat endpoints require a `Authorization: Bearer <token>` header.
-
-#### `POST /api/chat/{conversation_id}/messages`
-
-Send a message and receive a streamed AI response via SSE.
-
-- If `conversation_id` doesn't exist, it is auto-created.
-- Response uses `text/event-stream` media type.
-- Each chunk is sent as a JSON event: `{"type": "chunk", "content": "..."}`.
-- The stream ends with `{"type": "complete", "message_id": "..."}` and `data: [DONE]`.
-
-**Request body:**
-
-```json
-{
-  "content": "string (1-10000 chars, required)"
-}
-```
-
-**Success response (200):** Stream of SSE events.
-
-**Error responses:**
-
-| Status | Code | Description |
-|--------|------|-------------|
-| 401 | `unauthorized` | Missing or invalid token |
-| 503 | `api_key_not_configured` | OPENAI_API_KEY not set |
-
-#### `GET /api/conversations`
-
-List all conversations for the authenticated user.
-
-**Success response (200):**
-
-```json
-[
-  {
-    "id": "uuid",
-    "title": "Conversation title",
-    "created_at": "2026-01-01T00:00:00Z",
-    "updated_at": "2026-01-01T00:00:00Z"
-  }
-]
-```
-
-#### `GET /api/health`
-
-Health check endpoint. Returns `{"status": "ok"}`.
-
----
-
-## Testing
-
-### Backend Tests
+To install:
 
 ```bash
-cd apps/api
-uv run pytest tests/ -v
+# From repo root
+apps/agent/.venv/bin/pre-commit install
 ```
 
-Runs unit tests for authentication, chat, and user model functionality.
-
-### Frontend Tests
+To run hooks manually on all files:
 
 ```bash
-cd apps/web
-pnpm exec vitest --run
+apps/agent/.venv/bin/pre-commit run --all-files
 ```
 
-Runs component and view tests for auth pages, chat components, and stores.
-
-### Integration Tests
-
-```bash
-cd apps/api
-uv run pytest tests/test_integration_auth_chat.py -v
-```
-
-End-to-end flow tests: register → login → send messages → list conversations.
-
----
-
-## Project Structure
+## Repository Layout
 
 ```
+openship/
+├── poc/
+│   ├── mockup/             # UI/UX prototypes (static HTML)
+│   └── PLACEHOLDER         # Keeps poc/ from being auto-removed
 ├── apps/
-│   ├── api/                 # FastAPI backend
-│   │   ├── src/openship/    # Application source
-│   │   │   ├── auth/        # Authentication (routes, models, service)
-│   │   │   ├── chat/        # Chat (routes, models, service, LLM)
-│   │   │   ├── database/    # Database session management
-│   │   │   └── config.py    # Application settings
-│   │   ├── tests/           # Test suite (unit + integration)
-│   │   ├── alembic/         # Database migrations
-│   │   ├── Dockerfile       # Container build
-│   │   └── pyproject.toml   # Python dependencies (uv)
-│   └── web/                 # Vue 3 frontend
-│       ├── src/             # Application source
-│       │   ├── components/  # UI components
-│       │   ├── views/       # Page views
-│       │   ├── stores/      # Pinia state stores
-│       │   └── router/      # Vue Router configuration
-│       ├── tests/           # Test suite
-│       ├── Dockerfile       # Container build
-│       └── package.json     # Node dependencies (pnpm)
-├── docker-compose.yml       # Full stack orchestration
-└── README.md                # This file
+│   ├── web/                # Frontend app (Vue.js) — planned
+│   ├── api/                # API service (FastAPI) — planned
+│   └── agent/              # Agent service (graduated from PoC)
+├── packages/
+│   ├── shared/             # Shared Python modules — planned
+│   └── ui/                 # Shared frontend components — planned
+├── docs/                   # Documentation, ideas, and design specs
+├── .pre-commit-config.yaml # Pre-commit hooks for lint and tests
+└── README.md
 ```
-
----
-
-## Troubleshooting
-
-### "AI service is not configured" message
-
-The app requires `OPENAI_API_KEY` to generate AI responses. Without it, the chat endpoint returns a 503 status with a clear message.
-
-**Fix:** Set the environment variable before starting the API:
-
-```bash
-# Docker Compose
-OPENAI_API_KEY=sk-xxx docker compose up --build
-
-# Or via .env file
-echo "OPENAI_API_KEY=sk-your-key" > .env
-docker compose up --build
-```
-
-### Database connection errors
-
-Ensure PostgreSQL is running and accessible:
-
-```bash
-# Check the database container is healthy
-docker compose ps
-
-# View database logs
-docker compose logs postgres
-```
-
-### Port conflicts
-
-If port 8000, 5432, or 8080 is already in use, modify `docker-compose.yml` to change the host port mapping:
-
-```yaml
-ports:
-  - "8001:8000"   # API on 8001 instead of 8000
-```
-
-### JWT token expired
-
-Tokens expire after 24 hours by default. Simply log in again to get a new token.
-
-To change the expiry, set the `JWT_EXPIRY_HOURS` environment variable:
-
-```bash
-JWT_EXPIRY_HOURS=48 docker compose up --build
-```
-
-### Frontend cannot reach the API
-
-The Vite dev server proxies `/api` requests to the backend. Ensure the proxy target in `apps/web/vite.config.ts` matches your backend URL:
-
-```typescript
-server: {
-  proxy: {
-    '/api': 'http://localhost:8000',
-  },
-}
-```
-
----
-
-## Security Notes
-
-- **JWT secret:** The default `dev-secret-change-in-production` is used for development. **Always set a strong, random `JWT_SECRET` in production.**
-- **API key:** Never commit your `OPENAI_API_KEY` to version control. Use environment variables or a secrets manager.
-- **HTTPS:** Docker Compose runs over HTTP locally. Use a reverse proxy (e.g., nginx, Traefik) with TLS for production.
-
----
 
 ## License
 
-MIT — See [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE) for details.
