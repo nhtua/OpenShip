@@ -3,9 +3,8 @@ import type { ChatMessage } from '@/types'
 
 defineProps<{
   message: ChatMessage
+  isStreaming?: boolean
 }>()
-
-const isStreaming = defineModel<boolean>({ default: false })
 </script>
 
 <template>
