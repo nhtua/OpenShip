@@ -2,6 +2,7 @@ import os
 import tempfile
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -40,7 +41,6 @@ def setup_db():
 @pytest.fixture
 def client():
     """Create a FastAPI test client."""
-    from fastapi.testclient import TestClient
     from src.openship.main import app
     return TestClient(app)
 
