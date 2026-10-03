@@ -91,19 +91,44 @@ DATABASE_URL=postgresql://openship:openship@postgres:5432/openship
 
 ## Development (Local)
 
-### Backend
+### 1. Database
+
+Create the OpenShip database:
+
+```bash
+createdb -U postgres openship
+```
+
+Or with psql:
+
+```bash
+psql -U postgres -c "CREATE DATABASE openship;"
+```
+
+### 2. Backend
+
+Set up environment variables:
 
 ```bash
 cd apps/api
+cp .env.example .env
+# Edit .env to add your OPENAI_API_KEY
+```
+
+Install dependencies and run migrations:
+
+```bash
 uv sync
+uv run alembic upgrade head
+```
+
+Start the API server:
+
+```bash
 uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Run migrations before first use:
-
-```bash
-uv run alembic upgrade head
-```
+The API will be available at **http://localhost:8000**. Interactive docs at **[http://localhost:8000/docs](http://localhost:8000/docs)**.
 
 Run tests:
 
@@ -111,7 +136,9 @@ Run tests:
 uv run pytest tests/ -v
 ```
 
-### Frontend
+### 3. Frontend
+
+Install dependencies and start the dev server:
 
 ```bash
 cd apps/web
@@ -119,7 +146,7 @@ pnpm install
 pnpm dev
 ```
 
-The frontend will be available at **http://localhost:5173** (Vite dev server) and proxies API requests to `http://localhost:8000`.
+The frontend will be available at **http://localhost:5173** (Vite dev server). It proxies `/api` requests to `http://localhost:8000`.
 
 ---
 
