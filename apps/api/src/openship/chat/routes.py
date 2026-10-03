@@ -13,11 +13,10 @@ from ..chat.service import _get_or_create_conversation, _stream_response
 from ..config import settings
 from ..database.session import get_db
 
-router = APIRouter(prefix="/api/chat", tags=["chat"])
-conversations_router = APIRouter(tags=["conversations"])
+router = APIRouter(prefix="/api", tags=["chat"])
 
 
-@router.post("/{conversation_id}/messages")
+@router.post("/chat/{conversation_id}/messages")
 async def send_message(
     conversation_id: uuid.UUID,
     req: MessageRequest,
@@ -25,18 +24,7 @@ async def send_message(
     user: User = Depends(require_jwt),
 ):
     # Get or create conversation
-    try:
-        conversation = _get_or_create_conversation(db, user, conversation_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": {
-                    "code": "conversation_not_found",
-                    "message": "Conversation not found",
-                }
-            },
-        )
+    conversation = _get_or_create_conversation(db, user, conversation_id)
 
     # Check API key availability
     if not settings.openai_api_key:
@@ -75,7 +63,7 @@ async def send_message(
     )
 
 
-@conversations_router.get("")
+@router.get("/conversations")
 async def list_conversations(
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
