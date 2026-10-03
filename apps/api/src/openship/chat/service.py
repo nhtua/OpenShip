@@ -70,7 +70,7 @@ def _stream_response(
 
     # Add system prompt
     messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "system", "content": "You are OpenShip, an AI DevOps co-pilot. Help users with infrastructure, deployment, and operations tasks. Be concise and practical."},
         *history,
         {"role": "user", "content": user_content},
     ]
