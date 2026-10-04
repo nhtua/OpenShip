@@ -131,6 +131,11 @@ def upgrade() -> None:
             'fk_messages_run_id', 'runs', ['run_id'], ['id'], ondelete='SET NULL'
         )
 
+    # 8a. Unique constraint: messages unique by (run_id, role) for chat runs
+    op.execute(
+        "CREATE UNIQUE INDEX ix_messages_run_id_role ON messages(run_id, role) WHERE run_id IS NOT NULL"
+    )
+
     # 9. Backfill: Create a default project for each user
     bind = op.get_bind()
     result = bind.execute(sa.text("SELECT id, username FROM users"))
@@ -154,6 +159,9 @@ def upgrade() -> None:
             {"proj_id": proj_id, "owner_id": owner_id},
         )
 
+    # 10a. Index on conversations.project_id
+    op.create_index('ix_conversations_project_id', 'conversations', ['project_id'])
+
     # 11. Make conversations.project_id non-nullable (after backfill)
     with op.batch_alter_table('conversations') as batch_op:
         batch_op.alter_column('project_id', nullable=False)
@@ -161,6 +169,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Reverse order: drop FKs first, then tables
+    op.drop_index('ix_messages_run_id_role')
     with op.batch_alter_table('messages') as batch_op:
         batch_op.drop_constraint('fk_messages_run_id', type_='foreignkey')
         batch_op.drop_column('run_id')
@@ -180,6 +189,7 @@ def downgrade() -> None:
     op.drop_index('ix_runs_project_id')
     op.drop_index('ix_runs_conversation_id')
     op.drop_table('runs')
+    op.drop_index('ix_conversations_project_id')
     with op.batch_alter_table('conversations') as batch_op:
         batch_op.drop_constraint('fk_conversations_project_id', type_='foreignkey')
         batch_op.drop_column('project_id')

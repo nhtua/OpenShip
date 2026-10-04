@@ -49,7 +49,6 @@ def test_send_message(client: TestClient, authorized_client: dict):
 
                 # Parse SSE events
                 text = response.text
-                print(f"RESPONSE TEXT: {text}")
                 events = [
                     line for line in text.strip().split("\n") if line.startswith("data:")
                 ]

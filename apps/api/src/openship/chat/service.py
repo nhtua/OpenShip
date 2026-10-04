@@ -29,6 +29,8 @@ def _get_or_create_conversation(
     project = db.query(Project).filter(
         Project.owner_user_id == user.id
     ).first()
+    if not project:
+        raise ValueError(f"No project found for user {user.id}")
 
     conv = Conversation(
         user_id=user.id,
