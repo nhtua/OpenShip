@@ -2,5 +2,7 @@
 </script>
 
 <template>
-  <RouterView />
+  <div class="min-h-dvh bg-background text-foreground">
+    <RouterView />
+  </div>
 </template>

@@ -1,20 +1,23 @@
 <script setup lang="ts">
-import { cn } from '@/lib/utils'
+import { Label } from 'reka-ui'
 import type { HTMLAttributes } from 'vue'
+import { cn } from '@/lib/utils'
 
-interface Props {
+const props = defineProps<{
   class?: HTMLAttributes['class']
-  for?: string
-}
-
-const props = defineProps<Props>()
+}>()
 </script>
 
 <template>
-  <label
-    :class="cn('text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70', props.class)"
-    :for="for"
+  <Label
+    :class="
+      cn(
+        'text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
+        props.class,
+      )
+    "
+    v-bind="$attrs"
   >
     <slot />
-  </label>
+  </Label>
 </template>

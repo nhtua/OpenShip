@@ -48,10 +48,16 @@ describe('Tailwind v4 CSS generation', () => {
 
     const css = collectCss(result)
 
-    // Semantic color classes generated via @theme inline { --color-* }
-    expect(css).toMatch(/\.bg-background\s*\{[^}]*background-color/)
-    expect(css).toMatch(/\.text-foreground\s*\{[^}]*color/)
-    expect(css).toMatch(/\.bg-primary\s*\{[^}]*background-color/)
-    expect(css).toMatch(/\.text-primary\s*\{[^}]*color/)
+    // Semantic color classes must resolve to the semantic variables
+    // (:root/.dark token pairs mapped through @theme inline), never to
+    // raw HSL channels or hard-coded values.
+    // Note: v4 groups utilities into selector lists (".bg-background, .bg-background\/80 {"),
+    // so the pattern tolerates selectors after the class before the brace.
+    expect(css).toMatch(/\.bg-background[^{]*\{[^}]*var\(--background\)/)
+    expect(css).toMatch(/\.text-foreground[^{]*\{[^}]*var\(--foreground\)/)
+    expect(css).toMatch(/\.bg-primary(?!-foreground)[^{]*\{[^}]*var\(--primary\)/)
+    expect(css).toMatch(/\.text-primary(?!-foreground)[^{]*\{[^}]*var\(--primary\)/)
+    // The raw-HSL-channel regression (background-color:222 47% 11%) must be gone.
+    expect(css).not.toMatch(/background-color:\s*\d+\s+\d+%?\s+\d+%?/)
   }, 60_000)
 })
