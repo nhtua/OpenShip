@@ -158,6 +158,8 @@ export async function mockApi(
     messages = E2E_MESSAGES,
   } = options
 
+  let sentMessages: { conversation_id: string; content: string }[] = []
+
   const json = (route: Route, status: number, body: unknown): Promise<void> =>
     route.fulfill({
       status,
@@ -206,11 +208,34 @@ export async function mockApi(
     const id = decodeURIComponent(
       url.split('/conversations/')[1]?.split('/')[0] ?? '',
     )
+    console.log('FIXTURE: messages requested for', id, 'sentMessages:', sentMessages.length)
     if (conversationMessagesStatus !== 200) {
       return json(route, conversationMessagesStatus, {
         detail: 'Conversation not found',
       })
     }
+    // If a message was sent to this conversation, include the assistant response
+    const sent = sentMessages.find((s) => s.conversation_id === id)
+    if (sent) {
+      const msgs = messages[id] ? [...messages[id]] : []
+      msgs.push({
+        id: 'msg-user-e2e',
+        role: 'user',
+        content: sent.content,
+        conversation_id: id,
+        created_at: new Date().toISOString(),
+      })
+      msgs.push({
+        id: 'msg-assistant-1',
+        role: 'assistant',
+        content: 'Hello world',
+        conversation_id: id,
+        created_at: new Date().toISOString(),
+      })
+      console.log('FIXTURE: returning messages with assistant response')
+      return json(route, 200, msgs)
+    }
+    console.log('FIXTURE: returning base messages')
     return json(route, 200, messages[id] ?? [])
   })
 
@@ -223,6 +248,33 @@ export async function mockApi(
       status: 200,
       contentType: 'text/event-stream',
       body: sseBody(sseChunks, sseMessageId),
+    })
+  })
+
+  // Durable run command endpoint (return error to force legacy fallback)
+  await page.route('**/api/runs/*/turns', (route) => {
+    return json(route, 500, { error: { code: 'server_error', message: 'Durable runs unavailable' } })
+  })
+
+  // Durable event snapshot endpoint
+  await page.route('**/api/conversations/*/snapshot', (route) => {
+    return json(route, 200, {
+      conversation_id: 'c1',
+      sequence: -1,
+      events: [],
+    })
+  })
+
+  // Durable event stream endpoint (emit run.succeeded after a delay)
+  await page.route('**/api/conversations/*/events/stream', async (route) => {
+    console.log('FIXTURE: event stream requested')
+    // Send a run.succeeded event after a brief delay to simulate completion
+    await new Promise((r) => setTimeout(r, 500))
+    console.log('FIXTURE: sending run.succeeded event')
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: 'data: {"id":"evt-succ-1","sequence":1,"type":"run.succeeded","payload":{"message_id":"msg-assistant-1"}}\n\n',
     })
   })
 }

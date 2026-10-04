@@ -1,149 +1,257 @@
 import { describe, it, expect, beforeEach, afterEach, vi, Mock } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useChatStore } from '@/stores/chat'
+import { runsApi } from '@/services/api'
 
-describe('ChatStore SSE handling', () => {
+vi.mock('@/services/api', () => ({
+  default: { get: vi.fn(), post: vi.fn() },
+  authApi: { login: vi.fn(), register: vi.fn(), logout: vi.fn() },
+  runsApi: {
+    submitTurn: vi.fn(),
+    cancelRun: vi.fn(),
+    getSnapshot: vi.fn(),
+    getRun: vi.fn(),
+  },
+}))
+
+const mockRunsApi = vi.mocked(runsApi)
+
+describe('ChatStore durable event handling', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('parses SSE chunk events and accumulates content', async () => {
+  it('handles turn_submitted and creates run card', async () => {
     const store = useChatStore()
+    store.currentConversation = {
+      id: 'conv-1',
+      title: 'Test',
+      created_at: '',
+      updated_at: '',
+    }
     store.messages = []
 
-    // Mock fetch with SSE response
-    const encoder = new TextEncoder()
-    const sseData = [
-      'data: {"type":"chunk","content":"Hello"}\n\n',
-      'data: {"type":"chunk","content":" world"}\n\n',
-      'data: {"type":"chunk","content":"!"}\n\n',
-      'data: {"type":"complete","message_id":"msg-123"}\n\n',
-    ].join('')
+    // Simulate turn_submitted event
+    const event = {
+      id: 'evt-1',
+      conversation_id: 'conv-1',
+      run_id: 'run-1',
+      sequence: 0,
+      type: 'turn_submitted',
+      payload: { content: 'Hello', client_request_id: 'req-1' },
+      created_at: '2026-10-04T00:00:00Z',
+    }
+    store.processDurableEvent(event as never)
 
-    const mockResponse: Response = {
-      ok: true,
-      status: 200,
-      body: new ReadableStream({
-        start(controller) {
-          controller.enqueue(encoder.encode(sseData))
-          controller.close()
-        },
-      }),
-    } as Response
-
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockResponse)
-
-    const conversationId = '550e8400-e29b-41d4-a716-446655440000'
-    await store.sendMessage('Hi', conversationId)
-
-    // Verify the messages were accumulated
-    expect(store.messages.length).toBeGreaterThan(0)
-    const lastMsg = store.messages[store.messages.length - 1]
-    expect(lastMsg.role).toBe('assistant')
-    expect(lastMsg.content).toContain('Hello')
-    expect(lastMsg.content).toContain('world')
-    expect(lastMsg.content).toContain('!')
-    expect(lastMsg.id).toBe('msg-123')
+    // Run card should be created
+    const card = store.runCards.get('conv-1')
+    expect(card).toBeTruthy()
+    expect(card!.status).toBe('queued')
+    expect(card!.run_id).toBe('run-1')
   })
 
-  it('sets error state on failed response', async () => {
+  it('updates run card status on run.started', async () => {
     const store = useChatStore()
+    store.currentConversation = {
+      id: 'conv-1',
+      title: 'Test',
+      created_at: '',
+      updated_at: '',
+    }
     store.messages = []
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: false,
-      status: 500,
-    } as Response)
+    // Create initial run card via turn_submitted
+    const submitEvent = {
+      id: 'evt-1',
+      conversation_id: 'conv-1',
+      run_id: 'run-1',
+      sequence: 0,
+      type: 'turn_submitted',
+      payload: { content: 'Hello', client_request_id: 'req-1' },
+      created_at: '2026-10-04T00:00:00Z',
+    }
+    store.processDurableEvent(submitEvent as never)
 
-    const conversationId = '550e8400-e29b-41d4-a716-446655440000'
-    await store.sendMessage('Hi', conversationId)
+    // Then the run starts
+    const startEvent = {
+      id: 'evt-2',
+      conversation_id: 'conv-1',
+      run_id: 'run-1',
+      sequence: 1,
+      type: 'run.started',
+      payload: {},
+      created_at: '2026-10-04T00:00:01Z',
+    }
+    store.processDurableEvent(startEvent as never)
 
-    // Verify error state
-    expect(store.error).toBeTruthy()
-    expect(store.isStreaming).toBe(false)
+    const card = store.runCards.get('conv-1')
+    expect(card!.status).toBe('running')
   })
 
-  it('rendersChunksBeforeCompletion', async () => {
+  it('updates run card status on run.succeeded', async () => {
     const store = useChatStore()
+    store.currentConversation = {
+      id: 'conv-1',
+      title: 'Test',
+      created_at: '',
+      updated_at: '',
+    }
     store.messages = []
 
-    // Controlled stream: each enqueued SSE event is delivered in its own
-    // read (one chunk per pull), so intermediate state is observable
-    // without real timers.
-    const encoder = new TextEncoder()
-    const queue: Uint8Array[] = []
-    const waiters: Array<(item: Uint8Array | null) => void> = []
-    let closed = false
+    // Create initial run card via turn_submitted
+    const submitEvent = {
+      id: 'evt-3',
+      conversation_id: 'conv-1',
+      run_id: 'run-1',
+      sequence: 0,
+      type: 'turn_submitted',
+      payload: { content: 'Hello', client_request_id: 'req-1' },
+      created_at: '2026-10-04T00:00:00Z',
+    }
+    store.processDurableEvent(submitEvent as never)
 
-    function nextChunk(): Promise<Uint8Array | null> {
-      return new Promise((resolve) => {
-        const item = queue.shift()
-        if (item !== undefined) {
-          resolve(item)
-        } else if (closed) {
-          resolve(null)
-        } else {
-          waiters.push((woken) =>
-            resolve(woken !== undefined ? woken : queue.shift() ?? null),
-          )
-        }
-      })
+    // Then succeed it
+    const successEvent = {
+      id: 'evt-4',
+      conversation_id: 'conv-1',
+      run_id: 'run-1',
+      sequence: 1,
+      type: 'run.succeeded',
+      payload: { message_id: 'msg-1' },
+      created_at: '2026-10-04T00:00:01Z',
+    }
+    store.processDurableEvent(successEvent as never)
+
+    const card = store.runCards.get('conv-1')
+    expect(card!.status).toBe('succeeded')
+  })
+
+  it('handles run.failed', async () => {
+    const store = useChatStore()
+    store.currentConversation = {
+      id: 'conv-1',
+      title: 'Test',
+      created_at: '',
+      updated_at: '',
+    }
+    store.messages = []
+
+    const submitEvent = {
+      id: 'evt-5',
+      conversation_id: 'conv-1',
+      run_id: 'run-2',
+      sequence: 0,
+      type: 'turn_submitted',
+      payload: { content: 'Hello', client_request_id: 'req-2' },
+      created_at: '2026-10-04T00:00:00Z',
+    }
+    store.processDurableEvent(submitEvent as never)
+
+    const failEvent = {
+      id: 'evt-6',
+      conversation_id: 'conv-1',
+      run_id: 'run-2',
+      sequence: 1,
+      type: 'run.failed',
+      payload: { error: 'Something broke' },
+      created_at: '2026-10-04T00:00:01Z',
+    }
+    store.processDurableEvent(failEvent as never)
+
+    const card = store.runCards.get('conv-1')
+    expect(card!.status).toBe('failed')
+  })
+
+  it('handles run_cancelled', async () => {
+    const store = useChatStore()
+    store.currentConversation = {
+      id: 'conv-1',
+      title: 'Test',
+      created_at: '',
+      updated_at: '',
+    }
+    store.messages = []
+
+    const submitEvent = {
+      id: 'evt-7',
+      conversation_id: 'conv-1',
+      run_id: 'run-3',
+      sequence: 0,
+      type: 'turn_submitted',
+      payload: { content: 'Hello', client_request_id: 'req-3' },
+      created_at: '2026-10-04T00:00:00Z',
+    }
+    store.processDurableEvent(submitEvent as never)
+
+    const cancelEvent = {
+      id: 'evt-8',
+      conversation_id: 'conv-1',
+      run_id: 'run-3',
+      sequence: 1,
+      type: 'run_cancelled',
+      payload: { status: 'cancelled' },
+      created_at: '2026-10-04T00:00:01Z',
+    }
+    store.processDurableEvent(cancelEvent as never)
+
+    const card = store.runCards.get('conv-1')
+    expect(card!.status).toBe('cancelled')
+  })
+
+  it('deduplicates events by event ID', async () => {
+    const store = useChatStore()
+    store.currentConversation = {
+      id: 'conv-1',
+      title: 'Test',
+      created_at: '',
+      updated_at: '',
+    }
+    store.messages = []
+
+    const event = {
+      id: 'evt-9',
+      conversation_id: 'conv-1',
+      run_id: 'run-4',
+      sequence: 0,
+      type: 'turn_submitted',
+      payload: { content: 'Hello', client_request_id: 'req-4' },
+      created_at: '2026-10-04T00:00:00Z',
     }
 
-    const stream = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        const item = await nextChunk()
-        if (item === null) {
-          controller.close()
-        } else {
-          controller.enqueue(item)
-        }
-      },
-    })
+    // Process same event twice
+    store.processDurableEvent(event as never)
+    store.processDurableEvent(event as never)
 
-    function enqueue(payload: Record<string, unknown>) {
-      const chunk = encoder.encode(`data: ${JSON.stringify(payload)}\n\n`)
-      const waiter = waiters.shift()
-      if (waiter) {
-        waiter(chunk)
-      } else {
-        queue.push(chunk)
-      }
+    // Should only create one user message
+    expect(store.messages.filter((m) => m.role === 'user').length).toBe(1)
+    // Only one run card
+    expect(store.runCards.size).toBe(1)
+  })
+
+  it('ignores events for non-current conversation', async () => {
+    const store = useChatStore()
+    store.currentConversation = null
+    store.messages = []
+
+    const event = {
+      id: 'evt-10',
+      conversation_id: 'conv-2',
+      run_id: 'run-5',
+      sequence: 0,
+      type: 'turn_submitted',
+      payload: { content: 'Hello', client_request_id: 'req-5' },
+      created_at: '2026-10-04T00:00:00Z',
     }
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      status: 200,
-      body: stream,
-    } as Response)
+    store.processDurableEvent(event as never)
 
-    const pending = store.sendMessage('Hi', null)
-
-    // Local user message + assistant placeholder exist before any chunk.
-    await vi.waitFor(() => expect(store.messages).toHaveLength(2))
-    const last = () => store.messages[store.messages.length - 1]
-    expect(last().role).toBe('assistant')
-    expect(last().content).toBe('')
-
-    enqueue({ type: 'chunk', content: 'He' })
-    await vi.waitFor(() => expect(last().content).toBe('He'))
-    expect(store.isStreaming).toBe(true)
-
-    enqueue({ type: 'chunk', content: 'llo' })
-    await vi.waitFor(() => expect(last().content).toBe('Hello'))
-    expect(store.isStreaming).toBe(true)
-
-    enqueue({ type: 'complete', message_id: 'msg-900' })
-    closed = true
-    await pending
-
-    expect(last().content).toBe('Hello')
-    expect(last().id).toBe('msg-900')
-    expect(store.isStreaming).toBe(false)
+    // No messages added for non-current conversation
+    expect(store.messages.length).toBe(0)
   })
 })

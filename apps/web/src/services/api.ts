@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AuthResponse } from '@/types'
+import type { AuthResponse, Run, Snapshot, TurnSubmitRequest } from '@/types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -38,6 +38,24 @@ export const authApi = {
     api.post('/auth/register', { username, email, password }),
 
   logout: (): Promise<void> => api.post('/auth/logout'),
+}
+
+// Durable run commands
+export const runsApi = {
+  submitTurn: (
+    conversationId: string,
+    request: TurnSubmitRequest,
+  ): Promise<{ data: Run }> =>
+    api.post(`/runs/${conversationId}/turns`, request),
+
+  cancelRun: (runId: string): Promise<{ data: Run }> =>
+    api.post(`/runs/${runId}/cancel`, {}),
+
+  getSnapshot: (conversationId: string): Promise<{ data: Snapshot }> =>
+    api.get(`/conversations/${conversationId}/snapshot`),
+
+  getRun: (runId: string): Promise<{ data: Run }> =>
+    api.get(`/runs/${runId}`),
 }
 
 export default api

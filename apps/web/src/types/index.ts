@@ -41,6 +41,7 @@ export interface SendMessageRequest {
   conversation_id?: string | null
 }
 
+// Legacy SSE events (still emitted by the adapter)
 export interface SSEChunkEvent {
   type: 'chunk'
   content: string
@@ -68,6 +69,48 @@ export interface SSEMessageUpdatedEvent {
   content: string
 }
 
-export type SSEEvent = SSEChunkEvent | SSECompleteEvent | SSEConversationCreatedEvent | SSETitleUpdatedEvent | SSEMessageUpdatedEvent
+export type SSEEvent =
+  | SSEChunkEvent
+  | SSECompleteEvent
+  | SSEConversationCreatedEvent
+  | SSETitleUpdatedEvent
+  | SSEMessageUpdatedEvent
 
+// Durable run types
+export interface Run {
+  id: string
+  conversation_id: string
+  status: 'created' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'stale'
+  created_at: string
+  attempt: number
+}
 
+export interface RunCard {
+  run_id: string
+  status: string
+  started_at: string | null
+  ended_at: string | null
+  usage: string | null
+  error_code: string | null
+}
+
+export interface TurnSubmitRequest {
+  content: string
+  client_request_id: string
+}
+
+export interface DurableEvent {
+  id: string
+  conversation_id: string
+  run_id: string | null
+  sequence: number
+  type: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export interface Snapshot {
+  conversation_id: string
+  sequence: number
+  events: DurableEvent[]
+}
