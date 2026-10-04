@@ -26,7 +26,7 @@ export default defineConfig({
   webServer: {
     command: isPreview
       ? 'pnpm preview --host 127.0.0.1 --port 4173 --strictPort'
-      : 'pnpm dev --host 127.0.0.1 --port 4173 --strictPort',
+      : 'E2E=1 pnpm dev --host 127.0.0.1 --port 4173 --strictPort',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: false,
     timeout: 180_000,

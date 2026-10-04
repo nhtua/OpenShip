@@ -1,4 +1,5 @@
 # Phase 1 UI Repair Implementation Plan
+
 **Type:** plan
 **Summary:** Repair the Tailwind v4 styling pipeline, adopt the shadcn-vue-admin shell with PrimeIcons, and restore authenticated-chat behavior.
 **Date:** 2026-10-03
@@ -182,7 +183,7 @@ Read the relevant reference files completely before adapting them. Preserve MIT 
 Store **complete CSS colors** (hex below), not bare HSL channels. `@theme inline` maps `--color-<name>: var(--<name>)`; do not wrap these hex variables in `hsl()`.
 
 | Token | Light `:root` | Dark `.dark` |
-|---|---|---|
+| --- | --- | --- |
 | background | `#ffffff` | `#0d1117` |
 | foreground | `#1f2328` | `#e6edf3` |
 | card / popover | `#ffffff` | `#161b22` |
@@ -214,7 +215,7 @@ Light/dark contrast must be checked in a browser; token border color alone is no
 Full file paths below are relative to the worktree root; shortened `src/` and tooling paths in the responsibility table are relative to `apps/web`. Commands within tasks run from `apps/web` unless stated otherwise.
 
 | Files | Responsibility |
-|---|---|
+| --- | --- |
 | `src/assets/index.css`, `src/main.ts`, `index.html`, `src/App.vue` | One v4 CSS entry point, shared tokens, root theme/height setup |
 | `src/lib/utils.ts`, `src/components/ui/*`, `components.json` | Local shadcn-vue primitives and class merging |
 | `src/components/common/Icon.vue`, `src/components/common/icons.ts` | Typed PrimeIcons names, consistent size, decorative semantics |
