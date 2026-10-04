@@ -1,51 +1,79 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
+import { Button, Icon, Label, Textarea } from '@/components/ui'
 
-const props = defineProps<{
-  disabled: boolean
-}>()
+const props = withDefaults(defineProps<{ disabled?: boolean }>(), {
+  disabled: false,
+})
 
 const emit = defineEmits<{
   send: [content: string]
 }>()
 
 const content = ref('')
+const textareaRef = ref<InstanceType<typeof Textarea> | null>(null)
 
-function handleSend() {
+// Grow to content, capped at 192px (max-h-48), then scroll internally.
+function grow() {
+  const el = textareaRef.value?.$el as HTMLElement | undefined
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, 192)}px`
+}
+
+async function handleSend() {
+  if (props.disabled) return
   const text = content.value.trim()
-  if (text && !props.disabled) {
-    emit('send', text)
-    content.value = ''
-  }
+  if (!text) return
+  emit('send', text)
+  content.value = ''
+  await nextTick()
+  grow()
 }
 
 function handleKeydown(event: KeyboardEvent) {
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault()
-    handleSend()
-  }
+  if (event.key !== 'Enter' || event.shiftKey) return
+  // IME composition (event.isComposing, keyCode 229 compatibility) never
+  // submits; the composing Enter confirms the composition instead.
+  if (event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  void handleSend()
 }
 </script>
 
 <template>
-  <div class="border-t border-[#30363d] p-4 bg-[#161b22]">
-    <div class="flex gap-3">
-      <textarea
-        v-model="content"
-        :disabled="disabled"
-        placeholder="Adjust parameters, ask questions, or approve..."
-        class="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-4 py-3 text-sm text-[#e6edf3] placeholder-[#8b949e] focus:outline-none focus:ring-2 focus:ring-[#58a6ff] resize-none"
-        rows="1"
-        @keydown="handleKeydown"
-      ></textarea>
-      <button
-        @click="handleSend"
-        :disabled="disabled || !content.trim()"
-        class="flex items-center gap-2 bg-[#238636] hover:bg-[#2ea043] text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+  <form
+    class="shrink-0 border-t border-border bg-card p-4"
+    data-testid="composer"
+    @submit.prevent="handleSend"
+  >
+    <div class="flex items-end gap-3">
+      <div class="min-w-0 flex-1">
+        <Label for="message" class="sr-only">Message</Label>
+        <Textarea
+          ref="textareaRef"
+          v-model="content"
+          id="message"
+          name="message"
+          rows="1"
+          :disabled="props.disabled"
+          placeholder="Message the agent..."
+          class="min-h-[38px] max-h-48 resize-none overflow-y-auto py-2"
+          @keydown="handleKeydown"
+          @input="grow"
+        />
+      </div>
+      <Button
+        type="submit"
+        :disabled="props.disabled || !content.trim()"
+        class="h-[38px] shrink-0"
       >
-        <i class="pi pi-send"></i>
-        Send
-      </button>
+        <Icon name="send" />
+        {{ props.disabled ? 'Streaming...' : 'Send' }}
+      </Button>
     </div>
-  </div>
+    <p class="mt-1 text-xs text-muted-foreground">
+      Enter to send · Shift+Enter for a new line
+    </p>
+  </form>
 </template>
