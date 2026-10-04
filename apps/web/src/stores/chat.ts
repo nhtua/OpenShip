@@ -43,13 +43,16 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadConversation(conversationId: string) {
     try {
+      // Fetch messages BEFORE swapping the displayed conversation so a
+      // failed load keeps the previous selection intact (plan Task 5.4).
+      const res = await api.get(`/conversations/${conversationId}/messages`)
+      const known = conversations.value.find((c) => c.id === conversationId)
       currentConversation.value = {
         id: conversationId,
-        title: '',
-        created_at: '',
-        updated_at: '',
+        title: known?.title || 'Conversation',
+        created_at: known?.created_at ?? '',
+        updated_at: known?.updated_at ?? '',
       }
-      const res = await api.get(`/conversations/${conversationId}/messages`)
       messages.value = res.data as unknown as ChatMessage[]
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } } }

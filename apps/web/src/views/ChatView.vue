@@ -1,154 +1,143 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Button,
+} from '@/components/ui'
 
+const router = useRouter()
 const auth = useAuthStore()
 const chat = useChatStore()
-const newConvTitle = ref('')
-const showNewConv = ref(false)
-const searchQuery = ref('')
-const showNotifications = ref(false)
 
-function handleLogout() {
-  auth.logout()
+// View-local async state (plan Task 5.3): released in finally blocks.
+const isLoadingConversations = ref(false)
+const isCreatingConversation = ref(false)
+const isLoadingConversation = ref(false)
+// Driven from the resulting store error, never inferred from an empty list.
+const historyLoadFailed = ref(false)
+
+const busy = computed(
+  () =>
+    chat.isStreaming ||
+    isCreatingConversation.value ||
+    isLoadingConversation.value,
+)
+
+const title = computed(
+  () => chat.currentConversation?.title || 'New Conversation',
+)
+
+async function loadHistory() {
+  isLoadingConversations.value = true
+  historyLoadFailed.value = false
+  chat.error = null
+  await chat.getConversations()
+  historyLoadFailed.value = chat.error !== null
+  isLoadingConversations.value = false
 }
 
-async function handleSend(content: string) {
-  const convId = chat.currentConversation?.id ?? null
-  await chat.sendMessage(content, convId)
-}
-
-async function handleNewConversation() {
-  const title = newConvTitle.value.trim() || 'New Conversation'
-  const conv = await chat.createConversation(title)
-  if (conv) {
-    chat.loadConversation(conv.id)
-    showNewConv.value = false
-    newConvTitle.value = ''
+async function loadConversationById(id: string) {
+  isLoadingConversation.value = true
+  try {
+    await chat.loadConversation(id)
+  } finally {
+    isLoadingConversation.value = false
   }
 }
 
-function selectConversation(convId: string) {
-  chat.loadConversation(convId)
+async function handleCreateConversation(newTitle: string) {
+  if (busy.value) return
+  isCreatingConversation.value = true
+  chat.error = null
+  try {
+    const conv = await chat.createConversation(newTitle)
+    if (conv) {
+      await loadConversationById(conv.id)
+    }
+  } finally {
+    isCreatingConversation.value = false
+  }
 }
 
-function handleExport() {
-  // TODO: Export conversation
+async function handleSelectConversation(id: string) {
+  if (busy.value || id === chat.currentConversation?.id) return
+  chat.error = null
+  await loadConversationById(id)
 }
 
-function handleStop() {
-  // TODO: Stop current streaming
+async function handleSend(content: string) {
+  if (busy.value) return
+  chat.error = null
+  await chat.sendMessage(content, chat.currentConversation?.id ?? null)
 }
 
-const navItems = [
-  { icon: 'pi-home', label: 'Home', active: true },
-  { icon: 'pi-plus', label: 'New Project' },
-  { icon: 'pi-comments', label: 'Agent Workspace', active: true },
-  { icon: 'pi-sitemap', label: 'Workflow Builder' },
-  { icon: 'pi-th-large', label: 'Tool Registry' },
-  { icon: 'pi-link', label: 'Connectors' },
-]
+function dismissError() {
+  chat.error = null
+  historyLoadFailed.value = false
+}
+
+async function handleSignOut() {
+  auth.logout()
+  chat.clearMessages()
+  chat.conversations = []
+  chat.error = null
+  historyLoadFailed.value = false
+  await router.replace({ name: 'login' })
+}
 
 onMounted(() => {
-  chat.getConversations()
+  void loadHistory()
 })
 </script>
 
 <template>
-  <div class="flex h-screen bg-[#0d1117] text-[#e6edf3]">
-    <!-- Sidebar -->
-    <aside class="w-64 bg-[#161b22] border-r border-[#30363d] flex flex-col">
-      <!-- App Logo -->
-      <div class="p-4 border-b border-[#30363d]">
-        <div class="flex items-center gap-2">
-          <div class="w-8 h-8 bg-[#58a6ff] rounded-lg flex items-center justify-center">
-            <i class="pi pi-anchor text-white text-sm"></i>
-          </div>
-          <span class="font-semibold text-[#e6edf3]">OpenShip</span>
+  <AppLayout
+    :title="title"
+    :is-streaming="chat.isStreaming"
+    :username="auth.user?.username ?? null"
+    :conversations="chat.conversations"
+    :current-conversation-id="chat.currentConversation?.id ?? null"
+    :busy="busy"
+    @create-conversation="handleCreateConversation"
+    @select-conversation="handleSelectConversation"
+    @sign-out="handleSignOut"
+  >
+    <!-- Error banner lives outside the stream's scrolling content so a
+         failure never disappears below the history. -->
+    <div v-if="chat.error" class="shrink-0 px-4 pt-4 md:px-6">
+      <Alert variant="destructive">
+        <AlertTitle>Something went wrong</AlertTitle>
+        <AlertDescription>{{ chat.error }}</AlertDescription>
+        <div class="mt-3 flex gap-2">
+          <Button
+            v-if="historyLoadFailed"
+            size="sm"
+            @click="loadHistory"
+          >
+            Retry
+          </Button>
+          <Button size="sm" variant="outline" @click="dismissError">
+            Dismiss
+          </Button>
         </div>
-      </div>
+      </Alert>
+    </div>
 
-      <!-- Workspace Selector -->
-      <div class="p-3">
-        <select class="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-[#e6edf3] focus:outline-none focus:ring-2 focus:ring-[#58a6ff]">
-          <option>web-platform</option>
-          <option>staging-env</option>
-          <option>prod-infra</option>
-        </select>
-      </div>
-
-      <!-- Navigation -->
-      <nav class="flex-1 p-2 space-y-1">
-        <div
-          v-for="item in navItems"
-          :key="item.label"
-          :class="[
-            'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer',
-            item.active
-              ? 'bg-[#0d1117] text-[#e6edf3]'
-              : 'text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3]'
-          ]"
-        >
-          <i :class="['pi', item.icon, item.active ? 'text-[#58a6ff]' : '']"></i>
-          {{ item.label }}
-        </div>
-      </nav>
-
-      <!-- Settings -->
-      <div class="p-3 border-t border-[#30363d]">
-        <button @click="handleLogout" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#8b949e] hover:bg-[#0d1117] hover:text-[#e6edf3] transition-colors">
-          <i class="pi pi-sign-out"></i>
-          Sign Out
-        </button>
-      </div>
-    </aside>
-
-    <!-- Main Chat Area -->
-    <main class="flex-1 flex flex-col">
-      <!-- Header -->
-      <div class="border-b border-[#30363d] bg-[#161b22]">
-        <!-- Top bar -->
-        <div class="flex items-center justify-between px-6 py-3">
-          <div class="flex items-center gap-4">
-            <div class="flex items-center gap-2">
-              <h1 class="text-lg font-semibold text-[#e6edf3]">
-                {{ chat.currentConversation?.title || 'Provision & Build' }}
-              </h1>
-              <span class="flex items-center gap-2 text-sm text-green-400">
-                <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-                Running
-              </span>
-            </div>
-          </div>
-          <div class="flex items-center gap-3">
-            <button @click="handleExport" class="flex items-center gap-2 bg-[#0d1117] border border-[#30363d] hover:border-[#58a6ff] text-[#e6edf3] px-3 py-1.5 rounded-lg text-sm transition-colors">
-              <i class="pi pi-download"></i>Export
-            </button>
-            <button @click="handleStop" class="flex items-center gap-2 bg-[#da3633] hover:bg-[#f85149] text-white px-3 py-1.5 rounded-lg text-sm transition-colors">
-              <i class="pi pi-stop"></i>Stop
-            </button>
-          </div>
-        </div>
-        <!-- Breadcrumb -->
-        <div class="px-6 py-2 text-sm text-[#8b949e] border-t border-[#30363d]">
-          web-platform • Session #{{ chat.currentConversation?.id?.substring(0, 4) || '1042' }}
-        </div>
-      </div>
-
-      <!-- Chat Stream -->
+    <div class="flex min-h-0 flex-1 flex-col" data-testid="chat-main">
       <ChatStream
         :messages="chat.messages"
         :is-streaming="chat.isStreaming"
+        data-testid="stream"
       />
-
-      <!-- Chat Input -->
-      <ChatInput
-        :disabled="chat.isStreaming"
-        @send="handleSend"
-      />
-    </main>
-  </div>
+      <ChatInput :disabled="busy" data-testid="composer" @send="handleSend" />
+    </div>
+  </AppLayout>
 </template>

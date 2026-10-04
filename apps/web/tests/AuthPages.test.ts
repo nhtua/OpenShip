@@ -2,10 +2,21 @@ import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { describe, test, expect, beforeEach, vi } from 'vitest'
 import LoginView from '@/views/LoginView.vue'
 import RegisterView from '@/views/RegisterView.vue'
 import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
+import api from '@/services/api'
+import { mountWithRouter } from './helpers/mountWithRouter'
+import { healthyChatApiGet } from './helpers/chatFixtures'
+
+vi.mock('@/services/api', () => ({
+  default: { get: vi.fn(), post: vi.fn() },
+  authApi: { login: vi.fn(), register: vi.fn(), logout: vi.fn() },
+}))
+
+const mockApi = vi.mocked(api)
 
 // Minimal router for testing
 function createTestRouter() {
@@ -129,26 +140,32 @@ describe('RegisterView', () => {
 
 describe('ChatView', () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+    mockApi.get.mockImplementation(
+      (async (url: string) => healthyChatApiGet(url)) as never,
+    )
+    mockApi.post.mockResolvedValue({ data: null })
   })
 
-  test('renders new conversation button', () => {
-    const wrapper = mount(ChatView)
+  test('renders new conversation button', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
     expect(wrapper.text()).toContain('New Conversation')
   })
 
-  test('shows logout button when user is logged in', () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
+  test('shows logout button when user is logged in', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
     const auth = useAuthStore()
     auth.user = { id: '1', username: 'testuser', email: 'test@example.com' }
     auth.token = 'test-token'
-    const wrapper = mount(ChatView)
+    await nextTick()
     expect(wrapper.text()).toContain('testuser')
+    expect(wrapper.text()).toContain('Sign Out')
   })
 
-  test('renders chat stream area', () => {
-    const wrapper = mount(ChatView)
+  test('renders chat stream area', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    await nextTick()
     expect(wrapper.text()).toContain('Start a conversation')
   })
 })
