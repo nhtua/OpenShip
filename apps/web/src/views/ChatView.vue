@@ -132,12 +132,9 @@ onMounted(() => {
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col" data-testid="chat-main">
-      <ChatStream
-        :messages="chat.messages"
-        :is-streaming="chat.isStreaming"
-        data-testid="stream"
-      />
-      <ChatInput :disabled="busy" data-testid="composer" @send="handleSend" />
+      <!-- The stream/composer components own their data-testid hooks. -->
+      <ChatStream :messages="chat.messages" :is-streaming="chat.isStreaming" />
+      <ChatInput :disabled="busy" @send="handleSend" />
     </div>
   </AppLayout>
 </template>

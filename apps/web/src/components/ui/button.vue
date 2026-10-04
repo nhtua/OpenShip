@@ -46,16 +46,23 @@ interface Props extends PrimitiveProps {
   variant?: VariantProps<typeof buttonVariants>['variant']
   size?: VariantProps<typeof buttonVariants>['size']
   class?: HTMLAttributes['class']
+  disabled?: boolean
+  type?: 'button' | 'submit' | 'reset'
 }
 
 const props = withDefaults(defineProps<Props>(), {
   variant: 'default',
   size: 'default',
+  disabled: false,
+  type: 'button',
 })
 </script>
 
 <template>
   <Primitive
+    v-bind="$attrs"
+    :disabled="props.disabled"
+    :type="props.type"
     :as="props.as ?? 'button'"
     :as-child="props.asChild"
     :class="

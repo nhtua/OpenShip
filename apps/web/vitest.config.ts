@@ -7,6 +7,10 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     globals: true,
+    // Plan Task 7.1: the unit runner and Playwright runner must never
+    // collect each other's files.
+    include: ['tests/**/*.test.ts'],
+    exclude: ['tests/e2e/**', '**/node_modules/**', '**/dist/**'],
   },
   resolve: {
     alias: {

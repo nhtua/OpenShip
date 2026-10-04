@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { Button } from '@/components/ui'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -37,7 +38,7 @@ async function handleLogin() {
 
 <template>
   <div class="min-h-screen flex items-center justify-center bg-background">
-    <div class="w-full max-w-md bg-card border border-input rounded-lg shadow-lg p-8">
+    <div class="w-full max-w-md bg-card border border-input rounded-lg shadow-lg p-6 md:p-8">
       <div class="text-center mb-8">
         <div class="w-12 h-12 bg-primary rounded-lg flex items-center justify-center mx-auto mb-4">
           <i class="pi pi-comments text-primary-foreground text-xl" />
@@ -93,14 +94,14 @@ async function handleLogin() {
           <i class="pi pi-info-circle mr-2" />{{ localError ?? auth.error }}
         </div>
 
-        <button
+        <Button
           type="submit"
+          class="w-full"
           :disabled="auth.isLoading || isSubmitting"
-          class="w-full bg-primary text-primary-foreground rounded-md font-medium py-2 transition-colors hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span v-if="auth.isLoading || isSubmitting">Signing in...</span>
           <span v-else>Sign In</span>
-        </button>
+        </Button>
       </form>
 
       <div class="mt-6 text-center">
