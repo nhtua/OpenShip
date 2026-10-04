@@ -27,18 +27,19 @@ export {
   SheetTitle,
   SheetTrigger,
 } from './sheet'
-export { default as Sidebar } from './sidebar.vue'
-export { default as SidebarHeader } from './sidebar-header.vue'
-export { default as SidebarContent } from './sidebar-content.vue'
-export { default as SidebarGroup } from './sidebar-group.vue'
-export { default as SidebarGroupLabel } from './sidebar-group-label.vue'
-export { default as SidebarGroupTitle } from './sidebar-group-title.vue'
-export { default as SidebarMenuItem } from './sidebar-menu-item.vue'
-export { default as SidebarGroupAction } from './sidebar-group-action.vue'
-export { default as SidebarMenuButton } from './sidebar-menu-button.vue'
-export { default as SidebarFooter } from './sidebar-footer.vue'
-export { default as SidebarRail } from './sidebar-rail.vue'
-export { default as SidebarTrigger } from './sidebar-trigger.vue'
+export {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar,
+} from './sidebar'
 export { default as Icon } from '../common/Icon.vue'
 export { PRIME_ICON_NAMES } from '../common/icons'
 export type { PrimeIconName } from '../common/icons'
