@@ -58,6 +58,7 @@ const statusVariant = computed(() => {
     <span v-if="card.ended_at" class="text-slate-500">
       Ended {{ new Date(card.ended_at).toLocaleTimeString() }}
     </span>
+    <span v-if="card.usage" class="text-slate-500">{{ card.usage }}</span>
     <span v-if="card.error_code" class="text-red-400">
       ({{ card.error_code }})
     </span>

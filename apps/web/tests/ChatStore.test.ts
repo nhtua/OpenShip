@@ -490,6 +490,98 @@ describe('chat store', () => {
     expect(chat.messages[0].content).toBe('Existing c2 msg')
   })
 
+  it('cancelRun waits for durable state by polling getRun', async () => {
+    // First call returns running, second returns cancelled
+    mockRunsApi.getRun
+      .mockResolvedValueOnce({
+        data: { id: 'run-poll-1', conversation_id: 'c1', status: 'running', created_at: '', attempt: 0 },
+      })
+      .mockResolvedValueOnce({
+        data: { id: 'run-poll-1', conversation_id: 'c1', status: 'cancelled', created_at: '', attempt: 0 },
+      })
+
+    const chat = useChatStore()
+    await chat.cancelRun('run-poll-1')
+
+    // Should have polled getRun at least twice
+    expect(mockRunsApi.getRun).toHaveBeenCalled()
+    expect(mockRunsApi.getRun.mock.calls.length).toBeGreaterThanOrEqual(2)
+    // Last call should see cancelled status
+    const lastCall = mockRunsApi.getRun.mock.calls[mockRunsApi.getRun.mock.calls.length - 1]
+    expect(lastCall[0]).toBe('run-poll-1')
+  })
+
+  it('refetches snapshot when stream closes without terminal event', async () => {
+    mockRunsApi.submitTurn.mockResolvedValue({
+      data: {
+        id: 'run-expiry-1',
+        conversation_id: 'c1',
+        status: 'running',
+        created_at: '2026-10-04T00:00:00Z',
+        attempt: 0,
+      },
+    })
+
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    chat.messages = []
+
+    // Set cursor to 1 (after turn_submitted)
+    chat.cursors.set('c1', 1)
+    // Process the turn_submitted event to set up state
+    chat.processDurableEvent({
+      id: 'evt-expiry-0',
+      conversation_id: 'c1',
+      run_id: 'run-expiry-1',
+      sequence: 0,
+      type: 'turn_submitted',
+      payload: { content: 'Hello' },
+      created_at: '',
+    } as never)
+    chat.processDurableEvent({
+      id: 'evt-expiry-1',
+      conversation_id: 'c1',
+      run_id: 'run-expiry-1',
+      sequence: 1,
+      type: 'run.started',
+      payload: {},
+      created_at: '',
+    } as never)
+
+    // Mock snapshot fetch — returns run completion that we missed
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1',
+        sequence: 2,
+        events: [
+          { id: 'evt-expiry-0', conversation_id: 'c1', run_id: 'run-expiry-1', sequence: 0, type: 'turn_submitted', payload: { content: 'Hello' }, created_at: '' },
+          { id: 'evt-expiry-1', conversation_id: 'c1', run_id: 'run-expiry-1', sequence: 1, type: 'run.started', payload: {}, created_at: '' },
+          { id: 'evt-expiry-2', conversation_id: 'c1', run_id: 'run-expiry-1', sequence: 2, type: 'run.succeeded', payload: { message_id: 'msg-1' }, created_at: '' },
+        ],
+      },
+    })
+
+    const encoder = new TextEncoder()
+    // Stream closes without sending a terminal event
+    const mockStream = new ReadableStream({
+      start(controller) {
+        controller.close()
+      },
+    })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: mockStream,
+    } as Response)
+
+    await chat.sendMessage('Hello', 'c1')
+
+    // Should have fetched snapshot due to stream expiry
+    expect(mockRunsApi.getSnapshot).toHaveBeenCalledWith('c1')
+    // Run card should show succeeded after snapshot recovery
+    expect(chat.runCards.get('c1')?.status).toBe('succeeded')
+  })
+
   it('tab reload after partial model answer rebuilds from snapshot', async () => {
     // Simulate: user sent message, got partial response, tab reloaded
     // Snapshot contains turn_submitted and run.started but not run.succeeded

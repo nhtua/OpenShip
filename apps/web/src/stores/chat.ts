@@ -105,7 +105,9 @@ export const useChatStore = defineStore('chat', () => {
         // Subscribe in background (don't block loadConversation)
         subscribeToEvents(conversationId, cursor, (event) => {
           processDurableEvent(event)
-          if (event.sequence > cursor) {
+          // Use live cursor value, not captured
+          const currentCursor = cursors.value.get(conversationId) ?? -1
+          if (event.sequence > currentCursor) {
             cursors.value.set(conversationId, event.sequence)
           }
           // Reload messages when run completes
@@ -305,10 +307,41 @@ export const useChatStore = defineStore('chat', () => {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let lastSeenSequence = afterSequence
+    let sawTerminalEvent = false
 
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (done) {
+        // Stream closed without terminal event — refetch snapshot to recover
+        if (!sawTerminalEvent) {
+          console.warn(
+            `SSE stream for ${conversationId} closed without terminal event at sequence ${lastSeenSequence}. Refetching snapshot.`,
+          )
+          try {
+            const snapRes = await runsApi.getSnapshot(conversationId)
+            const snapshot = snapRes.data as unknown as Snapshot
+            // Process new events from snapshot that we missed
+            for (const event of snapshot.events) {
+              if (event.sequence > lastSeenSequence) {
+                onEvent(event)
+                lastSeenSequence = event.sequence
+                if (
+                  event.type === 'run.succeeded' ||
+                  event.type === 'run.failed' ||
+                  event.type === 'run_cancelled'
+                ) {
+                  sawTerminalEvent = true
+                }
+              }
+            }
+            cursors.value.set(conversationId, snapshot.sequence)
+          } catch (err) {
+            console.warn('Failed to refetch snapshot after stream close', err)
+          }
+        }
+        break
+      }
 
       buffer += decoder.decode(value, { stream: true })
 
@@ -338,16 +371,29 @@ export const useChatStore = defineStore('chat', () => {
 
         try {
           const data = JSON.parse(dataStr)
+          const sequence = data.sequence || 0
+
           // Emit the parsed event
           onEvent({
             id: eventId || data.id || '',
             conversation_id: conversationId,
             run_id: data.run_id || null,
-            sequence: data.sequence || 0,
+            sequence,
             type: eventType || data.type || '',
             payload: data.payload || data,
             created_at: new Date().toISOString(),
           })
+
+          if (sequence > lastSeenSequence) {
+            lastSeenSequence = sequence
+          }
+          if (
+            eventType === 'run.succeeded' ||
+            eventType === 'run.failed' ||
+            eventType === 'run_cancelled'
+          ) {
+            sawTerminalEvent = true
+          }
         } catch {
           // Skip malformed events
         }
@@ -427,8 +473,9 @@ export const useChatStore = defineStore('chat', () => {
         try {
           await subscribeToEvents(convId, cursor, (event) => {
             processDurableEvent(event)
-            // Update cursor
-            if (event.sequence > cursor) {
+            // Update cursor (use live value, not captured)
+            const currentCursor = cursors.value.get(convId) ?? -1
+            if (event.sequence > currentCursor) {
               cursors.value.set(convId, event.sequence)
             }
 
@@ -569,7 +616,32 @@ export const useChatStore = defineStore('chat', () => {
   async function cancelRun(runId: string): Promise<void> {
     try {
       await runsApi.cancelRun(runId)
-      // Wait for durable state update via event stream
+      // Wait for durable state update by polling the run status
+      let attempts = 0
+      const maxAttempts = 10
+      while (attempts < maxAttempts) {
+        try {
+          const res = await runsApi.getRun(runId)
+          const status = res.data.status
+          if (['cancelled', 'failed', 'completed'].includes(status)) {
+            // Update the run card to reflect the durable state
+            const card = [...runCards.value.entries()].find(
+              ([, c]) => c.run_id === runId,
+            )
+            if (card) {
+              card[1].status = status
+              card[1].ended_at = new Date().toISOString()
+              runCards.value.set(card[0], card[1])
+            }
+            break
+          }
+        } catch (err) {
+          console.warn('Failed to fetch run status after cancel', err)
+        }
+        attempts++
+        // Wait 500ms between polls
+        await new Promise((resolve) => setTimeout(resolve, 500))
+      }
     } catch (err) {
       console.error('Failed to cancel run', err)
     }
