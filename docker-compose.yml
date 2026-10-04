@@ -20,6 +20,14 @@ services:
     depends_on:
       - postgres
 
+  worker:
+    build: ./apps/api
+    command: ["uv", "run", "python", "-m", "src.openship.runs.worker", "--log-level", "INFO"]
+    environment:
+      DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+    depends_on:
+      - postgres
+
   web:
     build: ./apps/web
     ports:

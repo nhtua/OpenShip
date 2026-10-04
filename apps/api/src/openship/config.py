@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # Worker queue settings
+    worker_lease_seconds: int = 30
+    worker_heartbeat_interval: int = 10
+    worker_poll_interval: int = 2
+    reconciler_interval: int = 60
+
     class Config:
         env_file = ".env"
 
