@@ -49,6 +49,9 @@ def _get_chat_history(db: Session, conversation: Conversation) -> list[dict]:
     ]
 
 
+import re
+
+
 def _generate_title(user_content: str) -> str:
     """Generate a conversation title from the first user message."""
     # Trim to 50 characters, add ellipsis if longer
@@ -56,6 +59,18 @@ def _generate_title(user_content: str) -> str:
     if len(title) > 50:
         title = title[:50] + "..."
     return title
+
+
+def _extract_title_from_response(response: str) -> str | None:
+    """Extract a conversation title from the LLM response.
+
+    The system prompt asks the LLM to include a short summary prefixed with
+    '## Title: ' at the end of the response.
+    """
+    match = re.search(r'## Title:\s*(.{1,50})', response)
+    if match:
+        return match.group(1).strip()
+    return None
 
 
 def _stream_response(
@@ -89,9 +104,13 @@ def _stream_response(
     # Build chat history
     history = _get_chat_history(db, conversation)
 
-    # Add system prompt
+    # Add system prompt with title generation instruction (for first message only)
+    system_content = "You are OpenShip, an AI DevOps co-pilot. Help users with infrastructure, deployment, and operations tasks. Be concise and practical."
+    if is_first_message:
+        system_content += "\n\nAfter your response, include a short 50-character summary on a new line prefixed with '## Title: '. This will be used as the conversation title. Do not include any other content after the title."
+
     messages = [
-        {"role": "system", "content": "You are OpenShip, an AI DevOps co-pilot. Help users with infrastructure, deployment, and operations tasks. Be concise and practical."},
+        {"role": "system", "content": system_content},
         *history,
         {"role": "user", "content": user_content},
     ]
@@ -117,11 +136,12 @@ def _stream_response(
     db.add(assistant_msg)
     db.commit()
 
-    # Generate title from first message
+    # Extract title from LLM response (first message only)
     new_title = None
     if is_first_message:
-        new_title = _generate_title(user_content)
-        conversation.title = new_title
-        db.commit()
+        new_title = _extract_title_from_response(assistant_content)
+        if new_title:
+            conversation.title = new_title
+            db.commit()
 
     return chunks, str(assistant_msg.id), new_title
