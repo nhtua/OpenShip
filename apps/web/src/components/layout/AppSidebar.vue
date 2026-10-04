@@ -95,12 +95,12 @@ const extraCount = computed(() => {
       class="h-14 shrink-0 items-center justify-start gap-2 border-b border-sidebar-border px-3 py-0 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
     >
       <span
-        class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground"
+        class="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground"
         aria-hidden="true"
       >
         OS
       </span>
-      <span class="truncate font-semibold group-data-[collapsible=icon]:hidden">
+      <span class="text-base font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
         OpenShip
       </span>
     </SidebarHeader>
