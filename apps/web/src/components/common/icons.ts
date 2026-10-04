@@ -23,6 +23,16 @@ export const PRIME_ICON_NAMES = [
   'info-circle',
   'arrow-down',
   'send',
+  'sitemap',
+  'wrench',
+  'book',
+  'box',
+  'link',
+  'server',
+  'code',
+  'cloud-upload',
+  'bell',
+  'cog',
 ] as const
 
 export type PrimeIconName = (typeof PRIME_ICON_NAMES)[number]

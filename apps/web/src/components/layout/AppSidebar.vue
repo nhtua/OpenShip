@@ -236,7 +236,7 @@ const extraCount = computed(() => {
       v-if="state !== 'collapsed'"
       class="shrink-0"
     >
-      <!-- Bottom navigation: Workflows, Tools, Skills, Settings -->
+      <!-- Bottom navigation: roadmap features -->
       <SidebarMenu class="mb-2">
         <SidebarMenuItem>
           <button
@@ -244,7 +244,7 @@ const extraCount = computed(() => {
             disabled
             class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
           >
-            <Icon name="info-circle" />
+            <Icon name="sitemap" />
             <span>Workflows</span>
           </button>
         </SidebarMenuItem>
@@ -254,7 +254,7 @@ const extraCount = computed(() => {
             disabled
             class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
           >
-            <Icon name="info-circle" />
+            <Icon name="wrench" />
             <span>Tools</span>
           </button>
         </SidebarMenuItem>
@@ -264,7 +264,7 @@ const extraCount = computed(() => {
             disabled
             class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
           >
-            <Icon name="info-circle" />
+            <Icon name="book" />
             <span>Skills</span>
           </button>
         </SidebarMenuItem>
@@ -274,7 +274,67 @@ const extraCount = computed(() => {
             disabled
             class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
           >
-            <Icon name="info-circle" />
+            <Icon name="box" />
+            <span>Artifacts</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="link" />
+            <span>Connectors</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="server" />
+            <span>Resources</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="code" />
+            <span>Git</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="cloud-upload" />
+            <span>Terraform</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="bell" />
+            <span>Alarms</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="cog" />
             <span>Settings</span>
           </button>
         </SidebarMenuItem>
