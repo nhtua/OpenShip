@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
     openai_base_url: str = "https://api.openai.com/v1"
+    model_max_tokens: int = 4000
 
     # Database
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"
