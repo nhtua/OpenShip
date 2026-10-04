@@ -13,6 +13,7 @@ from ..chat.schemas import ConversationResponse, MessageRequest
 from ..chat.service import _get_or_create_conversation, _stream_response
 from ..config import settings
 from ..database.session import get_db
+from ..workspace.models import Project
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -123,8 +124,14 @@ async def create_conversation(
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
+    # Find user's default project
+    project = db.query(Project).filter(
+        Project.owner_user_id == user.id
+    ).first()
+
     conv = Conversation(
         user_id=user.id,
+        project_id=project.id,
         title=req.get("title", "New Conversation"),
     )
     db.add(conv)
