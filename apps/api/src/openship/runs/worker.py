@@ -9,9 +9,9 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
 
 import psycopg2
 from sqlalchemy import create_engine, text
@@ -53,13 +53,31 @@ class Worker:
 
         logger.info(f"Worker {self.worker_id} initialized")
 
+    def _heartbeat(self, db, run_id, fence, stop_event, interval=None):
+        """Background heartbeat thread that renews the lease periodically."""
+        if interval is None:
+            interval = getattr(settings, "worker_heartbeat_interval", 10)
+
+        while not stop_event.wait(timeout=interval):
+            try:
+                ok = renew(db, run_id, fence)
+                if not ok:
+                    logger.warning(f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})")
+                    break
+            except Exception as e:
+                logger.warning(f"[{self.worker_id}] Heartbeat error for run {run_id}: {e}")
+                break
+
     def process_job(self, claim):
-        """Process a single claimed job."""
+        """Process a single claimed job with lease heartbeat."""
         run_id = claim.run_id
         fence = claim.fence
         logger.info(f"[{self.worker_id}] Processing run {run_id} (fence={fence})")
 
         db = self.Session()
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = None
+
         try:
             # Get run and conversation info
             from ..runs.models import Run
@@ -84,8 +102,7 @@ class Worker:
                 logger.warning(f"No user message for run {run_id}")
                 return False
 
-            # Build graph state
-            thread_id = f"{run_id}-{claim.checkpoint_ns}"
+            # Build graph state with checkpoint namespace
             state = {
                 "messages": [
                     {"role": "user", "content": user_msg.content},
@@ -96,15 +113,27 @@ class Worker:
 
             # Mark provider call as started
             mark_provider_started(db, run_id, fence)
-            db.commit()
 
-            # Execute the model turn
+            # Start heartbeat thread to renew lease during processing
+            heartbeat_thread = threading.Thread(
+                target=self._heartbeat,
+                args=(db, run_id, fence, heartbeat_stop),
+                daemon=True,
+            )
+            heartbeat_thread.start()
+
+            # Execute the model turn with checkpoint namespace
             result = execute_model_turn(
                 run_id=str(run_id),
-                thread_id=thread_id,
+                thread_id=f"{run_id}-{claim.checkpoint_ns}",
                 fence=fence,
                 state=state,
             )
+
+            # Stop heartbeat
+            heartbeat_stop.set()
+            if heartbeat_thread.is_alive():
+                heartbeat_thread.join(timeout=5)
 
             # Finalize the run
             if result.error:
@@ -161,6 +190,9 @@ class Worker:
                 pass
             return False
         finally:
+            heartbeat_stop.set()
+            if heartbeat_thread and heartbeat_thread.is_alive():
+                heartbeat_thread.join(timeout=5)
             db.close()
 
     def run(self):
@@ -168,21 +200,24 @@ class Worker:
         logger.info(f"[{self.worker_id}] Starting worker loop")
 
         while self.running:
+            db = self.Session()
             try:
                 # Claim a job
                 claim = claim_next(
-                    db=self.Session(),
+                    db=db,
                     worker_id=self.worker_id,
                     lease_seconds=settings.worker_lease_seconds,
                 )
 
                 if claim is None:
                     # No jobs available, sleep and retry
+                    db.close()
                     time.sleep(settings.worker_poll_interval)
                     continue
 
-                # Process the job
+                # Process the job (process_job will close db)
                 self.process_job(claim)
+                db = None  # process_job closed it
 
             except KeyboardInterrupt:
                 self.running = False
@@ -190,6 +225,9 @@ class Worker:
             except Exception as e:
                 logger.exception(f"[{self.worker_id}] Error in worker loop")
                 time.sleep(1)
+            finally:
+                if db is not None:
+                    db.close()
 
         # Cleanup
         self.engine.dispose()
