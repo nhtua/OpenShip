@@ -79,6 +79,7 @@ def dry_run_retention(
         Dict with eligible counts for each data type.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=event_retention_days)
+    checkpoint_cutoff = datetime.now(timezone.utc) - timedelta(days=checkpoint_retention_days)
 
     # Eligible events: from completed/failed/cancelled runs older than cutoff
     eligible_events = (
@@ -91,13 +92,13 @@ def dry_run_retention(
         .count()
     )
 
-    # Eligible checkpoints: from terminal runs older than cutoff
+    # Eligible checkpoints: from terminal runs older than checkpoint_cutoff
     # (count runs; actual checkpoint deletion uses checkpointer API)
     eligible_checkpoints = (
         db.query(Run)
         .filter(
             Run.status.in_(["completed", "failed", "cancelled", "timed_out"]),
-            Run.ended_at < cutoff,
+            Run.ended_at < checkpoint_cutoff,
         )
         .count()
     )
@@ -144,7 +145,8 @@ def run_retention(
         Dict with counts of pruned items.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=event_retention_days)
-    logger.info("Running retention policy, cutoff: %s", cutoff.isoformat())
+    checkpoint_cutoff = datetime.now(timezone.utc) - timedelta(days=checkpoint_retention_days)
+    logger.info("Running retention policy, event cutoff: %s, checkpoint cutoff: %s", cutoff.isoformat(), checkpoint_cutoff.isoformat())
 
     metrics = dry_run_retention(db, event_retention_days, checkpoint_retention_days, dry_run)
 
@@ -152,23 +154,19 @@ def run_retention(
         logger.info("Dry run — no deletions performed")
         return metrics
 
-    # Delete eligible events using Core delete for join support
-    from sqlalchemy import delete
-    eligible_run_ids = [
-        run.id for run in (
-            db.query(Run)
-            .filter(
-                Run.status.in_(["completed", "failed", "cancelled", "timed_out"]),
-                Run.ended_at < cutoff,
-            )
-            .all()
+    # Delete eligible events using a subquery to avoid loading all IDs into memory
+    from sqlalchemy import delete, select
+    eligible_subquery = (
+        select(Run.id)
+        .where(
+            Run.status.in_(["completed", "failed", "cancelled", "timed_out"]),
+            Run.ended_at < cutoff,
         )
-    ]
-    events_pruned = 0
-    if eligible_run_ids:
-        events_pruned = db.execute(
-            delete(Event).where(Event.run_id.in_(eligible_run_ids))
-        ).rowcount
+    )
+
+    events_pruned = db.execute(
+        delete(Event).where(Event.run_id.in_(eligible_subquery))
+    ).rowcount
     logger.info("Pruned %d events", events_pruned)
 
     # Delete eligible checkpoints using checkpointer API
@@ -177,11 +175,12 @@ def run_retention(
         db.query(Run)
         .filter(
             Run.status.in_(["completed", "failed", "cancelled", "timed_out"]),
-            Run.ended_at < cutoff,
+            Run.ended_at < checkpoint_cutoff,
         )
         .all()
     )
-    for run in terminal_runs:
+    logger.info("Deleting checkpoints for %d terminal runs", len(terminal_runs))
+    for idx, run in enumerate(terminal_runs, 1):
         if run.graph_thread_id:
             try:
                 from ..runs.checkpoints import get_checkpointer
@@ -189,6 +188,8 @@ def run_retention(
                     # Use checkpointer's whole-thread deletion
                     saver.delete_thread(run.graph_thread_id)
                     checkpoint_pruned += 1
+                    if idx % 50 == 0 or idx == len(terminal_runs):
+                        logger.info("Deleted %d/%d checkpoints so far", idx, len(terminal_runs))
             except Exception as e:
                 logger.warning("Failed to delete checkpoint for run %s: %s", run.id, e)
 
