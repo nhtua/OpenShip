@@ -41,7 +41,10 @@ def setup_db(request):
     Skipped for migration integration tests that manage their own schema.
     """
     test_path = request.node.fspath.strpath
-    if "integration" in test_path and "test_phase2_migration" in test_path:
+    if "integration" in test_path and (
+        "test_phase2_migration" in test_path
+        or "test_run_commands_pg" in test_path
+    ):
         yield
         return
 

@@ -1,0 +1,61 @@
+"""Routes for durable run commands."""
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+
+from ..auth.models import User
+from ..auth.routes import require_jwt
+from ..database.session import get_db
+from .schemas import RunResponse, RunCancelRequest, TurnSubmitRequest
+from .service import request_cancel, submit_turn
+
+router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+
+@router.post("/{conversation_id}/turns", status_code=202, response_model=RunResponse)
+async def submit_chat_turn(
+    conversation_id: str,
+    req: TurnSubmitRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """Submit a chat turn as a durable, queued run."""
+    try:
+        run = submit_turn(
+            db=db,
+            user_id=user.id,
+            conversation_id=conversation_id,
+            content=req.content,
+            client_request_id=req.client_request_id,
+        )
+        return run
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"code": "submit_failed", "message": str(e)}},
+        )
+
+
+@router.post("/{run_id}/cancel", status_code=200, response_model=RunResponse)
+async def cancel_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """Request cancellation of a run."""
+    try:
+        run = request_cancel(
+            db=db,
+            user_id=user.id,
+            run_id=run_id,
+        )
+        return run
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"code": "cancel_failed", "message": str(e)}},
+        )

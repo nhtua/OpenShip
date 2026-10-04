@@ -30,3 +30,7 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+  - repo: https://github.com/nhtua/rayloc
+    rev: v2026.10.4  # a release tag or commit SHA
+    hooks:
+      - id: rayloc-staged

@@ -136,6 +136,13 @@ def upgrade() -> None:
         "CREATE UNIQUE INDEX ix_messages_run_id_role ON messages(run_id, role) WHERE run_id IS NOT NULL"
     )
 
+    # 8b. One active run per conversation (partial unique index)
+    op.execute(
+        "CREATE UNIQUE INDEX ix_runs_conversation_active "
+        "ON runs(conversation_id) "
+        "WHERE status IN ('created', 'queued', 'running')"
+    )
+
     # 9. Backfill: Create a default project for each user
     bind = op.get_bind()
     result = bind.execute(sa.text("SELECT id, username FROM users"))
@@ -169,6 +176,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Reverse order: drop FKs first, then tables
+    op.drop_index('ix_runs_conversation_active')
     op.drop_index('ix_messages_run_id_role')
     with op.batch_alter_table('messages') as batch_op:
         batch_op.drop_constraint('fk_messages_run_id', type_='foreignkey')

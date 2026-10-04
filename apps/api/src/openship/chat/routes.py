@@ -10,9 +10,10 @@ from ..auth.models import User
 from ..auth.routes import require_jwt
 from ..chat.models import Conversation, Message
 from ..chat.schemas import ConversationResponse, MessageRequest
-from ..chat.service import _get_or_create_conversation, _stream_response
+from ..chat.service import _stream_response
 from ..config import settings
 from ..database.session import get_db
+from ..runs.service import require_owned_conversation
 from ..workspace.models import Project
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -29,20 +30,9 @@ async def send_message(
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
-    # Parse conversation_id: accept "new" or a valid UUID
-    parsed_conversation_id: uuid.UUID | None = None
-    if conversation_id != "new":
-        try:
-            parsed_conversation_id = uuid.UUID(conversation_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=422,
-                detail={"error": {"code": "invalid_conversation_id", "message": "Invalid conversation ID format"}},
-            )
-
-    # Get or create conversation
-    conversation = _get_or_create_conversation(db, user, parsed_conversation_id)
-    created_new = parsed_conversation_id is None
+    """Adapter for the old chat stream API. Validates ownership, does not auto-create."""
+    # Require conversation to exist (no auto-creation)
+    conversation = require_owned_conversation(db, user.id, conversation_id)
 
     # Check API key availability
     if not settings.openai_api_key:
@@ -56,13 +46,9 @@ async def send_message(
             },
         )
 
-    # Stream response
+    # Stream response (ephemeral adapter path)
     def generate():
         try:
-            # Notify frontend of new conversation ID if one was just created
-            if created_new:
-                yield f"data: {json.dumps({'type': 'conversation_created', 'conversation_id': str(conversation.id)})}\n\n"
-
             chunks, message_id, new_title, cleaned_content = _stream_response(conversation, req.content, db)
 
             # Stream the response chunks
@@ -118,7 +104,7 @@ async def list_conversations(
     ]
 
 
-@router.post("/conversations")
+@router.post("/conversations", status_code=201)
 async def create_conversation(
     req: ConversationCreateRequest,
     db: Session = Depends(get_db),

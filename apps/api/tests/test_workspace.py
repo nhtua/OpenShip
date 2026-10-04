@@ -27,8 +27,11 @@ def test_list_conversations_via_workspace(client, auth_token):
     """GET /api/workspace/conversations returns user's conversations."""
     headers = {"Authorization": f"Bearer {auth_token}"}
 
-    # Send a message to create a conversation
-    conv_id = uuid.uuid4()
+    # Phase 2: must create conversation explicitly (no auto-creation)
+    conv_resp = client.post("/api/conversations", json={"title": "New Conversation"}, headers=headers)
+    assert conv_resp.status_code == 201
+    conv_id = conv_resp.json()["id"]
+
     mock_chunk = MagicMock()
     mock_chunk.choices = [MagicMock()]
     mock_chunk.choices[0].delta = MagicMock(content="Test response")

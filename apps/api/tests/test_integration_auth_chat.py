@@ -40,7 +40,11 @@ def test_full_auth_then_chat_flow(client: TestClient):
     headers = {"Authorization": f"Bearer {token}"}
 
     # --- Step 3: Send a chat message (mocked LLM) ---
-    conv_id = uuid.uuid4()
+    # Phase 2: must create conversation explicitly (no auto-creation)
+    conv_resp = client.post("/api/conversations", json={"title": "First"}, headers=headers)
+    assert conv_resp.status_code == 201
+    conv_id = conv_resp.json()["id"]
+
     mock_chunk = MagicMock()
     mock_chunk.choices = [MagicMock()]
     mock_chunk.choices[0].delta = MagicMock(content="Integration test response")
@@ -77,7 +81,10 @@ def test_full_auth_then_chat_flow(client: TestClient):
     assert len(data) >= 1
 
     # --- Step 5: Send another message in a new conversation ---
-    conv_id_2 = uuid.uuid4()
+    # Phase 2: must create conversation explicitly (no auto-creation)
+    conv_id_2_resp = client.post("/api/conversations", json={"title": "Second"}, headers=headers)
+    assert conv_id_2_resp.status_code == 201
+    conv_id_2 = conv_id_2_resp.json()["id"]
     mock_chunk2 = MagicMock()
     mock_chunk2.choices = [MagicMock()]
     mock_chunk2.choices[0].delta = MagicMock(content="Second message")
@@ -128,7 +135,10 @@ def test_auth_then_multiple_chat_turns(client: TestClient):
     token = login.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    conv_id = uuid.uuid4()
+    # Phase 2: must create conversation explicitly (no auto-creation)
+    conv_resp = client.post("/api/conversations", json={"title": "Turn test"}, headers=headers)
+    assert conv_resp.status_code == 201
+    conv_id = conv_resp.json()["id"]
 
     # Send 10 turns
     for i in range(10):
