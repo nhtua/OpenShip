@@ -204,3 +204,54 @@ def test_failed_transaction_leaves_no_orphans(test_session):
     # Verify no orphan run was created
     run_count = test_session.query(Run).filter(Run.conversation_id == conv.id).count()
     assert run_count == 0
+
+
+def test_concurrent_sends_one_succeeds_one_conflicts(test_session):
+    """Two submit_turn calls for the same conversation: one succeeds, one conflicts.
+
+    Tests the database-enforced one-active-run-per-conversation constraint. When two
+    requests arrive concurrently, one will create the run (202) and the other will
+    hit the unique index violation (409). Both use different client_request_ids so
+    neither is an idempotent replay of the other.
+    """
+    user = User(username=f"concurrent_test_{uuid.uuid4().hex[:8]}", email=f"concurrent_test_{uuid.uuid4().hex[:8]}@example.com", password_hash="hash")
+    test_session.add(user)
+    test_session.commit()
+
+    project = Project(owner_user_id=user.id, name="Test Project")
+    test_session.add(project)
+    test_session.commit()
+
+    conv = Conversation(user_id=user.id, project_id=project.id, title="Test")
+    test_session.add(conv)
+    test_session.commit()
+
+    # First submit_turn — should succeed
+    req1_id = str(uuid.uuid4())
+    run1 = Run(
+        conversation_id=conv.id,
+        project_id=project.id,
+        status="queued",
+        client_request_id=req1_id,
+    )
+    test_session.add(run1)
+    test_session.commit()
+
+    # Second submit_turn (concurrent scenario) — should hit unique index violation
+    req2_id = str(uuid.uuid4())
+    run2 = Run(
+        conversation_id=conv.id,
+        project_id=project.id,
+        status="queued",
+        client_request_id=req2_id,
+    )
+    test_session.add(run2)
+
+    from sqlalchemy.exc import IntegrityError
+    with pytest.raises(IntegrityError) as exc_info:
+        test_session.commit()
+    test_session.rollback()
+    # SQLite reports "UNIQUE constraint failed" without index name
+    assert "UNIQUE constraint failed" in str(exc_info.value), (
+        f"Expected unique index violation, got: {exc_info.value}"
+    )

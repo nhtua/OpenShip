@@ -62,7 +62,7 @@ def submit_turn(
         )
 
     # Check for existing run with same client_request_id (idempotency)
-    existing = db.query(Run).filter(Run.graph_thread_id == client_request_id).first()
+    existing = db.query(Run).filter(Run.client_request_id == client_request_id).first()
     if existing:
         # Verify same conversation
         if existing.conversation_id != conv.id:
@@ -101,7 +101,7 @@ def submit_turn(
     run = Run(
         conversation_id=conv.id,
         project_id=conv.project_id,
-        graph_thread_id=client_request_id,
+        client_request_id=client_request_id,
         status="queued",
         attempt=0,
         fence=0,

@@ -22,6 +22,7 @@ class Run(Base):
         nullable=False,
     )
     graph_thread_id = Column(String(255), nullable=True)
+    client_request_id = Column(String(255), nullable=True)
     status = Column(
         String(20),
         nullable=False,
