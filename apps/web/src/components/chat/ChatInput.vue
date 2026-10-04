@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import { Button, Icon, Label, Textarea } from '@/components/ui'
 
 const props = withDefaults(defineProps<{ disabled?: boolean }>(), {
@@ -13,12 +13,30 @@ const emit = defineEmits<{
 const content = ref('')
 const textareaRef = ref<InstanceType<typeof Textarea> | null>(null)
 
+// Re-focus input when streaming completes (disabled → enabled)
+watch(
+  () => props.disabled,
+  (wasDisabled, isDisabled) => {
+    if (wasDisabled && !isDisabled) {
+      void focusInput()
+    }
+  },
+)
+
 // Grow to content, capped at 192px (max-h-48), then scroll internally.
 function grow() {
   const el = textareaRef.value?.$el as HTMLElement | undefined
   if (!el) return
   el.style.height = 'auto'
   el.style.height = `${Math.min(el.scrollHeight, 192)}px`
+}
+
+async function focusInput() {
+  await nextTick()
+  const el = textareaRef.value?.$el as HTMLElement | undefined
+  if (el) {
+    el.focus()
+  }
 }
 
 async function handleSend() {
