@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { Conversation } from '@/types'
 import { Button, Icon, Input } from '@/components/ui'
 import {
@@ -18,23 +18,28 @@ const props = withDefaults(
     conversations?: Conversation[]
     currentConversationId?: string | null
     busy?: boolean
+    username?: string | null
   }>(),
   {
     conversations: () => [],
     currentConversationId: null,
     busy: false,
+    username: null,
   },
 )
 
 const emit = defineEmits<{
   createConversation: [title: string]
   selectConversation: [id: string]
+  signOut: []
 }>()
 
-const { setOpen } = useSidebar()
+const { setOpen, state } = useSidebar()
 
 const showCreateForm = ref(false)
 const draftTitle = ref('')
+const showUserMenu = ref(false)
+const showAllConversations = ref(false)
 
 function openCreateForm() {
   if (props.busy) return
@@ -58,6 +63,30 @@ function submitCreateForm() {
 function expandSidebar() {
   setOpen(true)
 }
+
+function toggleUserMenu() {
+  showUserMenu.value = !showUserMenu.value
+}
+
+function toggleConversations() {
+  showAllConversations.value = !showAllConversations.value
+}
+
+/** Max conversations shown before expand is needed. */
+const COLLAPSED_CONVERSATION_LIMIT = 8
+
+const visibleConversations = computed(() => {
+  const all = props.conversations
+  if (showAllConversations.value || all.length <= COLLAPSED_CONVERSATION_LIMIT) {
+    return all
+  }
+  return all.slice(0, COLLAPSED_CONVERSATION_LIMIT)
+})
+
+const extraCount = computed(() => {
+  if (showAllConversations.value) return 0
+  return props.conversations.length - COLLAPSED_CONVERSATION_LIMIT
+})
 </script>
 
 <template>
@@ -118,9 +147,10 @@ function expandSidebar() {
         </form>
       </div>
 
-      <!-- Navigation + conversation history -->
+      <!-- Top-level navigation -->
       <nav aria-label="Conversations" class="flex min-h-0 flex-1 flex-col">
-        <SidebarMenu class="group-data-[collapsible=icon]:hidden">
+        <SidebarMenu class="mt-1 group-data-[collapsible=icon]:hidden">
+          <!-- Primary action -->
           <SidebarMenuItem>
             <RouterLink
               :to="{ name: 'chat' }"
@@ -130,41 +160,87 @@ function expandSidebar() {
               <span>Agent Workspace</span>
             </RouterLink>
           </SidebarMenuItem>
+
+          <!-- Placeholder / soon items -->
+          <SidebarMenuItem>
+            <button
+              type="button"
+              disabled
+              class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 [&.router-link-exact-active]:bg-sidebar-accent [&.router-link-exact-active]:font-medium [&.router-link-exact-active]:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              <Icon name="info-circle" />
+              <span>Settings</span>
+            </button>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <button
+              type="button"
+              disabled
+              class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 [&.router-link-exact-active]:bg-sidebar-accent [&.router-link-exact-active]:font-medium [&.router-link-exact-active]:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              <Icon name="info-circle" />
+              <span>Templates</span>
+            </button>
+          </SidebarMenuItem>
         </SidebarMenu>
 
-        <SidebarMenu class="mt-1 group-data-[collapsible=icon]:hidden">
-          <li
+        <!-- Conversation history -->
+        <div class="mt-2 px-2 group-data-[collapsible=icon]:px-0">
+          <div
             v-if="props.busy && props.conversations.length === 0"
             class="px-3 py-2 text-xs text-sidebar-foreground/60"
           >
             Loading conversations...
-          </li>
-          <li
+          </div>
+          <div
             v-else-if="props.conversations.length === 0"
             class="px-3 py-2 text-xs text-sidebar-foreground/60"
           >
             No conversations yet
-          </li>
+          </div>
           <template v-else>
-            <SidebarMenuItem v-for="conv in props.conversations" :key="conv.id">
-              <SidebarMenuButton
-                :is-active="conv.id === props.currentConversationId"
-                :disabled="props.busy"
-                :title="conv.title"
-                :aria-label="`Open conversation ${conv.title}`"
-                @click="emit('selectConversation', conv.id)"
+            <SidebarMenu>
+              <SidebarMenuItem
+                v-for="conv in visibleConversations"
+                :key="conv.id"
               >
-                <Icon name="comments" />
-                <span>{{ conv.title }}</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+                <SidebarMenuButton
+                  :is-active="conv.id === props.currentConversationId"
+                  :disabled="props.busy"
+                  :title="conv.title"
+                  :aria-label="`Open conversation ${conv.title}`"
+                  @click="emit('selectConversation', conv.id)"
+                >
+                  <Icon name="comments" />
+                  <span>{{ conv.title }}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+
+            <!-- Expand / collapse toggle -->
+            <template v-if="extraCount > 0">
+              <Button
+                variant="ghost"
+                size="sm"
+                class="w-full text-xs text-sidebar-foreground/60 hover:text-sidebar-foreground"
+                @click="toggleConversations"
+              >
+                <Icon :name="showAllConversations ? 'chevron-up' : 'chevron-down'" />
+                <span class="group-data-[collapsible=icon]:hidden">
+                  {{ showAllConversations ? 'Show less' : `Show ${extraCount} more` }}
+                </span>
+              </Button>
+            </template>
           </template>
-        </SidebarMenu>
+        </div>
       </nav>
     </SidebarContent>
 
-    <!-- Icon-only mode: labeled control restores the full list. -->
-    <SidebarFooter class="hidden shrink-0 group-data-[collapsible=icon]:flex">
+    <!-- Footer: icon-mode expand button (only when sidebar is collapsed) -->
+    <SidebarFooter
+      v-if="state === 'collapsed'"
+      class="shrink-0"
+    >
       <Button
         variant="ghost"
         size="icon"
@@ -175,6 +251,49 @@ function expandSidebar() {
         <Icon name="bars" />
         <span class="sr-only">Expand sidebar</span>
       </Button>
+    </SidebarFooter>
+
+    <!-- Footer: expanded-mode user profile (only when sidebar is expanded) -->
+    <SidebarFooter
+      v-if="username && state !== 'collapsed'"
+      class="shrink-0"
+    >
+      <div
+        class="relative"
+      >
+        <Button
+          variant="ghost"
+          size="sm"
+          class="w-full justify-between"
+          @click="toggleUserMenu"
+        >
+          <span class="flex items-center gap-2">
+            <Icon name="user" class="size-4 shrink-0" />
+            <span class="truncate">{{ username }}</span>
+          </span>
+          <Icon
+            :name="showUserMenu ? 'chevron-up' : 'chevron-down'"
+            class="size-3 shrink-0 text-sidebar-foreground/60"
+          />
+        </Button>
+        <div
+          v-if="showUserMenu"
+          class="absolute bottom-full left-0 right-0 mb-1 overflow-hidden rounded-md border border-border bg-card shadow-lg"
+        >
+          <div class="px-3 py-2 text-xs text-muted-foreground border-b border-border">
+            Signed in
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="w-full justify-start gap-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            @click="emit('signOut'); showUserMenu = false"
+          >
+            <Icon name="sign-out" />
+            Sign Out
+          </Button>
+        </div>
+      </div>
     </SidebarFooter>
   </Sidebar>
 </template>

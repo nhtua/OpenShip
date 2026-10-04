@@ -160,6 +160,14 @@ describe('ChatView', () => {
     auth.token = 'test-token'
     await nextTick()
     expect(wrapper.text()).toContain('testuser')
+    // Sign Out lives in the sidebar user-menu dropdown; open it by clicking the
+    // user profile button (first button containing the username text).
+    const allButtons = wrapper.findAll('button')
+    const userBtnIdx = allButtons.findIndex((b) => b.text().includes('testuser'))
+    expect(userBtnIdx).toBeGreaterThanOrEqual(0)
+    await allButtons[userBtnIdx].trigger('click')
+    await nextTick()
+    // Now the dropdown should reveal Sign Out.
     expect(wrapper.text()).toContain('Sign Out')
   })
 

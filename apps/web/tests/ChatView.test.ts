@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { mountWithRouter } from './helpers/mountWithRouter'
 import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -183,7 +184,20 @@ describe('ChatView', () => {
       { timeout: wait },
     )
 
-    await findByText(wrapper, 'Sign Out')!.trigger('click')
+    const allButtons = wrapper.findAll('button')
+    const userBtnIdx = allButtons.findIndex((b) => b.text().includes('testuser'))
+    await allButtons[userBtnIdx].trigger('click')
+    await nextTick()
+    const signOutBtn = allButtons.find((b) => b.text().includes('Sign Out'))
+    if (!signOutBtn) {
+      // Re-query since the dropdown adds new buttons.
+      const freshButtons = wrapper.findAll('button')
+      const freshIdx = freshButtons.findIndex((b) => b.text().includes('Sign Out'))
+      expect(freshIdx).toBeGreaterThanOrEqual(0)
+      await freshButtons[freshIdx].trigger('click')
+    } else {
+      await signOutBtn.trigger('click')
+    }
 
     expect(auth.token).toBeNull()
     expect(auth.user).toBeNull()

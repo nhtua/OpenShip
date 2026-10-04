@@ -14,6 +14,8 @@ export const PRIME_ICON_NAMES = [
   'bars',
   'chevron-left',
   'chevron-right',
+  'chevron-up',
+  'chevron-down',
   'times',
   'sun',
   'moon',

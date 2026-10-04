@@ -40,20 +40,20 @@ const emit = defineEmits<{
 
 <template>
   <div class="h-dvh min-h-0 w-full overflow-hidden bg-background text-foreground">
-    <SidebarProvider class="h-full min-h-0">
+    <SidebarProvider default-open class="h-full min-h-0">
       <AppSidebar
         :conversations="props.conversations"
         :current-conversation-id="props.currentConversationId"
         :busy="props.busy"
+        :username="props.username"
         @create-conversation="emit('createConversation', $event)"
         @select-conversation="emit('selectConversation', $event)"
+        @sign-out="emit('signOut')"
       />
       <SidebarInset class="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <AppHeader
           :title="props.title"
           :is-streaming="props.isStreaming"
-          :username="props.username"
-          @sign-out="emit('signOut')"
         />
         <div class="flex min-h-0 min-w-0 flex-1 flex-col">
           <slot />

@@ -8,18 +8,12 @@ const props = withDefaults(
   defineProps<{
     title?: string
     isStreaming?: boolean
-    username?: string | null
   }>(),
   {
     title: 'New Conversation',
     isStreaming: false,
-    username: null,
   },
 )
-
-const emit = defineEmits<{
-  signOut: []
-}>()
 
 const theme = useThemeStore()
 
@@ -74,16 +68,6 @@ const dotClass = computed(() =>
         @click="theme.toggleTheme()"
       >
         <Icon :name="theme.mode === 'dark' ? 'sun' : 'moon'" />
-      </Button>
-      <span
-        v-if="props.username"
-        class="hidden max-w-40 truncate text-sm text-muted-foreground sm:inline"
-      >
-        {{ props.username }}
-      </span>
-      <Button variant="ghost" size="sm" aria-label="Sign out" @click="emit('signOut')">
-        <Icon name="sign-out" />
-        Sign Out
       </Button>
     </div>
   </header>
