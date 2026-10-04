@@ -71,10 +71,13 @@ async def send_message(
             # Notify frontend of new title if this was the first message
             if new_title:
                 yield f"data: {json.dumps({'type': 'title_updated', 'conversation_id': str(conversation.id), 'title': new_title})}\n\n"
-                # Send cleaned content to replace the streamed response (removes title line)
-                yield f"data: {json.dumps({'type': 'message_updated', 'message_id': message_id, 'content': cleaned_content})}\n\n"
 
             yield f"data: {json.dumps({'type': 'complete', 'message_id': message_id})}\n\n"
+
+            # Send cleaned content after complete (so message ID is assigned)
+            if new_title:
+                yield f"data: {json.dumps({'type': 'message_updated', 'message_id': message_id, 'content': cleaned_content})}\n\n"
+
             yield "data: [DONE]\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
