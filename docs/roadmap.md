@@ -98,9 +98,11 @@ Dependencies identify prerequisites; they do not require every preceding phase t
 
 **Not yet:** Tools, executable code, cloud access, or reusable workflows.
 
-#### Phase 2 — Durable Workspace and Observable Runs
+#### Phase 2 — Durable Workspace and Observable Runs ✅
 
 **Milestone:** "I can reconnect or restart OpenShip without losing my conversation or the recorded state of my work."
+
+**Status:** Implemented — PR #21
 
 **Build**
 
