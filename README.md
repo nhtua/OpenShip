@@ -106,20 +106,23 @@ All contributions are welcome, no matter your experience level. We're building t
 
 ### Pre-commit Hooks
 
-We use pre-commit hooks to enforce code quality before commits are created. The hooks run `ruff` linting and `pytest` on every commit.
+We use pre-commit hooks to enforce code quality before commits are created. The hooks run `ruff` linting, `pytest` (backend), and `pnpm typecheck` + `pnpm test:run` (frontend) on every commit.
 
 To install:
 
 ```bash
 # From repo root
-apps/agent/.venv/bin/pre-commit install
+pip install pre-commit
+pre-commit install
 ```
 
 To run hooks manually on all files:
 
 ```bash
-apps/agent/.venv/bin/pre-commit run --all-files
+pre-commit run --all-files
 ```
+
+**Note:** For new worktrees, always run `pre-commit install` after creating the worktree to ensure hooks are active.
 
 ## Repository Layout
 
