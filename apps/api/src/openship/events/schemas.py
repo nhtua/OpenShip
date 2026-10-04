@@ -22,11 +22,32 @@ class EventRead(BaseModel):
     created_at: str
 
 
+class MessageSummary(BaseModel):
+    """Summary of a chat message."""
+    id: str
+    role: str
+    content: str
+    run_id: Optional[str]
+    created_at: str
+
+
+class RunSummary(BaseModel):
+    """Summary of a run."""
+    id: str
+    status: str
+    attempt: int
+    started_at: Optional[str]
+    ended_at: Optional[str]
+    error_code: Optional[str]
+
+
 class SnapshotResponse(BaseModel):
     """Complete state snapshot for a conversation."""
     conversation_id: str
     sequence: int  # Max committed sequence; -1 means empty
     events: list[EventRead]
+    messages: list[MessageSummary]
+    runs: list[RunSummary]
 
 
 class StreamResponse(BaseModel):

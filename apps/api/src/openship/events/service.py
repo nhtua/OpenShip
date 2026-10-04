@@ -8,9 +8,16 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ..chat.models import Conversation
-from ..runs.models import Event
-from .schemas import EventInput, EventRead, SnapshotResponse, StreamResponse
+from ..chat.models import Conversation, Message
+from ..runs.models import Event, Run
+from .schemas import (
+    EventInput,
+    EventRead,
+    MessageSummary,
+    RunSummary,
+    SnapshotResponse,
+    StreamResponse,
+)
 
 
 def _event_to_read(ev: Event) -> EventRead:
@@ -29,6 +36,29 @@ def _event_to_read(ev: Event) -> EventRead:
         type=ev.type,
         payload=payload,
         created_at=ev.created_at.isoformat() if ev.created_at else "",
+    )
+
+
+def _message_to_summary(msg: Message) -> MessageSummary:
+    """Convert Message model to MessageSummary schema."""
+    return MessageSummary(
+        id=str(msg.id),
+        role=msg.role,
+        content=msg.content,
+        run_id=str(msg.run_id) if msg.run_id else None,
+        created_at=msg.created_at.isoformat() if msg.created_at else "",
+    )
+
+
+def _run_to_summary(run: Run) -> RunSummary:
+    """Convert Run model to RunSummary schema."""
+    return RunSummary(
+        id=str(run.id),
+        status=run.status,
+        attempt=run.attempt,
+        started_at=run.created_at.isoformat() if run.created_at else None,
+        ended_at=run.ended_at.isoformat() if run.ended_at else None,
+        error_code=run.error_code,
     )
 
 
@@ -149,6 +179,22 @@ def read_snapshot(db: Session, user_id: uuid.UUID, conversation_id: str) -> Snap
         .all()
     )
 
+    # Read messages
+    messages = (
+        db.query(Message)
+        .filter(Message.conversation_id == conv_id)
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+
+    # Read runs
+    runs = (
+        db.query(Run)
+        .filter(Run.conversation_id == conv_id)
+        .order_by(Run.created_at.asc())
+        .all()
+    )
+
     max_sequence = conv.next_event_sequence - 1
     if max_sequence < 0:
         max_sequence = -1
@@ -157,6 +203,8 @@ def read_snapshot(db: Session, user_id: uuid.UUID, conversation_id: str) -> Snap
         conversation_id=str(conv_id),
         sequence=max_sequence,
         events=[_event_to_read(ev) for ev in events],
+        messages=[_message_to_summary(msg) for msg in messages],
+        runs=[_run_to_summary(run) for run in runs],
     )
 
 

@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -56,6 +56,7 @@ async def get_events_after(
 async def stream_event_stream(
     conversation_id: str,
     after_sequence: int = Query(-1, ge=-1, description="Cursor: last received event sequence"),
+    request: Request = None,
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
@@ -64,7 +65,18 @@ async def stream_event_stream(
     Uses database polling as Phase 2 fallback. Emits events as they are
     committed and sends periodic heartbeats. For a pruned cursor, emits
     'snapshot.required' then closes.
+
+    Supports the Last-Event-ID header as an alternative cursor: if provided,
+    it takes precedence over the after_sequence query parameter.
     """
+    # Check for Last-Event-ID header as alternative cursor
+    last_event_id = request.headers.get("last-event-id") if request else None
+    if last_event_id is not None:
+        try:
+            # Last-Event-ID should be the sequence number
+            after_sequence = int(last_event_id)
+        except (ValueError, TypeError):
+            pass  # Fall back to query parameter
     try:
         conv_id = uuid.UUID(conversation_id)
     except ValueError:

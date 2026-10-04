@@ -20,9 +20,8 @@ from sqlalchemy.orm import sessionmaker
 from ..config import settings
 from ..database.session import get_db
 from .checkpoints import get_checkpointer
-from .graph import build_chat_graph, execute_model_turn
+from .graph import build_chat_graph, ModelResult
 from .queue import claim_next, renew, finalize, mark_provider_started
-from .service import submit_turn
 
 logger = logging.getLogger("worker")
 
@@ -111,6 +110,14 @@ class Worker:
                 "conversation_id": str(conv.id),
             }
 
+            # Build the graph with the checkpointer
+            graph = build_chat_graph(self.checkpointer)
+
+            # Construct the thread ID and persist it on the Run record
+            thread_id = f"{run_id}-{claim.checkpoint_ns}"
+            run.graph_thread_id = thread_id
+            db.flush()
+
             # Mark provider call as started
             mark_provider_started(db, run_id, fence)
 
@@ -122,13 +129,16 @@ class Worker:
             )
             heartbeat_thread.start()
 
-            # Execute the model turn with checkpoint namespace
-            result = execute_model_turn(
-                run_id=str(run_id),
-                thread_id=f"{run_id}-{claim.checkpoint_ns}",
-                fence=fence,
-                state=state,
-            )
+            # Invoke the graph with checkpointing via thread_id
+            try:
+                config = {"configurable": {"thread_id": thread_id}}
+                graph_state = graph.invoke(state, config=config)
+                result = ModelResult(
+                    assistant_response=graph_state.get("assistant_response", ""),
+                    usage=graph_state.get("usage"),
+                )
+            except Exception as e:
+                result = ModelResult(assistant_response="", error=str(e))
 
             # Stop heartbeat
             heartbeat_stop.set()
