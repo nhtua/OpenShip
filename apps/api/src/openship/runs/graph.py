@@ -66,26 +66,49 @@ def model_step(state: ChatState) -> dict:
     except Exception as e:
         raise ModelError(f"Provider error: {e}")
 
-    # Collect response
+    # Collect response and capture usage from provider metadata
     chunks = []
-    completion_tokens = 0
+    prompt_tokens = None
+    completion_tokens = None
+    total_tokens = None
     try:
         for chunk in response:
             if chunk.choices:
                 delta = chunk.choices[0].delta
                 if delta and delta.content:
                     chunks.append(delta.content)
+            # Usage is provided in the final chunk of the stream
             if chunk.usage:
+                prompt_tokens = chunk.usage.prompt_tokens
                 completion_tokens = chunk.usage.completion_tokens
+                total_tokens = chunk.usage.total_tokens
     except Exception as e:
         raise ModelError(f"Stream error: {e}")
 
     assistant_response = "".join(chunks).strip()
 
-    # Build usage info only if we have data
+    # Build usage info from provider metadata only — never estimated
+    # Values come only from what the provider returns
     usage = None
-    if completion_tokens > 0:
-        usage = {"completion_tokens": completion_tokens}
+    has_any = (
+        prompt_tokens is not None
+        or completion_tokens is not None
+        or total_tokens is not None
+    )
+    if has_any:
+        # If any value is missing, mark as estimated (incomplete)
+        all_present = (
+            prompt_tokens is not None
+            and completion_tokens is not None
+            and total_tokens is not None
+        )
+        usage = {
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "provider_model": None,  # Not available in stream response
+            "estimated": not all_present,
+        }
 
     return {
         "assistant_response": assistant_response,

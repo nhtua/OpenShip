@@ -44,6 +44,7 @@ def setup_db(request):
     if "integration" in test_path and (
         "test_phase2_migration" in test_path
         or "test_run_commands_pg" in test_path
+        or "test_retention_pg" in test_path
     ):
         yield
         return

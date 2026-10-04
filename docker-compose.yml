@@ -10,6 +10,11 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openship"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build: ./apps/api
@@ -17,23 +22,49 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      EVENT_RETENTION_DAYS: 30
+      CHECKPOINT_RETENTION_DAYS: 30
+      LOG_RETENTION_DAYS: 7
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}"
 
   worker:
     build: ./apps/api
     command: ["uv", "run", "python", "-m", "src.openship.runs.worker", "--log-level", "INFO"]
     environment:
       DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      EVENT_RETENTION_DAYS: 30
+      CHECKPOINT_RETENTION_DAYS: 30
+      LOG_RETENTION_DAYS: 7
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}"
 
   web:
     build: ./apps/web
     ports:
       - "8080:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:

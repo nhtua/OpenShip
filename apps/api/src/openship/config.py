@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     worker_poll_interval: int = 2
     reconciler_interval: int = 60
 
+    # Retention settings
+    event_retention_days: int = 30
+    checkpoint_retention_days: int = 30
+    log_retention_days: int = 7
+
     class Config:
         env_file = ".env"
 

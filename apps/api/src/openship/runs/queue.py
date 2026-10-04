@@ -5,6 +5,7 @@ Uses FOR UPDATE SKIP LOCKED for race-free job claiming and fence-based
 optimistic concurrency control for all status updates.
 """
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -157,7 +158,8 @@ def finalize(db: Session, run_id: uuid.UUID, fence: int, result: dict) -> bool:
         db: Database session.
         run_id: ID of the run to finalize.
         fence: Current fence value (must match).
-        result: Result data including status and output.
+        result: Result data including status and output. Usage is persisted
+            only on success and only if provided.
 
     Returns:
         True if finalization succeeded, False if fence mismatch or job not found.
@@ -172,6 +174,10 @@ def finalize(db: Session, run_id: uuid.UUID, fence: int, result: dict) -> bool:
     }
     if status != "success":
         values["error_code"] = result.get("error_code", "unknown_error")
+
+    # Persist usage only on success, only if provider returned it
+    if status == "success" and result.get("usage") is not None:
+        values["usage"] = json.dumps(result["usage"])
 
     result_obj = db.execute(
         update(Run)

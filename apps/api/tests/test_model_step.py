@@ -173,7 +173,9 @@ def test_execute_model_turn_returns_model_result():
     mock_chunk_final.choices = [MagicMock()]
     mock_chunk_final.choices[0].delta = MagicMock(content="")
     mock_chunk_final.usage = MagicMock()
+    mock_chunk_final.usage.prompt_tokens = None
     mock_chunk_final.usage.completion_tokens = 5
+    mock_chunk_final.usage.total_tokens = None
 
     with patch("src.openship.runs.graph.settings") as mock_settings:
         mock_settings.openai_api_key = "fake-key"
@@ -186,7 +188,9 @@ def test_execute_model_turn_returns_model_result():
     assert isinstance(result, ModelResult)
     assert result.assistant_response == "Hello back!"
     assert result.usage is not None
-    assert result.usage["completion_tokens"] == 5
+    # Usage is incomplete (only output tokens), so estimated=True
+    assert result.usage["output_tokens"] == 5
+    assert result.usage["estimated"] is True
     assert result.error is None
 
 
