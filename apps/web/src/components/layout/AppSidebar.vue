@@ -92,7 +92,7 @@ const extraCount = computed(() => {
 <template>
   <Sidebar collapsible="icon" class="z-50">
     <SidebarHeader
-      class="h-14 shrink-0 items-center justify-start gap-2 border-b border-sidebar-border px-3 py-0 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+      class="h-14 shrink-0 flex-row items-center justify-start gap-2 border-b border-sidebar-border px-3 py-0 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
     >
       <span
         class="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground"
