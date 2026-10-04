@@ -7,6 +7,8 @@ import type {
   SSEEvent,
   SSEChunkEvent,
   SSECompleteEvent,
+  SSEConversationCreatedEvent,
+  SSETitleUpdatedEvent,
 } from '@/types'
 
 export const useChatStore = defineStore('chat', () => {
@@ -31,7 +33,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const res = await api.post('/conversations', { title })
       const conv = res.data as unknown as Conversation
-      conversations.value.push(conv)
+      conversations.value.unshift(conv)
       return conv
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } } }
@@ -157,7 +159,7 @@ export const useChatStore = defineStore('chat', () => {
                 (event as SSECompleteEvent).message_id,
               )
             } else if (event.type === 'conversation_created') {
-              const convEvent = event as { conversation_id: string }
+              const convEvent = event as SSEConversationCreatedEvent
               currentConversation.value = {
                 id: convEvent.conversation_id,
                 title: 'New Conversation',
@@ -166,6 +168,21 @@ export const useChatStore = defineStore('chat', () => {
               }
               // Add to conversations list
               conversations.value.unshift(currentConversation.value)
+            } else if (event.type === 'title_updated') {
+              const titleEvent = event as SSETitleUpdatedEvent
+              // Update the conversation title in the list
+              const convIndex = conversations.value.findIndex(
+                (c) => c.id === titleEvent.conversation_id,
+              )
+              if (convIndex >= 0) {
+                conversations.value[convIndex].title = titleEvent.title
+              }
+              // Update current conversation if it matches
+              if (
+                currentConversation.value?.id === titleEvent.conversation_id
+              ) {
+                currentConversation.value.title = titleEvent.title
+              }
             }
           } catch {
             // Skip malformed SSE events

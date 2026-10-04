@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { Conversation } from '@/types'
-import { Button, Icon, Input } from '@/components/ui'
+import { Button, Icon } from '@/components/ui'
 import {
   Sidebar,
   SidebarContent,
@@ -36,29 +36,8 @@ const emit = defineEmits<{
 
 const { setOpen, state } = useSidebar()
 
-const showCreateForm = ref(false)
-const draftTitle = ref('')
 const showUserMenu = ref(false)
 const showAllConversations = ref(false)
-
-function openCreateForm() {
-  if (props.busy) return
-  draftTitle.value = ''
-  showCreateForm.value = true
-}
-
-function cancelCreateForm() {
-  showCreateForm.value = false
-  draftTitle.value = ''
-}
-
-function submitCreateForm() {
-  if (props.busy || !showCreateForm.value) return
-  const title = draftTitle.value.trim() || 'New Conversation'
-  showCreateForm.value = false
-  draftTitle.value = ''
-  emit('createConversation', title)
-}
 
 function expandSidebar() {
   setOpen(true)
@@ -106,45 +85,17 @@ const extraCount = computed(() => {
     </SidebarHeader>
 
     <SidebarContent>
-      <!-- New conversation control + local create form (emits once). -->
+      <!-- New conversation control: immediately create, no title input. -->
       <div class="shrink-0 px-2 pt-1 group-data-[collapsible=icon]:px-0">
         <Button
           class="w-full justify-start"
-          :disabled="props.busy || showCreateForm"
+          :disabled="props.busy"
           aria-label="New Conversation"
-          @click="openCreateForm"
+          @click="emit('createConversation', 'New Conversation')"
         >
           <Icon name="plus" />
           <span class="group-data-[collapsible=icon]:hidden">New Conversation</span>
         </Button>
-
-        <form
-          v-if="showCreateForm"
-          class="mt-2 flex flex-col gap-2 px-1"
-          @submit.prevent="submitCreateForm"
-        >
-          <Input
-            v-model="draftTitle"
-            name="new-conversation-title"
-            placeholder="Conversation title"
-            aria-label="Conversation title"
-            class="h-8 text-sm"
-          />
-          <div class="flex gap-2">
-            <Button type="submit" size="sm" class="flex-1" :disabled="props.busy">
-              Create
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              class="flex-1"
-              @click="cancelCreateForm"
-            >
-              Cancel
-            </Button>
-          </div>
-        </form>
       </div>
 
       <!-- Agent Workspace: conversation history -->
@@ -156,7 +107,7 @@ const extraCount = computed(() => {
               :to="{ name: 'chat' }"
               class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 [&.router-link-exact-active]:bg-sidebar-accent [&.router-link-exact-active]:font-medium [&.router-link-exact-active]:text-sidebar-accent-foreground"
             >
-              <Icon name="comments" />
+              <Icon name="bolt" />
               <span>Agent Workspace</span>
             </RouterLink>
           </SidebarMenuItem>

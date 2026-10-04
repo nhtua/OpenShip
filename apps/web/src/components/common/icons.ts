@@ -33,6 +33,7 @@ export const PRIME_ICON_NAMES = [
   'cloud-upload',
   'bell',
   'cog',
+  'bolt',
 ] as const
 
 export type PrimeIconName = (typeof PRIME_ICON_NAMES)[number]

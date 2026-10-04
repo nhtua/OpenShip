@@ -63,17 +63,17 @@ describe('ChatView', () => {
     expect(row.attributes('data-active')).toBe('true')
   })
 
-  it('creates and selects a conversation with a trimmed title', async () => {
+  it('creates and selects a conversation immediately on click', async () => {
     const created: Conversation = {
       id: 'c3',
-      title: '',
+      title: 'New Conversation',
       created_at: '2026-01-03T00:00:00Z',
       updated_at: '2026-01-03T00:00:00Z',
     }
     mockApi.post.mockImplementation(
-      (async (url: string, body?: { title?: string }) => {
+      (async (url: string) => {
         if (url === '/conversations') {
-          return { data: { ...created, title: body?.title ?? 'New Conversation' } }
+          return { data: created }
         }
         throw new Error(`unexpected POST ${url}`)
       }) as never,
@@ -88,14 +88,10 @@ describe('ChatView', () => {
     )
 
     await findByText(wrapper, 'New Conversation')!.trigger('click')
-    const input = wrapper.find('input[name="new-conversation-title"]')
-    expect(input.exists()).toBe(true)
-    await input.setValue('  My new chat  ')
-    await wrapper.find('form').trigger('submit')
 
     expect(mockApi.post).toHaveBeenCalledTimes(1)
     expect(mockApi.post).toHaveBeenCalledWith('/conversations', {
-      title: 'My new chat',
+      title: 'New Conversation',
     })
 
     await vi.waitFor(
@@ -104,9 +100,6 @@ describe('ChatView', () => {
       },
       { timeout: wait },
     )
-
-    const row = findByText(wrapper, 'My new chat')!
-    expect(row.attributes('data-active')).toBe('true')
   })
 
   it('shows an actionable error with Retry when history loading fails', async () => {

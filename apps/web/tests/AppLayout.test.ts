@@ -35,46 +35,14 @@ describe('AppLayout', () => {
     expect(wrapper.findAll('[aria-current="page"]').length).toBe(1)
   })
 
-  it('emits createConversation with a trimmed title', async () => {
+  it('emits createConversation immediately on button click', async () => {
     const { wrapper } = await mountWithRouter(AppLayout, '/')
     const newButton = wrapper
       .findAll('button')
       .find((b) => b.text().includes('New Conversation'))
     expect(newButton, 'New Conversation button').toBeTruthy()
     await newButton!.trigger('click')
-
-    const input = wrapper.find('input[name="new-conversation-title"]')
-    expect(input.exists()).toBe(true)
-    await input.setValue('  Scale up web  ')
-
-    await wrapper.find('form').trigger('submit')
-    expect(wrapper.emitted('createConversation')).toEqual([['Scale up web']])
-  })
-
-  it('defaults a blank conversation title to New Conversation', async () => {
-    const { wrapper } = await mountWithRouter(AppLayout, '/')
-    const newButton = wrapper
-      .findAll('button')
-      .find((b) => b.text().includes('New Conversation'))
-    await newButton!.trigger('click')
-    await wrapper.find('form').trigger('submit')
     expect(wrapper.emitted('createConversation')).toEqual([['New Conversation']])
-  })
-
-  it('cancels the create form without emitting', async () => {
-    const { wrapper } = await mountWithRouter(AppLayout, '/')
-    const newButton = wrapper
-      .findAll('button')
-      .find((b) => b.text().includes('New Conversation'))
-    await newButton!.trigger('click')
-
-    const cancel = wrapper
-      .findAll('button')
-      .find((b) => b.text().includes('Cancel'))
-    await cancel!.trigger('click')
-
-    expect(wrapper.find('form').exists()).toBe(false)
-    expect(wrapper.emitted('createConversation')).toBeUndefined()
   })
 
   it('emits selectConversation when a conversation row is clicked', async () => {

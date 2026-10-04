@@ -49,12 +49,33 @@ def _get_chat_history(db: Session, conversation: Conversation) -> list[dict]:
     ]
 
 
+def _generate_title(user_content: str) -> str:
+    """Generate a conversation title from the first user message."""
+    # Trim to 50 characters, add ellipsis if longer
+    title = user_content.strip()
+    if len(title) > 50:
+        title = title[:50] + "..."
+    return title
+
+
 def _stream_response(
     conversation: Conversation,
     user_content: str,
     db: Session,
-) -> tuple[list[str], str]:
-    """Stream response from OpenAI and persist both user and assistant messages."""
+) -> tuple[list[str], str, str | None]:
+    """Stream response from OpenAI and persist both user and assistant messages.
+
+    Returns (chunks, assistant_message_id, new_title).
+    new_title is non-None if this is the first message in the conversation.
+    """
+    # Check if this is the first message (no existing messages)
+    existing_messages = (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation.id)
+        .count()
+    )
+    is_first_message = existing_messages == 0
+
     # Save user message
     user_msg = Message(
         conversation_id=conversation.id,
@@ -96,4 +117,11 @@ def _stream_response(
     db.add(assistant_msg)
     db.commit()
 
-    return chunks, str(assistant_msg.id)
+    # Generate title from first message
+    new_title = None
+    if is_first_message:
+        new_title = _generate_title(user_content)
+        conversation.title = new_title
+        db.commit()
+
+    return chunks, str(assistant_msg.id), new_title
