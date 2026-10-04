@@ -147,10 +147,10 @@ const extraCount = computed(() => {
         </form>
       </div>
 
-      <!-- Top-level navigation -->
+      <!-- Agent Workspace: conversation history -->
       <nav aria-label="Conversations" class="flex min-h-0 flex-1 flex-col">
+        <!-- Primary workspace link (expanded mode only) -->
         <SidebarMenu class="mt-1 group-data-[collapsible=icon]:hidden">
-          <!-- Primary action -->
           <SidebarMenuItem>
             <RouterLink
               :to="{ name: 'chat' }"
@@ -160,32 +160,10 @@ const extraCount = computed(() => {
               <span>Agent Workspace</span>
             </RouterLink>
           </SidebarMenuItem>
-
-          <!-- Placeholder / soon items -->
-          <SidebarMenuItem>
-            <button
-              type="button"
-              disabled
-              class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 [&.router-link-exact-active]:bg-sidebar-accent [&.router-link-exact-active]:font-medium [&.router-link-exact-active]:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50"
-            >
-              <Icon name="info-circle" />
-              <span>Settings</span>
-            </button>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <button
-              type="button"
-              disabled
-              class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 [&.router-link-exact-active]:bg-sidebar-accent [&.router-link-exact-active]:font-medium [&.router-link-exact-active]:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50"
-            >
-              <Icon name="info-circle" />
-              <span>Templates</span>
-            </button>
-          </SidebarMenuItem>
         </SidebarMenu>
 
-        <!-- Conversation history -->
-        <div class="mt-2 px-2 group-data-[collapsible=icon]:px-0">
+        <!-- Conversation history (expanded mode only) -->
+        <div class="mt-1 px-2 group-data-[collapsible=icon]:px-0">
           <div
             v-if="props.busy && props.conversations.length === 0"
             class="px-3 py-2 text-xs text-sidebar-foreground/60"
@@ -199,7 +177,7 @@ const extraCount = computed(() => {
             No conversations yet
           </div>
           <template v-else>
-            <SidebarMenu>
+            <SidebarMenu class="group-data-[collapsible=icon]:hidden">
               <SidebarMenuItem
                 v-for="conv in visibleConversations"
                 :key="conv.id"
@@ -217,16 +195,16 @@ const extraCount = computed(() => {
               </SidebarMenuItem>
             </SidebarMenu>
 
-            <!-- Expand / collapse toggle -->
+            <!-- Expand / collapse toggle for conversation list -->
             <template v-if="extraCount > 0">
               <Button
                 variant="ghost"
                 size="sm"
-                class="w-full text-xs text-sidebar-foreground/60 hover:text-sidebar-foreground"
+                class="w-full text-xs text-sidebar-foreground/60 hover:text-sidebar-foreground group-data-[collapsible=icon]:hidden"
                 @click="toggleConversations"
               >
                 <Icon :name="showAllConversations ? 'chevron-up' : 'chevron-down'" />
-                <span class="group-data-[collapsible=icon]:hidden">
+                <span>
                   {{ showAllConversations ? 'Show less' : `Show ${extraCount} more` }}
                 </span>
               </Button>
@@ -253,14 +231,57 @@ const extraCount = computed(() => {
       </Button>
     </SidebarFooter>
 
-    <!-- Footer: expanded-mode user profile (only when sidebar is expanded) -->
+    <!-- Footer: expanded-mode user profile + bottom navigation -->
     <SidebarFooter
-      v-if="username && state !== 'collapsed'"
+      v-if="state !== 'collapsed'"
       class="shrink-0"
     >
-      <div
-        class="relative"
-      >
+      <!-- Bottom navigation: Workflows, Tools, Skills, Settings -->
+      <SidebarMenu class="mb-2">
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="info-circle" />
+            <span>Workflows</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="info-circle" />
+            <span>Tools</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="info-circle" />
+            <span>Skills</span>
+          </button>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <button
+            type="button"
+            disabled
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Icon name="info-circle" />
+            <span>Settings</span>
+          </button>
+        </SidebarMenuItem>
+      </SidebarMenu>
+
+      <!-- User profile with dropdown -->
+      <div class="relative border-t border-sidebar-border">
         <Button
           variant="ghost"
           size="sm"
@@ -281,8 +302,16 @@ const extraCount = computed(() => {
           class="absolute bottom-full left-0 right-0 mb-1 overflow-hidden rounded-md border border-border bg-card shadow-lg"
         >
           <div class="px-3 py-2 text-xs text-muted-foreground border-b border-border">
-            Signed in
+            Signed in as {{ username }}
           </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="w-full justify-start gap-2"
+          >
+            <Icon name="user" />
+            Profile
+          </Button>
           <Button
             variant="ghost"
             size="sm"
