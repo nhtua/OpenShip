@@ -18,11 +18,14 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def chat(messages: list[dict], model: str | None = None):
+def chat(messages: list[dict], model: str | None = None, max_tokens: int | None = None):
     client = _get_client()
     model = model or settings.openai_model
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=True,
-    )
+    kwargs = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return client.chat.completions.create(**kwargs)

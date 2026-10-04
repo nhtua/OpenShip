@@ -25,7 +25,11 @@ def get_checkpointer(database_url: str) -> Generator:
     from langgraph.checkpoint.postgres import PostgresSaver
 
     saver = PostgresSaver.from_conn_string(database_url)
-    yield saver
+    try:
+        yield saver
+    finally:
+        # Clean up the connection pool
+        saver.close()
 
 
 def setup_checkpointer(database_url: str):

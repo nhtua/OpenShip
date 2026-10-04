@@ -62,7 +62,7 @@ def model_step(state: ChatState) -> dict:
     max_tokens = getattr(settings, "model_max_tokens", 4000)
 
     try:
-        response = chat(messages)
+        response = chat(messages, max_tokens=max_tokens)
     except Exception as e:
         raise ModelError(f"Provider error: {e}")
 
@@ -116,8 +116,10 @@ def execute_model_turn(run_id: str, thread_id: str, fence: int, state: ChatState
 
     Args:
         run_id: The run ID for this turn.
-        thread_id: The thread ID for checkpointing.
-        fence: The fence value for optimistic locking.
+        thread_id: The thread ID for checkpointing (reserved for future
+            checkpointer integration; not currently used).
+        fence: The fence value for optimistic locking (reserved for future
+            checkpointer integration; not currently used).
         state: The input state with messages.
 
     Returns:

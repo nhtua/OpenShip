@@ -1,7 +1,8 @@
-"""Integration tests for PostgreSQL-checkpointed chat graph.
+"""Integration tests for checkpointed chat graph.
 
 These tests verify the checkpointing behavior using LangGraph's InMemorySaver,
-which implements the same interface as PostgresSaver.
+which implements the same interface as PostgresSaver. The saver interface
+is what matters for graph checkpointing correctness.
 """
 
 import os

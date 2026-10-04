@@ -146,9 +146,10 @@ def test_model_step_output_bounded_by_max_tokens():
             mock_chat.return_value = [mock_chunk]
             result = model_step(state)
 
-    # Verify the call was made with messages
+    # Verify max_tokens was passed to chat()
     call_kwargs = mock_chat.call_args
     assert call_kwargs is not None
+    assert call_kwargs[1]["max_tokens"] == 4000
 
 
 def test_execute_model_turn_returns_model_result():
