@@ -6,7 +6,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest"
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
     "@formkit/auto-animate": "^0.10.0",
