@@ -41,6 +41,7 @@ async def send_message(
 
     # Get or create conversation
     conversation = _get_or_create_conversation(db, user, parsed_conversation_id)
+    created_new = parsed_conversation_id is None
 
     # Check API key availability
     if not settings.openai_api_key:
@@ -57,6 +58,10 @@ async def send_message(
     # Stream response
     def generate():
         try:
+            # Notify frontend of new conversation ID if one was just created
+            if created_new:
+                yield f"data: {json.dumps({'type': 'conversation_created', 'conversation_id': str(conversation.id)})}\n\n"
+
             chunks, message_id = _stream_response(conversation, req.content, db)
 
             for chunk_text in chunks:

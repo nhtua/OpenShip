@@ -51,6 +51,11 @@ export interface SSECompleteEvent {
   message_id: string
 }
 
-export type SSEEvent = SSEChunkEvent | SSECompleteEvent
+export interface SSEConversationCreatedEvent {
+  type: 'conversation_created'
+  conversation_id: string
+}
+
+export type SSEEvent = SSEChunkEvent | SSECompleteEvent | SSEConversationCreatedEvent
 
 

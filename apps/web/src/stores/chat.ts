@@ -156,6 +156,16 @@ export const useChatStore = defineStore('chat', () => {
               finalizeStreamingMessage(
                 (event as SSECompleteEvent).message_id,
               )
+            } else if (event.type === 'conversation_created') {
+              const convEvent = event as { conversation_id: string }
+              currentConversation.value = {
+                id: convEvent.conversation_id,
+                title: 'New Conversation',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              }
+              // Add to conversations list
+              conversations.value.unshift(currentConversation.value)
             }
           } catch {
             // Skip malformed SSE events
