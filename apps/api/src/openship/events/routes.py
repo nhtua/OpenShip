@@ -1,5 +1,6 @@
 """Routes for event snapshot and SSE streaming."""
 
+import asyncio
 import json
 import time
 import uuid
@@ -106,7 +107,7 @@ async def stream_event_stream(
             },
         )
 
-    def event_generator():
+    async def event_generator():
         """Generate SSE events by polling the database."""
         last_sequence = after_sequence
         last_poll = time.time()
@@ -153,10 +154,10 @@ async def stream_event_stream(
                         )
                         last_sequence = ev.sequence
 
-                # Sleep and retry
-                time.sleep(poll_interval)
+                # Sleep and retry (async)
+                await asyncio.sleep(poll_interval)
 
-        except GeneratorExit:
+        except asyncio.CancelledError:
             pass
 
     return StreamingResponse(

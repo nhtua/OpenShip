@@ -11,7 +11,9 @@ import tempfile
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -318,3 +320,80 @@ def test_outbox_deduplication_by_event_id(test_session):
         .count()
     )
     assert event_count == 1
+
+
+def test_slow_listener_does_not_block_worker(test_session):
+    """A slow consumer falling behind does not block the producer.
+
+    Demonstrates that events accumulate in the database regardless of
+    whether a consumer is actively streaming. The consumer can resume
+    from its last cursor and receive all events it missed.
+    """
+    user, project, conv = _setup_conv(test_session)
+
+    run = Run(
+        conversation_id=conv.id,
+        project_id=project.id,
+        status="queued",
+        fence=0,
+    )
+    test_session.add(run)
+    test_session.commit()
+
+    # Producer writes events rapidly (simulating worker)
+    from src.openship.events.service import append_event
+
+    for i in range(5):
+        append_event(
+            db=test_session,
+            conversation_id=conv.id,
+            run_id=run.id,
+            event_type=f"event_{i}",
+            payload={"i": i},
+            actor_id=user.id,
+        )
+    test_session.commit()
+
+    # Verify all 5 events were written
+    event_count = (
+        test_session.query(Event)
+        .filter(Event.conversation_id == conv.id)
+        .count()
+    )
+    assert event_count == 5
+
+    # Slow consumer: only reads up to sequence 2 (simulates falling behind)
+    from src.openship.events.service import stream_events
+    stream = stream_events(
+        db=test_session,
+        user_id=user.id,
+        conversation_id=str(conv.id),
+        after_sequence=-1,
+    )
+    # Consumer only processes first 3 events
+    processed = [ev for ev in stream.events if ev.sequence <= 2]
+    assert len(processed) == 3
+
+    # Producer continues writing while consumer is "slow"
+    for i in range(5, 8):
+        append_event(
+            db=test_session,
+            conversation_id=conv.id,
+            run_id=run.id,
+            event_type=f"event_{i}",
+            payload={"i": i},
+            actor_id=user.id,
+        )
+    test_session.commit()
+
+    # Consumer resumes from last processed cursor (sequence 2)
+    stream2 = stream_events(
+        db=test_session,
+        user_id=user.id,
+        conversation_id=str(conv.id),
+        after_sequence=2,
+    )
+    # Should receive events 3, 4, 5, 6, 7 (all that accumulated)
+    assert len(stream2.events) == 5
+    assert stream2.events[0].sequence == 3
+    assert stream2.events[-1].sequence == 7

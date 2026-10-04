@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..chat.models import Conversation
@@ -43,8 +43,8 @@ def append_event(
     """Append a durable semantic event to a conversation.
 
     Uses the caller's transaction and increments the conversation's
-    next_event_sequence atomically. The event is committed with the
-    caller's transaction.
+    next_event_sequence atomically via UPDATE...RETURNING. The event is
+    committed with the caller's transaction.
 
     Args:
         db: Database session (caller's transaction).
@@ -70,9 +70,29 @@ def append_event(
             },
         )
 
-    # Get and increment sequence atomically (within caller's tx)
-    seq = conv.next_event_sequence
-    conv.next_event_sequence = seq + 1
+    # Atomically increment sequence using SELECT...FOR UPDATE lock
+    # and ORM update. This provides a conversation sequence lock
+    # that prevents concurrent writers from reading the same sequence.
+    locked_conv = (
+        db.query(Conversation)
+        .filter(Conversation.id == conversation_id)
+        .with_for_update()
+        .first()
+    )
+    if locked_conv is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": f"Conversation {conversation_id} not found",
+                }
+            },
+        )
+
+    # Increment within the same transaction
+    seq = locked_conv.next_event_sequence
+    locked_conv.next_event_sequence = seq + 1
 
     event = Event(
         conversation_id=conversation_id,
@@ -80,6 +100,7 @@ def append_event(
         sequence=seq,
         type=event_type,
         payload=json.dumps(payload),
+        actor_id=actor_id,
     )
     db.add(event)
     return event

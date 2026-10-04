@@ -436,6 +436,70 @@ def test_stream_event_ordering():
         assert sequences == sorted(sequences)
 
 
+def test_sse_stream_pruned_cursor():
+    """Pruned cursor emits snapshot.required then closes."""
+    db = SessionLocal()
+    try:
+        user_id, project_id, conv_id = setup_user_project_conv()
+
+        run = Run(
+            conversation_id=conv_id, project_id=project_id, status="queued", fence=0
+        )
+        db.add(run)
+        db.flush()
+
+        # Create 150 events so min_sequence becomes positive
+        for i in range(150):
+            ev = Event(
+                conversation_id=conv_id,
+                run_id=run.id,
+                sequence=i,
+                type=f"event_{i}",
+                payload=f'{{"seq": {i}}}',
+            )
+            db.add(ev)
+
+        conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+        conv.next_event_sequence = 150
+        db.commit()
+    finally:
+        db.close()
+
+    token = get_user_token(user_id)
+    with TestClient(app_test) as client:
+        # min_sequence = 150 - 100 = 50
+        # Pruned check: after_sequence < 50 - 1 => after_sequence < 49
+        # Use after_sequence=10 which is pruned
+        resp = client.get(
+            f"/api/conversations/{conv_id}/events/stream?after_sequence=10",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        text = resp.text
+        assert "snapshot.required" in text
+        assert "pruned" in text
+
+
+def test_sse_stream_future_cursor():
+    """Future cursor on SSE endpoint returns 422."""
+    db = SessionLocal()
+    try:
+        user_id, project_id, conv_id = setup_user_project_conv()
+    finally:
+        db.close()
+
+    token = get_user_token(user_id)
+    with TestClient(app_test) as client:
+        resp = client.get(
+            f"/api/conversations/{conv_id}/events/stream?after_sequence=9999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422
+        data = resp.json()
+        assert "future_cursor" in str(data)
+
+
 def test_sse_stream_connection():
     """SSE stream endpoint returns proper headers and format."""
     db = SessionLocal()

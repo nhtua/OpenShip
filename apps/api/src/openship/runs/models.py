@@ -89,6 +89,11 @@ class Event(Base):
     sequence = Column(Integer, nullable=False)
     type = Column(String(100), nullable=False)
     payload = Column(Text, nullable=False)
+    actor_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
