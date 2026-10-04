@@ -62,14 +62,17 @@ async def send_message(
             if created_new:
                 yield f"data: {json.dumps({'type': 'conversation_created', 'conversation_id': str(conversation.id)})}\n\n"
 
-            chunks, message_id, new_title = _stream_response(conversation, req.content, db)
+            chunks, message_id, new_title, cleaned_content = _stream_response(conversation, req.content, db)
+
+            # Stream the response chunks
+            for chunk_text in chunks:
+                yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_text})}\n\n"
 
             # Notify frontend of new title if this was the first message
             if new_title:
                 yield f"data: {json.dumps({'type': 'title_updated', 'conversation_id': str(conversation.id), 'title': new_title})}\n\n"
-
-            for chunk_text in chunks:
-                yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_text})}\n\n"
+                # Send cleaned content to replace the streamed response (removes title line)
+                yield f"data: {json.dumps({'type': 'message_updated', 'message_id': message_id, 'content': cleaned_content})}\n\n"
 
             yield f"data: {json.dumps({'type': 'complete', 'message_id': message_id})}\n\n"
             yield "data: [DONE]\n\n"

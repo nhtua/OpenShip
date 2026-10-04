@@ -62,6 +62,12 @@ export interface SSETitleUpdatedEvent {
   title: string
 }
 
-export type SSEEvent = SSEChunkEvent | SSECompleteEvent | SSEConversationCreatedEvent | SSETitleUpdatedEvent
+export interface SSEMessageUpdatedEvent {
+  type: 'message_updated'
+  message_id: string
+  content: string
+}
+
+export type SSEEvent = SSEChunkEvent | SSECompleteEvent | SSEConversationCreatedEvent | SSETitleUpdatedEvent | SSEMessageUpdatedEvent
 
 

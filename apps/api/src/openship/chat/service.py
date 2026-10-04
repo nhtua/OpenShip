@@ -138,10 +138,15 @@ def _stream_response(
 
     # Extract title from LLM response (first message only)
     new_title = None
+    cleaned_content = assistant_content
     if is_first_message:
         new_title = _extract_title_from_response(assistant_content)
         if new_title:
             conversation.title = new_title
+            # Remove the title line from the response before storing
+            cleaned_content = re.sub(r'## Title:\s*.{1,50}', '', assistant_content).strip()
+            # Update the stored message content
+            assistant_msg.content = cleaned_content
             db.commit()
 
-    return chunks, str(assistant_msg.id), new_title
+    return chunks, str(assistant_msg.id), new_title, cleaned_content

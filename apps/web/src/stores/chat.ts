@@ -9,6 +9,7 @@ import type {
   SSECompleteEvent,
   SSEConversationCreatedEvent,
   SSETitleUpdatedEvent,
+  SSEMessageUpdatedEvent,
 } from '@/types'
 
 export const useChatStore = defineStore('chat', () => {
@@ -182,6 +183,15 @@ export const useChatStore = defineStore('chat', () => {
                 currentConversation.value?.id === titleEvent.conversation_id
               ) {
                 currentConversation.value.title = titleEvent.title
+              }
+            } else if (event.type === 'message_updated') {
+              const msgEvent = event as SSEMessageUpdatedEvent
+              // Find and update the message content (removes title line)
+              const msgIndex = messages.value.findIndex(
+                (m) => m.id === msgEvent.message_id,
+              )
+              if (msgIndex >= 0) {
+                messages.value[msgIndex].content = msgEvent.content
               }
             }
           } catch {
