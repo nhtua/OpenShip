@@ -30,6 +30,11 @@ app.include_router(chat_router)
 app.include_router(workspace_router)
 
 
+@app.get("/health")
+async def health_check_root():
+    return {"status": "ok"}
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
