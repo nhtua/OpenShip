@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { Button, Icon, Label, Textarea } from '@/components/ui'
 
 const props = withDefaults(defineProps<{ disabled?: boolean }>(), {
@@ -12,6 +12,11 @@ const emit = defineEmits<{
 
 const content = ref('')
 const textareaRef = ref<InstanceType<typeof Textarea> | null>(null)
+
+// Focus input on mount so user can start typing immediately
+onMounted(() => {
+  focusInput()
+})
 
 // Re-focus input when streaming completes (disabled → enabled)
 watch(
@@ -47,6 +52,8 @@ async function handleSend() {
   content.value = ''
   await nextTick()
   grow()
+  // Re-focus input after sending so user can continue typing
+  focusInput()
 }
 
 function handleKeydown(event: KeyboardEvent) {
