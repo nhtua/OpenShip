@@ -18,16 +18,47 @@ Invoke this skill for any Git-related work on this repository.
 2. **Create a worktree** from the latest `main`:
    ```bash
    git fetch origin
-   git worktree add -b <branch-name> /tmp/opencode/<task-slug> origin/main
-   cd /tmp/opencode/<task-slug>
+   git worktree add -b <branch-name> .worktrees/<task-slug> origin/main
+   cd .worktrees/<task-slug>
    ```
 
-3. **Sync before starting a sub-task** (rebase, not merge):
+3. **Install dependencies and pre-commit hooks** in the new worktree:
+   ```bash
+   # Frontend dependencies
+   cd apps/web
+   pnpm install
+   cd ../..
+
+   # Backend dependencies
+   cd apps/api
+   uv sync
+   cd ../..
+
+   # Install pre-commit hooks
+   pre-commit install
+   ```
+
+4. **Sync before starting a sub-task** (rebase, not merge):
    ```bash
    git fetch origin
    git rebase origin/main
    ```
    Resolve any uncommitted or unstaged work first.
+
+5. **Run tests before committing:**
+   ```bash
+   # Frontend typecheck, tests, and build
+   cd apps/web
+   pnpm typecheck
+   pnpm test:run
+   pnpm build
+   cd ../..
+
+   # Backend tests
+   cd apps/api
+   uv run pytest tests/ -q
+   cd ../..
+   ```
 
 ## Branch Naming
 
@@ -50,7 +81,7 @@ Invoke this skill for any Git-related work on this repository.
 2. Clean up the worktree (the branch is preserved on remote):
    ```bash
    cd <repo-root>
-   git worktree remove /tmp/opencode/<task-slug>
+   git worktree remove .worktrees/<task-slug>
    ```
 
 ## Privacy
