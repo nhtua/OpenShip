@@ -16,3 +16,17 @@ repos:
         types: [python]
         pass_filenames: false
         always_run: true
+
+      - id: frontend-typecheck
+        name: Vue Typecheck
+        entry: bash -c "cd apps/web && pnpm typecheck"
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: frontend-tests
+        name: Frontend Unit Tests
+        entry: bash -c "cd apps/web && pnpm test:run"
+        language: system
+        pass_filenames: false
+        always_run: true
