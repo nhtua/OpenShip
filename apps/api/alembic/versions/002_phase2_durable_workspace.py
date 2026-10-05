@@ -94,6 +94,7 @@ def upgrade() -> None:
     op.create_table(
         'events',
         sa.Column('id', sa.String(36), nullable=False),
+        sa.Column('project_id', sa.String(36), sa.ForeignKey('projects.id', ondelete='CASCADE'), nullable=True),
         sa.Column('conversation_id', sa.String(36), sa.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False),
         sa.Column('run_id', sa.String(36), sa.ForeignKey('runs.id', ondelete='SET NULL'), nullable=True),
         sa.Column('sequence', sa.Integer(), nullable=False),
@@ -104,6 +105,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('conversation_id', 'sequence', name='uq_events_conversation_sequence'),
     )
     op.create_index('ix_events_conversation_id_sequence', 'events', ['conversation_id', 'sequence'])
+    op.create_index('ix_events_project_id', 'events', ['project_id'])
 
     # 7. Create outbox table (SSE notification pattern)
     op.create_table(
