@@ -258,6 +258,26 @@ export const useChatStore = defineStore('chat', () => {
         updateRunStatus(convId, event.run_id || '', 'cancelled', event.created_at)
         break
       }
+
+      case 'title_updated': {
+        const payload = event.payload
+        const title = (payload.title as string) || ''
+        const payloadConvId = payload.conversation_id as string
+
+        // Update conversation title in conversations list
+        const convIndex = conversations.value.findIndex(
+          (c) => c.id === payloadConvId,
+        )
+        if (convIndex >= 0) {
+          conversations.value[convIndex].title = title
+        }
+
+        // Update current conversation title
+        if (currentConversation.value?.id === payloadConvId) {
+          currentConversation.value.title = title
+        }
+        break
+      }
     }
   }
 
