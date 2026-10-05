@@ -18,6 +18,7 @@ import psycopg2
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from ..chat.models import Message
 from ..config import settings
 from ..database.session import get_db
 from .checkpoints import get_checkpointer
@@ -111,7 +112,7 @@ class Worker:
         try:
             # Get run and conversation info
             from ..runs.models import Run
-            from ..chat.models import Conversation, Message
+            from ..chat.models import Conversation
 
             run = db.query(Run).filter(Run.id == run_id).first()
             if not run:
