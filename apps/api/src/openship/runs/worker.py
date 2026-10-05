@@ -140,14 +140,20 @@ class Worker:
             heartbeat_thread.start()
 
             # Invoke the graph with checkpointing via thread_id
+            print(f"[worker] About to invoke graph for run {run_id}")
             try:
                 config = {"configurable": {"thread_id": thread_id}}
+                print(f"[worker] Invoking graph.invoke...")
                 graph_state = graph.invoke(state, config=config)
+                print(f"[worker] graph.invoke returned")
                 result = ModelResult(
                     assistant_response=graph_state.get("assistant_response", ""),
                     usage=graph_state.get("usage"),
                 )
             except Exception as e:
+                import traceback
+                print(f"[worker] graph.invoke failed: {type(e).__name__}: {e}")
+                traceback.print_exc()
                 result = ModelResult(assistant_response="", error=str(e))
 
             # Stop heartbeat
