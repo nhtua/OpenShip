@@ -76,6 +76,11 @@ class Event(Base):
     __tablename__ = "events"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     conversation_id = Column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
