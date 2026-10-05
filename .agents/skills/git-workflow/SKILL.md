@@ -68,7 +68,8 @@ Invoke this skill for any Git-related work on this repository.
 
 ## Commit & PR Strategy
 
-- Commit often with clear messages after each logical change.
+- **Validate before committing.** Always run relevant tests and typechecks before committing. Never commit code you haven't verified works.
+- **Commit atomic, working changes.** Each commit should be a complete, tested unit of work that leaves the codebase in a working state.
 - One feature/fix per branch. Group related changes; do not open PRs after every small edit.
 - Open a PR only when the feature/fix is complete and ready for review.
 
