@@ -7,6 +7,7 @@ and finalizes the run with fence-based optimistic concurrency control.
 import argparse
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -75,6 +76,28 @@ class Worker:
                 logger.warning(f"[{self.worker_id}] Heartbeat error for run {run_id}: {e}")
                 break
 
+    def _is_first_message(self, db, conversation, user_msg):
+        """Check if this is the first message in the conversation."""
+        existing = db.query(Message).filter(
+            Message.conversation_id == conversation.id,
+            Message.id != user_msg.id,
+        ).count()
+        return existing == 0
+
+    def _generate_title(self, user_content):
+        """Generate a conversation title from the first user message (fallback)."""
+        title = user_content.strip()
+        if len(title) > 50:
+            title = title[:50] + "..."
+        return title
+
+    def _extract_title_from_response(self, response):
+        """Extract a conversation title from the LLM response."""
+        match = re.search(r'## Title:\s*(.{1,50})', response)
+        if match:
+            return match.group(1).strip()
+        return None
+
     def process_job(self, claim):
         """Process a single claimed job with lease heartbeat."""
         run_id = claim.run_id
@@ -109,6 +132,9 @@ class Worker:
                 logger.warning(f"No user message for run {run_id}")
                 return False
 
+            # Check if this is the first message (for auto-titling)
+            is_first = self._is_first_message(db, conv, user_msg)
+
             # Load conversation history for context
             history = db.query(Message).filter(
                 Message.conversation_id == conv.id,
@@ -117,6 +143,13 @@ class Worker:
 
             # Build graph state with checkpoint namespace
             messages = []
+
+            # Add system prompt with title generation instruction for first message
+            system_content = "You are OpenShip, an AI DevOps co-pilot. Help users with infrastructure, deployment, and operations tasks. Be concise and practical."
+            if is_first:
+                system_content += "\n\nAfter your response, include a short 50-character summary on a new line prefixed with '## Title: '. This will be used as the conversation title. Do not include any other content after the title."
+            messages.append({"role": "system", "content": system_content})
+
             for msg in history:
                 messages.append({"role": msg.role, "content": msg.content})
             messages.append({"role": "user", "content": user_msg.content})
@@ -171,6 +204,18 @@ class Worker:
             # Finalize the run first to check ownership
             from ..events.service import append_event
 
+            # Auto-title the conversation if this is the first message
+            new_title = None
+            cleaned_response = result.assistant_response
+            if is_first and not result.error:
+                new_title = self._extract_title_from_response(result.assistant_response)
+                if new_title:
+                    # Remove the title line from the response before storing
+                    cleaned_response = re.sub(r'## Title:\s*.{1,50}', '', result.assistant_response).strip()
+                else:
+                    # Fallback: generate title from user message
+                    new_title = self._generate_title(user_msg.content)
+
             if result.error:
                 finalized = finalize(
                     db=db,
@@ -203,7 +248,7 @@ class Worker:
                     fence=fence,
                     result={
                         "status": "success",
-                        "output": result.assistant_response,
+                        "output": cleaned_response,
                         "usage": result.usage,
                     },
                 )
@@ -213,9 +258,13 @@ class Worker:
                         conversation_id=conv.id,
                         run_id=run_id,
                         role="assistant",
-                        content=result.assistant_response,
+                        content=cleaned_response,
                     )
                     db.add(assistant_msg)
+
+                    # Update conversation title if this was the first message
+                    if is_first and new_title:
+                        conv.title = new_title
 
                     # Emit run.succeeded event
                     append_event(
@@ -227,8 +276,21 @@ class Worker:
                         actor_id=None,
                     )
 
+                    # Emit title_updated event if title changed
+                    if is_first and new_title:
+                        append_event(
+                            db=db,
+                            conversation_id=conv.id,
+                            run_id=run_id,
+                            event_type="title_updated",
+                            payload={"conversation_id": str(conv.id), "title": new_title},
+                            actor_id=None,
+                        )
+
                     db.commit()
                     logger.info(f"[{self.worker_id}] Run {run_id} completed")
+                    if is_first and new_title:
+                        logger.info(f"[{self.worker_id}] Auto-titled conversation: {new_title}")
                 else:
                     logger.warning(f"[{self.worker_id}] Run {run_id} already finalized by another worker")
 
