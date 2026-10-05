@@ -41,11 +41,18 @@ class Worker:
 
         # Set up checkpointer
         self.checkpointer = None
+        self._checkpointer_ctx = None
         try:
             from langgraph.checkpoint.postgres import PostgresSaver
-            # PostgresSaver.from_conn_string returns a context manager
-            saver_ctx = PostgresSaver.from_conn_string(settings.database_url)
-            self.checkpointer = saver_ctx.__enter__()
+            # Use persistent connection with pool
+            self._checkpointer_ctx = PostgresSaver.from_conn_string(
+                settings.database_url,
+                pool_size=5,
+                max_overflow=10,
+                pool_timeout=30,
+                pool_recycle=1800,
+            )
+            self.checkpointer = self._checkpointer_ctx.__enter__()
             logger.info("Checkpointer initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize checkpointer: {e}")
