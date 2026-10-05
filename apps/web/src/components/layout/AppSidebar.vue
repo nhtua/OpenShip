@@ -88,7 +88,7 @@ const extraCount = computed(() => {
     <div class="shrink-0 border-b border-sidebar-border px-3 py-2 group-data-[collapsible=icon]:hidden">
       <div class="text-xs text-sidebar-foreground/60">Project</div>
       <div class="flex items-center gap-1 text-sm font-medium text-sidebar-foreground">
-        <Icon name="bolt" class="size-3" />
+        <Icon name="box" class="size-3" />
         Personal Workspace
       </div>
     </div>
