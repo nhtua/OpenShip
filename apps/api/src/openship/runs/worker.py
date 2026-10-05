@@ -175,7 +175,7 @@ class Worker:
                         db=db,
                         conversation_id=conv.id,
                         run_id=run_id,
-                        type="run.failed",
+                        event_type="run.failed",
                         payload={"error_code": "provider_error", "error": result.error},
                         actor_id=None,
                     )
@@ -209,7 +209,7 @@ class Worker:
                         db=db,
                         conversation_id=conv.id,
                         run_id=run_id,
-                        type="run.succeeded",
+                        event_type="run.succeeded",
                         payload={"message_id": str(assistant_msg.id), "usage": result.usage},
                         actor_id=None,
                     )
