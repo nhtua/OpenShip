@@ -77,6 +77,20 @@ async function handleSelectConversation(id: string) {
 async function handleSend(content: string) {
   if (busy.value) return
   chat.error = null
+
+  // If no conversation is selected, create one first
+  if (!chat.currentConversation) {
+    isCreatingConversation.value = true
+    try {
+      const conv = await chat.createConversation('New Conversation')
+      if (conv) {
+        await loadConversationById(conv.id)
+      }
+    } finally {
+      isCreatingConversation.value = false
+    }
+  }
+
   await chat.sendMessage(content, chat.currentConversation?.id ?? null)
 }
 
@@ -94,8 +108,20 @@ async function handleSignOut() {
   await router.replace({ name: 'login' })
 }
 
-onMounted(() => {
-  void loadHistory()
+onMounted(async () => {
+  await loadHistory()
+  // Auto-create a conversation if none exist so the user can immediately start chatting
+  if (!isLoadingConversations.value && chat.conversations.length === 0 && !historyLoadFailed.value) {
+    isCreatingConversation.value = true
+    try {
+      const conv = await chat.createConversation('New Conversation')
+      if (conv) {
+        await loadConversationById(conv.id)
+      }
+    } finally {
+      isCreatingConversation.value = false
+    }
+  }
 })
 </script>
 

@@ -84,6 +84,15 @@ const extraCount = computed(() => {
       </span>
     </SidebarHeader>
 
+    <!-- Project indicator (Phase 2: single default project) -->
+    <div class="shrink-0 border-b border-sidebar-border px-3 py-2 group-data-[collapsible=icon]:hidden">
+      <div class="text-xs text-sidebar-foreground/60">Project</div>
+      <div class="flex items-center gap-1 text-sm font-medium text-sidebar-foreground">
+        <Icon name="bolt" class="size-3" />
+        Personal Workspace
+      </div>
+    </div>
+
     <SidebarContent>
       <!-- New conversation control: immediately create, no title input. -->
       <div class="shrink-0 px-2 pt-1 group-data-[collapsible=icon]:px-0">
