@@ -21,6 +21,7 @@ def _get_client() -> OpenAI:
 def chat(messages: list[dict], model: str | None = None, max_tokens: int | None = None):
     client = _get_client()
     model = model or settings.openai_model
+    print(f"[llm] Calling chat completions: model={model}, messages={len(messages)}")
     kwargs = {
         "model": model,
         "messages": messages,
@@ -28,4 +29,11 @@ def chat(messages: list[dict], model: str | None = None, max_tokens: int | None 
     }
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    return client.chat.completions.create(**kwargs)
+    print(f"[llm] API key length: {len(settings.openai_api_key) if settings.openai_api_key else 0}")
+    try:
+        result = client.chat.completions.create(**kwargs)
+        print(f"[llm] Got response object: {type(result)}")
+        return result
+    except Exception as e:
+        print(f"[llm] API call failed: {type(e).__name__}: {e}")
+        raise
