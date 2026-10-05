@@ -125,6 +125,7 @@ def append_event(
     locked_conv.next_event_sequence = seq + 1
 
     event = Event(
+        project_id=locked_conv.project_id,
         conversation_id=conversation_id,
         run_id=run_id,
         sequence=seq,

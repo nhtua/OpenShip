@@ -129,6 +129,7 @@ def submit_turn(
     # Create initial event (turn_submitted)
     seq = conv.next_event_sequence
     event = Event(
+        project_id=conv.project_id,
         conversation_id=conv.id,
         run_id=run.id,
         sequence=seq,
