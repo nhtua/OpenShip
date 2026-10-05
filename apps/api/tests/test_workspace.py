@@ -2,14 +2,19 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 
-def test_get_workspace(client, auth_token):
+def test_get_workspace(client, auth_token, request):
     """GET /api/workspace returns user's workspace info."""
+    import hashlib
+    test_name = request.node.name
+    short_id = hashlib.md5(test_name.encode()).hexdigest()[:8]
+    username = f"tuser_{short_id}"
+
     response = client.get("/api/workspace", headers={"Authorization": f"Bearer {auth_token}"})
     assert response.status_code == 200
 
     data = response.json()
-    assert data["user"]["username"] == "testuser"
-    assert data["workspace"]["name"] == "testuser's workspace"
+    assert data["user"]["username"] == username
+    assert data["workspace"]["name"] == f"{username}'s workspace"
 
 
 def test_get_workspace_requires_auth(client):
@@ -22,15 +27,18 @@ def test_list_conversations_via_workspace(client, auth_token):
     """GET /api/workspace/conversations returns user's conversations."""
     headers = {"Authorization": f"Bearer {auth_token}"}
 
-    # Send a message to create a conversation
-    conv_id = uuid.uuid4()
+    # Phase 2: must create conversation explicitly (no auto-creation)
+    conv_resp = client.post("/api/conversations", json={"title": "New Conversation"}, headers=headers)
+    assert conv_resp.status_code == 201
+    conv_id = conv_resp.json()["id"]
+
     mock_chunk = MagicMock()
     mock_chunk.choices = [MagicMock()]
     mock_chunk.choices[0].delta = MagicMock(content="Test response")
     mock_done = MagicMock()
     mock_done.choices = []
 
-    with patch("src.openship.chat.service.chat") as mock_chat:
+    with patch("src.openship.chat.llm.chat") as mock_chat:
         mock_chat.return_value = [mock_chunk, mock_done]
 
         with patch("src.openship.chat.routes.settings") as mock_settings:

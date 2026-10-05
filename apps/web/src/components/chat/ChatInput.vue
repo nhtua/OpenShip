@@ -51,9 +51,9 @@ async function handleSend() {
   emit('send', text)
   content.value = ''
   await nextTick()
-  grow()
   // Re-focus input after sending so user can continue typing
   focusInput()
+  grow()
 }
 
 function handleKeydown(event: KeyboardEvent) {

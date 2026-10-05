@@ -21,7 +21,7 @@ withDefaults(
       class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground"
       aria-hidden="true"
     >
-      AI
+      OS
     </div>
     <div class="min-w-0 max-w-full flex-1 space-y-3 md:max-w-2xl">
       <div

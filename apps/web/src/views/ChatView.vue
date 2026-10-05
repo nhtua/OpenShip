@@ -6,6 +6,7 @@ import { useChatStore } from '@/stores/chat'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import RunCard from '@/components/chat/RunCard.vue'
 import {
   Alert,
   AlertDescription,
@@ -76,6 +77,20 @@ async function handleSelectConversation(id: string) {
 async function handleSend(content: string) {
   if (busy.value) return
   chat.error = null
+
+  // If no conversation is selected, create one first
+  if (!chat.currentConversation) {
+    isCreatingConversation.value = true
+    try {
+      const conv = await chat.createConversation('New Conversation')
+      if (conv) {
+        await loadConversationById(conv.id)
+      }
+    } finally {
+      isCreatingConversation.value = false
+    }
+  }
+
   await chat.sendMessage(content, chat.currentConversation?.id ?? null)
 }
 
@@ -93,8 +108,20 @@ async function handleSignOut() {
   await router.replace({ name: 'login' })
 }
 
-onMounted(() => {
-  void loadHistory()
+onMounted(async () => {
+  await loadHistory()
+  // Auto-create a conversation if none exist so the user can immediately start chatting
+  if (!isLoadingConversations.value && chat.conversations.length === 0 && !historyLoadFailed.value) {
+    isCreatingConversation.value = true
+    try {
+      const conv = await chat.createConversation('New Conversation')
+      if (conv) {
+        await loadConversationById(conv.id)
+      }
+    } finally {
+      isCreatingConversation.value = false
+    }
+  }
 })
 </script>
 
@@ -132,6 +159,10 @@ onMounted(() => {
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col" data-testid="chat-main">
+      <!-- Run card shows durable progress for the current conversation -->
+      <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
+        <RunCard :card="chat.runCards.get(chat.currentConversation.id)!" />
+      </div>
       <!-- The stream/composer components own their data-testid hooks. -->
       <ChatStream :messages="chat.messages" :is-streaming="chat.isStreaming" />
       <ChatInput :disabled="busy" @send="handleSend" />

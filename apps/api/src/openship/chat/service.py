@@ -6,6 +6,7 @@ from ..auth.models import User
 from ..chat.models import Conversation, Message
 from ..chat.llm import chat
 from ..config import settings
+from ..workspace.models import Project
 
 
 def _get_or_create_conversation(
@@ -13,7 +14,7 @@ def _get_or_create_conversation(
     user: User,
     conversation_id: uuid.UUID | None,
 ) -> Conversation:
-    """Get existing conversation or create a new one for this user."""
+    """Get existing conversation or create a new one for this user's project."""
     if conversation_id:
         conv = db.query(Conversation).filter(
             Conversation.id == conversation_id,
@@ -24,8 +25,16 @@ def _get_or_create_conversation(
         # Unknown conversation_id: create a new one
         pass
 
+    # Find user's default project
+    project = db.query(Project).filter(
+        Project.owner_user_id == user.id
+    ).first()
+    if not project:
+        raise ValueError(f"No project found for user {user.id}")
+
     conv = Conversation(
         user_id=user.id,
+        project_id=project.id,
         title="New Conversation",
     )
     db.add(conv)

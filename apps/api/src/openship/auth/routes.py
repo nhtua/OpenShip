@@ -1,9 +1,12 @@
+import uuid as _uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from ..auth.models import User
 from ..auth.service import create_jwt, hash_password, verify_password, verify_jwt
 from ..database.session import get_db
+from ..workspace.models import Project
 from .schemas import LoginRequest, RegisterRequest
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -101,13 +104,20 @@ async def register(req: RegisterRequest, db: Session = Depends(get_db)):
             },
         )
 
-    # Create new user
+    # Create new user and their default project in the same transaction
     user = User(
         username=req.username,
         email=req.email,
         password_hash=hash_password(req.password),
     )
     db.add(user)
+    db.flush()  # Generate user.id before creating project
+
+    project = Project(
+        owner_user_id=user.id,
+        name=f"{req.username}'s project",
+    )
+    db.add(project)
     db.commit()
     db.refresh(user)
 

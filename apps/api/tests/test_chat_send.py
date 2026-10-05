@@ -8,8 +8,10 @@ from fastapi.testclient import TestClient
 
 def test_send_message(client: TestClient, authorized_client: dict):
     """Test sending a message with SSE streaming and verifying response."""
-    # Use a fresh UUID — the service auto-creates a conversation for unknown IDs
-    new_conv_id = uuid.uuid4()
+    # Create conversation explicitly first (Phase 2: no auto-creation)
+    conv_resp = client.post("/api/conversations", json={"title": "Test"}, headers=authorized_client)
+    assert conv_resp.status_code == 201
+    conv_id = conv_resp.json()["id"]
 
     # Mock the OpenAI chat response
     mock_chunk1 = MagicMock()
@@ -39,7 +41,7 @@ def test_send_message(client: TestClient, authorized_client: dict):
                 mock_llm_settings.openai_base_url = "https://api.openai.com/v1"
 
                 response = client.post(
-                    f"/api/chat/{new_conv_id}/messages",
+                    f"/api/chat/{conv_id}/messages",
                     json={"content": "Hello OpenShip!"},
                     headers=authorized_client,
                 )
@@ -70,36 +72,15 @@ def test_send_message(client: TestClient, authorized_client: dict):
         assert "Hello OpenShip!" in messages[1]["content"]
 
 
-def test_send_message_creates_conversation(client: TestClient, authorized_client: dict):
-    """Test that sending a message to an unknown conversation_id auto-creates it."""
+def test_send_message_to_unknown_conversation_returns_404(client: TestClient, authorized_client: dict):
+    """Phase 2: sending to an unknown conversation returns 404 (no auto-creation)."""
     new_conv_id = uuid.uuid4()
-
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Hi there!")
-    mock_done = MagicMock()
-    mock_done.choices = []
-
-    with patch("src.openship.chat.service.chat") as mock_chat:
-        mock_chat.return_value = [mock_chunk, mock_done]
-
-        with patch("src.openship.chat.routes.settings") as mock_settings:
-            mock_settings.openai_api_key = "fake-key-for-testing"
-            mock_settings.openai_model = "gpt-4o"
-            mock_settings.openai_base_url = "https://api.openai.com/v1"
-
-            with patch("src.openship.chat.llm.settings") as mock_llm_settings:
-                mock_llm_settings.openai_api_key = "fake-key-for-testing"
-                mock_llm_settings.openai_model = "gpt-4o"
-                mock_llm_settings.openai_base_url = "https://api.openai.com/v1"
-
-                response = client.post(
-                    f"/api/chat/{new_conv_id}/messages",
-                    json={"content": "Start a new conversation"},
-                    headers=authorized_client,
-                )
-
-                assert response.status_code == 200
+    response = client.post(
+        f"/api/chat/{new_conv_id}/messages",
+        json={"content": "Start a new conversation"},
+        headers=authorized_client,
+    )
+    assert response.status_code == 404
 
 
 def test_send_message_unauthorized(client: TestClient):
@@ -116,7 +97,10 @@ def test_send_message_unauthorized(client: TestClient):
 
 def test_send_message_missing_api_key(client: TestClient, authorized_client: dict):
     """Test that missing API key returns 503 with user-friendly message."""
-    new_conv_id = uuid.uuid4()
+    # Create conversation explicitly first
+    conv_resp = client.post("/api/conversations", json={"title": "Test"}, headers=authorized_client)
+    assert conv_resp.status_code == 201
+    conv_id = conv_resp.json()["id"]
 
     with patch("src.openship.chat.llm.chat") as mock_chat:
         mock_chat.return_value = []
@@ -128,7 +112,7 @@ def test_send_message_missing_api_key(client: TestClient, authorized_client: dic
             mock_settings.openai_base_url = "https://api.openai.com/v1"
 
             response = client.post(
-                f"/api/chat/{new_conv_id}/messages",
+                f"/api/chat/{conv_id}/messages",
                 json={"content": "Hello"},
                 headers=authorized_client,
             )
