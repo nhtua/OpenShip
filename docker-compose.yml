@@ -1,5 +1,14 @@
 version: '3.8'
 services:
+  migrate:
+    build: ./apps/api
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: postgres:15
     environment:
@@ -25,9 +34,12 @@ services:
       EVENT_RETENTION_DAYS: 30
       CHECKPOINT_RETENTION_DAYS: 30
       LOG_RETENTION_DAYS: 7
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
@@ -48,9 +60,12 @@ services:
       EVENT_RETENTION_DAYS: 30
       CHECKPOINT_RETENTION_DAYS: 30
       LOG_RETENTION_DAYS: 7
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     logging:
       driver: json-file
       options:

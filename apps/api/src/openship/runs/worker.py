@@ -21,7 +21,7 @@ from ..config import settings
 from ..database.session import get_db
 from .checkpoints import get_checkpointer
 from .graph import build_chat_graph, ModelResult
-from .queue import claim_next, renew, finalize, mark_provider_started
+from .queue import claim_next, renew, finalize, mark_provider_started, reconcile_expired
 
 logger = logging.getLogger("worker")
 
@@ -42,10 +42,11 @@ class Worker:
         # Set up checkpointer
         self.checkpointer = None
         try:
-            from ..runs.checkpoints import get_checkpointer
-            with get_checkpointer(settings.database_url) as saver:
-                self.checkpointer = saver
-                logger.info("Checkpointer initialized")
+            from langgraph.checkpoint.postgres import PostgresSaver
+            # PostgresSaver.from_conn_string returns a context manager
+            saver_ctx = PostgresSaver.from_conn_string(settings.database_url)
+            self.checkpointer = saver_ctx.__enter__()
+            logger.info("Checkpointer initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize checkpointer: {e}")
             self.checkpointer = None
@@ -101,11 +102,20 @@ class Worker:
                 logger.warning(f"No user message for run {run_id}")
                 return False
 
+            # Load conversation history for context
+            history = db.query(Message).filter(
+                Message.conversation_id == conv.id,
+                Message.id != user_msg.id,
+            ).order_by(Message.created_at.asc()).all()
+
             # Build graph state with checkpoint namespace
+            messages = []
+            for msg in history:
+                messages.append({"role": msg.role, "content": msg.content})
+            messages.append({"role": "user", "content": user_msg.content})
+
             state = {
-                "messages": [
-                    {"role": "user", "content": user_msg.content},
-                ],
+                "messages": messages,
                 "run_id": str(run_id),
                 "conversation_id": str(conv.id),
             }
@@ -145,9 +155,11 @@ class Worker:
             if heartbeat_thread.is_alive():
                 heartbeat_thread.join(timeout=5)
 
-            # Finalize the run
+            # Finalize the run first to check ownership
+            from ..events.service import append_event
+
             if result.error:
-                finalize(
+                finalized = finalize(
                     db=db,
                     run_id=run_id,
                     fence=fence,
@@ -157,19 +169,22 @@ class Worker:
                         "output": result.error,
                     },
                 )
-                logger.info(f"[{self.worker_id}] Run {run_id} failed: {result.error}")
+                if finalized:
+                    # Emit run.failed event
+                    append_event(
+                        db=db,
+                        conversation_id=conv.id,
+                        run_id=run_id,
+                        type="run.failed",
+                        payload={"error_code": "provider_error", "error": result.error},
+                        actor_id=None,
+                    )
+                    logger.info(f"[{self.worker_id}] Run {run_id} failed: {result.error}")
+                else:
+                    logger.warning(f"[{self.worker_id}] Run {run_id} already finalized by another worker")
             else:
-                # Save assistant message
-                assistant_msg = Message(
-                    conversation_id=conv.id,
-                    run_id=run_id,
-                    role="assistant",
-                    content=result.assistant_response,
-                )
-                db.add(assistant_msg)
-                db.commit()
-
-                finalize(
+                # Try to finalize first to check ownership
+                finalized = finalize(
                     db=db,
                     run_id=run_id,
                     fence=fence,
@@ -179,7 +194,30 @@ class Worker:
                         "usage": result.usage,
                     },
                 )
-                logger.info(f"[{self.worker_id}] Run {run_id} completed")
+                if finalized:
+                    # Only save assistant message if we own the run
+                    assistant_msg = Message(
+                        conversation_id=conv.id,
+                        run_id=run_id,
+                        role="assistant",
+                        content=result.assistant_response,
+                    )
+                    db.add(assistant_msg)
+
+                    # Emit run.succeeded event
+                    append_event(
+                        db=db,
+                        conversation_id=conv.id,
+                        run_id=run_id,
+                        type="run.succeeded",
+                        payload={"message_id": str(assistant_msg.id), "usage": result.usage},
+                        actor_id=None,
+                    )
+
+                    db.commit()
+                    logger.info(f"[{self.worker_id}] Run {run_id} completed")
+                else:
+                    logger.warning(f"[{self.worker_id}] Run {run_id} already finalized by another worker")
 
             return True
 
@@ -206,10 +244,26 @@ class Worker:
             db.close()
 
     def run(self):
-        """Main worker loop."""
+        """Main worker loop with automatic reconciliation."""
         logger.info(f"[{self.worker_id}] Starting worker loop")
+        last_reconcile = time.time()
+        reconcile_interval = getattr(settings, "worker_reconcile_interval", 60)  # 60 seconds
 
         while self.running:
+            # Periodically reconcile expired leases
+            now = time.time()
+            if now - last_reconcile >= reconcile_interval:
+                db = self.Session()
+                try:
+                    reclaimed = reconcile_expired(db)
+                    if reclaimed > 0:
+                        logger.info(f"[{self.worker_id}] Reclaimed {reclaimed} expired leases")
+                except Exception as e:
+                    logger.warning(f"[{self.worker_id}] Error during reconciliation: {e}")
+                finally:
+                    db.close()
+                last_reconcile = now
+
             db = self.Session()
             try:
                 # Claim a job

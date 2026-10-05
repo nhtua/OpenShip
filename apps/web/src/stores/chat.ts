@@ -459,8 +459,12 @@ export const useChatStore = defineStore('chat', () => {
           }
         } catch (err) {
           console.error('STORE: Failed to submit durable run', err)
-          // Fall through to legacy API for compatibility
-          runId = ''
+          // Don't fall back to legacy API — show error to user
+          // This avoids duplicate model calls if submitTurn actually succeeded
+          // but the response was lost
+          error.value = 'Failed to submit message. Please try again.'
+          isStreaming.value = false
+          return
         }
       }
 

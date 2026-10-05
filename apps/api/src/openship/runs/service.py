@@ -208,3 +208,37 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
     db.commit()
     db.refresh(run)
     return run
+
+
+def get_run(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
+    """Get the status of a run.
+
+    Validates user ownership through the conversation.
+    """
+    try:
+        rid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": "invalid_run_id", "message": "Invalid run ID format"}},
+        )
+
+    run = db.query(Run).filter(Run.id == rid).first()
+    if not run:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "run_not_found", "message": "Run not found"}},
+        )
+
+    # Verify ownership through conversation
+    conv = db.query(Conversation).filter(
+        Conversation.id == run.conversation_id,
+        Conversation.user_id == user_id,
+    ).first()
+    if not conv:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "run_not_found", "message": "Run not found"}},
+        )
+
+    return run

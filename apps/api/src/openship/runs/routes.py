@@ -7,9 +7,32 @@ from ..auth.models import User
 from ..auth.routes import require_jwt
 from ..database.session import get_db
 from .schemas import RunResponse, RunCancelRequest, TurnSubmitRequest
-from .service import request_cancel, submit_turn
+from .service import request_cancel, submit_turn, get_run
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+
+@router.get("/{run_id}", response_model=RunResponse)
+async def get_run_status(
+    run_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """Get the status of a run."""
+    try:
+        run = get_run(
+            db=db,
+            user_id=user.id,
+            run_id=run_id,
+        )
+        return run
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"code": "get_run_failed", "message": str(e)}},
+        )
 
 
 @router.post("/{conversation_id}/turns", status_code=202, response_model=RunResponse)

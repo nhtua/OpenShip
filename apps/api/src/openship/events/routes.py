@@ -134,13 +134,12 @@ async def stream_event_stream(
                     yield _sse_heartbeat()
                     last_poll = now
 
-                # Poll for new events
+                # Poll for new events (no upper bound to catch events committed after subscription)
                 events = (
                     db.query(Event)
                     .filter(
                         Event.conversation_id == conv_id,
                         Event.sequence > last_sequence,
-                        Event.sequence < conv.next_event_sequence,
                     )
                     .order_by(Event.sequence.asc())
                     .all()
