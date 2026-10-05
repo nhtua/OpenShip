@@ -7,12 +7,6 @@ import type {
   DurableEvent,
   RunCard,
   Snapshot,
-  SSEEvent,
-  SSEChunkEvent,
-  SSECompleteEvent,
-  SSEConversationCreatedEvent,
-  SSETitleUpdatedEvent,
-  SSEMessageUpdatedEvent,
 } from '@/types'
 
 // Stable client request ID generation
@@ -467,34 +461,43 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       // Submit durable command
-      let runId = ''
-      if (conversationId) {
-        try {
-          const runRes = await runsApi.submitTurn(conversationId, {
-            content,
-            client_request_id: requestId,
-          })
-          runId = runRes.data.id
-          console.log('STORE: durable run submitted, runId:', runId)
-          // Update run card with actual run ID
-          const card = runCards.value.get(conversationId)
-          if (card) {
-            card.run_id = runId
-            runCards.value.set(conversationId, card)
-          }
-        } catch (err) {
-          console.error('STORE: Failed to submit durable run', err)
-          // Don't fall back to legacy API — show error to user
-          // This avoids duplicate model calls if submitTurn actually succeeded
-          // but the response was lost
-          error.value = 'Failed to submit message. Please try again.'
+      // If no conversation ID, create a new conversation first
+      let effectiveConvId = conversationId
+      if (!effectiveConvId) {
+        const newConv = await createConversation('New Conversation')
+        if (!newConv) {
+          error.value = 'Failed to create conversation.'
           isStreaming.value = false
           return
         }
+        effectiveConvId = newConv.id
+        // Update current conversation
+        currentConversation.value = newConv
+      }
+
+      let runId = ''
+      try {
+        const runRes = await runsApi.submitTurn(effectiveConvId, {
+          content,
+          client_request_id: requestId,
+        })
+        runId = runRes.data.id
+        console.log('STORE: durable run submitted, runId:', runId)
+        // Update run card with actual run ID
+        const card = runCards.value.get(effectiveConvId)
+        if (card) {
+          card.run_id = runId
+          runCards.value.set(effectiveConvId, card)
+        }
+      } catch (err) {
+        console.error('STORE: Failed to submit durable run', err)
+        error.value = 'Failed to submit message. Please try again.'
+        isStreaming.value = false
+        return
       }
 
       // Subscribe to events and process stream
-      const convId = conversationId || ''
+      const convId = effectiveConvId
       const cursor = cursors.value.get(convId) ?? -1
 
       if (runId) {
@@ -528,9 +531,6 @@ export const useChatStore = defineStore('chat', () => {
         } catch (err) {
           console.error('Event stream error', err)
         }
-      } else {
-        // Fallback to legacy chat stream API
-        await legacySendMessage(content, conversationId)
       }
 
       // Clear pending request
@@ -540,105 +540,6 @@ export const useChatStore = defineStore('chat', () => {
       error.value = `Failed to send message: ${message}`
     } finally {
       isStreaming.value = false
-    }
-  }
-
-  async function legacySendMessage(
-    content: string,
-    conversationId: string | null,
-  ): Promise<void> {
-    // Create placeholder for assistant response
-    const assistantMsg: ChatMessage = {
-      id: '',
-      role: 'assistant',
-      content: '',
-      conversation_id: conversationId,
-      created_at: new Date().toISOString(),
-    }
-    messages.value.push(assistantMsg)
-
-    // Open SSE connection using fetch
-    const token = localStorage.getItem('access_token')
-    const convId = conversationId || 'new'
-    const url = `/api/chat/${convId}/messages`
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        content,
-        conversation_id: conversationId,
-      }),
-    })
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Failed to send message`)
-    }
-
-    if (!response.body) {
-      throw new Error('No response body received')
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-
-      // Process complete SSE lines
-      const lines = buffer.split('\n\n')
-      buffer = lines.pop() ?? ''
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const jsonStr = line.slice(6)
-        try {
-          const event: SSEEvent = JSON.parse(jsonStr)
-          if (event.type === 'chunk') {
-            appendStreamingContent((event as SSEChunkEvent).content)
-          } else if (event.type === 'complete') {
-            finalizeStreamingMessage(
-              (event as SSECompleteEvent).message_id,
-            )
-          } else if (event.type === 'conversation_created') {
-            const convEvent = event as SSEConversationCreatedEvent
-            currentConversation.value = {
-              id: convEvent.conversation_id,
-              title: 'New Conversation',
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }
-            conversations.value.unshift(currentConversation.value)
-          } else if (event.type === 'title_updated') {
-            const titleEvent = event as SSETitleUpdatedEvent
-            const convIndex = conversations.value.findIndex(
-              (c) => c.id === titleEvent.conversation_id,
-            )
-            if (convIndex >= 0) {
-              conversations.value[convIndex].title = titleEvent.title
-            }
-            if (currentConversation.value?.id === titleEvent.conversation_id) {
-              currentConversation.value.title = titleEvent.title
-            }
-          } else if (event.type === 'message_updated') {
-            const msgEvent = event as SSEMessageUpdatedEvent
-            const msgIndex = messages.value.findIndex(
-              (m) => m.id === msgEvent.message_id,
-            )
-            if (msgIndex >= 0) {
-              messages.value[msgIndex].content = msgEvent.content
-            }
-          }
-        } catch {
-          // Skip malformed SSE events
-        }
-      }
     }
   }
 
@@ -678,20 +579,6 @@ export const useChatStore = defineStore('chat', () => {
 
   function appendMessage(msg: ChatMessage) {
     messages.value.push(msg)
-  }
-
-  function appendStreamingContent(content: string) {
-    const last = messages.value[messages.value.length - 1]
-    if (last && last.role === 'assistant' && !last.id) {
-      last.content += content
-    }
-  }
-
-  function finalizeStreamingMessage(messageId: string) {
-    const last = messages.value[messages.value.length - 1]
-    if (last && last.role === 'assistant' && !last.id) {
-      last.id = messageId
-    }
   }
 
   function clearMessages() {
