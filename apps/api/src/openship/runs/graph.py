@@ -61,9 +61,13 @@ def model_step(state: ChatState) -> dict:
     # Bounded output budget
     max_tokens = getattr(settings, "model_max_tokens", 4000)
 
+    print(f"[graph] Calling chat API with {len(messages)} messages, model={settings.openai_model}")
+    print(f"[graph] API key configured: {bool(settings.openai_api_key)}")
     try:
         response = chat(messages, max_tokens=max_tokens)
+        print(f"[graph] Chat response received: {response}")
     except Exception as e:
+        print(f"[graph] Chat API error: {type(e).__name__}: {e}")
         raise ModelError(f"Provider error: {e}")
 
     # Collect response and capture usage from provider metadata
