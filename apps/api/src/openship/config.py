@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"
 
     # JWT
-    jwt_secret: str = "dev-secret-change-in-production"
+    jwt_secret: str = "dev-secret-change-in-production-123"
     jwt_expiry_hours: int = 24
 
     # Server
