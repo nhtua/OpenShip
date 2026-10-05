@@ -394,6 +394,11 @@ export const useChatStore = defineStore('chat', () => {
           ) {
             sawTerminalEvent = true
           }
+          // Break out of the outer loop after processing terminal event
+          if (sawTerminalEvent) {
+            reader.releaseLock()
+            break
+          }
         } catch {
           // Skip malformed events
         }
