@@ -4,6 +4,7 @@ from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Tex
 from sqlalchemy.dialects.postgresql import UUID
 
 from ..auth.models import Base
+from ..workspace.models import Project  # noqa: F401
 
 
 class Run(Base):
