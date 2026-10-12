@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     model_max_tokens: int = 4000
 
+    # Model profiles (non-secret). Credentials stay in their own named bindings.
+    model_profiles_json: str = ""
+    model_default_profile_id: str = ""
+
     # Database
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"
 
