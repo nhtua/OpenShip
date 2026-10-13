@@ -81,6 +81,18 @@ def _is_private_host(host: str) -> bool:
     return host.startswith("172.")
 
 
+def destination_label(endpoint: str) -> str:
+    """A safe name for a destination: host and path, never a query or a secret.
+
+    A browser may show this; it may never show the endpoint's own shape, which
+    is where an operator could have hidden something.
+    """
+    parts = urlsplit(endpoint)
+    host = (parts.hostname or "").lower()
+    path = (parts.path or "").rstrip("/")
+    return f"{host}{path}"
+
+
 def parse_profiles(raw: str) -> tuple[ProviderProfile, ...]:
     """Parse and validate the operator's declared profiles, in declared order."""
     try:

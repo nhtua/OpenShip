@@ -3,7 +3,7 @@
 from ..auth.models import Base, User  # noqa: F401
 from ..workspace.models import Project  # noqa: F401
 from ..chat.models import Conversation, Message  # noqa: F401
-from ..runs.models import Run, RunJob, Event, Outbox  # noqa: F401
+from ..runs.models import Event, Outbox, ProviderAttempt, Run, RunJob  # noqa: F401
 
 __all__ = [
     "Base",
@@ -15,4 +15,5 @@ __all__ = [
     "RunJob",
     "Event",
     "Outbox",
+    "ProviderAttempt",
 ]

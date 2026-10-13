@@ -27,6 +27,11 @@ dev = [
     "pre-commit>=3.6.0",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "postgres: requires a real PostgreSQL database named by TEST_POSTGRES_URL",
+]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.2",

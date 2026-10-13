@@ -3,6 +3,8 @@
 from typing import Any, Optional
 from pydantic import BaseModel, Field
 
+from ..runs.schemas import AttemptSummary, ErrorSummary, ModelSummary, UsageSummary
+
 
 class EventInput(BaseModel):
     """Input for appending an event."""
@@ -32,13 +34,17 @@ class MessageSummary(BaseModel):
 
 
 class RunSummary(BaseModel):
-    """Summary of a run."""
+    """Summary of a run. Only the public projection: no credential, no SDK setting."""
     id: str
     status: str
     attempt: int
     started_at: Optional[str]
     ended_at: Optional[str]
     error_code: Optional[str]
+    model: Optional[ModelSummary] = None
+    usage: Optional[UsageSummary] = None
+    error: Optional[ErrorSummary] = None
+    provider_attempts: list[AttemptSummary] = Field(default_factory=list)
 
 
 class SnapshotResponse(BaseModel):

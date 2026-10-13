@@ -9,7 +9,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..chat.models import Conversation, Message
-from ..runs.models import Event, Run
+from ..runs.models import Event, ProviderAttempt, Run
+from ..runs.schemas import (
+    _attempt_projection,
+    _error_projection,
+    _model_projection,
+    _usage_projection,
+)
 from .schemas import (
     EventInput,
     EventRead,
@@ -50,8 +56,8 @@ def _message_to_summary(msg: Message) -> MessageSummary:
     )
 
 
-def _run_to_summary(run: Run) -> RunSummary:
-    """Convert Run model to RunSummary schema."""
+def _run_to_summary(run: Run, attempts=()) -> RunSummary:
+    """Convert Run model to RunSummary schema: only the public projection."""
     return RunSummary(
         id=str(run.id),
         status=run.status,
@@ -59,6 +65,10 @@ def _run_to_summary(run: Run) -> RunSummary:
         started_at=run.created_at.isoformat() if run.created_at else None,
         ended_at=run.ended_at.isoformat() if run.ended_at else None,
         error_code=run.error_code,
+        model=_model_projection(run.model_configuration),
+        usage=_usage_projection(run.usage),
+        error=_error_projection(run.error_code),
+        provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
     )
 
 
@@ -196,6 +206,14 @@ def read_snapshot(db: Session, user_id: uuid.UUID, conversation_id: str) -> Snap
         .all()
     )
 
+    # Attempts belong to the run's own story, in the order the worker made them
+    recorded_attempts: dict[uuid.UUID, list[ProviderAttempt]] = {}
+    if runs:
+        for attempt in db.query(ProviderAttempt).filter(
+            ProviderAttempt.run_id.in_([run.id for run in runs])
+        ).order_by(ProviderAttempt.ordinal).all():
+            recorded_attempts.setdefault(attempt.run_id, []).append(attempt)
+
     max_sequence = conv.next_event_sequence - 1
     if max_sequence < 0:
         max_sequence = -1
@@ -205,7 +223,7 @@ def read_snapshot(db: Session, user_id: uuid.UUID, conversation_id: str) -> Snap
         sequence=max_sequence,
         events=[_event_to_read(ev) for ev in events],
         messages=[_message_to_summary(msg) for msg in messages],
-        runs=[_run_to_summary(run) for run in runs],
+        runs=[_run_to_summary(run, recorded_attempts.get(run.id, ())) for run in runs],
     )
 
 

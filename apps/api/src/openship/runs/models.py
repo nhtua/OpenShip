@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, CheckConstraint, UniqueConstraint, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, CheckConstraint, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 
 from ..auth.models import Base
@@ -37,6 +37,11 @@ class Run(Base):
     ended_at = Column(DateTime(timezone=True), nullable=True)
     error_code = Column(String(50), nullable=True)
     usage = Column(Text, nullable=True)
+    # A run's own provider configuration, frozen when it was submitted. Null
+    # means "not recorded": a run from before profiles exists, and nothing is
+    # guessed for it.
+    model_selection = Column(Text, nullable=True)
+    model_configuration = Column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -72,10 +77,48 @@ class RunJob(Base):
     )
 
 
+class ProviderAttempt(Base):
+    """One bounded generation request a worker made for a run.
+
+    Metadata and outcomes only: no prompt, no provider response body, and no
+    credential ever belongs here.
+    """
+    __tablename__ = "provider_attempts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ordinal = Column(Integer, nullable=False)
+    fence = Column(Integer, nullable=False)
+    profile_id = Column(String(128), nullable=False)
+    profile_revision = Column(String(64), nullable=False)
+    adapter = Column(String(32), nullable=False)
+    requested_model = Column(String(128), nullable=False)
+    actual_model = Column(String(128), nullable=True)
+    destination_label = Column(String(120), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    outcome = Column(String(32), nullable=False, server_default="started")
+    error_code = Column(String(50), nullable=True)
+    usage = Column(Text, nullable=True)
+    reserved_cost_usd = Column(Numeric(12, 6), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "ordinal", name="uq_provider_attempts_run_id_ordinal"),
+        CheckConstraint(
+            "outcome IN ('started', 'succeeded', 'failed', 'cancelled')",
+            name="ck_provider_attempts_outcome",
+        ),
+        Index("ix_provider_attempts_run_id", "run_id"),
+    )
+
+
 class Event(Base):
     """An event in a conversation's lifecycle, with sequence numbering."""
     __tablename__ = "events"
-
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(
         UUID(as_uuid=True),

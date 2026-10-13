@@ -45,6 +45,7 @@ def setup_db(request):
         "test_phase2_migration" in test_path
         or "test_run_commands_pg" in test_path
         or "test_retention_pg" in test_path
+        or "test_provider_pinning" in test_path
     ):
         yield
         return
@@ -143,3 +144,61 @@ def auth_token(client: TestClient, request) -> str:
 def authorized_client(client: TestClient, auth_token: str):
     """Return headers with Bearer token for authenticated requests."""
     return {"Authorization": f"Bearer {auth_token}"}
+
+# --- Model profile configuration helpers (non-secret; credentials stay in bindings) ---
+
+FIXTURE_ENDPOINT = "https://fixture.provider.test/v1"  # rayloc:ignore
+FIXTURE_MODEL = "fixture-model"  # rayloc:ignore
+CREDENTIAL_BINDING = "TEST_PROVIDER_CREDENTIAL"  # rayloc:ignore
+SENTINEL_CREDENTIAL = "sentinel-credential-value"  # rayloc:ignore
+
+
+def profile_spec(profile_id: str, *, label: str | None = None, allowed_fallbacks=()):
+    """A minimal text-only profile an operator would declare."""
+    return {
+        "id": profile_id,
+        "label": label or f"Fixture profile {profile_id}",
+        "adapter": "openai",
+        "model": FIXTURE_MODEL,
+        "endpoint": FIXTURE_ENDPOINT,
+        "api_version": "chat-completions",
+        "credential_ref": CREDENTIAL_BINDING,
+        "capabilities": {
+            "streaming": True,
+            "usage_reporting": True,
+            "context_tokens": 32768,
+            "max_output_tokens": 4096,
+            "token_counting": False,
+            "tool_calls": False,
+            "structured_output": False,
+            "attachment_types": [],
+            "parallel_tool_calls": False,
+        },
+        "allowed_fallback_profile_ids": list(allowed_fallbacks),
+        "qualified_model_aliases": [],
+        "adapter_options": {
+            "adapter": "openai",
+            "output_limit_parameter": "max_tokens",
+        },
+    }
+
+
+def configure_profiles(monkeypatch, specs, default_id: str):
+    """Declare the installation's profiles for one test."""
+    import json
+
+    monkeypatch.setattr("src.openship.config.settings.model_profiles_json", json.dumps(specs))
+    monkeypatch.setattr("src.openship.config.settings.model_default_profile_id", default_id)
+    monkeypatch.setenv(CREDENTIAL_BINDING, SENTINEL_CREDENTIAL)
+
+
+def declare_two_profiles(monkeypatch) -> None:
+    """Two profiles where the second is an allowed fallback of the first."""
+    configure_profiles(
+        monkeypatch,
+        [
+            profile_spec("primary-fixture", allowed_fallbacks=["secondary-fixture"]),
+            profile_spec("secondary-fixture"),
+        ],
+        "primary-fixture",
+    )
