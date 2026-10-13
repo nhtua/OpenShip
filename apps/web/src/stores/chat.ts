@@ -109,11 +109,16 @@ export const useChatStore = defineStore('chat', () => {
     // that is being sent, so it is ignored rather than queued.
     if (isSubmitting.value) return
 
-    // A fallback is only offered when the chosen profile allows it; anything
-    // else the caller asks for is not this profile's to serve.
-    const chosen = profileId
+    // A fallback is only offered when the profile that answers allows it;
+    // anything else the caller asks for is not this profile's to serve. The
+    // profile that answers is the chosen one, or the default when nothing is
+    // chosen — which is the same rule the selector applies when it decides
+    // whether to offer the opt-in at all. Refusing it here would leave the
+    // browser offering a control the store then ignores.
+    const answering = profileId ?? modelProfiles.value?.default_profile_id
+    const chosen = answering
       ? (modelProfiles.value?.profiles ?? []).find(
-          (profile) => profile.profile_id === profileId,
+          (profile) => profile.profile_id === answering,
         )
       : null
     const allowed = new Set(chosen ? chosen.allowed_fallback_profile_ids : [])

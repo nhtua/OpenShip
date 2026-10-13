@@ -794,6 +794,21 @@ describe('chat store', () => {
     expect(chat.selectedFallbackIds).toEqual(['secondary-fixture'])
   })
 
+  it('accepts a fallback the default profile allows, with nothing chosen', async () => {
+    const chat = useChatStore()
+    await chat.loadModelProfiles()
+
+    // The selector offers the opt-in while the default answers, so the store
+    // has to accept it: refusing it would leave a control that does nothing.
+    chat.selectProfile(null, ['secondary-fixture'])
+    expect(chat.selectedProfileId).toBeNull()
+    expect(chat.selectedFallbackIds).toEqual(['secondary-fixture'])
+
+    // One the default does not allow is still not this turn's to promise.
+    chat.selectProfile(null, ['offline-fixture'])
+    expect(chat.selectedFallbackIds).toEqual([])
+  })
+
   it('keeps the captured payload when selection changes before submission', async () => {
     const chat = useChatStore()
     await chat.loadModelProfiles()

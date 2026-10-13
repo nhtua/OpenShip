@@ -291,3 +291,477 @@ export async function setAuthToken(
     localStorage.setItem('access_token', t)
   }, token)
 }
+
+/* ----------------------------------------------------------------------- */
+/* Durable-run fixtures (plan Task 10)                                      */
+/* ----------------------------------------------------------------------- */
+
+/**
+ * The endpoints the portability surface actually uses: a catalog, a submitted
+ * turn, a run read, a cancellation, a snapshot, and an event stream. Every
+ * response is local and fixed; no provider is contacted and no fixture names
+ * a credential.
+ *
+ * These are registered after `mockApi` rather than inside it, which is what
+ * makes them win: Playwright keeps the most recently added handler for a
+ * matching URL. A test that wants the durable path opts in, and every other
+ * test keeps seeing the legacy fixture it was written against.
+ */
+
+export interface E2EProfileItem {
+  profile_id: string
+  label: string
+  adapter: string
+  model: string
+  destination_label: string | null
+  capabilities: Record<string, unknown>
+  available: boolean
+  reason: string | null
+  explanation: string
+  allowed_fallback_profile_ids: string[]
+}
+
+export interface E2EProfileCatalog {
+  default_profile_id: string
+  profiles: E2EProfileItem[]
+}
+
+export interface E2ERunModelSummary {
+  profile_id: string
+  label: string
+  adapter: string
+  requested_model: string
+  actual_model: string | null
+  destination_label: string | null
+  fallback_profile_ids: string[]
+  recorded: boolean
+}
+
+export interface E2EUsageSummary {
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  cached_input_tokens: number | null
+  reasoning_tokens: number | null
+  source: string | null
+}
+
+export interface E2EErrorSummary {
+  code: string
+  message: string
+  retry_after_seconds: number | null
+}
+
+export interface E2EAttemptSummary {
+  ordinal: number
+  profile_id: string
+  adapter: string
+  requested_model: string
+  actual_model: string | null
+  destination_label: string | null
+  outcome: string
+  error_code: string | null
+  usage: E2EUsageSummary | null
+  started_at: string | null
+  ended_at: string | null
+}
+
+export interface E2ERun {
+  id: string
+  conversation_id: string
+  status:
+    | 'created'
+    | 'queued'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'timed_out'
+    | 'stale'
+  created_at: string
+  attempt: number
+  model: E2ERunModelSummary | null
+  usage: E2EUsageSummary | null
+  error: E2EErrorSummary | null
+  provider_attempts: E2EAttemptSummary[]
+}
+
+export interface E2EDurableEvent {
+  id: string
+  conversation_id: string
+  run_id: string | null
+  sequence: number
+  type: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export interface E2ESnapshot {
+  conversation_id: string
+  sequence: number
+  events: E2EDurableEvent[]
+}
+
+/**
+ * What one installation offers. Two it can serve and one it cannot: the
+ * unavailable one carries the reason a reader acts on. No fixture here names
+ * an endpoint URL, an adapter's host, or a credential.
+ */
+export const E2E_PROFILES: E2EProfileCatalog = {
+  default_profile_id: 'primary-model',
+  profiles: [
+    {
+      profile_id: 'primary-model',
+      label: 'Primary model',
+      adapter: 'openai',
+      model: 'primary-fixture',
+      destination_label: 'api.primary.test',
+      capabilities: {},
+      available: true,
+      reason: null,
+      explanation: '',
+      allowed_fallback_profile_ids: ['backup-model'],
+    },
+    {
+      profile_id: 'backup-model',
+      label: 'Backup model',
+      adapter: 'openai',
+      model: 'backup-fixture',
+      destination_label: 'api.backup.test',
+      capabilities: {},
+      available: true,
+      reason: null,
+      explanation: '',
+      allowed_fallback_profile_ids: [],
+    },
+    {
+      profile_id: 'needs-a-key',
+      label: 'Needs a key',
+      adapter: 'openai',
+      model: 'unconfigured-fixture',
+      destination_label: null,
+      capabilities: {},
+      available: false,
+      reason: 'credential_missing',
+      explanation: 'Not available in this installation',
+      allowed_fallback_profile_ids: [],
+    },
+  ],
+}
+
+const PRIMARY_MODEL: E2ERunModelSummary = {
+  profile_id: 'primary-model',
+  label: 'Primary model',
+  adapter: 'openai',
+  requested_model: 'primary-fixture',
+  actual_model: null,
+  destination_label: 'api.primary.test',
+  fallback_profile_ids: [],
+  recorded: true,
+}
+
+export const BACKUP_MODEL: E2ERunModelSummary = {
+  ...PRIMARY_MODEL,
+  profile_id: 'backup-model',
+  label: 'Backup model',
+  requested_model: 'backup-fixture',
+  destination_label: 'api.backup.test',
+}
+
+const PRIMARY_USAGE: E2EUsageSummary = {
+  input_tokens: 11,
+  output_tokens: 7,
+  total_tokens: 18,
+  cached_input_tokens: null,
+  reasoning_tokens: null,
+  source: 'provider',
+}
+
+export const E2E_RUN_QUEUED: E2ERun = {
+  id: 'run-e2e-1',
+  conversation_id: 'c1',
+  status: 'queued',
+  created_at: '2026-01-01T00:00:00Z',
+  attempt: 0,
+  model: null,
+  usage: null,
+  error: null,
+  provider_attempts: [],
+}
+
+export const E2E_RUN_COMPLETED: E2ERun = {
+  ...E2E_RUN_QUEUED,
+  status: 'completed',
+  model: PRIMARY_MODEL,
+  usage: PRIMARY_USAGE,
+  provider_attempts: [
+    {
+      ordinal: 1,
+      profile_id: 'primary-model',
+      adapter: 'openai',
+      requested_model: 'primary-fixture',
+      actual_model: null,
+      destination_label: 'api.primary.test',
+      outcome: 'completed',
+      error_code: null,
+      usage: PRIMARY_USAGE,
+      started_at: '2026-01-01T00:00:01Z',
+      ended_at: '2026-01-01T00:00:04Z',
+    },
+  ],
+}
+
+export const E2E_RUN_FAILED: E2ERun = {
+  ...E2E_RUN_QUEUED,
+  status: 'failed',
+  model: PRIMARY_MODEL,
+  usage: null,
+  error: {
+    code: 'rate_limited',
+    message:
+      'The model provider is busy right now. Try again in a moment.',
+    retry_after_seconds: 30,
+  },
+  provider_attempts: [
+    {
+      ordinal: 1,
+      profile_id: 'primary-model',
+      adapter: 'openai',
+      requested_model: 'primary-fixture',
+      actual_model: null,
+      destination_label: 'api.primary.test',
+      outcome: 'failed',
+      error_code: 'rate_limited',
+      usage: null,
+      started_at: '2026-01-01T00:00:01Z',
+      ended_at: '2026-01-01T00:00:04Z',
+    },
+  ],
+}
+
+export const E2E_RUN_CANCELLED: E2ERun = {
+  ...E2E_RUN_QUEUED,
+  status: 'cancelled',
+  model: PRIMARY_MODEL,
+  usage: null,
+  error: null,
+  provider_attempts: [],
+}
+
+/**
+ * A run read that names the profile a turn was answered by. A test that
+ * wants to know whether a browser choice reached the server reads what this
+ * returns, because the run read is the only place the browser learns it.
+ */
+export function runReadNaming(model: E2ERunModelSummary): E2ERun {
+  return {
+    ...E2E_RUN_COMPLETED,
+    model,
+    provider_attempts: [
+      {
+        ordinal: 1,
+        profile_id: model.profile_id,
+        adapter: model.adapter,
+        requested_model: model.requested_model,
+        actual_model: model.actual_model,
+        destination_label: model.destination_label,
+        outcome: 'completed',
+        error_code: null,
+        usage: PRIMARY_USAGE,
+        started_at: '2026-01-01T00:00:01Z',
+        ended_at: '2026-01-01T00:00:04Z',
+      },
+    ],
+  }
+}
+
+/** One SSE frame in the framing the store reads: `id:`/`event:`/`data:`. */
+function durableFrame(event: E2EDurableEvent): string {
+  const data: Record<string, unknown> = {
+    id: event.id,
+    sequence: event.sequence,
+    run_id: event.run_id,
+    payload: event.payload,
+  }
+  return (
+    `id: ${event.id}\n` +
+    `event: ${event.type}\n` +
+    `data: ${JSON.stringify(data)}\n\n`
+  )
+}
+
+/** One event of a conversation's record, so a test can name a whole stream. */
+export function durableEvent(
+  sequence: number,
+  type: string,
+  options: { id?: string; conversation_id?: string; run_id?: string | null; payload?: Record<string, unknown> } = {},
+): E2EDurableEvent {
+  return {
+    id: options.id ?? `evt-${sequence}`,
+    conversation_id: options.conversation_id ?? 'c1',
+    run_id: options.run_id ?? 'run-e2e-1',
+    sequence,
+    type,
+    payload: options.payload ?? {},
+    created_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+export interface DurableApiOptions {
+  profilesStatus?: number
+  profiles?: E2EProfileCatalog
+  turnsStatus?: number
+  submittedRun?: E2ERun
+  /** What each successive run read reports; the last one repeats. */
+  runReads?: E2ERun[]
+  cancelStatus?: number
+  cancelledRun?: E2ERun
+  /** What the messages endpoint says exists before a turn is sent. */
+  baseMessages?: Record<string, E2EMessage[]>
+  /** What a turn that completed leaves behind. */
+  assistantContent?: string
+  snapshotEvents?: E2EDurableEvent[]
+  streamEvents?: E2EDurableEvent[]
+  streamStatus?: number
+}
+
+export async function mockDurableApi(
+  page: Page,
+  options: DurableApiOptions = {},
+): Promise<{ submitted: { conversation_id: string; payload: Record<string, unknown> }[] }> {
+  const {
+    profilesStatus = 200,
+    profiles = E2E_PROFILES,
+    turnsStatus = 201,
+    submittedRun = E2E_RUN_QUEUED,
+    runReads = [E2E_RUN_COMPLETED],
+    cancelStatus = 200,
+    cancelledRun = E2E_RUN_CANCELLED,
+    baseMessages = {},
+    assistantContent = 'Answered by the fixture.',
+    snapshotEvents = [],
+    streamEvents = [],
+    streamStatus = 200,
+  } = options
+
+  // What the browser actually asked for. A test that wants to know whether a
+  // choice reached the request reads this, rather than inferring it from what
+  // the card later shows.
+  const capture = {
+    submitted: [] as { conversation_id: string; payload: Record<string, unknown> }[],
+    stream: [] as string[],
+  }
+
+  // The end this installation's turn reached. Only a completed one leaves an
+  // answer behind — a failed or cancelled turn leaves its own end and nothing
+  // else, which is what the messages endpoint has to agree with.
+  const terminalReached = (): string | null => {
+    const events = [...snapshotEvents, ...streamEvents]
+    for (const type of ['run.succeeded', 'run.failed', 'run_cancelled']) {
+      if (events.some((event) => event.type === type)) return type
+    }
+    return null
+  }
+
+  const json = (route: Route, status: number, body: unknown): void => {
+    route.fulfill({
+      status,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    })
+  }
+
+  const conversationFrom = (url: string, marker: string): string =>
+    decodeURIComponent(url.split(marker)[1]?.split('/')[0] ?? '')
+
+  await page.route('**/api/model-profiles', (route) =>
+    profilesStatus !== 200
+      ? json(route, profilesStatus, { detail: 'Model catalog unavailable' })
+      : json(route, 200, profiles),
+  )
+
+  // The run read. Registered before the command routes below, which is what
+  // lets those win: Playwright keeps the most recently added handler.
+  let readIndex = 0
+  await page.route('**/api/runs/*', async (route) => {
+    const read = runReads[Math.min(readIndex, runReads.length - 1)]
+    readIndex += 1
+    json(route, 200, read)
+  })
+
+  await page.route('**/api/conversations/*/messages', (route) => {
+    const conversationId = conversationFrom(route.request().url(), '/conversations/')
+    const list = [...(baseMessages[conversationId] ?? [])]
+    for (const { conversation_id, payload } of capture.submitted) {
+      if (conversation_id !== conversationId) continue
+      list.push({
+        id: `msg-user-${payload.client_request_id}`,
+        role: 'user',
+        content: String(payload.content ?? ''),
+        conversation_id,
+        created_at: '2026-01-01T00:00:00Z',
+      })
+      // Only a turn that completed leaves an answer. A failed or cancelled
+      // one leaves its own end, and the messages endpoint says so too.
+      if (terminalReached() === 'run.succeeded') {
+        list.push({
+          id: 'msg-assistant-fixture',
+          role: 'assistant',
+          content: assistantContent,
+          conversation_id,
+          created_at: '2026-01-01T00:00:05Z',
+        })
+      }
+    }
+    json(route, 200, list)
+  })
+
+  // The record only exists once a turn has been submitted: before that the
+  // conversation has nothing to replay, and after a reload the same record
+  // is what rebuilds the state. Serving it early would let the snapshot
+  // answer for a turn that has not been sent yet.
+  await page.route('**/api/conversations/*/snapshot', (route) => {
+    const events = capture.submitted.length ? snapshotEvents : []
+    return json(route, 200, {
+      conversation_id: conversationFrom(route.request().url(), '/conversations/'),
+      sequence: events.reduce((max, e) => Math.max(max, e.sequence), -1),
+      events,
+    })
+  })
+
+  // The stream's URL carries an `after_sequence` query, and Playwright's
+  // glob ends at the pattern: the trailing wildcard is what lets the query
+  // through. Without it the fixture is never asked and the browser sees a
+  // 404 instead of the record.
+  await page.route('**/api/conversations/*/events/stream**', (route) => {
+    capture.stream.push(route.request().url())
+    if (streamStatus !== 200) {
+      return json(route, streamStatus, { detail: 'Event stream unavailable' })
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: streamEvents.map(durableFrame).join(''),
+    })
+  })
+
+  await page.route('**/api/runs/*/turns', async (route) => {
+    if (turnsStatus !== 201) {
+      return json(route, turnsStatus, { detail: 'Turn could not be submitted' })
+    }
+    const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>
+    capture.submitted.push({
+      conversation_id: conversationFrom(route.request().url(), '/runs/'),
+      payload: body,
+    })
+    json(route, 201, submittedRun)
+  })
+
+  await page.route('**/api/runs/*/cancel', (route) =>
+    cancelStatus !== 200
+      ? json(route, cancelStatus, { detail: 'Run could not be cancelled' })
+      : json(route, 200, cancelledRun),
+  )
+
+  return capture
+}
