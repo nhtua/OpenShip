@@ -434,6 +434,22 @@ export const E2E_PROFILES: E2EProfileCatalog = {
       explanation: '',
       allowed_fallback_profile_ids: [],
     },
+    // A different adapter and a different kind of destination. The browser
+    // never learns what an adapter is, so a card that reads the same here as
+    // it does for the first one is the point: nothing in the browser is
+    // OpenAI-shaped.
+    {
+      profile_id: 'local-model',
+      label: 'Local model',
+      adapter: 'openai_compatible',
+      model: 'local-fixture',
+      destination_label: 'localhost:11434',
+      capabilities: {},
+      available: true,
+      reason: null,
+      explanation: '',
+      allowed_fallback_profile_ids: [],
+    },
     {
       profile_id: 'needs-a-key',
       label: 'Needs a key',
@@ -444,6 +460,21 @@ export const E2E_PROFILES: E2EProfileCatalog = {
       available: false,
       reason: 'credential_missing',
       explanation: 'Not available in this installation',
+      allowed_fallback_profile_ids: [],
+    },
+    // Unavailable for a different reason: this build has no adapter for it.
+    // The reason is stated the same way, because the reason is what a reader
+    // acts on and the reason is never a guess.
+    {
+      profile_id: 'no-adapter',
+      label: 'No adapter yet',
+      adapter: 'anthropic',
+      model: 'unshipped-fixture',
+      destination_label: null,
+      capabilities: {},
+      available: false,
+      reason: 'adapter_unavailable',
+      explanation: 'This build has no adapter for it',
       allowed_fallback_profile_ids: [],
     },
   ],
@@ -466,6 +497,20 @@ export const BACKUP_MODEL: E2ERunModelSummary = {
   label: 'Backup model',
   requested_model: 'backup-fixture',
   destination_label: 'api.backup.test',
+}
+
+// The same shape for a different adapter and destination. Nothing here is
+// OpenAI-shaped: the browser reads a label, a model, and a destination, and
+// the card that renders this is the card that renders the first.
+export const LOCAL_MODEL: E2ERunModelSummary = {
+  profile_id: 'local-model',
+  label: 'Local model',
+  adapter: 'openai_compatible',
+  requested_model: 'local-fixture',
+  actual_model: null,
+  destination_label: 'localhost:11434',
+  fallback_profile_ids: [],
+  recorded: true,
 }
 
 const PRIMARY_USAGE: E2EUsageSummary = {
@@ -549,6 +594,48 @@ export const E2E_RUN_CANCELLED: E2ERun = {
 }
 
 /**
+ * A run that reached a provider and is still going. This is the state a
+ * person acts on when they stop a turn: the run has an id and no end, so
+ * the browser has something to cancel and has not invented an answer.
+ */
+export const E2E_RUN_RUNNING: E2ERun = {
+  ...E2E_RUN_QUEUED,
+  status: 'running',
+  model: PRIMARY_MODEL,
+  usage: null,
+  error: null,
+  provider_attempts: [],
+}
+
+/**
+ * A turn answered by a different adapter, at a destination of a different
+ * kind. It reports no counts, which is the other half of the claim: the
+ * card says "Not reported" rather than estimating, whatever the adapter.
+ */
+export const E2E_RUN_LOCAL_COMPLETED: E2ERun = {
+  ...E2E_RUN_QUEUED,
+  status: 'completed',
+  model: LOCAL_MODEL,
+  usage: null,
+  error: null,
+  provider_attempts: [
+    {
+      ordinal: 1,
+      profile_id: 'local-model',
+      adapter: 'openai_compatible',
+      requested_model: 'local-fixture',
+      actual_model: null,
+      destination_label: 'localhost:11434',
+      outcome: 'completed',
+      error_code: null,
+      usage: null,
+      started_at: '2026-01-01T00:00:01Z',
+      ended_at: '2026-01-01T00:00:04Z',
+    },
+  ],
+}
+
+/**
  * A run read that names the profile a turn was answered by. A test that
  * wants to know whether a browser choice reached the server reads what this
  * returns, because the run read is the only place the browser learns it.
@@ -628,7 +715,11 @@ export interface DurableApiOptions {
 export async function mockDurableApi(
   page: Page,
   options: DurableApiOptions = {},
-): Promise<{ submitted: { conversation_id: string; payload: Record<string, unknown> }[] }> {
+): Promise<{
+  submitted: { conversation_id: string; payload: Record<string, unknown> }[]
+  stream: string[]
+  cancelled: string[]
+}> {
   const {
     profilesStatus = 200,
     profiles = E2E_PROFILES,
@@ -650,6 +741,9 @@ export async function mockDurableApi(
   const capture = {
     submitted: [] as { conversation_id: string; payload: Record<string, unknown> }[],
     stream: [] as string[],
+    // Which runs a browser asked to stop. A cancellation a test claims has to
+    // be one the browser actually made, of this run.
+    cancelled: [] as string[],
   }
 
   // The end this installation's turn reached. Only a completed one leaves an
@@ -757,11 +851,14 @@ export async function mockDurableApi(
     json(route, 201, submittedRun)
   })
 
-  await page.route('**/api/runs/*/cancel', (route) =>
-    cancelStatus !== 200
-      ? json(route, cancelStatus, { detail: 'Run could not be cancelled' })
-      : json(route, 200, cancelledRun),
-  )
+  await page.route('**/api/runs/*/cancel', (route) => {
+    capture.cancelled.push(conversationFrom(route.request().url(), '/runs/'))
+    json(
+      route,
+      cancelStatus === 200 ? 200 : cancelStatus,
+      cancelStatus === 200 ? cancelledRun : { detail: 'Run could not be cancelled' },
+    )
+  })
 
   return capture
 }

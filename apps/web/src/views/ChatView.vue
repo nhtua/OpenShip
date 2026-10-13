@@ -94,6 +94,29 @@ async function handleSend(content: string) {
   await chat.sendMessage(content, chat.currentConversation?.id ?? null)
 }
 
+// A run that has reached an end has nothing left to stop, and a run that has
+// no id was never submitted: offering cancel for either would be a control
+// that does nothing. The statuses here are the same ones the card still
+// calls live, so the control and the card never disagree about a run.
+const activeRunId = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  if (!conversationId) return null
+  const card = chat.runCards.get(conversationId)
+  if (!card?.run_id) return null
+  return ['queued', 'running', 'paused'].includes(card.status)
+    ? card.run_id
+    : null
+})
+
+async function handleCancelRun() {
+  // Deliberately not guarded by `busy`: stopping a run is the thing a person
+  // does while one is streaming. The store owns what a cancellation leaves
+  // behind - the fence, the card, and the reason a turn has no answer.
+  const runId = activeRunId.value
+  if (!runId) return
+  await chat.cancelRun(runId)
+}
+
 function dismissError() {
   chat.error = null
   historyLoadFailed.value = false
@@ -169,9 +192,21 @@ onMounted(async () => {
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col" data-testid="chat-main">
-      <!-- Run card shows durable progress for the current conversation -->
+      <!-- Run card shows durable progress for the current conversation.
+           Cancel lives beside the run it names, and only while that run can
+           still be stopped - a run that reached an end has nothing left to
+           stop, and offering it would be a control that does nothing. -->
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
         <RunCard :card="chat.runCards.get(chat.currentConversation.id)!" />
+        <div v-if="activeRunId" class="shrink-0 px-4 pt-2">
+          <Button
+            size="sm"
+            variant="destructive"
+            @click="handleCancelRun"
+          >
+            Cancel run
+          </Button>
+        </div>
       </div>
       <!-- The stream/composer components own their data-testid hooks. -->
       <ChatStream :messages="chat.messages" :is-streaming="chat.isStreaming" />

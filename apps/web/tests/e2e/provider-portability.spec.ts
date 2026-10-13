@@ -11,6 +11,9 @@ import {
   E2E_RUN_CANCELLED,
   E2E_RUN_COMPLETED,
   E2E_RUN_FAILED,
+  E2E_RUN_LOCAL_COMPLETED,
+  E2E_RUN_RUNNING,
+  LOCAL_MODEL,
 } from './fixtures/api'
 import type { Page } from '@playwright/test'
 
@@ -60,11 +63,21 @@ test('a profile this installation cannot serve is stated before anything is sent
   await openConversation(page)
 
   // The reason is stated in the same place the choices are, so a reader acts
-  // instead of guessing why a name has no button.
+  // instead of guessing why a name has no button. Two reasons are shown here,
+  // because the reason is what a reader acts on and neither one is hidden
+  // behind a name with nothing under it: a key this installation does not
+  // configure, and an adapter this build does not ship.
   await expect(
     page.getByText('Needs a key — Not available in this installation'),
   ).toBeVisible()
-  expect(await page.getByRole('button', { name: 'Needs a key' }).count()).toBe(0)
+  await expect(
+    page.getByText('No adapter yet — This build has no adapter for it'),
+  ).toBeVisible()
+  expect(
+    await page
+      .getByRole('button', { name: /Needs a key|No adapter yet/ })
+      .count(),
+  ).toBe(0)
 })
 
 test('choosing another profile names it, and the next turn asks for it', async ({
@@ -120,6 +133,37 @@ test('a chosen profile survives a reload, because the run read states it', async
   expect(asked.submitted).toHaveLength(1)
 })
 
+test("a different adapter's destination reads the same way", async ({ page }) => {
+  await clearApiRoutes(page)
+  await mockApi(page)
+  const asked = await mockDurableApi(page, {
+    runReads: [E2E_RUN_LOCAL_COMPLETED],
+    streamEvents: aTurnRecord('Deploy staging', 'run.succeeded'),
+  })
+  await openConversation(page)
+
+  // A profile at a destination of a different kind, reached the same way as
+  // the first: the browser never learns what an adapter is, so nothing here
+  // is a second kind of choice — it is the same choice, at another address.
+  await page.getByRole('button', { name: 'Local model', exact: true }).click()
+  await sendATurn(page, 'Deploy staging')
+
+  // The request itself names the profile, so the choice reached the server
+  // rather than only the card.
+  expect(asked.submitted[0].payload['provider_profile_id']).toBe('local-model')
+
+  // The card makes the same sentence it made for the first adapter: a label,
+  // a model, a destination. Nothing about this one is OpenAI-shaped.
+  await expect(
+    page.getByText('Local model · local-fixture at localhost:11434'),
+  ).toBeVisible()
+
+  // And it reported no counts, so the card says so rather than estimating —
+  // the other half of the claim, and the reason the fixture leaves usage
+  // empty here.
+  await expect(page.getByText('Not reported')).toBeVisible()
+})
+
 test('a fallback is offered only where the chosen profile allows it', async ({
   page,
 }) => {
@@ -164,7 +208,7 @@ test('a bounded outage is reported with the copy the API settled', async ({
   expect(await page.getByText('Answered by the fixture.').count()).toBe(0)
 })
 
-test('a cancelled provider keeps its own end', async ({ page }) => {
+test('a cancellation the record carries leaves its own end', async ({ page }) => {
   await clearApiRoutes(page)
   await mockApi(page)
   await mockDurableApi(page, {
@@ -174,10 +218,45 @@ test('a cancelled provider keeps its own end', async ({ page }) => {
   await openConversation(page)
   await sendATurn(page, 'Deploy staging')
 
-  // The browser has no cancel control of its own yet, so this is the end a
-  // cancellation elsewhere leaves: the stream closes with a cancellation, the
-  // card agrees, and no answer is invented for a turn that has none.
+  // Nothing here stopped the turn from the browser: this is an end someone
+  // else reached, and the browser only has to agree with the record. The
+  // card says cancelled, and a turn with no answer still has none.
   await expect(page.getByText('Cancelled')).toBeVisible()
+  expect(await page.getByText('Answered by the fixture.').count()).toBe(0)
+})
+
+test('a run that is still going can be stopped from the browser', async ({ page }) => {
+  await clearApiRoutes(page)
+  await mockApi(page)
+  const asked = await mockDurableApi(page, {
+    // The record ends while the run is still going, and the first run read
+    // agrees: nothing has answered. The second read is what the cancellation
+    // leaves, and the browser learns the end from it rather than assuming
+    // that asking was enough.
+    runReads: [E2E_RUN_RUNNING, E2E_RUN_CANCELLED],
+    streamEvents: [
+      durableEvent(0, 'turn_submitted', { payload: { content: 'Deploy staging' } }),
+      durableEvent(1, 'run.queued'),
+      durableEvent(2, 'run.started'),
+    ],
+  })
+  await openConversation(page)
+  await sendATurn(page, 'Deploy staging')
+
+  // The control appears beside a run that can still be stopped, and only
+  // there: a run that reached an end has nothing left to stop, and the
+  // scenario above is that one.
+  const cancel = page.getByRole('button', { name: 'Cancel run' })
+  await expect(cancel).toBeVisible()
+  await cancel.click()
+
+  await expect(page.getByText('Cancelled')).toBeVisible()
+
+  // The browser asked about this run rather than another one, and asked at
+  // all — a card that changed on its own would be a lie.
+  expect(asked.cancelled).toEqual(['run-e2e-1'])
+
+  // A turn with no answer leaves none, even after a person stops it.
   expect(await page.getByText('Answered by the fixture.').count()).toBe(0)
 })
 
