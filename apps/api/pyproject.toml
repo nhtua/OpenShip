@@ -30,6 +30,7 @@ dev = [
 [tool.pytest.ini_options]
 markers = [
     "postgres: requires a real PostgreSQL database named by TEST_POSTGRES_URL",
+    "provider_live: contacts a real provider; opt-in via OPENSHIP_LIVE_PROFILE_ID",
 ]
 
 [dependency-groups]

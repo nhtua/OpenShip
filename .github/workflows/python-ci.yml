@@ -31,3 +31,70 @@ jobs:
           enable-cache: true
       - run: uv tool install ruff
       - run: cd apps/agent && ruff check .
+
+  # The API suite minus the lanes that need a service or a live provider. It
+  # has to pass with no PostgreSQL and no vendor credentials, which is what
+  # lets an ordinary PR be reviewed at all: every response in it is a
+  # fixture.
+  api-unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: cd apps/api && uv sync --extra dev
+      - run: cd apps/api && uv run pytest -q -m "not postgres and not provider_live"
+
+  # The durable pipeline's promises are only proved where the real locks,
+  # JSON serialization, and saver writes exist. The service only has to
+  # exist: each lane names its own database inside it, so the two modules
+  # cannot wait for each other's locks.
+  api-postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: openship
+          # A throwaway database, but a credential literal would still be a
+          # secret in a public repository, so the value lives in a repo secret.
+          # TEST_POSTGRES_URL, used by the step below, has to name this same
+          # user and password.
+          POSTGRES_PASSWORD: ${{ secrets.TEST_POSTGRES_PASSWORD }}
+          POSTGRES_DB: lane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: cd apps/api && uv sync --extra dev
+      # Selecting the marker is not enough: a job that skipped every case
+      # would be green without proving anything, so the summary is checked.
+      - name: Run the PostgreSQL lane
+        env:
+          # The connection string is a repo secret rather than a literal: any
+          # URI that carries a credential is a secret in a public repository.
+          # It has to name this job's service - the same user and password as
+          # the service above - and the lanes create their own databases inside
+          # it, so the two modules never wait for each other's locks.
+          TEST_POSTGRES_URL: ${{ secrets.TEST_POSTGRES_URL }}
+        run: |
+          cd apps/api
+          uv run pytest -q -m postgres tests/integration/test_provider_pinning_migration.py tests/integration/test_provider_worker_postgres.py | tee /tmp/pg-lane.log
+          ! grep -q skipped /tmp/pg-lane.log
