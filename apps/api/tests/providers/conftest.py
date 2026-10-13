@@ -6,6 +6,8 @@ it opened. Everything else in a case — the adapter, the contracts, the
 control — is the real component under test.
 """
 
+import uuid
+
 from src.openship.providers.contracts import (
     ChatMessage,
     ModelRequest,
@@ -17,6 +19,8 @@ from src.openship.providers.errors import ProviderError
 #: happens only in tests/live.  # rayloc:ignore
 FIXTURE_MODEL = "fixture-model"
 FIXTURE_ENDPOINT = "https://fixture.provider.test/v1"
+#: The credential binding a fixture profile names. Only its name is ever used.
+CREDENTIAL_REF = "FIXTURE_KEY"  # rayloc:ignore
 
 
 def qualified_profile(*, output_limit_parameter="max_tokens", **overrides):
@@ -28,7 +32,7 @@ def qualified_profile(*, output_limit_parameter="max_tokens", **overrides):
         "model": FIXTURE_MODEL,
         "endpoint": FIXTURE_ENDPOINT,
         "api_version": "chat-completions",
-        "credential_ref": "FIXTURE_KEY",  # rayloc:ignore
+        "credential_ref": CREDENTIAL_REF,  # rayloc:ignore
         "capabilities": {
             "streaming": True,
             "usage_reporting": True,
@@ -237,3 +241,66 @@ async def drain(adapter, request, profile, control_) -> tuple[list[object], Prov
     except ProviderError as failure:
         return events, failure
     return events, None
+
+
+class FakeRecorder:
+    """A recorder that keeps what it was asked, so a case can assert on it.
+
+    The database recorder belongs to the run's transaction; a unit case only
+    needs to know that an attempt was opened and closed, and with which result.
+    """
+
+    def __init__(self):
+        self.started = []
+        self.finished = []
+
+    def start(self, profile, reason, reserved_cost_usd=None):
+        self.started.append((profile.id, reason))
+        return uuid.uuid4()
+
+    def finish(self, attempt_id, outcome, usage=None, error_code=None, actual_model=None):
+        self.finished.append(
+            {"outcome": outcome, "error_code": error_code, "usage": usage}
+        )
+
+
+def invocation(*, control_=None, recorder=None):
+    """The pair a model step asks an invocation to supply, per call."""
+    from src.openship.providers.control import InvocationControl
+
+    return lambda: (
+        control_ if control_ is not None else InvocationControl(),
+        recorder if recorder is not None else FakeRecorder(),
+    )
+
+
+def run_snapshot(**overrides) -> str:
+    """A model configuration a run would carry, as the graph reads it."""
+    from src.openship.providers.contracts import RunLimits, RunModelConfig
+
+    config = RunModelConfig(
+        schema_version=1,
+        primary=qualified_profile(**overrides),
+        limits=RunLimits(),
+        binding_origin="submission",
+    )
+    return config.model_dump_json()
+
+
+def run_state(*turns) -> dict:
+    """A graph state carrying the configuration this run pinned."""
+    return {
+        "messages": [{"role": role, "content": text} for role, text in turns],
+        "run_id": "test-run-model-step",
+        "conversation_id": "test-conv-model-step",
+        "model_configuration": run_snapshot(),
+    }
+
+
+def serve(monkeypatch, chunks=(), raises=None) -> StreamTransport:
+    """The installation's OpenAI adapter answers from a synthetic transport."""
+    from src.openship.providers.registry import _adapter_factories
+
+    transport = StreamTransport(list(chunks), raises=raises)
+    monkeypatch.setitem(_adapter_factories, "openai", lambda _profile: make_adapter("openai", transport))
+    return transport

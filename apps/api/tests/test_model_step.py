@@ -1,228 +1,150 @@
-"""Tests for the chat graph model step and bounded request/output budget."""
+"""Tests for the chat graph model step: the run's own snapshot, bounded output, and safe failures.
+
+The breaks these catch: a step that follows today's settings instead of the
+configuration the run carries, a partial answer published as if it were
+complete, and a provider failure that reaches a user as a stack trace.
+"""
 
 import os
 import pytest
-from unittest.mock import MagicMock, patch
 
 # Set strict msgpack before importing graph modules
 os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
 
+from src.openship.providers.contracts import RunLimits
+from src.openship.providers.errors import ProviderError
+from src.openship.runs.graph import (
+    ChatState,
+    ModelResult,
+    build_chat_graph,
+    execute_model_turn,
+    model_step,
+)
 
-def test_model_step_returns_response_with_mocked_provider():
+from .conftest import FIXTURE_MODEL
+from .providers.conftest import (
+    CREDENTIAL_REF,
+    error_fixture,
+    invocation,
+    run_state,
+    serve,
+    sdk_chunk,
+)
+
+
+def test_model_step_returns_response_with_mocked_provider(monkeypatch):
     """Model step returns a complete assistant response when provider succeeds."""
-    from src.openship.runs.graph import model_step
-
-    state = {
-        "messages": [
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "Hello!"},
+    serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(content="Hi there!"),
+            sdk_chunk(content=" How can I help?"),
+            sdk_chunk(finish_reason="stop"),
+            sdk_chunk(choices=False, usage=(11, 10, 21)),
         ],
-        "run_id": "test-run-1",
-        "conversation_id": "test-conv-1",
-    }
+    )
 
-    # Mock the streaming response
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Hi there!")
-    mock_chunk.usage = None
+    result = model_step(run_state(("system", "You are helpful."), ("user", "Hello!")), invocation())
 
-    mock_chunk2 = MagicMock()
-    mock_chunk2.choices = [MagicMock()]
-    mock_chunk2.choices[0].delta = MagicMock(content=" How can I help?")
-    mock_chunk2.usage = None
-
-    mock_chunk_final = MagicMock()
-    mock_chunk_final.choices = [MagicMock()]
-    mock_chunk_final.choices[0].delta = MagicMock(content="")
-    mock_chunk_final.usage = MagicMock()
-    mock_chunk_final.usage.completion_tokens = 10
-
-    with patch("src.openship.runs.graph.settings") as mock_settings:
-        mock_settings.openai_api_key = "fake-key"
-        mock_settings.model_max_tokens = 4000
-
-        with patch("src.openship.runs.graph.chat") as mock_chat:
-            mock_chat.return_value = [mock_chunk, mock_chunk2, mock_chunk_final]
-            result = model_step(state)
-
-    assert "assistant_response" in result
     assert result["assistant_response"] == "Hi there! How can I help?"
-    assert mock_chat.called
+    assert result["finish_reason"] == "stop"
 
 
-def test_model_step_empty_stream_returns_empty():
-    """Model step returns empty response when stream is empty."""
-    from src.openship.runs.graph import model_step
+def test_model_step_empty_stream_refuses_an_answer(monkeypatch):
+    """Model step refuses an answer when the stream produced nothing."""
+    serve(monkeypatch, chunks=[])
 
-    state = {
-        "messages": [
-            {"role": "user", "content": "Hello!"},
-        ],
-        "run_id": "test-run-2",
-        "conversation_id": "test-conv-1",
-    }
+    with pytest.raises(ProviderError) as refused:
+        model_step(run_state(("user", "Hello!")), invocation())
 
-    with patch("src.openship.runs.graph.settings") as mock_settings:
-        mock_settings.openai_api_key = "fake-key"
-        mock_settings.model_max_tokens = 4000
-
-        with patch("src.openship.runs.graph.chat") as mock_chat:
-            mock_chat.return_value = []
-            result = model_step(state)
-
-    assert "assistant_response" in result
-    assert result["assistant_response"] == ""
+    assert refused.value.code == "invalid_response"
 
 
-def test_model_step_provider_error_captured():
-    """Model step captures provider errors without crashing."""
-    from src.openship.runs.graph import model_step, ModelError
+def test_model_step_provider_error_captured(monkeypatch):
+    """Model step reports a provider failure in the normalized vocabulary."""
+    serve(monkeypatch, raises=error_fixture("openai", "unreachable"))
 
-    state = {
-        "messages": [
-            {"role": "user", "content": "Hello!"},
-        ],
-        "run_id": "test-run-3",
-        "conversation_id": "test-conv-1",
-    }
+    with pytest.raises(ProviderError) as refused:
+        model_step(run_state(("user", "Hello!")), invocation())
 
-    with patch("src.openship.runs.graph.settings") as mock_settings:
-        mock_settings.openai_api_key = "fake-key"
-        mock_settings.model_max_tokens = 4000
-
-        with patch("src.openship.runs.graph.chat") as mock_chat:
-            mock_chat.side_effect = Exception("API timeout")
-            with pytest.raises(ModelError) as exc_info:
-                model_step(state)
-
-    assert "API timeout" in str(exc_info.value)
+    assert refused.value.code == "provider_unavailable"
+    assert "unreachable" not in refused.value.safe_message
 
 
-def test_model_step_missing_api_key_raises_configuration_error():
-    """Model step raises a safe configuration error when API key is missing."""
-    from src.openship.runs.graph import model_step, ConfigurationError
+def test_model_step_missing_credential_raises_configuration_error(monkeypatch):
+    """Model step raises a safe configuration error when a binding is missing."""
+    monkeypatch.delenv(CREDENTIAL_REF, raising=False)
 
-    state = {
-        "messages": [
-            {"role": "user", "content": "Hello!"},
-        ],
-        "run_id": "test-run-4",
-        "conversation_id": "test-conv-1",
-    }
+    with pytest.raises(ProviderError) as refused:
+        model_step(run_state(("user", "Hello!")), invocation())
 
-    with patch("src.openship.runs.graph.settings") as mock_settings:
-        mock_settings.openai_api_key = ""
-        mock_settings.model_max_tokens = 4000
-
-        with pytest.raises(ConfigurationError) as exc_info:
-            model_step(state)
-
-    assert "OPENAI_API_KEY" in str(exc_info.value)
+    assert refused.value.code == "configuration_error"
+    assert CREDENTIAL_REF in refused.value.safe_message, (
+        "the message names the binding the operator has to set, never its value"
+    )
 
 
-def test_model_step_output_bounded_by_max_tokens():
-    """Model step uses bounded output budget (max_tokens)."""
-    from src.openship.runs.graph import model_step
+def test_model_step_output_bounded_by_max_tokens(monkeypatch):
+    """Model step uses bounded output budget (the run's own limit)."""
+    transport = serve(
+        monkeypatch,
+        chunks=[sdk_chunk(content="Bounded response", finish_reason="stop")],
+    )
 
-    state = {
-        "messages": [
-            {"role": "user", "content": "Hello!"},
-        ],
-        "run_id": "test-run-5",
-        "conversation_id": "test-conv-1",
-    }
+    model_step(run_state(("user", "Hello!")), invocation())
 
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Bounded response")
-    mock_chunk.usage = None
-
-    with patch("src.openship.runs.graph.settings") as mock_settings:
-        mock_settings.openai_api_key = "fake-key"
-        mock_settings.model_max_tokens = 4000
-
-        with patch("src.openship.runs.graph.chat") as mock_chat:
-            mock_chat.return_value = [mock_chunk]
-            result = model_step(state)
-
-    # Verify max_tokens was passed to chat()
-    call_kwargs = mock_chat.call_args
-    assert call_kwargs is not None
-    assert call_kwargs[1]["max_tokens"] == 4000
+    assert transport.seen_kwargs["max_tokens"] == RunLimits().max_output_tokens
+    assert transport.seen_kwargs["model"] == FIXTURE_MODEL, (
+        "the step served the model the run carries, not today's setting"
+    )
 
 
-def test_execute_model_turn_returns_model_result():
+def test_execute_model_turn_returns_model_result(monkeypatch):
     """execute_model_turn returns a ModelResult with response and usage."""
-    from src.openship.runs.graph import execute_model_turn, ModelResult
-
-    state = {
-        "messages": [
-            {"role": "user", "content": "Hello!"},
+    serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(content="Hello back!"),
+            sdk_chunk(finish_reason="stop"),
+            sdk_chunk(choices=False, usage=(None, 5, None)),
         ],
-        "run_id": "test-run-6",
-        "conversation_id": "test-conv-1",
-    }
+    )
 
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Hello back!")
-    mock_chunk.usage = None
-
-    mock_chunk_final = MagicMock()
-    mock_chunk_final.choices = [MagicMock()]
-    mock_chunk_final.choices[0].delta = MagicMock(content="")
-    mock_chunk_final.usage = MagicMock()
-    mock_chunk_final.usage.prompt_tokens = None
-    mock_chunk_final.usage.completion_tokens = 5
-    mock_chunk_final.usage.total_tokens = None
-
-    with patch("src.openship.runs.graph.settings") as mock_settings:
-        mock_settings.openai_api_key = "fake-key"
-        mock_settings.model_max_tokens = 4000
-
-        with patch("src.openship.runs.graph.chat") as mock_chat:
-            mock_chat.return_value = [mock_chunk, mock_chunk_final]
-            result = execute_model_turn("test-run-6", "test-thread-6", 0, state)
+    result = execute_model_turn(
+        "test-run-6",
+        "test-thread-6",
+        0,
+        run_state(("user", "Hello!")),
+        invocation_factory=invocation(),
+    )
 
     assert isinstance(result, ModelResult)
     assert result.assistant_response == "Hello back!"
-    assert result.usage is not None
-    # Usage is incomplete (only output tokens), so estimated=True
-    assert result.usage["output_tokens"] == 5
-    assert result.usage["estimated"] is True
     assert result.error is None
+    assert result.usage["output_tokens"] == 5
+    assert result.usage["input_tokens"] is None, "absence stays absence, never a zero"
 
 
-def test_execute_model_turn_error_returns_result_with_error():
-    """execute_model_turn returns a ModelResult with error on failure."""
-    from src.openship.runs.graph import execute_model_turn, ModelResult
+def test_execute_model_turn_error_returns_result_with_error(monkeypatch):
+    """execute_model_turn returns a ModelResult with a safe error on failure."""
+    serve(monkeypatch, raises=error_fixture("openai", "unauthorized"))
 
-    state = {
-        "messages": [
-            {"role": "user", "content": "Hello!"},
-        ],
-        "run_id": "test-run-7",
-        "conversation_id": "test-conv-1",
-    }
-
-    with patch("src.openship.runs.graph.settings") as mock_settings:
-        mock_settings.openai_api_key = "fake-key"
-        mock_settings.model_max_tokens = 4000
-
-        with patch("src.openship.runs.graph.chat") as mock_chat:
-            mock_chat.side_effect = Exception("Timeout")
-            result = execute_model_turn("test-run-7", "test-thread-7", 0, state)
+    result = execute_model_turn(
+        "test-run-7",
+        "test-thread-7",
+        0,
+        run_state(("user", "Hello!")),
+        invocation_factory=invocation(),
+    )
 
     assert isinstance(result, ModelResult)
     assert result.error is not None
-    assert "Timeout" in result.error
+    assert result.error_code == "authentication_error"
+    assert "Traceback" not in result.error
 
 
 def test_build_chat_graph_returns_compiled_graph():
     """build_chat_graph returns a CompiledStateGraph."""
-    from src.openship.runs.graph import build_chat_graph
-
     graph = build_chat_graph(None)
     # CompiledStateGraph is the result of .compile()
     assert hasattr(graph, "invoke")
@@ -230,35 +152,42 @@ def test_build_chat_graph_returns_compiled_graph():
 
 
 def test_graph_state_has_required_fields():
-    """Graph state includes all required fields."""
+    """Graph state includes the fields a resumed thread needs, and no runtime ones."""
     from src.openship.runs.graph import ChatState
 
-    # Check the state schema has required fields via __annotations__
     assert "messages" in ChatState.__annotations__
     assert "run_id" in ChatState.__annotations__
     assert "conversation_id" in ChatState.__annotations__
     assert "assistant_response" in ChatState.__annotations__
+    assert "model_configuration" in ChatState.__annotations__, (
+        "a resumed thread must run the model its run pinned"
+    )
+    assert "control" not in ChatState.__annotations__, (
+        "the runtime control is injected per invocation, never serialized"
+    )
+    assert "recorder" not in ChatState.__annotations__
 
 
-def test_partial_stream_leaves_no_completed_assistant_message():
-    """When stream is cut short, no completed assistant message is returned."""
-    from src.openship.runs.graph import model_step
-
-    state = {
-        "messages": [
-            {"role": "user", "content": "Hello!"},
+def test_partial_stream_leaves_no_completed_assistant_message(monkeypatch):
+    """When the stream is cut short, no completed assistant message is returned."""
+    serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(content="A beginning that was cut off"),
+            sdk_chunk(content=" and never finished", finish_reason="length"),
         ],
-        "run_id": "test-run-8",
-        "conversation_id": "test-conv-1",
-    }
+    )
 
-    with patch("src.openship.runs.graph.settings") as mock_settings:
-        mock_settings.openai_api_key = "fake-key"
-        mock_settings.model_max_tokens = 4000
+    values = model_step(run_state(("user", "Hello!")), invocation())
+    assert values["finish_reason"] == "length"
 
-        with patch("src.openship.runs.graph.chat") as mock_chat:
-            mock_chat.return_value = []
-            result = model_step(state)
+    result = execute_model_turn(
+        "test-run-8",
+        "test-thread-8",
+        0,
+        run_state(("user", "Hello!")),
+        invocation_factory=invocation(),
+    )
 
-    # Empty response is not a "completed" assistant message
-    assert result["assistant_response"] == ""
+    assert result.assistant_response == "", "partial text is never an answer"
+    assert result.error_code == "output_limit_exceeded"

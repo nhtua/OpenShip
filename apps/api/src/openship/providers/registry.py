@@ -33,6 +33,27 @@ def register_adapter(name: str, factory) -> None:
     _adapter_factories[name] = factory
 
 
+def build_adapter(profile):
+    """Instantiate the adapter a profile names, importing its module on demand.
+
+    The registry holds no SDK import of its own: an adapter module registers
+    itself the first time a profile asks for it, so a profile that names an
+    adapter nobody shipped is a configuration error, never a guess.
+    """
+    factory = _adapter_factories.get(profile.adapter)
+    if factory is None:
+        import importlib
+
+        importlib.import_module(f"src.openship.providers.{profile.adapter}")
+        factory = _adapter_factories.get(profile.adapter)
+    if factory is None:
+        raise ProviderError(
+            "configuration_error",
+            safe_message=f"no adapter is registered for profile {profile.id!r}",
+        )
+    return factory(profile)
+
+
 class ProviderRegistry:
     """Immutable, non-secret view of the installation's model profiles."""
 

@@ -18,6 +18,7 @@ from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
 from ..runs.models import Event, Outbox, Run, RunJob
+from .queue import fenced_update_run
 
 
 def require_owned_conversation(db: Session, user_id: uuid.UUID, conversation_id: str) -> Conversation:
@@ -220,18 +221,91 @@ def load_run_model_config(run: Run) -> RunModelConfig:
 
     A run from before profiles records nothing, and nothing is guessed for it.
     """
-    if not run.model_configuration:
+    return parse_run_model_config(run.model_configuration, run.id)
+
+
+def parse_run_model_config(snapshot: str | None, run_id) -> RunModelConfig:
+    """Read a run's frozen configuration, or explain why this installation cannot.
+
+    Nothing is re-resolved here: a snapshot that no longer matches today's
+    profiles is still what that run must execute, and one this installation
+    cannot read is a safe error, never a guess.
+    """
+    if not snapshot:
         raise ProviderError(
             "configuration_error",
-            safe_message=f"run {run.id} records no model configuration",
+            safe_message=f"run {run_id} records no model configuration",
         )
     try:
-        return RunModelConfig(**json.loads(run.model_configuration))
+        return RunModelConfig(**json.loads(snapshot))
     except (json.JSONDecodeError, TypeError, ValueError) as invalid:
         raise ProviderError(
             "configuration_error",
-            safe_message=f"run {run.id} records a model configuration this installation cannot read",
+            safe_message=(
+                f"run {run_id} records a model configuration this installation "
+                "cannot read; choose a run made against a supported schema"
+            ),
         ) from invalid
+
+
+def bind_run_model_config(db: Session, run: Run, fence: int) -> RunModelConfig:
+    """The configuration this run will execute, binding one if it never recorded any.
+
+    A run submitted after profiles existed already froze its configuration, so
+    nothing here re-resolves it and a changed default cannot change what it
+    runs. A run from before that was queued but never dispatched gets one now,
+    under the fence its worker holds, and says which it was: binding at
+    execution is not submission-time pinning.
+    """
+    if run.model_configuration:
+        return parse_run_model_config(run.model_configuration, run.id)
+
+    if run.provider_started_at is not None:
+        raise ProviderError(
+            "configuration_error",
+            safe_message=(
+                f"run {run.id} was dispatched before it recorded any model configuration; "
+                "its provider is not knowable after the fact"
+            ),
+        )
+
+    selection = json.loads(run.model_selection) if run.model_selection else {}
+    try:
+        registry = load_profiles(settings)
+        pinned = registry.pin_selection(
+            selection.get("profile_id"), tuple(selection.get("fallback_profile_ids") or ())
+        )
+    except ProviderError as refused:
+        raise ProviderError(
+            refused.code,
+            safe_message=(
+                f"run {run.id} predates model profiles and cannot be bound to one: "
+                f"{refused.safe_message}"
+            ),
+        ) from refused
+
+    config = RunModelConfig(
+        schema_version=1,
+        primary=pinned.primary,
+        fallbacks=pinned.fallbacks,
+        limits=pinned.limits,
+        binding_origin="legacy_bound_at_execution",
+    )
+
+    if not fenced_update_run(
+        db=db,
+        run_id=run.id,
+        fence=fence,
+        model_configuration=config.model_dump_json(),
+    ):
+        raise ProviderError(
+            "lease_lost",
+            safe_message=(
+                f"this worker no longer holds the lease for run {run.id}, "
+                "so it bound no configuration"
+            ),
+        )
+    return config
 
 
 def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:

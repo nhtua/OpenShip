@@ -27,6 +27,10 @@ class InvocationControl:
         """A per-request timeout that never exceeds the turn's budget."""
         return min(limit, self.remaining_seconds())
 
+    def is_stopped(self) -> bool:
+        """Whether a supervisor has decided this turn should stop."""
+        return bool(self._stop())
+
     def raise_if_stopped(self) -> None:
         """Stop before the next request or the next chunk."""
         if self._stop():

@@ -3,46 +3,31 @@
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+
+import pytest
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from src.openship.runs.graph import model_step
-from src.openship.runs.models import Event, Run
+from src.openship.runs.worker import _usage_record
+
+from .providers.conftest import invocation, run_state, serve, sdk_chunk
 
 
-def test_model_step_captures_usage():
+def test_model_step_captures_usage(monkeypatch):
     """Model step captures usage from provider response."""
-    mock_chunk1 = MagicMock()
-    mock_chunk1.choices = [MagicMock()]
-    mock_chunk1.choices[0].delta = MagicMock(content="Hello")
-    mock_chunk1.usage = None
+    serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(content="Hello"),
+            sdk_chunk(content=" world"),
+            sdk_chunk(choices=False, usage=(42, 15, 57)),
+            sdk_chunk(finish_reason="stop"),
+        ],
+    )
 
-    mock_chunk2 = MagicMock()
-    mock_chunk2.choices = [MagicMock()]
-    mock_chunk2.choices[0].delta = MagicMock(content=" world")
-    mock_chunk2.usage = MagicMock()
-    mock_chunk2.usage.prompt_tokens = 42
-    mock_chunk2.usage.completion_tokens = 15
-    mock_chunk2.usage.total_tokens = 57
-
-    mock_done = MagicMock()
-    mock_done.choices = []
-    mock_done.usage = None
-
-    mock_stream = [mock_chunk1, mock_chunk2, mock_done]
-
-    state = {
-        "messages": [{"role": "user", "content": "Say hello"}],
-        "run_id": str(uuid.uuid4()),
-        "conversation_id": str(uuid.uuid4()),
-    }
-
-    from src.openship.config import settings
-    with patch.object(settings, "openai_api_key", "test-key"):
-        with patch("src.openship.runs.graph.chat", return_value=iter(mock_stream)):
-            result = model_step(state)
+    result = model_step(run_state(("user", "Say hello")), invocation())
 
     assert result["assistant_response"] == "Hello world"
     assert result["usage"] is not None
@@ -51,65 +36,38 @@ def test_model_step_captures_usage():
     assert result["usage"]["total_tokens"] == 57
 
 
-def test_model_step_no_usage_when_omitted():
+def test_model_step_no_usage_when_omitted(monkeypatch):
     """Model step returns None usage when provider omits it."""
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Hello")
-    mock_chunk.usage = None
+    serve(monkeypatch, chunks=[sdk_chunk(content="Hello"), sdk_chunk(finish_reason="stop")])
 
-    mock_done = MagicMock()
-    mock_done.choices = []
-    mock_done.usage = None
-
-    mock_stream = [mock_chunk, mock_done]
-
-    state = {
-        "messages": [{"role": "user", "content": "Say hello"}],
-        "run_id": str(uuid.uuid4()),
-        "conversation_id": str(uuid.uuid4()),
-    }
-
-    from src.openship.config import settings
-    with patch.object(settings, "openai_api_key", "test-key"):
-        with patch("src.openship.runs.graph.chat", return_value=iter(mock_stream)):
-            result = model_step(state)
+    result = model_step(run_state(("user", "Say hello")), invocation())
 
     assert result["assistant_response"] == "Hello"
     assert result["usage"] is None
 
 
-def test_model_step_incomplete_usage_visible():
+def test_model_step_incomplete_usage_visible(monkeypatch):
     """Incomplete usage (only completion tokens) is visible as incomplete."""
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Hello")
-    mock_chunk.usage = MagicMock()
-    mock_chunk.usage.prompt_tokens = None
-    mock_chunk.usage.completion_tokens = 15
-    mock_chunk.usage.total_tokens = None
+    serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(content="Hello"),
+            sdk_chunk(choices=False, usage=(None, 15, None)),
+            sdk_chunk(finish_reason="stop"),
+        ],
+    )
 
-    mock_done = MagicMock()
-    mock_done.choices = []
-    mock_done.usage = None
-
-    mock_stream = [mock_chunk, mock_done]
-
-    state = {
-        "messages": [{"role": "user", "content": "Say hello"}],
-        "run_id": str(uuid.uuid4()),
-        "conversation_id": str(uuid.uuid4()),
-    }
-
-    from src.openship.config import settings
-    with patch.object(settings, "openai_api_key", "test-key"):
-        with patch("src.openship.runs.graph.chat", return_value=iter(mock_stream)):
-            result = model_step(state)
+    result = model_step(run_state(("user", "Say hello")), invocation())
 
     assert result["usage"] is not None
     assert result["usage"]["output_tokens"] == 15
     assert result["usage"]["input_tokens"] is None
-    assert result["usage"]["estimated"] is True
+    assert result["usage"]["total_tokens"] is None
+
+    # What a run keeps says the totals are incomplete, and invents no number.
+    kept = _usage_record(result["usage"])
+    assert kept["estimated"] is True
+    assert kept["input_tokens"] is None
 
 
 def test_finalize_persists_usage():

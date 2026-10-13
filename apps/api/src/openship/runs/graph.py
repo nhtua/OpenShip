@@ -1,27 +1,40 @@
-"""LangGraph chat graph with PostgreSQL checkpointing and bounded model step.
+"""LangGraph chat graph: one bounded model turn through the run's own snapshot.
 
-This module defines a simple chat graph with a single model step node.
-State carries only serializable chat inputs/output and run ID, never
-API credentials.
+State carries only serializable chat inputs, the run's pinned configuration,
+and the canonical result. The runtime control, the attempt recorder, and every
+provider client are injected per invocation and never reach a checkpoint.
 """
 
+import asyncio
 import json
+import uuid
+
 from dataclasses import dataclass
 
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, Optional
 
-from ..chat.llm import chat
-from ..config import settings
+from ..providers.contracts import ChatMessage, ModelRequest, RunModelConfig
+from ..providers.errors import ProviderError, SAFE_MESSAGES
+from ..providers.runner import run_model_turn
+from .service import parse_run_model_config
 
 
 class ChatState(TypedDict):
-    """Graph state schema. Carries only serializable data."""
+    """Graph state schema. Carries only serializable data.
+
+    The run's pinned configuration is part of the state because it is frozen,
+    non-secret, and is what makes a resumed thread run the same model. The
+    runtime control, the attempt recorder, and every provider client are
+    injected per invocation and never reach a checkpoint.
+    """
     messages: list[dict]
     run_id: str
     conversation_id: str
+    model_configuration: str
     assistant_response: str
     usage: Optional[dict]
+    finish_reason: str
 
 
 @dataclass
@@ -30,115 +43,133 @@ class ModelResult:
     assistant_response: str
     usage: Optional[dict] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    finish_reason: Optional[str] = None
 
 
-class ModelError(Exception):
-    """Raised when the provider returns an error."""
-    pass
+#: A finish reason that is not an answer, and the normalized failure it shows.
+FINISH_ERRORS = {
+    "length": "output_limit_exceeded",
+    "refusal": "model_refused",
+    "tool_calls": "unsupported_capability",
+}
 
 
-class ConfigurationError(Exception):
-    """Raised when configuration is missing or invalid."""
-    pass
+def _request_of(state: ChatState, config: RunModelConfig) -> ModelRequest:
+    """The conversation as contract messages, in the order it was sent."""
+    try:
+        return ModelRequest(
+            messages=tuple(
+                ChatMessage(role=message["role"], content=message["content"])
+                for message in state["messages"]
+            ),
+            max_output_tokens=config.limits.max_output_tokens,
+        )
+    except (KeyError, TypeError, ValueError) as unmapped:
+        raise ProviderError(
+            "invalid_request",
+            safe_message="the conversation carries messages this model cannot be sent",
+        ) from unmapped
 
 
-def model_step(state: ChatState) -> dict:
-    """Execute one model turn.
+def model_step(state: ChatState, invocation=None) -> dict:
+    """Execute one model turn through the configuration this run pinned.
 
-    Calls the OpenAI chat API with bounded output budget.
-    Returns only the assistant response and usage info.
+    ``invocation`` supplies the runtime control and attempt recorder this
+    invocation should use; it is never stored in state. Without one, the pair
+    is resolved from the run in this installation's database, which is what a
+    direct caller (a test, a one-off script) wants.
     """
-    messages = state["messages"]
-    run_id = state["run_id"]
+    config = parse_run_model_config(state.get("model_configuration"), state["run_id"])
+    request = _request_of(state, config)
+    control, recorder = invocation() if invocation else _default_invocation(state)
 
-    # Validate API key is configured
-    if not settings.openai_api_key:
-        raise ConfigurationError(
-            "OPENAI_API_KEY is not configured. "
-            "Set the OPENAI_API_KEY environment variable."
-        )
+    # The model turn is asynchronous; this node owns the event loop so the
+    # worker's own thread stays synchronous.
+    result = asyncio.run(run_model_turn(request, config, control, recorder))
 
-    # Bounded output budget
-    max_tokens = getattr(settings, "model_max_tokens", 4000)
-
-    print(f"[graph] Calling chat API with {len(messages)} messages, model={settings.openai_model}")
-    print(f"[graph] API key configured: {bool(settings.openai_api_key)}")
-    try:
-        response = chat(messages, max_tokens=max_tokens)
-        print(f"[graph] Chat response received: {response}")
-    except Exception as e:
-        print(f"[graph] Chat API error: {type(e).__name__}: {e}")
-        raise ModelError(f"Provider error: {e}")
-
-    # Collect response and capture usage from provider metadata
-    chunks = []
-    prompt_tokens = None
-    completion_tokens = None
-    total_tokens = None
-    try:
-        for chunk in response:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    chunks.append(delta.content)
-            # Usage is provided in the final chunk of the stream
-            if chunk.usage:
-                prompt_tokens = chunk.usage.prompt_tokens
-                completion_tokens = chunk.usage.completion_tokens
-                total_tokens = chunk.usage.total_tokens
-    except Exception as e:
-        raise ModelError(f"Stream error: {e}")
-
-    assistant_response = "".join(chunks).strip()
-
-    # Build usage info from provider metadata only — never estimated
-    # Values come only from what the provider returns
-    usage = None
-    has_any = (
-        prompt_tokens is not None
-        or completion_tokens is not None
-        or total_tokens is not None
-    )
-    if has_any:
-        # If any value is missing, mark as estimated (incomplete)
-        all_present = (
-            prompt_tokens is not None
-            and completion_tokens is not None
-            and total_tokens is not None
-        )
-        usage = {
-            "input_tokens": prompt_tokens,
-            "output_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-            "provider_model": None,  # Not available in stream response
-            "estimated": not all_present,
-        }
-
+    usage = result.usage.model_dump(mode="json") if result.usage is not None else None
     return {
-        "assistant_response": assistant_response,
+        "assistant_response": result.text,
         "usage": usage,
+        "finish_reason": result.finish_reason,
     }
 
 
-def build_chat_graph(checkpointer=None):
+def _invocation_for(run_id, fence: int):
+    """The control and recorder one turn should use, for a run this worker owns."""
+    from ..database.session import get_db
+    from ..providers.attempts import DatabaseAttemptRecorder
+    from ..providers.control import InvocationControl
+
+    db = get_db()
+    return InvocationControl(), DatabaseAttemptRecorder(lambda: db, _run_id(run_id), fence)
+
+
+def _default_invocation(state: ChatState):
+    """The control and recorder for a run, read from this installation's database.
+
+    A worker supplies its own factory so the control carries its deadline and
+    stop signal and the recorder its claimed fence; this is the fallback for a
+    direct caller, which owns no supervision of its own.
+    """
+    return _invocation_for(state["run_id"], _current_fence(state["run_id"]))
+
+
+def _run_id(raw) -> uuid.UUID:
+    """A run ID this installation knows, or a safe configuration error."""
+    try:
+        return uuid.UUID(raw)
+    except (TypeError, ValueError):
+        raise ProviderError(
+            "configuration_error",
+            safe_message=f"run {raw} is not a run this installation knows",
+        ) from None
+
+
+def _current_fence(raw) -> int:
+    """The fence a run holds now, for a caller that claimed no lease of its own."""
+    from ..database.session import get_db
+    from ..runs.models import Run
+
+    run = get_db().get(Run, _run_id(raw))
+    if run is None:
+        raise ProviderError(
+            "configuration_error",
+            safe_message=f"run {raw} does not exist in this installation",
+        )
+    return run.fence
+
+
+def build_chat_graph(checkpointer=None, invocation_factory=None):
     """Build the chat graph.
 
     Args:
         checkpointer: Optional checkpoint saver. If None, uses in-memory.
+        invocation_factory: Supplies the runtime control and attempt recorder
+            for one invocation. It is called per model step, so neither object
+            is ever serialized into a checkpoint.
 
     Returns:
         CompiledStateGraph.
     """
     builder = StateGraph(ChatState)
 
-    builder.add_node("model", model_step)
+    factory = invocation_factory or _default_invocation
+    builder.add_node("model", lambda state: model_step(state, factory))
     builder.set_entry_point("model")
     builder.add_edge("model", END)
 
     return builder.compile(checkpointer=checkpointer)
 
 
-def execute_model_turn(run_id: str, thread_id: str, fence: int, state: ChatState) -> ModelResult:
+def execute_model_turn(
+    run_id: str,
+    thread_id: str,
+    fence: int,
+    state: ChatState,
+    invocation_factory=None,
+) -> ModelResult:
     """Execute a model turn and return the result.
 
     Args:
@@ -148,18 +179,35 @@ def execute_model_turn(run_id: str, thread_id: str, fence: int, state: ChatState
         fence: The fence value for optimistic locking (reserved for future
             checkpointer integration; not currently used).
         state: The input state with messages.
+        invocation_factory: Supplies the control and recorder to use; defaults
+            to the run's own, read from this installation's database.
 
     Returns:
         ModelResult with assistant response, usage, and any error.
     """
+    factory = invocation_factory or (lambda: _invocation_for(_run_id(run_id), fence))
     try:
-        result = model_step(state)
-        return ModelResult(
-            assistant_response=result["assistant_response"],
-            usage=result["usage"],
-        )
-    except (ModelError, ConfigurationError) as e:
-        return ModelResult(
-            assistant_response="",
-            error=str(e),
-        )
+        values = model_step(state, factory)
+    except ProviderError as refused:
+        return ModelResult(assistant_response="", error=refused.safe_message, error_code=refused.code)
+
+    code = _unpublishable(values)
+    if code is not None:
+        return ModelResult(assistant_response="", error=SAFE_MESSAGES[code], error_code=code)
+
+    return ModelResult(
+        assistant_response=values["assistant_response"],
+        usage=values["usage"],
+        finish_reason=values["finish_reason"],
+    )
+
+
+def _unpublishable(values: dict) -> str | None:
+    """The normalized failure a turn produced instead of a publishable answer.
+
+    Only a clean stop with nonempty text may publish an assistant answer;
+    partial text stays an internal result and never enters history.
+    """
+    if values["finish_reason"] == "stop" and values["assistant_response"]:
+        return None
+    return FINISH_ERRORS.get(values["finish_reason"], "invalid_response")

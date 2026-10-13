@@ -25,6 +25,7 @@ from src.openship.providers.contracts import (
     validate_request,
 )
 from src.openship.providers.errors import ProviderError
+from src.openship.providers.registry import register_adapter
 
 _UNAVAILABLE = "The model provider could not be reached."
 
@@ -180,3 +181,13 @@ class OpenAIAdapter:
                 "declare a profile that qualifies one"
             ),
         )
+
+
+def _build_adapter(profile) -> OpenAIAdapter:
+    """The adapter for a pinned profile: the SDK is imported only here."""
+    return OpenAIAdapter()
+
+
+#: Registered by the adapter itself, so the registry never invents one and no
+#: module outside this one imports the SDK.
+register_adapter("openai", _build_adapter)
