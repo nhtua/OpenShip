@@ -66,6 +66,20 @@ reviewed at all:
 cd apps/api && uv run pytest tests/ -q -m "not provider_live and not postgres"
 ```
 
+One lane is not of the code but of the packaging: `tests/test_packaging.py`
+reads `docker-compose.yml` and `.env.example` and asserts what an operator
+would actually get. That the API and the worker are configured with the same
+thing, so a run one queues is executed under the profile the other offered;
+that a credential is named and never carried, and never made required — an
+installation without a key still starts, and says which profiles it cannot
+serve; that every binding the packaging interpolates is one the documented
+environment names, so following the docs does not leave a service
+half-configured; and that the opt-in an operator sets is the name the live
+test reads and a registered lane, so a qualification that never happened
+cannot look like a pass. The check reads those files as text and asserts
+only their shape, which is why validating the packaging cannot put a secret
+in a log.
+
 ## The browser
 
 The browser's provider journey is walked end to end against local fixtures:
@@ -77,13 +91,18 @@ including the event stream's URL with its cursor query.
 cd apps/web && pnpm test:e2e provider-portability.spec.ts
 ```
 
-Seven cases: an unavailable profile is stated with its reason before anything
-is sent; choosing another profile names it and the submitted payload asks for
-it; a chosen profile survives a reload because the run read states it; a
-fallback is offered only where the chosen profile allows it; a bounded outage
-is reported with the copy the API settled and no answer behind it; a
-cancelled provider keeps its own end; a completed turn leaves exactly one
-answer.
+Nine cases: an unavailable profile is stated with its reason before anything
+is sent — two reasons, a key this installation does not configure and an
+adapter this build does not ship, stated the same way; choosing another
+profile names it and the submitted payload asks for it; a chosen profile
+survives a reload because the run read states it; a different adapter at a
+local destination reads the same way and reports no counts, so the card says
+"Not reported" rather than estimating; a fallback is offered only where the
+chosen profile allows it; a bounded outage is reported with the copy the API
+settled and no answer behind it; a cancellation the record carries leaves its
+own end; a run that is still going can be stopped from the browser, which
+asks about that run and learns the end from the run read rather than
+assuming the ask was enough; and a completed turn leaves exactly one answer.
 
 ## Live qualification
 
@@ -118,10 +137,11 @@ Verified 2026-10-13, on this checkout:
 
 | Lane | Result |
 | --- | --- |
-| API unit (`-m "not provider_live and not postgres"`) | 197 passed, 15 deselected |
+| API lint (`ruff check .` over `apps/api`) | no findings |
+| API unit (`-m "not provider_live and not postgres"`) | 203 passed, 15 deselected |
 | API PostgreSQL durable lane | 13 passed, 5 deselected |
-| Web typecheck / unit / build | clean, 121 passed, clean |
-| Browser portability scenario | 7 passed |
+| Web typecheck / unit / build | clean, 122 passed, clean |
+| Browser portability scenario | 9 passed |
 | Live qualification | **pending** — no credential binding is configured, so the test skips |
 
 No tuple is `live-qualified` or `accepted`. The states after
