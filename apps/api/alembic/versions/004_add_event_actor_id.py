@@ -33,7 +33,9 @@ def upgrade() -> None:
     if 'actor_id' not in columns:
         with op.batch_alter_table('events') as batch_op:
             batch_op.add_column(
-                sa.Column('actor_id', UUID(as_uuid=True), nullable=True)
+                # Same id type as every other revision: a foreign key to a
+                # differently typed column is refused on PostgreSQL.
+                sa.Column('actor_id', sa.Uuid(), nullable=True)
             )
 
     # Add foreign key separately for SQLite compatibility

@@ -48,8 +48,8 @@ def upgrade() -> None:
     # One row per bounded generation request a worker made for a run.
     op.create_table(
         'provider_attempts',
-        sa.Column('id', sa.String(36), nullable=False),
-        sa.Column('run_id', sa.String(36), sa.ForeignKey('runs.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('run_id', sa.Uuid(), sa.ForeignKey('runs.id', ondelete='CASCADE'), nullable=False),
         sa.Column('ordinal', sa.Integer(), nullable=False),
         sa.Column('fence', sa.Integer(), nullable=False),
         sa.Column('profile_id', sa.String(128), nullable=False),

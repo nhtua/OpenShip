@@ -64,9 +64,12 @@ def _upgrade(ini_path: Path, revision: str) -> None:
     result = _alembic(ini_path, "upgrade", revision)
     assert result.returncode == 0, (
         f"upgrade to {revision} failed: {result.stderr}\n"
-        "The Phase 1-2 revisions declare varchar ids (001) while 002 declares "
-        "UUID ids, so the chain does not apply to PostgreSQL as written; "
-        "making it dialect-aware is a separate decision."
+        "Every revision must declare ids with the type the ORM declares "
+        "(sa.Uuid): SQLAlchemy maps it to a string column on SQLite and to "
+        "the native uuid on PostgreSQL, so a revision that declares varchar "
+        "cannot take a foreign key to an earlier one on PostgreSQL. SQLite "
+        "accepts the mismatch, which is why this only fails in the PostgreSQL "
+        "lane."
     )
 
 

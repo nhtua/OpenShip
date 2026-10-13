@@ -110,15 +110,18 @@ class Worker:
         else:
             try:
                 from langgraph.checkpoint.postgres import PostgresSaver
-                # Use persistent connection with pool
+
+                # from_conn_string takes only the connection string: the pool
+                # keyword arguments this installation once passed are not part
+                # of the saver's API, and passing them left every worker
+                # without a checkpointer at all.
                 self._checkpointer_ctx = PostgresSaver.from_conn_string(
-                    settings.database_url,
-                    pool_size=5,
-                    max_overflow=10,
-                    pool_timeout=30,
-                    pool_recycle=1800,
+                    settings.database_url
                 )
                 self.checkpointer = self._checkpointer_ctx.__enter__()
+                # The saver's tables are what make a thread resumable; without
+                # this the graph silently has nowhere to write a checkpoint.
+                self.checkpointer.setup()
                 logger.info("Checkpointer initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize checkpointer: {e}")
