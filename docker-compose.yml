@@ -34,6 +34,13 @@ services:
       EVENT_RETENTION_DAYS: 30
       CHECKPOINT_RETENTION_DAYS: 30
       LOG_RETENTION_DAYS: 7
+      # Profile configuration is non-secret and shared: the worker executes a
+      # run the API queued, so a profile that means different things to the
+      # two of them would make "which model answered" a question with two
+      # answers. Only credential values come from the environment.
+      MODEL_PROFILES_JSON: ${MODEL_PROFILES_JSON:-}
+      MODEL_DEFAULT_PROFILE_ID: ${MODEL_DEFAULT_PROFILE_ID:-}
+      MODEL_MAX_TOKENS: ${MODEL_MAX_TOKENS:-4000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
@@ -60,6 +67,12 @@ services:
       EVENT_RETENTION_DAYS: 30
       CHECKPOINT_RETENTION_DAYS: 30
       LOG_RETENTION_DAYS: 7
+      # Identical to the api service above, on the same variables: the worker
+      # executes what the API queued, so the profile a run names has to mean
+      # the same thing to both.
+      MODEL_PROFILES_JSON: ${MODEL_PROFILES_JSON:-}
+      MODEL_DEFAULT_PROFILE_ID: ${MODEL_DEFAULT_PROFILE_ID:-}
+      MODEL_MAX_TOKENS: ${MODEL_MAX_TOKENS:-4000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
