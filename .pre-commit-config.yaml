@@ -20,10 +20,14 @@ repos:
       # The API's own validation, gated on the API changing so a frontend
       # commit never pays for it. The unit lane is the whole suite minus the
       # lanes that need a service or a live provider — the same lane CI runs.
-      # Lint is deliberately not a gate here: apps/api has never been linted
-      # and carries pre-existing findings across every rule family, so a lint
-      # gate would be a separate, deliberate cleanup rather than something a
-      # feature can quietly turn on.
+      - id: api-ruff
+        name: API Ruff Lint
+        entry: bash -c "cd apps/api && uv run ruff check ."
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^apps/api/
+
       - id: api-tests
         name: API Unit Tests
         entry: bash -c "cd apps/api && uv run pytest -q -m 'not postgres and not provider_live'"

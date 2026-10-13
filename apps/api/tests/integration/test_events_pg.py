@@ -6,23 +6,21 @@ Verifies:
 - Retention pruning works correctly
 """
 
-import uuid
-import tempfile
 import os
 import subprocess
 import sys
-import time
+import tempfile
+import uuid
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from src.openship.auth.models import User
-from src.openship.workspace.models import Project
 from src.openship.chat.models import Conversation
-from src.openship.runs.models import Run, Event, Outbox
+from src.openship.runs.models import Event, Outbox, Run
+from src.openship.workspace.models import Project
 
 
 @pytest.fixture(scope="module")
@@ -78,7 +76,7 @@ datefmt = %H:%M:%S
 
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ini_path), "upgrade", "head"],
-        capture_output=True, text=True, env=env, timeout=30,
+        capture_output=True, text=True, env=env, timeout=30, check=False,
     )
     assert result.returncode == 0, f"Migration failed: {result.stderr}"
 
@@ -131,7 +129,7 @@ def _setup_conv(session):
 
 def test_concurrent_event_writers_distinct_sequences(test_session):
     """Two writers appending events produce distinct ordered sequences."""
-    user, project, conv = _setup_conv(test_session)
+    _user, project, conv = _setup_conv(test_session)
 
     run = Run(
         conversation_id=conv.id,
@@ -182,7 +180,7 @@ def test_concurrent_event_writers_distinct_sequences(test_session):
 
 def test_stream_resumes_after_restart(test_session):
     """Client can resume streaming from last received sequence."""
-    user, project, conv = _setup_conv(test_session)
+    _user, project, conv = _setup_conv(test_session)
 
     run = Run(
         conversation_id=conv.id,
@@ -220,7 +218,7 @@ def test_stream_resumes_after_restart(test_session):
 
 def test_retention_pruning(test_session):
     """Pruning keeps most recent events and prunes oldest."""
-    user, project, conv = _setup_conv(test_session)
+    _user, project, conv = _setup_conv(test_session)
 
     run = Run(
         conversation_id=conv.id,
@@ -274,7 +272,7 @@ def test_retention_pruning(test_session):
 
 def test_outbox_deduplication_by_event_id(test_session):
     """Duplicate outbox rows for same event ID are harmless."""
-    user, project, conv = _setup_conv(test_session)
+    _user, project, conv = _setup_conv(test_session)
 
     run = Run(
         conversation_id=conv.id,

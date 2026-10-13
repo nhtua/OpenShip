@@ -9,30 +9,26 @@ import asyncio
 import json
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
-
 from fastapi.testclient import TestClient
 
 from src.openship.chat.models import Conversation, Message
-from src.openship.runs.models import ProviderAttempt, Run, RunJob
-from src.openship.runs.queue import claim_next, finalize, mark_provider_started
-from src.openship.runs.service import bind_run_model_config, load_run_model_config
-from src.openship.providers.attempts import DatabaseAttemptRecorder
 from src.openship.providers.contracts import (
     ChatMessage,
     ModelRequest,
-    ProviderTurnResult,
     RunLimits,
     RunModelConfig,
-    TokenUsage,
     pin_profile,
 )
 from src.openship.providers.control import InvocationControl
 from src.openship.providers.errors import ProviderError
 from src.openship.providers.registry import _adapter_factories
 from src.openship.providers.runner import run_model_turn
+from src.openship.runs.models import ProviderAttempt, Run, RunJob
+from src.openship.runs.queue import claim_next, finalize
+from src.openship.runs.service import bind_run_model_config, load_run_model_config
 from src.openship.runs.worker import Worker
 
 from .conftest import (
@@ -44,13 +40,12 @@ from .conftest import (
 )
 from .providers.conftest import StreamTransport, make_adapter, sdk_chunk
 
-
 # --- The installation, a queued run, and one worker job ----------------------------
 
 #: A queue order the fixture controls. A case's job is always the oldest
 #: available one, so the claim that follows is this case's own run and a case
 #: never depends on another case's leftovers.
-_QUEUE_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_QUEUE_EPOCH = datetime(2000, 1, 1, tzinfo=UTC)
 
 
 def _two_destinations(monkeypatch) -> None:
@@ -258,7 +253,7 @@ def test_legacy_queued_run_binds_once_under_fence(client, authorized_client, mon
     session.commit()
 
     claim = _claim()
-    transport = _serve(
+    _serve(
         monkeypatch,
         chunks=[sdk_chunk(content="Bound at execution.", finish_reason="stop")],
     )
@@ -407,7 +402,7 @@ def test_completion_message_and_event_commit_together(client, authorized_client,
     run = _queued_turn(client, authorized_client, monkeypatch)
     claim = _claim()
 
-    transport = _serve(
+    _serve(
         monkeypatch,
         chunks=[
             sdk_chunk(content="A complete answer.", finish_reason="stop"),

@@ -1,10 +1,13 @@
+# ruff: noqa: BLE001
+# Any unusable token is a 401: which of the several ways a token can be bad
+# does not change the answer, and the answer is what the client needs.
 import uuid as _uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from ..auth.models import User
-from ..auth.service import create_jwt, hash_password, verify_password, verify_jwt
+from ..auth.service import create_jwt, hash_password, verify_jwt, verify_password
 from ..database.session import get_db
 from ..workspace.models import Project
 from .schemas import LoginRequest, RegisterRequest
@@ -52,7 +55,6 @@ def require_jwt(request: Request) -> User:
             },
         )
 
-    import uuid as _uuid
 
     db = next(get_db())
     try:

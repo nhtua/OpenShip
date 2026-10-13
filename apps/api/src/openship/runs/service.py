@@ -6,10 +6,9 @@ All mutations happen within a single database transaction for atomicity.
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from ..chat.models import Conversation, Message
@@ -98,7 +97,7 @@ def submit_turn(
 
     # Validate client_request_id format
     try:
-        request_uuid = uuid.UUID(client_request_id)
+        uuid.UUID(client_request_id)
     except ValueError:
         raise HTTPException(
             status_code=422,
@@ -346,7 +345,7 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
 
     # Update status to cancelled
     run.status = "cancelled"
-    run.ended_at = datetime.now(timezone.utc)
+    run.ended_at = datetime.now(UTC)
     run.fence += 1
 
     # Create cancel event

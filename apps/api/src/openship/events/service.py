@@ -2,10 +2,8 @@
 
 import json
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..chat.models import Conversation, Message
@@ -17,7 +15,6 @@ from ..runs.schemas import (
     _usage_projection,
 )
 from .schemas import (
-    EventInput,
     EventRead,
     MessageSummary,
     RunSummary,
@@ -78,7 +75,7 @@ def append_event(
     run_id: uuid.UUID,
     event_type: str,
     payload: dict,
-    actor_id: uuid.UUID = None,
+    actor_id: uuid.UUID | None = None,
 ) -> Event:
     """Append a durable semantic event to a conversation.
 

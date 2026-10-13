@@ -27,6 +27,21 @@ dev = [
     "pre-commit>=3.6.0",
 ]
 
+# The gate CI runs over apps/api. The rule set stays at ruff's defaults;
+# one rule is turned off, and the reason is stated here rather than hidden
+# in a green run: FastAPI's dependency-injection idiom puts Depends() in
+# argument defaults, which is the framework's required form and has no
+# alternative spelling. B008 flags that shape in every route signature.
+# Where a broad except is deliberate - a health endpoint reporting degraded
+# instead of failing, a worker that keeps serving after one run fails, an
+# alembic shim that is idempotent across backends - the suppression lives
+# on that module, so new code is still checked.
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["B008"]
+
 [tool.pytest.ini_options]
 markers = [
     "postgres: requires a real PostgreSQL database named by TEST_POSTGRES_URL",

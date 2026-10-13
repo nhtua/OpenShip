@@ -8,7 +8,7 @@ optimistic concurrency control for all status updates.
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from sqlalchemy import and_, func, or_, update
@@ -46,10 +46,10 @@ def _db_now():
 
 def _py_now():
     """Get current UTC time for setting values."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-def claim_next(db: Session, worker_id: str, lease_seconds: int = None) -> Claim | None:
+def claim_next(db: Session, worker_id: str, lease_seconds: int | None = None) -> Claim | None:
     """Claim the next available job from the queue.
 
     Uses FOR UPDATE SKIP LOCKED to safely claim jobs under concurrent
@@ -116,7 +116,7 @@ def claim_next(db: Session, worker_id: str, lease_seconds: int = None) -> Claim 
     )
 
 
-def renew(db: Session, run_id: uuid.UUID, fence: int, lease_seconds: int = None) -> bool:
+def renew(db: Session, run_id: uuid.UUID, fence: int, lease_seconds: int | None = None) -> bool:
     """Renew a job's lease atomically.
 
     Uses UPDATE ... WHERE fence = :fence with returning to atomically check
@@ -263,12 +263,12 @@ def fenced_update_run(
     db: Session,
     run_id: uuid.UUID,
     fence: int,
-    status: str = None,
-    error_code: str = None,
+    status: str | None = None,
+    error_code: str | None = None,
     ended_at=None,
     provider_started_at=None,
-    usage: str = None,
-    model_configuration: str = None,
+    usage: str | None = None,
+    model_configuration: str | None = None,
 ) -> bool:
     """Update a run with atomic fence-based optimistic concurrency control.
 

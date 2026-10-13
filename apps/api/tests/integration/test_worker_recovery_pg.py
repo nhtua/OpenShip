@@ -7,30 +7,29 @@ These tests verify:
 - Cancelled runs cannot be claimed or finalized
 """
 
-import uuid
-import tempfile
 import os
 import subprocess
 import sys
+import tempfile
+import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.openship.auth.models import Base, User
-from src.openship.workspace.models import Project
+from src.openship.auth.models import User
 from src.openship.chat.models import Conversation
 from src.openship.runs.models import Run, RunJob
 from src.openship.runs.queue import (
     claim_next,
-    renew,
     finalize,
     reconcile_expired,
-    ReleaseReason,
+    renew,
 )
 from src.openship.runs.service import submit_turn
+from src.openship.workspace.models import Project
 
 
 @pytest.fixture(scope="module")
@@ -87,7 +86,7 @@ datefmt = %H:%M:%S
 
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ini_path), "upgrade", "head"],
-        capture_output=True, text=True, env=env, timeout=30,
+        capture_output=True, text=True, env=env, timeout=30, check=False,
     )
     assert result.returncode == 0, f"Migration failed: {result.stderr}"
 
@@ -209,7 +208,7 @@ def test_renew_updates_lease(test_session, test_run):
 
 def test_renew_wrong_fence_fails(test_session, test_run):
     """renew with wrong fence value fails."""
-    claim = claim_next(
+    claim_next(
         db=test_session,
         worker_id="worker-wrong-fence",
         lease_seconds=30,
@@ -245,7 +244,7 @@ def test_finalize_completes_run(test_session, test_run):
 
 def test_finalize_wrong_fence_fails(test_session, test_run):
     """finalize with wrong fence fails."""
-    claim = claim_next(
+    claim_next(
         db=test_session,
         worker_id="worker-wrong-fence-finish",
         lease_seconds=30,
@@ -288,7 +287,7 @@ def test_reconcile_expired_requeues_not_started(test_session):
     test_session.flush()
 
     # Create a claimed job with expired lease
-    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    past = datetime.now(UTC) - timedelta(hours=1)
     job = RunJob(
         run_id=run.id,
         owner_id="dead-worker",
@@ -330,12 +329,12 @@ def test_reconcile_expired_marks_started_as_failed(test_session):
         project_id=project.id,
         status="running",
         fence=1,
-        provider_started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        provider_started_at=datetime.now(UTC) - timedelta(minutes=5),
     )
     test_session.add(run)
     test_session.flush()
 
-    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    past = datetime.now(UTC) - timedelta(hours=1)
     job = RunJob(
         run_id=run.id,
         owner_id="dead-worker-2",

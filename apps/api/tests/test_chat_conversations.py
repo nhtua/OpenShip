@@ -1,7 +1,5 @@
 """Tests for the conversation listing endpoint."""
 
-import uuid
-from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 

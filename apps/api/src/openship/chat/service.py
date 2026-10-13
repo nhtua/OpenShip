@@ -3,9 +3,8 @@ import uuid
 from sqlalchemy.orm import Session
 
 from ..auth.models import User
-from ..chat.models import Conversation, Message
 from ..chat.llm import chat
-from ..config import settings
+from ..chat.models import Conversation, Message
 from ..workspace.models import Project
 
 
@@ -23,7 +22,6 @@ def _get_or_create_conversation(
         if conv:
             return conv
         # Unknown conversation_id: create a new one
-        pass
 
     # Find user's default project
     project = db.query(Project).filter(

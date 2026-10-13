@@ -20,9 +20,9 @@ import pytest
 
 from src.openship.config import settings
 from src.openship.providers.contracts import ChatMessage, ModelRequest
+from src.openship.providers.control import InvocationControl
 from src.openship.providers.registry import build_adapter, load_profiles
 from src.openship.providers.runner import run_model_turn
-from src.openship.providers.control import InvocationControl
 
 pytestmark = pytest.mark.provider_live
 

@@ -3,11 +3,11 @@
 import uuid
 
 from src.openship.auth.models import User
-from src.openship.workspace.models import Project
 from src.openship.chat.models import Conversation
-from src.openship.runs.models import Run, Event
 from src.openship.database.session import SessionLocal
 from src.openship.events.service import append_event, read_snapshot, stream_events
+from src.openship.runs.models import Event, Run
+from src.openship.workspace.models import Project
 
 
 def setup_user_project_conv(db):
@@ -111,7 +111,7 @@ def test_append_event_persists_with_caller_transaction():
         db.add(run)
         db.flush()
 
-        ev = append_event(
+        append_event(
             db, conv.id, run.id, "test_event", {"data": "test"}, actor_id=user.id
         )
         db.commit()  # Caller commits

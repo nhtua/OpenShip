@@ -6,21 +6,21 @@ These tests verify the database-level constraints that enforce durable run seman
 - No orphan records on failed transactions
 """
 
-import uuid
-import tempfile
 import os
 import subprocess
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.openship.auth.models import Base, User
+from src.openship.auth.models import User
+from src.openship.chat.models import Conversation
+from src.openship.runs.models import Event, Run
 from src.openship.workspace.models import Project
-from src.openship.chat.models import Conversation, Message
-from src.openship.runs.models import Run, RunJob, Event, Outbox
 
 
 @pytest.fixture(scope="module")
@@ -77,7 +77,7 @@ datefmt = %H:%M:%S
 
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ini_path), "upgrade", "head"],
-        capture_output=True, text=True, env=env, timeout=30,
+        capture_output=True, text=True, env=env, timeout=30, check=False,
     )
     assert result.returncode == 0, f"Migration failed: {result.stderr}"
 

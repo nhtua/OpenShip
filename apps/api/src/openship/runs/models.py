@@ -1,6 +1,18 @@
 import uuid
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, CheckConstraint, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 
 from ..auth.models import Base

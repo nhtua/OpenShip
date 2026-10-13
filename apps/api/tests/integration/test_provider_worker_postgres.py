@@ -1,3 +1,7 @@
+# ruff: noqa: BLE001, S110, S112
+# Two probes whose answer is "not there yet": a lane database that does not
+# exist, and a table this installation does not have. Both are expected, and
+# a later case reads what this one skipped.
 """The durable pipeline's durability, on a real PostgreSQL database.
 
 What the SQLite unit lane cannot show: PostgreSQL's ``FOR UPDATE SKIP LOCKED``
@@ -16,30 +20,35 @@ import os
 import subprocess
 import sys
 import uuid as uuidlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text as sa_text
+from sqlalchemy import create_engine
+from sqlalchemy import text as sa_text
 from sqlalchemy.orm import sessionmaker
 
 from src.openship.auth.models import User
-from src.openship.workspace.models import Project
 from src.openship.chat.models import Conversation, Message
-from src.openship.runs.models import Event, Outbox, ProviderAttempt, Run, RunJob
 from src.openship.config import settings
 from src.openship.events.retention import prune_events
 from src.openship.providers.attempts import DatabaseAttemptRecorder
 from src.openship.providers.contracts import pin_profile
 from src.openship.providers.errors import ProviderError
 from src.openship.providers.registry import _adapter_factories
-from src.openship.runs.queue import claim_next, finalize, mark_provider_started, reconcile_expired, renew
+from src.openship.runs.models import Event, ProviderAttempt, Run, RunJob
+from src.openship.runs.queue import (
+    claim_next,
+    finalize,
+    mark_provider_started,
+    reconcile_expired,
+    renew,
+)
 from src.openship.runs.service import request_cancel, submit_turn
-from src.openship.runs.worker import Worker, _INSTALLATION
-
+from src.openship.runs.worker import _INSTALLATION, Worker
+from src.openship.workspace.models import Project
 from tests.conftest import (
     CREDENTIAL_BINDING,
-    FIXTURE_ENDPOINT,
     FIXTURE_MODEL,
     SENTINEL_CREDENTIAL,
     profile_spec,
@@ -51,7 +60,7 @@ from tests.providers.conftest import StreamTransport, make_adapter, sdk_chunk
 pytestmark = [pytest.mark.postgres]
 
 #: A queue order the case controls, so the claim that follows is this case's.
-_QUEUE_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_QUEUE_EPOCH = datetime(2000, 1, 1, tzinfo=UTC)
 
 #: What a clean lane holds before a case fills it, in foreign-key order so a
 #: shared database can be emptied by another module's tests. ``run_jobs`` is
@@ -92,6 +101,7 @@ def _alembic(ini_path: Path, *args: str) -> subprocess.CompletedProcess:
         },
         cwd=Path(__file__).parents[2],
         timeout=180,
+        check=False,
     )
 
 
@@ -396,7 +406,7 @@ def test_two_workers_do_not_duplicate_dispatch(installation, monkeypatch):
     makes the second claim wait rather than read a job that is already taken.
     """
     db = installation()
-    run = _turn(db)["run"]
+    _turn(db)["run"]
 
     first = _claim(db, worker_id="worker-1")
     assert first
@@ -439,7 +449,7 @@ def completed_run(installation, monkeypatch):
 
 def test_terminal_commit_is_atomic(completed_run):
     """Status, the answer, and its event land together or not at all."""
-    db, run = completed_run["db"], completed_run["run"]
+    _db, run = completed_run["db"], completed_run["run"]
     with completed_run["factory"]() as session:
         status = session.query(Run).filter(Run.id == run.id).one().status
         answer = _assistant(session, run.id)

@@ -16,13 +16,12 @@ import pytest
 # Set strict msgpack before importing graph modules
 os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
 
+#: Imported so the real adapter is registered before any case replaces one.
+import src.openship.providers.openai  # noqa: F401
 from src.openship.providers.contracts import RunLimits, RunModelConfig
 from src.openship.providers.errors import ProviderError
 from src.openship.providers.registry import _adapter_factories
 from src.openship.runs.graph import ModelResult, build_chat_graph, execute_model_turn
-
-#: Imported so the real adapter is registered before any case replaces one.
-import src.openship.providers.openai  # noqa: F401
 
 #: A value that must never appear in a checkpoint. Not a real credential.
 SENTINEL_CREDENTIAL = "sentinel-credential-value"  # rayloc:ignore

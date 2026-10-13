@@ -1,7 +1,8 @@
+import uuid
+from datetime import UTC, datetime, timedelta
+
 import bcrypt
 import jwt
-import uuid
-from datetime import datetime, timedelta
 
 from ..config import settings
 
@@ -20,8 +21,8 @@ def create_jwt(user_id: uuid.UUID, username: str) -> str:
     payload = {
         "sub": str(user_id),
         "username": username,
-        "iat": datetime.utcnow(),
-        "exp": datetime.utcnow() + timedelta(hours=settings.jwt_expiry_hours),
+        "iat": datetime.now(UTC),
+        "exp": datetime.now(UTC) + timedelta(hours=settings.jwt_expiry_hours),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 

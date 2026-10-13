@@ -1,3 +1,6 @@
+# ruff: noqa: BLE001
+# A rejected foreign-key constraint is the assertion: the test expects an
+# error, so the exception type is not what the case is about.
 """Integration tests for the Phase 2 durable workspace migration.
 
 These tests verify:
@@ -18,7 +21,10 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy import create_engine, MetaData, Table, Column, String, Text, DateTime, ForeignKey, func
+from sqlalchemy import (
+    MetaData,
+    create_engine,
+)
 
 
 def _run_alembic(alembic_ini: Path, *args: str) -> subprocess.CompletedProcess:
@@ -35,6 +41,7 @@ def _run_alembic(alembic_ini: Path, *args: str) -> subprocess.CompletedProcess:
         env=env,
         cwd=Path(__file__).parents[2],
         timeout=60,
+        check=False,
     )
 
 
@@ -279,7 +286,7 @@ def test_foreign_project_join_fails(seeded_phase1_db):
             )
             conn.commit()
             assert False, "FK constraint did not prevent foreign project join"
-        except Exception as e:
+        except Exception:
             # FK violation expected
             conn.rollback()
 

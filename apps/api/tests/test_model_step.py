@@ -6,6 +6,7 @@ complete, and a provider failure that reaches a user as a stack trace.
 """
 
 import os
+
 import pytest
 
 # Set strict msgpack before importing graph modules
@@ -27,8 +28,8 @@ from .providers.conftest import (
     error_fixture,
     invocation,
     run_state,
-    serve,
     sdk_chunk,
+    serve,
 )
 
 
@@ -153,7 +154,6 @@ def test_build_chat_graph_returns_compiled_graph():
 
 def test_graph_state_has_required_fields():
     """Graph state includes the fields a resumed thread needs, and no runtime ones."""
-    from src.openship.runs.graph import ChatState
 
     assert "messages" in ChatState.__annotations__
     assert "run_id" in ChatState.__annotations__

@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
-
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.openship.providers.configuration import destination_label
 from src.openship.providers.contracts import PinnedProviderConfig, TokenUsage
@@ -23,7 +22,7 @@ OUTCOMES = ("started", "succeeded", "failed", "cancelled")
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class DatabaseAttemptRecorder:

@@ -10,16 +10,15 @@ a fallback that runs without being authorized, a partial answer retried as if
 starting over, and a budget reported as if a number were known.
 """
 
-import pytest
-
 from decimal import Decimal
+
+import pytest
 
 from src.openship.providers.contracts import RunLimits, RunModelConfig
 from src.openship.providers.errors import ProviderError
 from src.openship.providers.runner import run_model_turn
 
 from .conftest import (
-    CountingAdapter,
     FakeRecorder,
     control,
     conversation,
@@ -117,7 +116,7 @@ def _config(primary=None, fallbacks=(), **limits):
 
 async def no_wait(_seconds):
     """A backoff the runner is told about: a case never waits for real time."""
-    return None
+    return
 
 
 def no_jitter():

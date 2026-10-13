@@ -12,7 +12,6 @@ import uuid
 #: would re-register the real adapter over the case's own, so a second
 #: request in the same turn would build a client instead of using the fixture.
 import src.openship.providers.openai  # noqa: F401
-
 from src.openship.providers.contracts import (
     ChatMessage,
     ModelRequest,

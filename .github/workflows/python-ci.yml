@@ -32,6 +32,22 @@ jobs:
       - run: uv tool install ruff
       - run: cd apps/agent && ruff check .
 
+  # The API's own lint gate. It is a gate rather than a suggestion: the rule
+  # set is ruff's defaults, and the one rule turned off (B008, which flags
+  # FastAPI's required Depends() form) is stated in apps/api/pyproject.toml.
+  # Where a broad except is deliberate the suppression lives on that module,
+  # so new code is still checked.
+  api-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv tool install ruff
+      - run: cd apps/api && ruff check .
+
   # The API suite minus the lanes that need a service or a live provider. It
   # has to pass with no PostgreSQL and no vendor credentials, which is what
   # lets an ordinary PR be reviewed at all: every response in it is a

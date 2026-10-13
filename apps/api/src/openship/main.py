@@ -1,3 +1,7 @@
+# ruff: noqa: BLE001, S110
+# A status route answers "degraded" rather than failing: an endpoint whose job
+# is to report whether the service can serve is a worse answer when it raises
+# than when it says it cannot.
 import json
 
 from fastapi import FastAPI, HTTPException, Request
@@ -47,8 +51,9 @@ async def health_check_root():
 @app.get("/api/health")
 async def health_check():
     """API health check including database connectivity."""
-    from .database.session import SessionLocal
     from sqlalchemy import text
+
+    from .database.session import SessionLocal
 
     db_ok = False
     db = None
@@ -73,9 +78,10 @@ async def readiness_check():
     Returns 503 when not ready.
     """
     from fastapi import Response as FastAPIResponse
+    from sqlalchemy import func, text
+
     from .database.session import SessionLocal
-    from .runs.models import RunJob, Run
-    from sqlalchemy import text, func
+    from .runs.models import Run, RunJob
 
     # Check database
     db_ok = False

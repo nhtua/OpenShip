@@ -1,14 +1,22 @@
+# ruff: noqa: BLE001
+# A request that cannot be served becomes a 500 with a code the client can
+# act on; which exception reached here is part of the message, not the answer.
 """Routes for durable run commands."""
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..auth.models import User
 from ..auth.routes import require_jwt
 from ..database.session import get_db
 from .models import ProviderAttempt
-from .schemas import RunResponse, RunCancelRequest, TurnSubmitRequest, project_run_response
+from .schemas import (
+    RunResponse,
+    TurnSubmitRequest,
+    project_run_response,
+)
 from .service import get_run, request_cancel, submit_turn
 
 logger = logging.getLogger("runs.routes")
@@ -66,7 +74,7 @@ async def submit_chat_turn(
         logger.warning(f"submit_chat_turn HTTPException: {e.status_code} - {e.detail}")
         raise
     except Exception as e:
-        logger.exception(f"submit_chat_turn failed with exception: {type(e).__name__}: {e}")
+        logger.exception("submit_chat_turn failed")
         raise HTTPException(
             status_code=500,
             detail={"error": {"code": "submit_failed", "message": str(e)}},

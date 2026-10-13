@@ -10,7 +10,6 @@ import json
 import uuid
 
 import pytest
-
 from fastapi.testclient import TestClient
 
 from src.openship.chat.models import Message

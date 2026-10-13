@@ -1,3 +1,7 @@
+# ruff: noqa: BLE001, S110
+# Worker supervision is deliberately broad: a run whose heartbeat, cleanup, or
+# reconciliation failed must not stop the worker from serving the next one,
+# and each site records what it could not do.
 """Worker entry point for processing queued chat turns.
 
 Claims jobs with lease-based ownership, executes the LangGraph chat turn
@@ -13,20 +17,17 @@ import threading
 import time
 import uuid
 
-import psycopg2
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from ..chat.models import Message
 from ..config import settings
-from ..database.session import get_db
 from ..providers.attempts import DatabaseAttemptRecorder
 from ..providers.control import InvocationControl
 from ..providers.errors import ProviderError
 from ..runs.service import bind_run_model_config
-from .checkpoints import get_checkpointer
-from .graph import build_chat_graph, ModelResult
-from .queue import claim_next, renew, finalize, mark_provider_started, reconcile_expired
+from .graph import ModelResult, build_chat_graph
+from .queue import claim_next, finalize, mark_provider_started, reconcile_expired, renew
 
 logger = logging.getLogger("worker")
 
@@ -92,7 +93,7 @@ class Supervision:
 class Worker:
     """A chat turn worker that claims and executes queued jobs."""
 
-    def __init__(self, worker_id: str = None, session_factory=None, checkpointer=_INSTALLATION):
+    def __init__(self, worker_id: str | None = None, session_factory=None, checkpointer=_INSTALLATION):
         if worker_id is None:
             worker_id = f"worker-{uuid.uuid4().hex[:8]}"
         self.worker_id = worker_id
@@ -192,9 +193,9 @@ class Worker:
         heartbeat_thread = None
 
         try:
-            from ..runs.models import Run
             from ..chat.models import Conversation
             from ..events.service import append_event
+            from ..runs.models import Run
 
             run = job.query(Run).filter(Run.id == run_id).first()
             if not run:
@@ -314,7 +315,7 @@ class Worker:
             failure = None
             try:
                 graph_state = graph.invoke(state, config={"configurable": {"thread_id": thread_id}})
-                print(f"[worker] graph.invoke returned")
+                print("[worker] graph.invoke returned")
                 result = ModelResult(
                     assistant_response=graph_state.get("assistant_response", ""),
                     usage=graph_state.get("usage"),
@@ -498,7 +499,7 @@ class Worker:
             except KeyboardInterrupt:
                 self.running = False
                 logger.info(f"[{self.worker_id}] Interrupted, shutting down")
-            except Exception as e:
+            except Exception:
                 logger.exception(f"[{self.worker_id}] Error in worker loop")
                 time.sleep(1)
             finally:

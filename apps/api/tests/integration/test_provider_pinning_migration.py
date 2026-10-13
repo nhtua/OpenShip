@@ -16,7 +16,7 @@ import uuid as uuidlib
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, MetaData, text
+from sqlalchemy import MetaData, create_engine, text
 
 PHASE2_HEAD = "ghi789"
 
@@ -56,6 +56,7 @@ def _alembic(ini_path: Path, *args: str) -> subprocess.CompletedProcess:
         env=env,
         cwd=Path(__file__).parents[2],
         timeout=120,
+        check=False,
     )
 
 

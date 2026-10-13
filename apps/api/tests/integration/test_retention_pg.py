@@ -7,9 +7,7 @@ Tests retention policy behavior with actual database constraints:
 - Retention metrics accuracy
 """
 
-import json
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -17,9 +15,9 @@ from sqlalchemy.orm import sessionmaker
 
 from src.openship.auth.models import Base, User
 from src.openship.chat.models import Conversation
-from src.openship.workspace.models import Project
-from src.openship.runs.models import Run, RunJob, Event, Outbox
 from src.openship.events.retention import dry_run_retention, run_retention
+from src.openship.runs.models import Event, Run
+from src.openship.workspace.models import Project
 
 
 @pytest.fixture(scope="module")
@@ -69,7 +67,7 @@ def test_pg_retention_counts_eligible(retention_session):
         project_id=project.id,
         status="completed",
         fence=1,
-        ended_at=datetime.now(timezone.utc) - timedelta(days=60),
+        ended_at=datetime.now(UTC) - timedelta(days=60),
     )
     retention_session.add(old_run)
     retention_session.flush()
@@ -81,7 +79,7 @@ def test_pg_retention_counts_eligible(retention_session):
         sequence=1,
         type="run_completed",
         payload='{}',
-        created_at=datetime.now(timezone.utc) - timedelta(days=60),
+        created_at=datetime.now(UTC) - timedelta(days=60),
     )
     retention_session.add(old_event)
     retention_session.commit()
@@ -114,7 +112,7 @@ def test_pg_retention_prunes_terminal_data(retention_session):
         project_id=project.id,
         status="completed",
         fence=1,
-        ended_at=datetime.now(timezone.utc) - timedelta(days=60),
+        ended_at=datetime.now(UTC) - timedelta(days=60),
     )
     retention_session.add(old_run)
     retention_session.flush()
@@ -126,7 +124,7 @@ def test_pg_retention_prunes_terminal_data(retention_session):
         sequence=1,
         type="run_completed",
         payload='{}',
-        created_at=datetime.now(timezone.utc) - timedelta(days=60),
+        created_at=datetime.now(UTC) - timedelta(days=60),
     )
     retention_session.add(old_event)
     retention_session.flush()
@@ -148,7 +146,7 @@ def test_pg_retention_prunes_terminal_data(retention_session):
         sequence=2,
         type="run_started",
         payload='{}',
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     retention_session.add(recent_event)
     retention_session.flush()
@@ -189,7 +187,7 @@ def test_pg_retention_keeps_active_runs(retention_session):
         project_id=project.id,
         status="queued",
         fence=0,
-        created_at=datetime.now(timezone.utc) - timedelta(days=60),
+        created_at=datetime.now(UTC) - timedelta(days=60),
     )
     retention_session.add(queued_run)
 
@@ -199,7 +197,7 @@ def test_pg_retention_keeps_active_runs(retention_session):
         project_id=project.id,
         status="running",
         fence=1,
-        created_at=datetime.now(timezone.utc) - timedelta(days=60),
+        created_at=datetime.now(UTC) - timedelta(days=60),
     )
     retention_session.add(running_run)
     retention_session.commit()
@@ -237,7 +235,7 @@ def test_pg_retention_preserves_messages(retention_session):
         project_id=project.id,
         status="completed",
         fence=1,
-        ended_at=datetime.now(timezone.utc) - timedelta(days=60),
+        ended_at=datetime.now(UTC) - timedelta(days=60),
     )
     retention_session.add(old_run)
     retention_session.flush()

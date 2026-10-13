@@ -1,10 +1,7 @@
 """Tests for honest usage accounting and retention policies."""
 
 import json
-import uuid
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -12,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from src.openship.runs.graph import model_step
 from src.openship.runs.worker import _usage_record
 
-from .providers.conftest import invocation, run_state, serve, sdk_chunk
+from .providers.conftest import invocation, run_state, sdk_chunk, serve
 
 
 def test_model_step_captures_usage(monkeypatch):
@@ -79,9 +76,9 @@ def test_finalize_persists_usage():
 
     # Create full schema (all models)
     from src.openship.auth.models import Base, User
-    from src.openship.chat.models import Conversation, Message
+    from src.openship.chat.models import Conversation
+    from src.openship.runs.models import Run
     from src.openship.workspace.models import Project
-    from src.openship.runs.models import Run, RunJob, Event, Outbox
     Base.metadata.create_all(engine)
 
     db = Session()
@@ -149,8 +146,8 @@ def test_finalize_null_usage_when_omitted():
 
     from src.openship.auth.models import Base, User
     from src.openship.chat.models import Conversation
-    from src.openship.workspace.models import Project
     from src.openship.runs.models import Run
+    from src.openship.workspace.models import Project
     Base.metadata.create_all(engine)
 
     db = Session()
@@ -210,8 +207,8 @@ def test_retention_dry_run_returns_metrics():
 
     from src.openship.auth.models import Base, User
     from src.openship.chat.models import Conversation
+    from src.openship.runs.models import Event, Run
     from src.openship.workspace.models import Project
-    from src.openship.runs.models import Run, Event
     Base.metadata.create_all(engine)
 
     db = Session()
@@ -235,7 +232,7 @@ def test_retention_dry_run_returns_metrics():
         project_id=project.id,
         status="completed",
         fence=1,
-        ended_at=datetime.now(timezone.utc) - timedelta(days=60),
+        ended_at=datetime.now(UTC) - timedelta(days=60),
     )
     db.add(run)
     db.commit()
@@ -246,7 +243,7 @@ def test_retention_dry_run_returns_metrics():
         sequence=1,
         type="run_completed",
         payload='{}',
-        created_at=datetime.now(timezone.utc) - timedelta(days=60),
+        created_at=datetime.now(UTC) - timedelta(days=60),
     )
     db.add(event)
     db.commit()
@@ -269,8 +266,8 @@ def test_retention_ignores_active_runs():
 
     from src.openship.auth.models import Base, User
     from src.openship.chat.models import Conversation
-    from src.openship.workspace.models import Project
     from src.openship.runs.models import Run
+    from src.openship.workspace.models import Project
     Base.metadata.create_all(engine)
 
     db = Session()
@@ -294,7 +291,7 @@ def test_retention_ignores_active_runs():
         project_id=project.id,
         status="completed",
         fence=1,
-        ended_at=datetime.now(timezone.utc) - timedelta(days=60),
+        ended_at=datetime.now(UTC) - timedelta(days=60),
     )
     db.add(completed_run)
 
@@ -304,7 +301,7 @@ def test_retention_ignores_active_runs():
         project_id=project.id,
         status="queued",
         fence=0,
-        created_at=datetime.now(timezone.utc) - timedelta(days=60),
+        created_at=datetime.now(UTC) - timedelta(days=60),
     )
     db.add(queued_run)
 
@@ -314,13 +311,13 @@ def test_retention_ignores_active_runs():
         project_id=project.id,
         status="running",
         fence=1,
-        created_at=datetime.now(timezone.utc) - timedelta(days=60),
+        created_at=datetime.now(UTC) - timedelta(days=60),
     )
     db.add(running_run)
 
     db.commit()
 
-    result = run_retention(
+    run_retention(
         db,
         event_retention_days=30,
         checkpoint_retention_days=30,

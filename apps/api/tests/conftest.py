@@ -9,8 +9,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.openship.auth.models import Base, User
-from src.openship.chat.models import Conversation, Message
 import src.openship.database.session as db_session
 
 # Use a temporary file so the in-memory DB survives across connections
@@ -111,6 +109,7 @@ datefmt = %H:%M:%S
         env=env,
         cwd=Path(__file__).parents[1],
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, f"Migration failed: {result.stderr}"
 

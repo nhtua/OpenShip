@@ -6,16 +6,14 @@ provider client are injected per invocation and never reach a checkpoint.
 """
 
 import asyncio
-import json
 import uuid
-
 from dataclasses import dataclass
+from typing import TypedDict
 
-from langgraph.graph import StateGraph, END
-from typing import TypedDict, Optional
+from langgraph.graph import END, StateGraph
 
 from ..providers.contracts import ChatMessage, ModelRequest, RunModelConfig
-from ..providers.errors import ProviderError, SAFE_MESSAGES
+from ..providers.errors import SAFE_MESSAGES, ProviderError
 from ..providers.runner import run_model_turn
 from .service import parse_run_model_config
 
@@ -33,7 +31,7 @@ class ChatState(TypedDict):
     conversation_id: str
     model_configuration: str
     assistant_response: str
-    usage: Optional[dict]
+    usage: dict | None
     finish_reason: str
 
 
@@ -41,10 +39,10 @@ class ChatState(TypedDict):
 class ModelResult:
     """Result of executing a model turn."""
     assistant_response: str
-    usage: Optional[dict] = None
-    error: Optional[str] = None
-    error_code: Optional[str] = None
-    finish_reason: Optional[str] = None
+    usage: dict | None = None
+    error: str | None = None
+    error_code: str | None = None
+    finish_reason: str | None = None
 
 
 #: A finish reason that is not an answer, and the normalized failure it shows.

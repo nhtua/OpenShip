@@ -1,13 +1,12 @@
 import json
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field, field_serializer
 
-from .models import ProviderAttempt, Run
 from ..providers.configuration import destination_label
 from ..providers.errors import SAFE_MESSAGES
+from .models import ProviderAttempt, Run
 
 
 class TurnSubmitRequest(BaseModel):
@@ -15,10 +14,10 @@ class TurnSubmitRequest(BaseModel):
     client_request_id: str = Field(..., description="UUID generated once per browser send, for idempotency")
     # A browser names a profile and nothing else: no endpoint, no model, no SDK
     # argument. Omitting the profile means the installation's default.
-    provider_profile_id: Optional[str] = Field(default=None, max_length=128)
+    provider_profile_id: str | None = Field(default=None, max_length=128)
     # Omitted means "the installation's default"; an explicit empty list means
     # fallback disabled. The two are not the same request.
-    fallback_profile_ids: Optional[list[str]] = None
+    fallback_profile_ids: list[str] | None = None
 
 
 class ModelSummary(BaseModel):
@@ -27,27 +26,27 @@ class ModelSummary(BaseModel):
     label: str
     adapter: str
     requested_model: str
-    actual_model: Optional[str] = None
-    destination_label: Optional[str] = None
+    actual_model: str | None = None
+    destination_label: str | None = None
     fallback_profile_ids: tuple[str, ...] = ()
     recorded: bool = True
 
 
 class UsageSummary(BaseModel):
     """Provider-reported counts. Missing stays missing; nothing is estimated."""
-    input_tokens: Optional[int] = None
-    output_tokens: Optional[int] = None
-    total_tokens: Optional[int] = None
-    cached_input_tokens: Optional[int] = None
-    reasoning_tokens: Optional[int] = None
-    source: Optional[str] = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    source: str | None = None
 
 
 class ErrorSummary(BaseModel):
     """A normalized failure: a code and fixed copy, never a provider body."""
     code: str
     message: str
-    retry_after_seconds: Optional[float] = None
+    retry_after_seconds: float | None = None
 
 
 class AttemptSummary(BaseModel):
@@ -56,13 +55,13 @@ class AttemptSummary(BaseModel):
     profile_id: str
     adapter: str
     requested_model: str
-    actual_model: Optional[str] = None
-    destination_label: Optional[str] = None
+    actual_model: str | None = None
+    destination_label: str | None = None
     outcome: str
-    error_code: Optional[str] = None
-    usage: Optional[UsageSummary] = None
-    started_at: Optional[str] = None
-    ended_at: Optional[str] = None
+    error_code: str | None = None
+    usage: UsageSummary | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class RunResponse(BaseModel):
@@ -71,9 +70,9 @@ class RunResponse(BaseModel):
     status: str
     created_at: datetime
     attempt: int = 0
-    model: Optional[ModelSummary] = None
-    usage: Optional[UsageSummary] = None
-    error: Optional[ErrorSummary] = None
+    model: ModelSummary | None = None
+    usage: UsageSummary | None = None
+    error: ErrorSummary | None = None
     provider_attempts: list[AttemptSummary] = Field(default_factory=list)
 
     @field_serializer('id')
@@ -93,7 +92,7 @@ class RunCancelRequest(BaseModel):
     pass
 
 
-def _model_projection(snapshot: str | None) -> Optional[ModelSummary]:
+def _model_projection(snapshot: str | None) -> ModelSummary | None:
     """A run's own pinned configuration, or nothing for a run that predates it."""
     if not snapshot:
         return None
@@ -109,13 +108,13 @@ def _model_projection(snapshot: str | None) -> Optional[ModelSummary]:
     )
 
 
-def _usage_projection(recorded: str | None) -> Optional[UsageSummary]:
+def _usage_projection(recorded: str | None) -> UsageSummary | None:
     if not recorded:
         return None
     return UsageSummary(**json.loads(recorded))
 
 
-def _error_projection(code: str | None) -> Optional[ErrorSummary]:
+def _error_projection(code: str | None) -> ErrorSummary | None:
     if not code:
         return None
     return ErrorSummary(code=code, message=SAFE_MESSAGES.get(code, "The model provider reported a failure."))
