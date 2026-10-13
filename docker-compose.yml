@@ -42,6 +42,7 @@ services:
       MODEL_DEFAULT_PROFILE_ID: ${MODEL_DEFAULT_PROFILE_ID:-}
       MODEL_MAX_TOKENS: ${MODEL_MAX_TOKENS:-4000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,6 +75,7 @@ services:
       MODEL_DEFAULT_PROFILE_ID: ${MODEL_DEFAULT_PROFILE_ID:-}
       MODEL_MAX_TOKENS: ${MODEL_MAX_TOKENS:-4000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

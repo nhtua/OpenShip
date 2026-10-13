@@ -468,13 +468,28 @@ export const E2E_PROFILES: E2EProfileCatalog = {
     {
       profile_id: 'no-adapter',
       label: 'No adapter yet',
-      adapter: 'anthropic',
+      adapter: 'google',
       model: 'unshipped-fixture',
       destination_label: null,
       capabilities: {},
       available: false,
       reason: 'adapter_unavailable',
       explanation: 'This build has no adapter for it',
+      allowed_fallback_profile_ids: [],
+    },
+    // A second adapter this build does ship, at a destination of its own kind.
+    // The catalog states it the same way as the first, because what a reader
+    // acts on is a label and whether the installation can serve it.
+    {
+      profile_id: 'messages-model',
+      label: 'Messages model',
+      adapter: 'anthropic',
+      model: 'messages-fixture',
+      destination_label: 'api.messages.test',
+      capabilities: {},
+      available: true,
+      reason: null,
+      explanation: '',
       allowed_fallback_profile_ids: [],
     },
   ],
@@ -513,10 +528,34 @@ export const LOCAL_MODEL: E2ERunModelSummary = {
   recorded: true,
 }
 
+export const MESSAGES_MODEL: E2ERunModelSummary = {
+  profile_id: 'messages-model',
+  label: 'Messages model',
+  adapter: 'anthropic',
+  requested_model: 'messages-fixture',
+  actual_model: null,
+  destination_label: 'api.messages.test',
+  fallback_profile_ids: [],
+  recorded: true,
+}
+
 const PRIMARY_USAGE: E2EUsageSummary = {
   input_tokens: 11,
   output_tokens: 7,
   total_tokens: 18,
+  cached_input_tokens: null,
+  reasoning_tokens: null,
+  source: 'provider',
+}
+
+/**
+ * Counts as a provider that reports no total reports them. Adding one would
+ * be an addition the provider did not make, so the record carries none.
+ */
+const MESSAGES_USAGE: E2EUsageSummary = {
+  input_tokens: 11,
+  output_tokens: 7,
+  total_tokens: null,
   cached_input_tokens: null,
   reasoning_tokens: null,
   source: 'provider',
@@ -629,6 +668,34 @@ export const E2E_RUN_LOCAL_COMPLETED: E2ERun = {
       outcome: 'completed',
       error_code: null,
       usage: null,
+      started_at: '2026-01-01T00:00:01Z',
+      ended_at: '2026-01-01T00:00:04Z',
+    },
+  ],
+}
+
+/**
+ * A turn answered under a second adapter, whose provider reported per-field
+ * counts and no total. The record is what a provider reports; what the card
+ * states is what the record holds.
+ */
+export const E2E_RUN_MESSAGES_COMPLETED: E2ERun = {
+  ...E2E_RUN_QUEUED,
+  status: 'completed',
+  model: MESSAGES_MODEL,
+  usage: MESSAGES_USAGE,
+  error: null,
+  provider_attempts: [
+    {
+      ordinal: 1,
+      profile_id: 'messages-model',
+      adapter: 'anthropic',
+      requested_model: 'messages-fixture',
+      actual_model: null,
+      destination_label: 'api.messages.test',
+      outcome: 'completed',
+      error_code: null,
+      usage: MESSAGES_USAGE,
       started_at: '2026-01-01T00:00:01Z',
       ended_at: '2026-01-01T00:00:04Z',
     },

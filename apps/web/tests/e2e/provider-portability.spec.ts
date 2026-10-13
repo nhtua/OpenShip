@@ -12,6 +12,7 @@ import {
   E2E_RUN_COMPLETED,
   E2E_RUN_FAILED,
   E2E_RUN_LOCAL_COMPLETED,
+  E2E_RUN_MESSAGES_COMPLETED,
   E2E_RUN_RUNNING,
   LOCAL_MODEL,
 } from './fixtures/api'
@@ -162,6 +163,33 @@ test("a different adapter's destination reads the same way", async ({ page }) =>
   // the other half of the claim, and the reason the fixture leaves usage
   // empty here.
   await expect(page.getByText('Not reported')).toBeVisible()
+})
+
+test('a profile under an adapter added later reads the same way', async ({ page }) => {
+  await clearApiRoutes(page)
+  await mockApi(page)
+  const asked = await mockDurableApi(page, {
+    runReads: [E2E_RUN_MESSAGES_COMPLETED],
+    streamEvents: aTurnRecord('Deploy staging', 'run.succeeded'),
+  })
+  await openConversation(page)
+
+  // The same choice, at a destination reached by a second adapter: nothing in
+  // the browser was written for one adapter, so a profile added later is
+  // offered and chosen the way the first ones were.
+  await page.getByRole('button', { name: 'Messages model', exact: true }).click()
+  await sendATurn(page, 'Deploy staging')
+
+  expect(asked.submitted[0].payload['provider_profile_id']).toBe('messages-model')
+
+  // The card makes the same sentence, and states the counts this provider
+  // reported without adding a total it never reported: a card that needed
+  // one would have said "Not reported" instead.
+  await expect(
+    page.getByText('Messages model · messages-fixture at api.messages.test'),
+  ).toBeVisible()
+  await expect(page.getByText('in 11 · out 7')).toBeVisible()
+  expect(await page.getByText('Not reported').count()).toBe(0)
 })
 
 test('a fallback is offered only where the chosen profile allows it', async ({

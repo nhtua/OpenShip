@@ -112,9 +112,13 @@ def test_unregistered_adapter_explains_the_gap(client: TestClient, authorized_cl
         [
             {
                 **profile_spec("future-fixture"),
-                "adapter": "anthropic",
-                "api_version": "messages",
-                "adapter_options": {"adapter": "anthropic", "server_side_fallback": False},
+                "adapter": "google",
+                "api_version": "gemini",
+                "adapter_options": {
+                    "adapter": "google",
+                    "native_api_version": "gemini",
+                    "automatic_function_calling": False,
+                },
             }
         ],
         "future-fixture",

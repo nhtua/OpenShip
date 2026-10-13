@@ -53,7 +53,12 @@ from tests.conftest import (
     SENTINEL_CREDENTIAL,
     profile_spec,
 )
-from tests.providers.conftest import StreamTransport, make_adapter, sdk_chunk
+from tests.providers.conftest import (
+    StreamTransport,
+    make_adapter,
+    provider_stream,
+    sdk_chunk,
+)
 
 #: The unit lane excludes this module; the PostgreSQL job runs it and fails if
 #: it is skipped rather than executed.
@@ -245,6 +250,17 @@ def installation(postgres_session_factory, monkeypatch):
             [
                 profile_spec("primary-fixture", allowed_fallbacks=["secondary-fixture"]),
                 {**profile_spec("secondary-fixture"), "model": "changed-after-submission"},
+                # A second adapter, so a case can ask whether the worker's path
+                # knows about adapters at all - it must not.
+                {
+                    **profile_spec("messages-fixture"),
+                    "adapter": "anthropic",
+                    "api_version": "messages",
+                    "adapter_options": {
+                        "adapter": "anthropic",
+                        "server_side_fallback": False,
+                    },
+                },
             ]
         ),
     )
@@ -253,13 +269,13 @@ def installation(postgres_session_factory, monkeypatch):
     return postgres_session_factory
 
 
-def _serve(monkeypatch, chunks=(), raises=None):
-    """The installation's OpenAI adapter answers from a synthetic transport."""
+def _serve(monkeypatch, chunks=(), raises=None, adapter="openai"):
+    """The installation's provider answers from a synthetic transport."""
     transport = StreamTransport(list(chunks), raises=raises)
     monkeypatch.setitem(
         _adapter_factories,
-        "openai",
-        lambda _profile: make_adapter("openai", transport),
+        adapter,
+        lambda _profile: make_adapter(adapter, transport),
     )
     return transport
 
@@ -354,6 +370,40 @@ def test_queued_snapshot_survives_worker_restart_and_config_change(installation,
     )
     assert served[0].requested_model == FIXTURE_MODEL, (
         f"the run served {served[0].requested_model}, not the model it pinned"
+    )
+
+
+def test_a_run_pinned_to_another_adapter_takes_the_same_path(installation, monkeypatch):
+    """Nothing in the durable path branches on which adapter a profile names.
+
+    The break this catches: a worker that reaches the provider differently
+    because of the profile's adapter, so the run's own record and the answer
+    it publishes stop agreeing - which is the same claim the case above makes,
+    one adapter over.
+    """
+    db = installation()
+    run = _turn(db, profile_id="messages-fixture")["run"]
+
+    claim = _claim(db)
+    assert claim, "the queued job must be claimable"
+
+    transport = _serve(
+        monkeypatch,
+        provider_stream("anthropic", text=["The deploy ran."]),
+        adapter="anthropic",
+    )
+    _process(db, claim, installation)
+
+    assert transport.requests == 1, "one job means one dispatch"
+    served = _attempt_rows(db, run.id)
+    assert [str(attempt.profile_id) for attempt in served] == ["messages-fixture"], (
+        "the run answered as the profile it pinned, under an adapter the "
+        "worker was never told about"
+    )
+    answers = _assistant(db, run.id)
+    assert len(answers) == 1, "one answer"
+    assert answers[0].content == "The deploy ran.", (
+        "the answer is the provider's own text, unchanged by the path"
     )
 
 

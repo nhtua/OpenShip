@@ -27,15 +27,28 @@ FIXTURE_ENDPOINT = "https://fixture.provider.test/v1"
 CREDENTIAL_REF = "FIXTURE_KEY"  # rayloc:ignore
 
 
-def qualified_profile(*, output_limit_parameter="max_tokens", **overrides):
+#: What each API is called and the options its contract requires. A fixture
+#: profile that declared the wrong adapter would not be testing the adapter
+#: the case drives.
+_API_VERSION = {"openai": "chat-completions", "anthropic": "messages"}
+_REQUIRED_OPTIONS = {
+    "openai": {"output_limit_parameter": "max_tokens"},
+    "anthropic": {"server_side_fallback": False},
+}
+
+
+def qualified_profile(*, adapter: str = "openai", output_limit_parameter=None, **overrides):
     """A text-only profile an operator would declare, ready to pin."""
+    options = {"adapter": adapter, **_REQUIRED_OPTIONS[adapter]}
+    if output_limit_parameter is not None:
+        options["output_limit_parameter"] = output_limit_parameter
     spec = {
         "id": "fixture-profile",
         "label": "Fixture profile",
-        "adapter": "openai",
+        "adapter": adapter,
         "model": FIXTURE_MODEL,
         "endpoint": FIXTURE_ENDPOINT,
-        "api_version": "chat-completions",
+        "api_version": _API_VERSION[adapter],
         "credential_ref": CREDENTIAL_REF,  # rayloc:ignore
         "capabilities": {
             "streaming": True,
@@ -50,10 +63,7 @@ def qualified_profile(*, output_limit_parameter="max_tokens", **overrides):
         },
         "allowed_fallback_profile_ids": [],
         "qualified_model_aliases": [],
-        "adapter_options": {
-            "adapter": "openai",
-            "output_limit_parameter": output_limit_parameter,
-        },
+        "adapter_options": options,
     }
     spec.update(overrides)
     return pin_profile(spec)
@@ -160,6 +170,10 @@ class _Stream:
     async def aclose(self):
         self._transport.aclose()
 
+    async def close(self):
+        """The name the Messages SDK uses for the same cleanup."""
+        self._transport.aclose()
+
 
 class SequenceTransport:
     """A transport that answers differently per request, so a case is a sequence.
@@ -211,12 +225,187 @@ class _Nested:
         self.__dict__.update(fields)
 
 
+class AnthropicClient:
+    """The shape an adapter asks a client for: messages.create."""
+
+    def __init__(self, transport):
+        self.messages = _Nested(create=transport.create)
+        self._transport = transport
+
+    @property
+    def transport(self):
+        return self._transport
+
+
+class CountingClient:
+    """A Messages client whose counter answers, so a case can read the ask.
+
+    The counter is the provider's own: a case that asserts a number here is
+    asserting what the provider reported, never what the adapter measured.
+    """
+
+    def __init__(self, counted: int):
+        self.asked = []
+        self._counted = counted
+        self.messages = _Nested(count_tokens=self._count)
+
+    async def _count(self, **kwargs):
+        self.asked.append(kwargs)
+        return _Nested(input_tokens=self._counted)
+
+
+def _event(**fields):
+    """One parsed Messages-stream event, named as the SDK names its fields."""
+    return _Nested(**fields)
+
+
+def anthropic_message_start(*, model=FIXTURE_MODEL, input_tokens=None, content=()):
+    """``message_start``: the snapshot the API opens a stream with.
+
+    The input count is the only place this API reports it, so a fixture that
+    leaves it out is a stream whose input stays unknown.
+    """
+    return _event(
+        type="message_start",
+        message=_Nested(
+            content=list(content),
+            id="msg-fixture",
+            model=model,
+            role="assistant",
+            stop_reason=None,
+            usage=_Nested(input_tokens=input_tokens, output_tokens=0),
+        ),
+    )
+
+
+def anthropic_text(part):
+    """A text delta - the only event that is answer text."""
+    return _event(type="content_block_delta", index=0, delta=_Nested(type="text_delta", text=part))
+
+
+def anthropic_thinking(part):
+    """A reasoning delta. It is not answer text, and nothing here runs it."""
+    return _event(
+        type="content_block_delta",
+        index=0,
+        delta=_Nested(type="thinking_delta", thinking=part),
+    )
+
+
+def anthropic_tool_json(part):
+    """A tool block's partial JSON. Not answer text; not executed here."""
+    return _event(
+        type="content_block_delta",
+        index=0,
+        delta=_Nested(type="input_json_delta", partial_json=part),
+    )
+
+
+def anthropic_block_start(kind, index=0):
+    """``content_block_start``: the kind of block the API is opening."""
+    return _event(type="content_block_start", index=index, content_block=_Nested(type=kind))
+
+
+def anthropic_block_stop(index=0):
+    return _event(type="content_block_stop", index=index)
+
+
+def anthropic_finish(reason=None, *, output_tokens=0):
+    """``message_delta``: the end and the cumulative output count, as one event.
+
+    This event never carries the input count, which is why the adapter keeps
+    the one it already saw rather than reading a new one here.
+    """
+    return _event(
+        type="message_delta",
+        delta=_Nested(stop_reason=reason, stop_sequence=None),
+        usage=_Nested(output_tokens=output_tokens),
+    )
+
+
+def anthropic_stop():
+    return _event(type="message_stop")
+
+
+def anthropic_ping():
+    """A non-content event the API sends. The adapter has no use for it."""
+    return _event(type="ping", error_message="pong")
+
+
+#: The same end, named as each API names it.
+_OPENAI_REASON = {"stop": "stop", "length": "length", "content_filter": "content_filter"}
+_ANTHROPIC_REASON = {"stop": "end_turn", "length": "max_tokens", "stop_sequence": "stop_sequence"}
+
+
+def provider_stream(adapter, *, text=(), finish="stop", usage=(), model=FIXTURE_MODEL):
+    """The provider-shaped stream that means: these parts, this end, these counts.
+
+    A shared case states one claim; what that claim looks like on the wire
+    belongs to the provider. This is the only place either shape is written,
+    so a shared case cannot quietly stop meaning something for one of them.
+
+    ``usage`` is a sequence of (input, output) counts as the provider reports
+    them. This API reports the input count once, at the start, and the output
+    count once, cumulatively, at the end - which is why the two spellings
+    differ and the claim does not.
+    """
+    if adapter == "openai":
+        chunks = [sdk_chunk(content=part) for part in text]
+        chunks += [sdk_chunk(choices=False, usage=(counted, output, counted + output))
+                   for counted, output in usage]
+        if finish:
+            chunks.append(sdk_chunk(finish_reason=_OPENAI_REASON[finish], model=model))
+        return chunks
+
+    if adapter == "anthropic":
+        events = [
+            anthropic_message_start(
+                model=model,
+                input_tokens=usage[0][0] if usage else None,
+            )
+        ]
+        events.append(anthropic_ping())
+        events += [anthropic_text(part) for part in text]
+        if finish:
+            events.append(
+                anthropic_finish(
+                    _ANTHROPIC_REASON[finish],
+                    output_tokens=usage[-1][1] if usage else 0,
+                )
+            )
+        events.append(anthropic_stop())
+        return events
+
+    raise AssertionError(f"no stream shape for adapter {adapter!r}")
+
+
+def asked_turns(adapter, kwargs) -> list[tuple[str, str]]:
+    """What the provider was asked for, back as (role, text) pairs.
+
+    Each API spells a conversation differently: one puts the system turn in
+    the message list, the other takes it as its own parameter. The shared
+    claim is about the conversation, so this is where the spelling stops and
+    the claim continues.
+    """
+    if adapter == "openai":
+        return [(turn["role"], turn["content"]) for turn in kwargs["messages"]]
+    if adapter == "anthropic":
+        system = kwargs.get("system")
+        opening = [("system", system)] if system else []
+        return opening + [(turn["role"], turn["content"]) for turn in kwargs["messages"]]
+    raise AssertionError(f"no request shape for adapter {adapter!r}")
+
+
 def make_adapter(name: str, transport) -> object:
     """A real adapter wired to a synthetic transport."""
-    from src.openship.providers.openai import OpenAIAdapter
-
     if name == "openai":
+        from src.openship.providers.openai import OpenAIAdapter
+
         return OpenAIAdapter(client_factory=lambda _config: ProviderClient(transport))
+    if name == "anthropic":
+        from src.openship.providers.anthropic import AnthropicAdapter
+
+        return AnthropicAdapter(client_factory=lambda _config: AnthropicClient(transport))
     raise AssertionError(f"no adapter registered for {name!r}")
 
 
@@ -243,7 +432,7 @@ class CountingAdapter:
 def adapter_case(*, chunks, raises=None, adapter="openai", profile_kwargs=None):
     """A fresh case: a real adapter, a qualified profile, and a transport."""
     transport = StreamTransport(chunks, raises=raises)
-    profile = qualified_profile(**(profile_kwargs or {}))
+    profile = qualified_profile(adapter=adapter, **(profile_kwargs or {}))
     return _Case(
         adapter=make_adapter(adapter, transport),
         profile=profile,
@@ -261,7 +450,8 @@ def error_fixture(name: str, kind: str = "rate_limited"):
     import httpx2
     import openai
 
-    request = httpx2.Request("POST", FIXTURE_ENDPOINT + "/chat/completions")
+    path = "/chat/completions" if name == "openai" else "/v1/messages"
+    request = httpx2.Request("POST", FIXTURE_ENDPOINT + path)
     if name == "openai":
         if kind == "rate_limited":
             response = httpx2.Response(
@@ -278,6 +468,34 @@ def error_fixture(name: str, kind: str = "rate_limited"):
             response = httpx2.Response(401, request=request)
             return openai.AuthenticationError(
                 "invalid api key", response=response, body=None
+            )
+    if name == "anthropic":
+        import anthropic
+
+        if kind == "rate_limited":
+            response = httpx2.Response(
+                429,
+                headers={"retry-after": "7", "request-id": "req-fixture"},
+                request=request,
+            )
+            return anthropic.RateLimitError(
+                '{"type": "error", "error": {"type": "rate_limit_error", "message": "secret-body"}}',
+                response=response,
+                body=None,
+            )
+        if kind == "unreachable":
+            return anthropic.APIConnectionError(request=request)
+        if kind == "unauthorized":
+            response = httpx2.Response(401, request=request)
+            return anthropic.AuthenticationError(
+                "invalid api key", response=response, body=None
+            )
+        if kind == "overloaded":
+            response = httpx2.Response(529, request=request)
+            return anthropic.OverloadedError(
+                '{"type": "error", "error": {"type": "overloaded_error", "message": "secret-body"}}',
+                response=response,
+                body=None,
             )
     raise AssertionError(f"no error fixture {kind!r} for {name!r}")
 
@@ -360,12 +578,14 @@ def run_state(*turns) -> dict:
     }
 
 
-def serve(monkeypatch, chunks=(), raises=None) -> StreamTransport:
-    """The installation's OpenAI adapter answers from a synthetic transport."""
+def serve(monkeypatch, chunks=(), raises=None, adapter="openai") -> StreamTransport:
+    """The installation's provider answers from a synthetic transport."""
     from src.openship.providers.registry import _adapter_factories
 
     transport = StreamTransport(list(chunks), raises=raises)
-    monkeypatch.setitem(_adapter_factories, "openai", lambda _profile: make_adapter("openai", transport))
+    monkeypatch.setitem(
+        _adapter_factories, adapter, lambda _profile: make_adapter(adapter, transport)
+    )
     return transport
 
 
@@ -397,12 +617,10 @@ def serve_counted(monkeypatch, behaviors, counted: int) -> SequenceTransport:
     return transport
 
 
-def answered(monkeypatch, *parts) -> StreamTransport:
+def answered(monkeypatch, *parts, adapter="openai") -> StreamTransport:
     """The installation's provider answers with these text parts, in order.
 
     A case about the durable pipeline needs an answer that arrives whole; the
     parts are only what the caller expects to read back.
     """
-    chunks = [sdk_chunk(content=part) for part in parts]
-    chunks.append(sdk_chunk(finish_reason="stop"))
-    return serve(monkeypatch, chunks)
+    return serve(monkeypatch, provider_stream(adapter, text=parts), adapter=adapter)

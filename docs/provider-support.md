@@ -32,8 +32,8 @@ skips rather than pretending, and the matrix says so.
 
 | Tuple | Adapter | Endpoint implementation / API version | Requested model | Observed model | SDK | Effective capabilities | Mandatory test results | Live qualification | User acceptance | State |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `openai` · Chat Completions | `openai` | `chat-completions` | *not stated* | *not observed* | `openai` 3.24.0 (the version this environment resolves) | streaming, usage reporting; no token counting, no tool calls, no structured output, no attachments | 23 conformance + adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_openai.py`) | pending — no credential configured | pending | `fixture-tested` |
-| `anthropic` | `anthropic` | pending | pending | pending | pending | pending | pending — the adapter lands in unit 3B | pending | pending | not yet testable |
+| `openai` · Chat Completions | `openai` | `chat-completions` | *not stated* | *not observed* | `openai` 3.24.0 (the version this environment resolves) | streaming, usage reporting; no token counting, no tool calls, no structured output, no attachments | 11 conformance cases + 12 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_openai.py`) | pending — no credential configured | pending | `fixture-tested` |
+| `anthropic` · Messages | `anthropic` | `messages` | *not stated* | *not observed* | `anthropic` 1.13.0 (the version this environment resolves) | streaming, usage reporting (per-field counts; this API reports no total), token counting through the provider's own counter; no tool calls, no structured output, no attachments | 11 conformance cases + 20 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_anthropic.py`) | pending — no credential configured | pending | `fixture-tested` |
 | `google` | `google` | pending | pending | pending | pending | pending | pending — unit 3C | pending | pending | not yet testable |
 | `openai_compatible` | `openai_compatible` | pending | pending | pending | pending | pending | pending — unit 3D | pending | pending | not yet testable |
 
@@ -93,7 +93,7 @@ profile that omits or invents one: `openai` needs `output_limit_parameter`
 | `MODEL_DEFAULT_PROFILE_ID` | the profile that answers when the browser chooses nothing | no |
 | `MODEL_MAX_TOKENS` | the output ceiling a turn asks for, when a profile declares none | no |
 | `OPENAI_MODEL`, `OPENAI_BASE_URL` | only for an installation that declares no profile (the legacy path) | no |
-| `OPENAI_API_KEY` and any name a profile's `credential_ref` gives | only where a client is constructed | **yes** |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and any name a profile's `credential_ref` gives | only where a client is constructed | **yes** |
 | `TEST_POSTGRES_URL` | the durable-pipeline test lane | throwaway |
 | `OPENSHIP_LIVE_PROFILE_ID` | the opt-in live qualification test | n/a |
 
