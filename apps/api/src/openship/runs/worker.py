@@ -25,9 +25,10 @@ from ..config import settings
 from ..providers.attempts import DatabaseAttemptRecorder
 from ..providers.control import InvocationControl
 from ..providers.errors import ProviderError
+from ..runs.schemas import _model_projection
 from ..runs.service import bind_run_model_config
 from .graph import ModelResult, build_chat_graph
-from .models import Run, RunJob
+from .models import ProviderAttempt, Run, RunJob
 from .queue import claim_next, finalize, mark_provider_started, reconcile_expired, renew
 
 logger = logging.getLogger("worker")
@@ -52,6 +53,22 @@ USAGE_SCHEMA_VERSION = 1
 def _run_outcome(error_code: str) -> str:
     """The run status a normalized provider failure shows."""
     return _OUTCOME.get(error_code, "failed")
+
+
+def _terminal_model(job, run) -> dict | None:
+    """The safe provider summary a terminal event carries.
+
+    A terminal event has to be readable on its own: a conversation whose
+    events were pruned by retention still has to say which profile a run was
+    pinned to and which model answered. The run's own record is what says
+    that, so the summary is projected from it and from the attempts it made -
+    never from the events that may already be gone.
+    """
+    attempts = job.query(ProviderAttempt).filter(
+        ProviderAttempt.run_id == run.id
+    ).all()
+    summary = _model_projection(run.model_configuration, attempts)
+    return summary.model_dump(mode="json") if summary is not None else None
 
 
 def _usage_record(usage) -> dict | None:
@@ -237,7 +254,6 @@ class Worker:
         try:
             from ..chat.models import Conversation
             from ..events.service import append_event
-            from ..runs.models import Run
 
             run = job.query(Run).filter(Run.id == run_id).first()
             if not run:
@@ -281,7 +297,11 @@ class Worker:
                         conversation_id=conv.id,
                         run_id=run_id,
                         event_type="run.failed",
-                        payload={"error_code": refused.code, "error": refused.safe_message},
+                        payload={
+                            "error_code": refused.code,
+                            "error": refused.safe_message,
+                            "model": _terminal_model(job, run),
+                        },
                         actor_id=None,
                     )
                     job.commit()
@@ -320,6 +340,15 @@ class Worker:
             # ever serialized into graph state or a checkpoint.
             deadline = time.monotonic() + snapshot.limits.run_timeout_seconds
 
+            # One recorder for the run, not one per model step: the statements
+            # it holds are published once, at the run's commit point, in the
+            # same command as the attempt rows they describe. Writing them when
+            # a request is admitted would hold the conversation's lock across
+            # the whole turn and a cancellation the owner asked would wait
+            # behind it; asking a second session to write instead is something
+            # SQLite refuses outright.
+            recorder = DatabaseAttemptRecorder(lambda: job, run_id, fence)
+
             def invocation():
                 return (
                     InvocationControl(
@@ -327,7 +356,7 @@ class Worker:
                         clock=time.monotonic,
                         stop=supervision.stop,
                     ),
-                    DatabaseAttemptRecorder(lambda: job, run_id, fence),
+                    recorder,
                 )
 
             graph = build_chat_graph(self.checkpointer, invocation_factory=invocation)
@@ -405,13 +434,20 @@ class Worker:
                     commit=False,
                 )
                 if finalized:
+                    # What the run asked first, then what it ended as: a reader
+                    # follows the requests in the order they were made.
+                    recorder.publish(job)
                     # The run's status, its event, and its outbox row are one command.
                     append_event(
                         db=job,
                         conversation_id=conv.id,
                         run_id=run_id,
                         event_type="run.failed",
-                        payload={"error_code": failure.code, "error": failure.safe_message},
+                        payload={
+                            "error_code": failure.code,
+                            "error": failure.safe_message,
+                            "model": _terminal_model(job, run),
+                        },
                         actor_id=None,
                     )
                     job.commit()
@@ -445,13 +481,21 @@ class Worker:
                     if is_first and new_title:
                         conv.title = new_title
 
+                    # The requests this turn made, stated in the order they
+                    # were made, before the answer that one of them produced.
+                    recorder.publish(job)
+
                     # Emit run.succeeded event
                     append_event(
                         db=job,
                         conversation_id=conv.id,
                         run_id=run_id,
                         event_type="run.succeeded",
-                        payload={"message_id": str(assistant_msg.id), "usage": result.usage},
+                        payload={
+                            "message_id": str(assistant_msg.id),
+                            "usage": result.usage,
+                            "model": _terminal_model(job, run),
+                        },
                         actor_id=None,
                     )
 

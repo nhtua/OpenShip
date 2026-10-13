@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.openship.chat.models import Conversation, Message
+from src.openship.events.retention import prune_events
 from src.openship.providers.contracts import (
     ChatMessage,
     ModelRequest,
@@ -26,7 +27,7 @@ from src.openship.providers.control import InvocationControl
 from src.openship.providers.errors import ProviderError
 from src.openship.providers.registry import _adapter_factories
 from src.openship.providers.runner import run_model_turn
-from src.openship.runs.models import ProviderAttempt, Run, RunJob
+from src.openship.runs.models import Event, ProviderAttempt, Run, RunJob
 from src.openship.runs.queue import claim_next, finalize, renew
 from src.openship.runs.schemas import project_run_response
 from src.openship.runs.service import bind_run_model_config, load_run_model_config
@@ -34,6 +35,7 @@ from src.openship.runs.worker import Worker
 
 from .conftest import (
     FIXTURE_MODEL,
+    SENTINEL_CREDENTIAL,
     TestSessionLocal,
     configure_profiles,
     declare_two_profiles,
@@ -42,6 +44,7 @@ from .conftest import (
 from .providers.conftest import (
     BlockingTransport,
     StreamTransport,
+    error_fixture,
     make_adapter,
     sdk_chunk,
 )
@@ -87,21 +90,27 @@ def _queued_turn(
     monkeypatch,
     order: int = 0,
     aliases: tuple = (),
+    fallbacks: tuple = (),
 ) -> Run:
     """A queued run pinned to the first profile, on its own conversation.
 
     Its job is made the oldest available one, so the claim that follows is
-    this run's: a case tests the worker, not another case's leftovers.
+    this run's: a case tests the worker, not another case's leftovers. A run
+    can also be asked with fallbacks it may move to - a fallback is chosen
+    only from the list the request named, so a case about one has to name it.
     """
     _two_destinations(monkeypatch, aliases=aliases)
     conversation_id = _conversation(client, authorized_client)
+    request = {
+        "content": "What ran?",
+        "client_request_id": str(uuid.uuid4()),
+        "provider_profile_id": "primary-fixture",
+    }
+    if fallbacks:
+        request["fallback_profile_ids"] = list(fallbacks)
     response = client.post(
         f"/api/runs/{conversation_id}/turns",
-        json={
-            "content": "What ran?",
-            "client_request_id": str(uuid.uuid4()),
-            "provider_profile_id": "primary-fixture",
-        },
+        json=request,
         headers=authorized_client,
     )
     assert response.status_code == 202, f"submit failed: {response.text}"
@@ -137,6 +146,25 @@ def _serve(monkeypatch, chunks=(), raises=None) -> StreamTransport:
     transport = StreamTransport(list(chunks), raises=raises)
     monkeypatch.setitem(_adapter_factories, "openai", lambda _profile: make_adapter("openai", transport))
     return transport
+
+
+class _RefusedThenAnswering(StreamTransport):
+    """The first request is refused; the next answers.
+
+    A fallback is only chosen after a request that did not answer, so a case
+    about the move needs a destination that fails once and then does. The
+    refusal is the SDK's own rate-limit failure, not a stand-in for one.
+    """
+
+    def __init__(self, chunks) -> None:
+        super().__init__(list(chunks))
+        self._refusals = 1
+
+    async def create(self, **kwargs):
+        if self._refusals:
+            self._refusals -= 1
+            raise error_fixture("openai", "rate_limited")
+        return await super().create(**kwargs)
 
 
 def _ask(*turns) -> ModelRequest:
@@ -512,6 +540,121 @@ def test_an_incomplete_answer_is_not_a_completed_one(
     assert _answers(session, run.id), (
         "the request was made, so its attempt is still recorded"
     )
+
+
+def test_the_requests_a_turn_made_are_stated_in_the_record(
+    client, authorized_client, monkeypatch
+):
+    """The bounded requests a run made are part of the durable record.
+
+    The break this catches: an attempt that exists only as a row. A reader
+    following a run that asked more than once could not tell which request
+    opened and which closed, or that a degraded answer came from a move at
+    all - and the row is not what a reader reads.
+    """
+    run = _queued_turn(client, authorized_client, monkeypatch)
+    claim = _claim()
+
+    _serve(
+        monkeypatch,
+        chunks=[sdk_chunk(content="An answer.", finish_reason="stop")],
+    )
+
+    _process(claim)
+
+    session = TestSessionLocal()
+    stated = {event.type: event for event in session.query(Event).filter(Event.run_id == run.id)}
+    assert {"model.attempt.started", "model.attempt.finished"} <= set(stated), (
+        "a run that asked is readable as having asked"
+    )
+    assert "run.succeeded" in stated
+
+    opened = json.loads(stated["model.attempt.started"].payload)
+    assert opened["profile_id"] == "primary-fixture"
+    assert opened["adapter"] == "openai"
+    assert opened["requested_model"] == FIXTURE_MODEL
+    assert opened["reason"] == "initial"
+
+    closed = json.loads(stated["model.attempt.finished"].payload)
+    assert closed["outcome"] == "succeeded"
+    assert closed["ordinal"] == opened["ordinal"], "the pair states one request"
+
+    for facts in (opened, closed):
+        text = json.dumps(facts)
+        assert SENTINEL_CREDENTIAL not in text, "a record never carries a credential value"
+        assert "credential_ref" not in text, "not even the binding it used"
+        assert "content" not in facts, "no prompt and no answer belongs here"
+
+    terminal = json.loads(stated["run.succeeded"].payload)
+    assert terminal["model"]["profile_id"] == "primary-fixture", (
+        "a terminal event can be read on its own, after the events beside it "
+        "were pruned"
+    )
+
+
+def test_a_pruned_record_still_says_what_the_run_was(
+    client, authorized_client, monkeypatch
+):
+    """Retention takes events; it cannot take a run's own record."""
+    run = _queued_turn(client, authorized_client, monkeypatch)
+    claim = _claim()
+
+    _serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(content="An answer.", finish_reason="stop"),
+            sdk_chunk(choices=False, usage=(5, 2, 7)),
+        ],
+    )
+
+    _process(claim)
+
+    session = TestSessionLocal()
+    conversation = session.query(Conversation).filter(
+        Conversation.id == run.conversation_id
+    ).one()
+    pruned = prune_events(session, conversation.id, keep_count=1)
+    assert pruned > 0, "this turn wrote more than the keep window allows"
+
+    read = project_run_response(session.get(Run, run.id), _answers(session, run.id))
+    assert read.model.profile_id == "primary-fixture", (
+        "the run still says what it was pinned to"
+    )
+    assert read.model.actual_model == FIXTURE_MODEL, (
+        "and what answered, from the record it keeps - not from an event"
+    )
+    assert read.usage.total_tokens == 7, "the counts a provider reported survive too"
+
+
+def test_a_fallback_states_the_move_it_made(client, authorized_client, monkeypatch):
+    """Choosing another profile is stated as its own fact, not inferred."""
+    run = _queued_turn(
+        client, authorized_client, monkeypatch, fallbacks=("secondary-fixture",)
+    )
+    claim = _claim()
+
+    transport = _RefusedThenAnswering(
+        [sdk_chunk(content="Answered elsewhere.", finish_reason="stop")]
+    )
+    monkeypatch.setitem(
+        _adapter_factories, "openai", lambda _profile: make_adapter("openai", transport)
+    )
+
+    _process(claim)
+
+    session = TestSessionLocal()
+    selected = [
+        event
+        for event in session.query(Event).filter(Event.run_id == run.id)
+        if event.type == "model.fallback.selected"
+    ]
+    assert len(selected) == 1, "one move, stated once"
+    facts = json.loads(selected[0].payload)
+    assert facts["from_profile_id"] == "primary-fixture"
+    assert facts["to_profile_id"] == "secondary-fixture", (
+        "the pair a reader needs is which profile stopped and which began"
+    )
+    assert facts["to_model"] == "changed-after-submission"
 
 
 def test_a_served_alias_is_reported_as_the_model_that_answered(

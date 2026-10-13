@@ -167,7 +167,7 @@ Verified 2026-10-13, on this checkout:
 | Lane | Result |
 | --- | --- |
 | API lint (`ruff check .` over `apps/api`) | no findings |
-| API unit (`-m "not provider_live and not postgres"`) | 303 passed, 19 deselected |
+| API unit (`-m "not provider_live and not postgres"`) | 306 passed, 19 deselected |
 | API PostgreSQL durable lane | 17 passed, 5 deselected |
 | Web typecheck / unit / build | clean, 122 passed, clean |
 | Browser portability scenario | 10 passed |
@@ -178,6 +178,15 @@ a worker mid-request is interrupted by the ask rather than by the run
 deadline. That claim cannot be shown on the SQLite unit lane, where a second
 writer races the worker's transaction, so it is stated where a real
 PostgreSQL database is the one under test.
+
+The durable stream also states the requests a turn made: `model.attempt.started`
+for each request a run admitted, `model.fallback.selected` when it moved to
+another profile, and `model.attempt.finished` with the outcome and the counts a
+provider reported. The attempt rows stay the record, because they carry what an
+event cannot - a fence, a reservation, and the ordering a retry is judged under.
+Both halves land in one command at the run's commit point, which is also why a
+run that lost its lease states nothing, and why a cancellation the owner asked
+is not made to wait behind a turn that had already started.
 
 No tuple is `live-qualified` or `accepted`. The states after
 `fixture-tested` stay pending until a person runs the live test against a
