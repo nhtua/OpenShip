@@ -26,6 +26,7 @@ described.
 | `tests/providers/test_conformance.py` | The mandatory cases every adapter must pass, run against a synthetic transport. |
 | `tests/providers/test_openai.py` | The OpenAI adapter's own obligations: no SDK retries, the output parameter that belongs to the profile, usage asked for when the provider reports it only when asked. |
 | `tests/providers/test_anthropic.py` | The Messages adapter's own obligations: the system turn as its own parameter, blocks that are not answer text, the end names this API uses, and counts this API never reports as a total. |
+| `tests/providers/test_google.py` | The Gemini adapter's own obligations: the system instruction as a field of its own, the assistant role named for the model, parts that are not answer text, the counts this API repeats on every chunk, the ends that name a refusal or a rejected call or a hop, and the SDK behaviours it must never be left to perform. |
 | `tests/providers/test_runner.py` | One shared budget across initial call, retries, and fallback: bounded attempts, deadline enforcement, reservation before request, and cancellation that never starts another request. |
 
 The transport in `tests/providers/conftest.py` stands in for the SDK at its
@@ -39,10 +40,13 @@ ships. What a case looks like on the wire belongs to the provider, so the
 fixtures come from one emitter that turns a neutral statement ("these parts,
 this end, these counts") into that API's own events, and the request is read
 back through one mapping that turns that API's spelling of a conversation
-back into roles and text. Those two places are the only places either API's
-shape is written; the claim under each case name is the same for every
+back into roles and text. Those two places are the only places any of these
+APIs' shapes is written; the claim under each case name is the same for every
 adapter. A case a provider cannot produce is not skipped quietly — it is
-marked as belonging to one API, and says why in the suite.
+marked as belonging to one API, and says why in the suite. One case is of
+that kind: a stream that carries no counts at all is a shape only Chat
+Completions produces, and the two APIs that report counts on every stream
+cannot be asked to produce one.
 
 ```bash
 cd apps/api && uv run pytest tests/providers -q
@@ -63,14 +67,15 @@ cd apps/api && TEST_POSTGRES_URL=<a disposable postgresgresql-15 url> \
 ```
 
 What they prove, by name: a queued snapshot survives a worker restart and a
-configuration change, and the same journey taken under a second adapter's
-profile reaches the provider the same way - nothing in the durable path
-branches on which adapter a profile names; a started request is not blindly
-replayed after a crash; a cancel fences a late result and closes the stream;
-a stale worker cannot publish an attempt or a message; two workers do not
-duplicate dispatch; the terminal commit is atomic; a snapshot after retention
-still preserves provider usage; and the checkpoint's own tables carry no
-credential value.
+configuration change, and the same journey taken under the profile of every
+adapter this build ships reaches the provider the same way — the case is
+parametrized over those adapters rather than written once per adapter, because
+nothing in the durable path branches on which adapter a profile names; a
+started request is not blindly replayed after a crash; a cancel fences a late
+result and closes the stream; a stale worker cannot publish an attempt or a
+message; two workers do not duplicate dispatch; the terminal commit is atomic;
+a snapshot after retention still preserves provider usage; and the
+checkpoint's own tables carry no credential value.
 
 The unit lane is the same suite minus those lanes, and it has to pass with no
 PostgreSQL and no vendor credentials — that is what lets an ordinary PR be
@@ -109,17 +114,18 @@ Ten cases: an unavailable profile is stated with its reason before anything
 is sent — two reasons, a key this installation does not configure and an
 adapter this build does not ship, stated the same way; choosing another
 profile names it and the submitted payload asks for it; a chosen profile
-survives a reload because the run read states it; a different adapter at a
-local destination reads the same way and reports no counts, so the card says
-"Not reported" rather than estimating; a profile under a second adapter this
-build does ship is offered and chosen the same way, and the card states the
-counts its provider reported without adding a total that provider never
-reported; a fallback is offered only where the chosen profile allows it; a
-bounded outage is reported with the copy the API settled and no answer behind
-it; a cancellation the record carries leaves its own end; a run that is still
-going can be stopped from the browser, which asks about that run and learns
-the end from the run read rather than assuming the ask was enough; and a
-completed turn leaves exactly one answer.
+survives a reload because the run read states it; a destination of a
+different kind — a loopback rather than a public host — reads the same way
+and reports no counts, so the card says "Not reported" rather than
+estimating; a profile under a second adapter this build does ship is offered
+and chosen the same way, and the card states the counts its provider reported
+without adding a total that provider never reported; a fallback is offered
+only where the chosen profile allows it; a bounded outage is reported with the
+copy the API settled and no answer behind it; a cancellation the record
+carries leaves its own end; a run that is still going can be stopped from the
+browser, which asks about that run and learns the end from the run read rather
+than assuming the ask was enough; and a completed turn leaves exactly one
+answer.
 
 ## Live qualification
 
@@ -155,8 +161,8 @@ Verified 2026-10-13, on this checkout:
 | Lane | Result |
 | --- | --- |
 | API lint (`ruff check .` over `apps/api`) | no findings |
-| API unit (`-m "not provider_live and not postgres"`) | 233 passed, 16 deselected |
-| API PostgreSQL durable lane | 14 passed, 5 deselected |
+| API unit (`-m "not provider_live and not postgres"`) | 267 passed, 17 deselected |
+| API PostgreSQL durable lane | 15 passed, 5 deselected |
 | Web typecheck / unit / build | clean, 122 passed, clean |
 | Browser portability scenario | 10 passed |
 | Live qualification | **pending** — no credential binding is configured, so the test skips |

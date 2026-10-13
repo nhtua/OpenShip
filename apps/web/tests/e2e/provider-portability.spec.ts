@@ -134,7 +134,7 @@ test('a chosen profile survives a reload, because the run read states it', async
   expect(asked.submitted).toHaveLength(1)
 })
 
-test("a different adapter's destination reads the same way", async ({ page }) => {
+test('a destination of a different kind reads the same way', async ({ page }) => {
   await clearApiRoutes(page)
   await mockApi(page)
   const asked = await mockDurableApi(page, {
@@ -144,8 +144,9 @@ test("a different adapter's destination reads the same way", async ({ page }) =>
   await openConversation(page)
 
   // A profile at a destination of a different kind, reached the same way as
-  // the first: the browser never learns what an adapter is, so nothing here
-  // is a second kind of choice — it is the same choice, at another address.
+  // the first: the browser never learns what an adapter is or what a
+  // destination is, so nothing here is a second kind of choice — it is the
+  // same choice, at another address.
   await page.getByRole('button', { name: 'Local model', exact: true }).click()
   await sendATurn(page, 'Deploy staging')
 
@@ -153,8 +154,8 @@ test("a different adapter's destination reads the same way", async ({ page }) =>
   // rather than only the card.
   expect(asked.submitted[0].payload['provider_profile_id']).toBe('local-model')
 
-  // The card makes the same sentence it made for the first adapter: a label,
-  // a model, a destination. Nothing about this one is OpenAI-shaped.
+  // The card makes the same sentence it made for the first profile: a label,
+  // a model, a destination. Nothing about this one is shaped by either.
   await expect(
     page.getByText('Local model · local-fixture at localhost:11434'),
   ).toBeVisible()

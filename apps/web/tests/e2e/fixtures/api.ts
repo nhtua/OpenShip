@@ -434,14 +434,14 @@ export const E2E_PROFILES: E2EProfileCatalog = {
       explanation: '',
       allowed_fallback_profile_ids: [],
     },
-    // A different adapter and a different kind of destination. The browser
-    // never learns what an adapter is, so a card that reads the same here as
-    // it does for the first one is the point: nothing in the browser is
-    // OpenAI-shaped.
+    // A destination of a different kind - a loopback, not a public host. The
+    // browser never learns what an adapter is or what a destination is, so a
+    // card that reads the same here as it does for the first one is the point:
+    // nothing in the browser is shaped by either.
     {
       profile_id: 'local-model',
       label: 'Local model',
-      adapter: 'openai_compatible',
+      adapter: 'openai',
       model: 'local-fixture',
       destination_label: 'localhost:11434',
       capabilities: {},
@@ -464,11 +464,13 @@ export const E2E_PROFILES: E2EProfileCatalog = {
     },
     // Unavailable for a different reason: this build has no adapter for it.
     // The reason is stated the same way, because the reason is what a reader
-    // acts on and the reason is never a guess.
+    // acts on and the reason is never a guess. The adapter named here is the
+    // one this build genuinely does not have - the others are shipped, so
+    // naming one of them would be a claim the fixture could not make.
     {
       profile_id: 'no-adapter',
       label: 'No adapter yet',
-      adapter: 'google',
+      adapter: 'openai_compatible',
       model: 'unshipped-fixture',
       destination_label: null,
       capabilities: {},
@@ -514,13 +516,13 @@ export const BACKUP_MODEL: E2ERunModelSummary = {
   destination_label: 'api.backup.test',
 }
 
-// The same shape for a different adapter and destination. Nothing here is
-// OpenAI-shaped: the browser reads a label, a model, and a destination, and
-// the card that renders this is the card that renders the first.
+// The same shape for a different destination. Nothing here is OpenAI-shaped:
+// the browser reads a label, a model, and a destination, and the card that
+// renders this is the card that renders the first.
 export const LOCAL_MODEL: E2ERunModelSummary = {
   profile_id: 'local-model',
   label: 'Local model',
-  adapter: 'openai_compatible',
+  adapter: 'openai',
   requested_model: 'local-fixture',
   actual_model: null,
   destination_label: 'localhost:11434',
@@ -661,7 +663,7 @@ export const E2E_RUN_LOCAL_COMPLETED: E2ERun = {
     {
       ordinal: 1,
       profile_id: 'local-model',
-      adapter: 'openai_compatible',
+      adapter: 'openai',
       requested_model: 'local-fixture',
       actual_model: null,
       destination_label: 'localhost:11434',

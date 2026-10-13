@@ -33,8 +33,8 @@ skips rather than pretending, and the matrix says so.
 | Tuple | Adapter | Endpoint implementation / API version | Requested model | Observed model | SDK | Effective capabilities | Mandatory test results | Live qualification | User acceptance | State |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `openai` · Chat Completions | `openai` | `chat-completions` | *not stated* | *not observed* | `openai` 3.24.0 (the version this environment resolves) | streaming, usage reporting; no token counting, no tool calls, no structured output, no attachments | 11 conformance cases + 12 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_openai.py`) | pending — no credential configured | pending | `fixture-tested` |
-| `anthropic` · Messages | `anthropic` | `messages` | *not stated* | *not observed* | `anthropic` 1.13.0 (the version this environment resolves) | streaming, usage reporting (per-field counts; this API reports no total), token counting through the provider's own counter; no tool calls, no structured output, no attachments | 11 conformance cases + 20 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_anthropic.py`) | pending — no credential configured | pending | `fixture-tested` |
-| `google` | `google` | pending | pending | pending | pending | pending | pending — unit 3C | pending | pending | not yet testable |
+| `anthropic` · Messages | `anthropic` | `messages` | *not stated* | *not observed* | `anthropic` 1.13.0 (the version this environment resolves) | streaming, usage reporting (per-field counts; this API reports no total), token counting through the provider's own counter; no tool calls, no structured output, no attachments | 10 of the 11 conformance cases (the eleventh is a shape only Chat Completions produces) + 20 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_anthropic.py`) | pending — no credential configured | pending | `fixture-tested` |
+| `google` · Gemini Developer API | `google` | `generate-content` streaming over `v1` | *not stated* | *not observed* | `google-genai` 2.30.1 (the version this environment resolves) | streaming, usage reporting (per-field counts, including this API's own total, a cached count, and a thought count), token counting through the provider's own counter; no tool calls — a predicted call is never executed here — no structured output, no attachments | 10 of the 11 conformance cases (the eleventh is a shape only Chat Completions produces) + 24 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_google.py`) | pending — no credential configured | pending | `fixture-tested` |
 | `openai_compatible` | `openai_compatible` | pending | pending | pending | pending | pending | pending — unit 3D | pending | pending | not yet testable |
 
 The requested/observed model columns stay empty on a `fixture-tested` tuple
@@ -93,7 +93,7 @@ profile that omits or invents one: `openai` needs `output_limit_parameter`
 | `MODEL_DEFAULT_PROFILE_ID` | the profile that answers when the browser chooses nothing | no |
 | `MODEL_MAX_TOKENS` | the output ceiling a turn asks for, when a profile declares none | no |
 | `OPENAI_MODEL`, `OPENAI_BASE_URL` | only for an installation that declares no profile (the legacy path) | no |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and any name a profile's `credential_ref` gives | only where a client is constructed | **yes** |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and any name a profile's `credential_ref` gives | only where a client is constructed | **yes** |
 | `TEST_POSTGRES_URL` | the durable-pipeline test lane | throwaway |
 | `OPENSHIP_LIVE_PROFILE_ID` | the opt-in live qualification test | n/a |
 
@@ -136,10 +136,13 @@ a configuration error, not a guess.
 One shared budget spans the initial call, every retry, and any fallback:
 `max_attempts` (default 3), `run_timeout_seconds` (120),
 `request_timeout_seconds` (45), `max_context_bytes` (64 KiB), and optional
-`max_total_tokens` / `max_cost_usd` ceilings. The SDK does not retry on its
-own (`max_retries=0`), so the number of generation requests a turn makes is
-the number the tests count. A provider that reports usage only when asked is
-asked.
+`max_total_tokens` / `max_cost_usd` ceilings. No SDK retries on its own —
+`max_retries=0` on the OpenAI and Anthropic clients, one attempt in the
+Gemini client's transport options — and the Gemini adapter also disables the
+two SDK behaviours that would make one attempt into several requests
+(`automatic_function_calling`, `automatic_continuation`). So the number of
+generation requests a turn makes is the number the tests count. A provider
+that reports usage only when asked is asked.
 
 ## Credential rotation and revocation
 

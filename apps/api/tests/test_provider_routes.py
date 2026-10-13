@@ -112,12 +112,14 @@ def test_unregistered_adapter_explains_the_gap(client: TestClient, authorized_cl
         [
             {
                 **profile_spec("future-fixture"),
-                "adapter": "google",
-                "api_version": "gemini",
+                "adapter": "openai_compatible",
+                "api_version": "openai-compatible",
                 "adapter_options": {
-                    "adapter": "google",
-                    "native_api_version": "gemini",
-                    "automatic_function_calling": False,
+                    "adapter": "openai_compatible",
+                    "endpoint_implementation": "chat-completions",
+                    "authentication": "bearer",
+                    "stream_usage_supported": True,
+                    "output_limit_parameter": "max_tokens",
                 },
             }
         ],

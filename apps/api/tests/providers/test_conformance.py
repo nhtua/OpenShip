@@ -40,7 +40,7 @@ CONVERSATION = (
 
 #: Every adapter this suite must pass. Adding one here is what makes the
 #: suite shared rather than a second file that happens to look alike.
-ADAPTERS = ("openai", "anthropic")
+ADAPTERS = ("openai", "anthropic", "google")
 
 
 @pytest.mark.asyncio

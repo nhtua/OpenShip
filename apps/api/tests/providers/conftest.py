@@ -30,10 +30,11 @@ CREDENTIAL_REF = "FIXTURE_KEY"  # rayloc:ignore
 #: What each API is called and the options its contract requires. A fixture
 #: profile that declared the wrong adapter would not be testing the adapter
 #: the case drives.
-_API_VERSION = {"openai": "chat-completions", "anthropic": "messages"}
+_API_VERSION = {"openai": "chat-completions", "anthropic": "messages", "google": "v1"}
 _REQUIRED_OPTIONS = {
     "openai": {"output_limit_parameter": "max_tokens"},
     "anthropic": {"server_side_fallback": False},
+    "google": {"native_api_version": "v1", "automatic_function_calling": False},
 }
 
 
@@ -332,22 +333,129 @@ def anthropic_ping():
     return _event(type="ping", error_message="pong")
 
 
+#: The Messages API's own vocabulary, used by the fixtures below. A fixture
+#: that spelled an end as a bare string would be a shape the SDK does not
+#: send, and the adapter would be tested against a claim it never has to make.
+from google.genai import types as _GOOGLE_TYPES
+
+
+class _AsyncClient:
+    """What the SDK's async client is: entered rather than used directly.
+
+    The API hands out a synchronous client and an async one reached through
+    it, so a fixture that skipped the entering would be a shape the SDK does
+    not have.
+    """
+
+    def __init__(self, *, models):
+        self.models = models
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class GoogleClient:
+    """The shape an adapter asks a client for: an async ``models.generate_content_stream``."""
+
+    def __init__(self, transport):
+        self._transport = transport
+        self.aio = _AsyncClient(models=_Nested(generate_content_stream=transport.create))
+
+    @property
+    def transport(self):
+        return self._transport
+
+
+class GoogleCountingClient:
+    """A Google client whose counter answers, so a case can read the ask.
+
+    The counter is the provider's own: a number asserted here is what the
+    provider reported, never what the adapter measured.
+    """
+
+    def __init__(self, counted):
+        self.asked = []
+        self._counted = counted
+        self.aio = _AsyncClient(models=_Nested(count_tokens=self._count))
+
+    async def _count(self, **kwargs):
+        self.asked.append(kwargs)
+        return _Nested(total_tokens=self._counted)
+
+
+def google_part(text):
+    """A text part of a candidate - the only part that is answer text."""
+    return _Nested(text=text)
+
+
+def google_thought(part):
+    """A thought part. The model's own work: not answer text, not an action."""
+    return _Nested(thought=part)
+
+
+def google_function_call(name, arguments=None):
+    """A predicted call. Nothing here runs it, and it is not answer text."""
+    return _Nested(function_call=_Nested(name=name, args=arguments or {}))
+
+
+def google_candidate(*, parts=(), finish=None, token_count=None):
+    """One candidate: its parts, and the reason it stopped if it did."""
+    return _Nested(
+        content=_Nested(role="model", parts=list(parts)),
+        finish_reason=finish,
+        token_count=token_count,
+    )
+
+
+def google_response(*, candidates=None, usage=None, model=FIXTURE_MODEL, blocked=None):
+    """One stream chunk: partial content, cumulative counts, or a block reason.
+
+    Every chunk carries a usage snapshot, which is why a case that states no
+    counts still gets an object - with no numbers in it. The adapter claims
+    nothing from that, and a case that wants counts states them.
+    """
+    fields = {"model_version": model}
+    if candidates is not None:
+        fields["candidates"] = list(candidates)
+    counted, output = usage if usage else (None, None)
+    total = counted + output if counted is not None and output is not None else None
+    fields["usage_metadata"] = _Nested(
+        prompt_token_count=counted,
+        candidates_token_count=output,
+        total_token_count=total,
+    )
+    if blocked is not None:
+        fields["prompt_feedback"] = _Nested(block_reason=blocked, safety_ratings=[])
+    return _Nested(**fields)
+
+
 #: The same end, named as each API names it.
 _OPENAI_REASON = {"stop": "stop", "length": "length", "content_filter": "content_filter"}
 _ANTHROPIC_REASON = {"stop": "end_turn", "length": "max_tokens", "stop_sequence": "stop_sequence"}
+_GOOGLE_REASON = {
+    "stop": _GOOGLE_TYPES.FinishReason.STOP,
+    "length": _GOOGLE_TYPES.FinishReason.MAX_TOKENS,
+    "safety": _GOOGLE_TYPES.FinishReason.SAFETY,
+}
 
 
 def provider_stream(adapter, *, text=(), finish="stop", usage=(), model=FIXTURE_MODEL):
     """The provider-shaped stream that means: these parts, this end, these counts.
 
     A shared case states one claim; what that claim looks like on the wire
-    belongs to the provider. This is the only place either shape is written,
-    so a shared case cannot quietly stop meaning something for one of them.
+    belongs to the provider. This is the only place any of these shapes is
+    written, so a shared case cannot quietly stop meaning something for one
+    of them.
 
     ``usage`` is a sequence of (input, output) counts as the provider reports
-    them. This API reports the input count once, at the start, and the output
-    count once, cumulatively, at the end - which is why the two spellings
-    differ and the claim does not.
+    them, and each API spells that differently: one sends a chunk of counts
+    with no content at all, another reports the input count only in the
+    snapshot that opens a stream, a third repeats the counts cumulatively on
+    every chunk. The claim - the counts a run reports are the ones the
+    provider last stated, not a sum of what it repeated - is the same.
     """
     if adapter == "openai":
         chunks = [sdk_chunk(content=part) for part in text]
@@ -376,6 +484,24 @@ def provider_stream(adapter, *, text=(), finish="stop", usage=(), model=FIXTURE_
         events.append(anthropic_stop())
         return events
 
+    if adapter == "google":
+        # This API sends a chunk of counts and no content first, then partial
+        # candidates, and repeats the counts cumulatively on every chunk -
+        # which is why the shared case reads the last one, not the sum.
+        chunks = [google_response(usage=pair) for pair in usage[:-1]]
+        chunks += [
+            google_response(candidates=[google_candidate(parts=[google_part(part)])])
+            for part in text
+        ]
+        if finish:
+            chunks.append(
+                google_response(
+                    candidates=[google_candidate(finish=_GOOGLE_REASON[finish])],
+                    usage=usage[-1] if usage else None,
+                )
+            )
+        return chunks
+
     raise AssertionError(f"no stream shape for adapter {adapter!r}")
 
 
@@ -393,6 +519,22 @@ def asked_turns(adapter, kwargs) -> list[tuple[str, str]]:
         system = kwargs.get("system")
         opening = [("system", system)] if system else []
         return opening + [(turn["role"], turn["content"]) for turn in kwargs["messages"]]
+    if adapter == "google":
+        # The system turn is a parameter of its own, and the assistant role is
+        # named for the model. Both are this API's spelling; the claim is about
+        # the conversation, so it resumes here.
+        config = kwargs.get("config")
+        instruction = getattr(config, "system_instruction", None) if config else None
+        opening = [("system", instruction)] if instruction else []
+        turns = []
+        for content in kwargs["contents"]:
+            text = "".join(
+                part.text
+                for part in (content.parts or [])
+                if getattr(part, "text", None) is not None
+            )
+            turns.append(("assistant" if content.role == "model" else content.role, text))
+        return opening + turns
     raise AssertionError(f"no request shape for adapter {adapter!r}")
 
 
@@ -406,6 +548,10 @@ def make_adapter(name: str, transport) -> object:
         from src.openship.providers.anthropic import AnthropicAdapter
 
         return AnthropicAdapter(client_factory=lambda _config: AnthropicClient(transport))
+    if name == "google":
+        from src.openship.providers.google import GoogleAdapter
+
+        return GoogleAdapter(client_factory=lambda _config: GoogleClient(transport))
     raise AssertionError(f"no adapter registered for {name!r}")
 
 
@@ -450,7 +596,13 @@ def error_fixture(name: str, kind: str = "rate_limited"):
     import httpx2
     import openai
 
-    path = "/chat/completions" if name == "openai" else "/v1/messages"
+    path = (
+        "/chat/completions"
+        if name == "openai"
+        else "/v1/messages"
+        if name == "anthropic"
+        else f"/models/{FIXTURE_MODEL}:streamGenerateContent"
+    )
     request = httpx2.Request("POST", FIXTURE_ENDPOINT + path)
     if name == "openai":
         if kind == "rate_limited":
@@ -497,6 +649,36 @@ def error_fixture(name: str, kind: str = "rate_limited"):
                 response=response,
                 body=None,
             )
+    if name == "google":
+        import google.genai.errors as google_errors
+
+        if kind == "rate_limited":
+            response = httpx2.Response(
+                429,
+                headers={"retry-after": "7", "x-request-id": "req-fixture"},
+                request=request,
+            )
+            return google_errors.ClientError(
+                429,
+                {"error": {"message": "secret-body"}},
+                response,
+            )
+        if kind == "unreachable":
+            return httpx2.ConnectError("connection refused")
+        if kind == "unauthorized":
+            response = httpx2.Response(403, request=request)
+            return google_errors.ClientError(
+                403, {"error": {"message": "api key not valid"}}, response
+            )
+        if kind == "server":
+            response = httpx2.Response(503, request=request)
+            return google_errors.ServerError(
+                503, {"error": {"message": "secret-body"}}, response
+            )
+        if kind == "unreadable":
+            # A failure this SDK raised without a status it could read - what
+            # a transport that answered nothing would leave behind.
+            return google_errors.APIError(0, {})
     raise AssertionError(f"no error fixture {kind!r} for {name!r}")
 
 

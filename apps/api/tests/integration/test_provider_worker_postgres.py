@@ -261,6 +261,18 @@ def installation(postgres_session_factory, monkeypatch):
                         "server_side_fallback": False,
                     },
                 },
+                # A third, so the same question is asked of every adapter this
+                # build ships rather than of one that happens to be named.
+                {
+                    **profile_spec("gemini-fixture"),
+                    "adapter": "google",
+                    "api_version": "v1",
+                    "adapter_options": {
+                        "adapter": "google",
+                        "native_api_version": "v1",
+                        "automatic_function_calling": False,
+                    },
+                },
             ]
         ),
     )
@@ -373,30 +385,37 @@ def test_queued_snapshot_survives_worker_restart_and_config_change(installation,
     )
 
 
-def test_a_run_pinned_to_another_adapter_takes_the_same_path(installation, monkeypatch):
+@pytest.mark.parametrize(
+    ("adapter", "profile_id"),
+    [("anthropic", "messages-fixture"), ("google", "gemini-fixture")],
+    ids=("messages", "gemini"),
+)
+def test_a_run_pinned_to_another_adapter_takes_the_same_path(
+    installation, monkeypatch, adapter, profile_id
+):
     """Nothing in the durable path branches on which adapter a profile names.
 
     The break this catches: a worker that reaches the provider differently
     because of the profile's adapter, so the run's own record and the answer
     it publishes stop agreeing - which is the same claim the case above makes,
-    one adapter over.
+    asked of every adapter this build ships rather than of one.
     """
     db = installation()
-    run = _turn(db, profile_id="messages-fixture")["run"]
+    run = _turn(db, profile_id=profile_id)["run"]
 
     claim = _claim(db)
     assert claim, "the queued job must be claimable"
 
     transport = _serve(
         monkeypatch,
-        provider_stream("anthropic", text=["The deploy ran."]),
-        adapter="anthropic",
+        provider_stream(adapter, text=["The deploy ran."]),
+        adapter=adapter,
     )
     _process(db, claim, installation)
 
     assert transport.requests == 1, "one job means one dispatch"
     served = _attempt_rows(db, run.id)
-    assert [str(attempt.profile_id) for attempt in served] == ["messages-fixture"], (
+    assert [str(attempt.profile_id) for attempt in served] == [profile_id], (
         "the run answered as the profile it pinned, under an adapter the "
         "worker was never told about"
     )
