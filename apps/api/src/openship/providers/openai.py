@@ -65,6 +65,32 @@ def _retry_after(error: BaseException) -> float | None:
     return None
 
 
+def _sdk_failure(error: BaseException) -> ProviderError | None:
+    """The normalized error for an SDK failure, or None when it is not one.
+
+    Both the request and the stream map through here: a provider that fails
+    after it began answering is the same failure as one that refuses to start.
+    """
+    if isinstance(error, RateLimitError):
+        return ProviderError("rate_limited", retry_after_seconds=_retry_after(error), cause=error)
+    if isinstance(error, (APIConnectionError, APITimeoutError)):
+        return ProviderError("provider_unavailable", cause=error)
+    if isinstance(error, AuthenticationError):
+        return ProviderError("authentication_error", cause=error)
+    if isinstance(error, BadRequestError):
+        return ProviderError("invalid_request", cause=error)
+    return None
+
+
+_SDK_ERRORS = (
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    RateLimitError,
+)
+
+
 class OpenAIAdapter:
     """Streams one model turn through Chat Completions as contract events."""
 
@@ -107,16 +133,8 @@ class OpenAIAdapter:
         }
         try:
             stream = await client.chat.completions.create(**kwargs)
-        except RateLimitError as error:
-            raise ProviderError(
-                "rate_limited", retry_after_seconds=_retry_after(error), cause=error
-            ) from error
-        except (APIConnectionError, APITimeoutError) as error:
-            raise ProviderError("provider_unavailable", cause=error) from error
-        except AuthenticationError as error:
-            raise ProviderError("authentication_error", cause=error) from error
-        except BadRequestError as error:
-            raise ProviderError("invalid_request", cause=error) from error
+        except _SDK_ERRORS as error:
+            raise _sdk_failure(error) from error
 
         finish_reason: str | None = None
         actual_model: str | None = None
@@ -159,6 +177,10 @@ class OpenAIAdapter:
                 reason=finish_reason,
                 actual_model=actual_model,
             )
+        except _SDK_ERRORS as error:
+            # A provider that fails after it began answering is the same
+            # failure as one that refuses to start; the stream is closed below.
+            raise _sdk_failure(error) from error
         finally:
             await stream.aclose()
 

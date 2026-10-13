@@ -33,10 +33,6 @@ from src.openship.providers.control import InvocationControl
 from src.openship.providers.errors import ProviderError
 from src.openship.providers.registry import _adapter_factories
 from src.openship.providers.runner import run_model_turn
-
-#: Imported so the real adapter is registered before any case replaces one:
-#: undoing an injection then restores it instead of unregistering it.
-import src.openship.providers.openai  # noqa: F401
 from src.openship.runs.worker import Worker
 
 from .conftest import (

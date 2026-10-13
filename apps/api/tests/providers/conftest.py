@@ -8,6 +8,11 @@ control — is the real component under test.
 
 import uuid
 
+#: Imported before any case replaces a factory: a lazy import inside a case
+#: would re-register the real adapter over the case's own, so a second
+#: request in the same turn would build a client instead of using the fixture.
+import src.openship.providers.openai  # noqa: F401
+
 from src.openship.providers.contracts import (
     ChatMessage,
     ModelRequest,
@@ -147,10 +152,47 @@ class _Stream:
     async def __anext__(self):
         if not self._remaining:
             raise StopAsyncIteration
-        return self._remaining.pop(0)
+        item = self._remaining.pop(0)
+        if isinstance(item, BaseException):
+            # A stream that fails after it began: the case's own failure fixture.
+            raise item
+        return item
 
     async def aclose(self):
         self._transport.aclose()
+
+
+class SequenceTransport:
+    """A transport that answers differently per request, so a case is a sequence.
+
+    Each request takes the next behavior — chunks to stream, or an error to
+    raise — and the last behavior repeats, so a case states only the requests
+    it cares about. Every request is recorded, which is how a case shows what
+    the runner actually asked for and how many times it asked.
+    """
+
+    def __init__(self, behaviors):
+        self._behaviors = list(behaviors)
+        self._current = 0
+        self.closed = False
+        self.requests = 0
+        self.seen = []
+
+    async def create(self, **kwargs):
+        self.requests += 1
+        behavior = self._behaviors[min(self._current, len(self._behaviors) - 1)]
+        self._current += 1
+        self.seen.append(kwargs)
+        if behavior.get("raises") is not None:
+            raise behavior["raises"]
+        return _Stream(list(behavior.get("chunks", ())), self)
+
+    def aclose(self):
+        self.closed = True
+
+    @property
+    def seen_kwargs(self):
+        return self.seen[-1] if self.seen else None
 
 
 class ProviderClient:
@@ -177,6 +219,26 @@ def make_adapter(name: str, transport) -> object:
     if name == "openai":
         return OpenAIAdapter(client_factory=lambda _config: ProviderClient(transport))
     raise AssertionError(f"no adapter registered for {name!r}")
+
+
+class CountingAdapter:
+    """A token-aware adapter stand-in: it counts, and it streams through a transport.
+
+    The OpenAI adapter deliberately never counts, so a case about the runner's
+    reservation supplies the counter a qualified profile declares.
+    """
+
+    def __init__(self, transport, counted: int):
+        self._adapter = make_adapter("openai", transport)
+        self._counted = counted
+
+    async def stream(self, request, profile, control_):
+        async for event in self._adapter.stream(request, profile, control_):
+            yield event
+
+    async def count_input_tokens(self, request, profile, control_):
+        control_.raise_if_stopped()
+        return self._counted
 
 
 def adapter_case(*, chunks, raises=None, adapter="openai", profile_kwargs=None):
@@ -221,14 +283,14 @@ def error_fixture(name: str, kind: str = "rate_limited"):
     raise AssertionError(f"no error fixture {kind!r} for {name!r}")
 
 
-def control(*, remaining=30.0, stopped=False):
+def control(*, remaining=30.0, stopped=False, stop=None):
     """A real InvocationControl with an injected clock and stop signal."""
     from src.openship.providers.control import InvocationControl
 
     return InvocationControl(
         deadline=remaining,
         clock=lambda: 0.0,
-        stop=lambda: stopped,
+        stop=stop if stop is not None else (lambda: stopped),
     )
 
 
@@ -253,9 +315,11 @@ class FakeRecorder:
     def __init__(self):
         self.started = []
         self.finished = []
+        self.reservations = []
 
     def start(self, profile, reason, reserved_cost_usd=None):
         self.started.append((profile.id, reason))
+        self.reservations.append(reserved_cost_usd)
         return uuid.uuid4()
 
     def finish(self, attempt_id, outcome, usage=None, error_code=None, actual_model=None):
@@ -303,4 +367,32 @@ def serve(monkeypatch, chunks=(), raises=None) -> StreamTransport:
 
     transport = StreamTransport(list(chunks), raises=raises)
     monkeypatch.setitem(_adapter_factories, "openai", lambda _profile: make_adapter("openai", transport))
+    return transport
+
+
+def serve_requests(monkeypatch, behaviors) -> SequenceTransport:
+    """The installation's OpenAI adapter answers a sequence of requests.
+
+    A case that is about attempts, retries, or fallback states what each
+    request answers with, so the runner's policy is what is under test.
+    """
+    from src.openship.providers.registry import _adapter_factories
+
+    transport = SequenceTransport(list(behaviors))
+    monkeypatch.setitem(
+        _adapter_factories, "openai", lambda _profile: make_adapter("openai", transport)
+    )
+    return transport
+
+
+def serve_counted(monkeypatch, behaviors, counted: int) -> SequenceTransport:
+    """The same sequence, through an adapter that qualifies a token counter."""
+    from src.openship.providers.registry import _adapter_factories
+
+    transport = SequenceTransport(list(behaviors))
+    monkeypatch.setitem(
+        _adapter_factories,
+        "openai",
+        lambda _profile: CountingAdapter(transport, counted),
+    )
     return transport

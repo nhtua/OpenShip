@@ -136,6 +136,12 @@ class Worker:
             interval = getattr(settings, "worker_heartbeat_interval", 10)
 
         while not supervision.stop():
+            # A poll on an interval: the first check happens while the turn is
+            # still running, so a lease that moved interrupts a blocked read
+            # rather than deciding the turn before it began.
+            time.sleep(interval)
+            if supervision.stop():
+                return
             try:
                 ok = renew(db, run_id, fence)
                 if not ok:
@@ -146,7 +152,6 @@ class Worker:
                 logger.warning(f"[{self.worker_id}] Heartbeat error for run {run_id}: {e}")
                 supervision.deny_lease()
                 return
-            time.sleep(interval)
 
     def _is_first_message(self, db, conversation, user_msg):
         """Check if this is the first message in the conversation."""
