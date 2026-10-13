@@ -19,6 +19,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 import uuid as uuidlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -54,6 +56,7 @@ from tests.conftest import (
     profile_spec,
 )
 from tests.providers.conftest import (
+    BlockingTransport,
     HTTPTransport,
     StreamTransport,
     make_adapter,
@@ -636,6 +639,55 @@ def test_cancel_fences_late_result_and_closes_stream(held_run, monkeypatch):
 
 
 # --- What a run reported survives its events ----------------------------------
+
+
+def test_a_cancel_the_owner_asked_stops_a_running_turn(installation, monkeypatch):
+    """A worker mid-request is interrupted by the ask, not by the deadline.
+
+    The break this catches: a cancel that moves only the run's fence. The
+    supervisor renews against the job's, so the desync would leave a blocked
+    provider read consuming until the run deadline. The cases above settle the
+    composition - a fence that moved stops a worker, and a stop signal closes
+    a blocked read - but they inject one half of it. This one starts from the
+    ask a user actually makes and lets the worker's own supervisor notice it.
+    """
+    db = installation()
+    queued = _turn(db)
+    claim = _claim(db)
+
+    transport = BlockingTransport()
+    monkeypatch.setitem(
+        _adapter_factories, "openai", lambda _profile: make_adapter("openai", transport)
+    )
+
+    def _ask_once_blocked():
+        # The owner asks only once the read is blocked, which is the state the
+        # claim is about. Nothing here hands a stop signal to the worker.
+        while transport.requests == 0:
+            time.sleep(0.01)
+        with installation() as session:
+            request_cancel(
+                session, user_id=queued["user"].id, run_id=str(queued["run"].id)
+            )
+
+    started = time.monotonic()
+    asker = threading.Thread(target=_ask_once_blocked)
+    asker.start()
+    _process(db, claim, installation)
+    asker.join()
+
+    assert transport.closed is True, "the ask must close the read it started"
+    assert transport.requests == 1, "the ask interrupts the read, it does not restart it"
+    assert time.monotonic() - started < 2, (
+        "the local read stops within the bounded window of the ask"
+    )
+    with installation() as session:
+        assert session.query(Run).filter(Run.id == queued["run"].id).one().status == (
+            "cancelled"
+        ), "the owner's end is the run's end"
+        assert not _assistant(session, queued["run"].id), (
+            "a cancelled turn publishes no answer"
+        )
 
 
 def _checkpoint_text(engine) -> str:

@@ -27,6 +27,7 @@ from ..providers.control import InvocationControl
 from ..providers.errors import ProviderError
 from ..runs.service import bind_run_model_config
 from .graph import ModelResult, build_chat_graph
+from .models import Run, RunJob
 from .queue import claim_next, finalize, mark_provider_started, reconcile_expired, renew
 
 logger = logging.getLogger("worker")
@@ -130,32 +131,73 @@ class Worker:
 
         logger.info(f"Worker {self.worker_id} initialized")
 
-    def _heartbeat(self, supervision, db, run_id, fence, interval=None):
-        """Background heartbeat thread that renews the lease periodically.
+    def _supervise(self, supervision, db, run_id, fence):
+        """Watch the run while its turn runs, and keep its lease alive.
 
-        Runs on its own session: it shares no transaction with the worker, so
-        it can neither see nor commit what the worker has pending.
+        Two concerns, one loop, because they are not the same kind of work.
+        The frequent one is a **read**: the run's own fence and status are
+        what a cancellation the owner asked changes, and reading them on a
+        short interval is what interrupts a blocked provider read inside the
+        bounded window this repo guarantees. The rare one is a **write** -
+        renewing the lease so a long turn is not reclaimed by another worker.
+        A write on the short interval would race the worker's own open
+        transaction, which is exactly what a short turn on SQLite does, so the
+        two intervals are kept apart.
         """
-        if interval is None:
-            interval = getattr(settings, "worker_heartbeat_interval", 10)
+        poll = getattr(settings, "worker_cancellation_poll_seconds", 0.5)
+        renew_every = getattr(settings, "worker_heartbeat_interval", 10)
 
+        waited = 0.0
         while not supervision.stop():
             # A poll on an interval: the first check happens while the turn is
             # still running, so a lease that moved interrupts a blocked read
             # rather than deciding the turn before it began.
-            time.sleep(interval)
+            time.sleep(poll)
+            waited += poll
             if supervision.stop():
                 return
             try:
-                ok = renew(db, run_id, fence)
-                if not ok:
-                    logger.warning(f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})")
+                if self._ownership_lost(db, run_id, fence):
+                    logger.warning(
+                        f"[{self.worker_id}] Ownership moved for run {run_id} (fence={fence})"
+                    )
+                    supervision.deny_lease()
+                    return
+            except Exception as e:
+                logger.warning(f"[{self.worker_id}] Supervisor error for run {run_id}: {e}")
+                supervision.deny_lease()
+                return
+
+            if waited < renew_every:
+                continue
+            waited = 0.0
+            try:
+                if not renew(db, run_id, fence):
+                    logger.warning(
+                        f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})"
+                    )
                     supervision.deny_lease()
                     return
             except Exception as e:
                 logger.warning(f"[{self.worker_id}] Heartbeat error for run {run_id}: {e}")
                 supervision.deny_lease()
                 return
+
+    def _ownership_lost(self, db, run_id, fence) -> bool:
+        """Whether this worker is still the owner of the run it is working on.
+
+        A read of both halves of the invariant the queue keeps: a claim moves
+        the run's fence and its job's together, and so does a cancellation the
+        owner asked. Either half having moved means this worker no longer holds
+        the turn, so its read must stop.
+        """
+        run = db.query(Run).filter(Run.id == run_id).first()
+        if run is None or run.fence != fence:
+            return True
+        if run.status not in ("queued", "running", "paused"):
+            return True
+        job = db.query(RunJob).filter(RunJob.run_id == run_id).first()
+        return job is None or job.fence != fence
 
     def _is_first_message(self, db, conversation, user_msg):
         """Check if this is the first message in the conversation."""
@@ -186,11 +228,11 @@ class Worker:
         logger.info(f"[{self.worker_id}] Processing run {run_id} (fence={fence})")
 
         # One session per thread: the worker's own work stays in one transaction,
-        # and the heartbeat thread gets a session of its own.
+        # and the supervisor thread gets a session of its own.
         job = self.Session()
-        heartbeat_db = self.Session()
+        supervisor_db = self.Session()
         supervision = Supervision()
-        heartbeat_thread = None
+        supervisor_thread = None
 
         try:
             from ..chat.models import Conversation
@@ -302,13 +344,13 @@ class Worker:
                 supervision.deny_lease()
                 return False
 
-            # Start heartbeat thread to renew lease during processing
-            heartbeat_thread = threading.Thread(
-                target=self._heartbeat,
-                args=(supervision, heartbeat_db, run_id, fence),
+            # Start the supervisor: it watches the run while its turn runs.
+            supervisor_thread = threading.Thread(
+                target=self._supervise,
+                args=(supervision, supervisor_db, run_id, fence),
                 daemon=True,
             )
-            heartbeat_thread.start()
+            supervisor_thread.start()
 
             # Invoke the graph with checkpointing via thread_id
             print(f"[worker] About to invoke graph for run {run_id}")
@@ -328,8 +370,8 @@ class Worker:
 
             # Stop the heartbeat before reading anything it may have changed.
             supervision.interrupt()
-            if heartbeat_thread.is_alive():
-                heartbeat_thread.join(timeout=5)
+            if supervisor_thread.is_alive():
+                supervisor_thread.join(timeout=5)
 
             # A lease this worker no longer holds publishes nothing: another
             # worker owns the run, and the reconciler will finish it.
@@ -451,10 +493,10 @@ class Worker:
                 pass
             return False
         finally:
-            if heartbeat_thread and heartbeat_thread.is_alive():
-                heartbeat_thread.join(timeout=5)
+            if supervisor_thread and supervisor_thread.is_alive():
+                supervisor_thread.join(timeout=5)
             job.close()
-            heartbeat_db.close()
+            supervisor_db.close()
 
     def run(self):
         """Main worker loop with automatic reconciliation."""

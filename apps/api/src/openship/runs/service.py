@@ -343,10 +343,18 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
     if run.status in ["cancelled", "completed", "failed", "timed_out"]:
         return run
 
-    # Update status to cancelled
+    # A cancellation takes ownership away. The run's fence and its job's move
+    # together, because the job's fence is what a worker renews against while
+    # a turn is running: moving only the run's would leave a worker mid-request
+    # still holding a lease it can renew, and the provider read would keep
+    # consuming until the run deadline ended. The invariant the queue keeps
+    # (claim_next sets both to the same value) is kept here too.
     run.status = "cancelled"
     run.ended_at = datetime.now(UTC)
     run.fence += 1
+    job = db.query(RunJob).filter(RunJob.run_id == rid).first()
+    if job is not None:
+        job.fence = run.fence
 
     # Create cancel event
     seq = conv.next_event_sequence

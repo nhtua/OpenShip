@@ -13,7 +13,7 @@ from typing import TypedDict
 from langgraph.graph import END, StateGraph
 
 from ..providers.contracts import ChatMessage, ModelRequest, RunModelConfig
-from ..providers.errors import SAFE_MESSAGES, ProviderError
+from ..providers.errors import ProviderError
 from ..providers.runner import run_model_turn
 from .service import parse_run_model_config
 
@@ -87,11 +87,21 @@ def model_step(state: ChatState, invocation=None) -> dict:
     result = asyncio.run(run_model_turn(request, config, control, recorder))
 
     usage = result.usage.model_dump(mode="json") if result.usage is not None else None
-    return {
+    values = {
         "assistant_response": result.text,
         "usage": usage,
         "finish_reason": result.finish_reason,
     }
+
+    # The guard lives here rather than in the callers, so no path that reaches
+    # a model turn can publish a partial or refused answer: only a clean stop
+    # with nonempty text may. A turn that ended any other way is a failure the
+    # caller must handle, and the text stays an internal result.
+    code = _unpublishable(values)
+    if code is not None:
+        raise ProviderError(code)
+
+    return values
 
 
 def _invocation_for(run_id, fence: int):
@@ -187,11 +197,12 @@ def execute_model_turn(
     try:
         values = model_step(state, factory)
     except ProviderError as refused:
-        return ModelResult(assistant_response="", error=refused.safe_message, error_code=refused.code)
-
-    code = _unpublishable(values)
-    if code is not None:
-        return ModelResult(assistant_response="", error=SAFE_MESSAGES[code], error_code=code)
+        # An unpublishable finish (see ``model_step``) arrives here as a
+        # normalized failure with its fixed copy, the same as a provider
+        # refusal.
+        return ModelResult(
+            assistant_response="", error=refused.safe_message, error_code=refused.code
+        )
 
     return ModelResult(
         assistant_response=values["assistant_response"],

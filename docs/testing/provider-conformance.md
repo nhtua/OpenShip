@@ -167,11 +167,17 @@ Verified 2026-10-13, on this checkout:
 | Lane | Result |
 | --- | --- |
 | API lint (`ruff check .` over `apps/api`) | no findings |
-| API unit (`-m "not provider_live and not postgres"`) | 298 passed, 18 deselected |
-| API PostgreSQL durable lane | 16 passed, 5 deselected |
+| API unit (`-m "not provider_live and not postgres"`) | 303 passed, 19 deselected |
+| API PostgreSQL durable lane | 17 passed, 5 deselected |
 | Web typecheck / unit / build | clean, 122 passed, clean |
 | Browser portability scenario | 10 passed |
 | Live qualification | **pending** — no credential binding is configured, so the test skips |
+
+The durable lane now also demonstrates the one cancellation a user can cause:
+a worker mid-request is interrupted by the ask rather than by the run
+deadline. That claim cannot be shown on the SQLite unit lane, where a second
+writer races the worker's transaction, so it is stated where a real
+PostgreSQL database is the one under test.
 
 No tuple is `live-qualified` or `accepted`. The states after
 `fixture-tested` stay pending until a person runs the live test against a

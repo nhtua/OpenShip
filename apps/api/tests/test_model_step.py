@@ -169,7 +169,7 @@ def test_graph_state_has_required_fields():
 
 
 def test_partial_stream_leaves_no_completed_assistant_message(monkeypatch):
-    """When the stream is cut short, no completed assistant message is returned."""
+    """A stream cut short is refused where the turn runs, not filtered after."""
     serve(
         monkeypatch,
         chunks=[
@@ -178,8 +178,11 @@ def test_partial_stream_leaves_no_completed_assistant_message(monkeypatch):
         ],
     )
 
-    values = model_step(run_state(("user", "Hello!")), invocation())
-    assert values["finish_reason"] == "length"
+    with pytest.raises(ProviderError) as refused:
+        model_step(run_state(("user", "Hello!")), invocation())
+    assert refused.value.code == "output_limit_exceeded", (
+        "the model step itself refuses a partial, so no caller can bypass it"
+    )
 
     result = execute_model_turn(
         "test-run-8",

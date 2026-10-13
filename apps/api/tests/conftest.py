@@ -161,12 +161,16 @@ def profile_spec(
     allowed_fallbacks=(),
     endpoint: str | None = None,
     credential_ref: str | None = None,
+    aliases=(),
 ):
     """A minimal text-only profile an operator would declare.
 
     The destination and the credential binding can be restated because a
     profile that points somewhere else, or needs no credential at all, is a
-    shape the installation can declare.
+    shape the installation can declare. So can the aliases: a provider that
+    answers under a name the operator qualified is a real shape, and the
+    difference between the name a run asked for and the name that answered
+    is a claim the installation has to keep.
     """
     return {
         "id": profile_id,
@@ -188,7 +192,7 @@ def profile_spec(
             "parallel_tool_calls": False,
         },
         "allowed_fallback_profile_ids": list(allowed_fallbacks),
-        "qualified_model_aliases": [],
+        "qualified_model_aliases": list(aliases),
         "adapter_options": {
             "adapter": "openai",
             "output_limit_parameter": "max_tokens",

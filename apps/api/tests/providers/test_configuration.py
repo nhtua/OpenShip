@@ -119,6 +119,33 @@ def test_operator_configuration_mistakes_are_all_configuration_errors():
         parse_profiles("not json")
 
 
+def test_a_claimed_capability_needs_the_mechanism_that_implements_it():
+    """A profile cannot claim a token ceiling it has no counter to enforce."""
+    unbacked = {
+        **LOCAL_PROFILE,
+        "capabilities": {**LOCAL_PROFILE["capabilities"], "token_counting": True},
+    }
+    with pytest.raises(ProviderError) as caught:
+        parse_profiles(json.dumps([unbacked]))
+    assert caught.value.code == "configuration_error", (
+        "the declaration is refused, not carried into a run"
+    )
+    assert "token_counter_id" in caught.value.safe_message, (
+        "the operator is told which half of the claim was missing"
+    )
+
+    backed = {
+        **unbacked,
+        "adapter_options": {
+            **unbacked["adapter_options"],
+            "token_counter_id": "llama-server:tokenize",
+        },
+    }
+    assert parse_profiles(json.dumps([backed]))[0].capabilities.token_counting is True, (
+        "naming the counter is what makes the claim legal"
+    )
+
+
 def test_endpoints_cannot_smuggle_credentials_or_use_insecure_remote_hosts():
     """A URL is a destination; secrets and query strings are not."""
     for bad in (

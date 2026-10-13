@@ -27,7 +27,8 @@ from src.openship.providers.errors import ProviderError
 from src.openship.providers.registry import _adapter_factories
 from src.openship.providers.runner import run_model_turn
 from src.openship.runs.models import ProviderAttempt, Run, RunJob
-from src.openship.runs.queue import claim_next, finalize
+from src.openship.runs.queue import claim_next, finalize, renew
+from src.openship.runs.schemas import project_run_response
 from src.openship.runs.service import bind_run_model_config, load_run_model_config
 from src.openship.runs.worker import Worker
 
@@ -38,7 +39,12 @@ from .conftest import (
     declare_two_profiles,
     profile_spec,
 )
-from .providers.conftest import StreamTransport, make_adapter, sdk_chunk
+from .providers.conftest import (
+    BlockingTransport,
+    StreamTransport,
+    make_adapter,
+    sdk_chunk,
+)
 
 # --- The installation, a queued run, and one worker job ----------------------------
 
@@ -48,16 +54,20 @@ from .providers.conftest import StreamTransport, make_adapter, sdk_chunk
 _QUEUE_EPOCH = datetime(2000, 1, 1, tzinfo=UTC)
 
 
-def _two_destinations(monkeypatch) -> None:
+def _two_destinations(monkeypatch, aliases=()) -> None:
     """Two profiles that serve different models, so following today's default is visible.
 
     The installation's default is the second one; runs pin the first. Anything
-    that reads today's settings instead of a run's snapshot serves the wrong model.
+    that reads today's settings instead of a run's snapshot serves the wrong
+    model. The primary can also qualify an alias, which is what a provider
+    that answers under a name the operator vouched for looks like.
     """
     configure_profiles(
         monkeypatch,
         [
-            profile_spec("primary-fixture", allowed_fallbacks=["secondary-fixture"]),
+            profile_spec(
+                "primary-fixture", allowed_fallbacks=["secondary-fixture"], aliases=aliases
+            ),
             {**profile_spec("secondary-fixture"), "model": "changed-after-submission"},
         ],
         "secondary-fixture",
@@ -71,13 +81,19 @@ def _conversation(client: TestClient, authorized_client: dict) -> str:
     return response.json()["id"]
 
 
-def _queued_turn(client: TestClient, authorized_client: dict, monkeypatch, order: int = 0) -> Run:
+def _queued_turn(
+    client: TestClient,
+    authorized_client: dict,
+    monkeypatch,
+    order: int = 0,
+    aliases: tuple = (),
+) -> Run:
     """A queued run pinned to the first profile, on its own conversation.
 
     Its job is made the oldest available one, so the claim that follows is
     this run's: a case tests the worker, not another case's leftovers.
     """
-    _two_destinations(monkeypatch)
+    _two_destinations(monkeypatch, aliases=aliases)
     conversation_id = _conversation(client, authorized_client)
     response = client.post(
         f"/api/runs/{conversation_id}/turns",
@@ -154,36 +170,6 @@ class RecordingRecorder:
 
     def finish(self, attempt_id, outcome, usage=None, error_code=None, actual_model=None):
         self.finished.append({"outcome": outcome, "error_code": error_code, "usage": usage})
-
-
-class BlockingTransport:
-    """A stream whose first read never returns; only cancellation can end it."""
-
-    def __init__(self):
-        self.closed = False
-        self.requests = 0
-
-    async def create(self, **kwargs):
-        self.requests += 1
-        return _BlockingStream(self)
-
-    def aclose(self):
-        self.closed = True
-
-
-class _BlockingStream:
-    def __init__(self, transport):
-        self._transport = transport
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        await asyncio.sleep(30)
-        raise StopAsyncIteration
-
-    async def aclose(self):
-        self._transport.aclose()
 
 
 def _answers(session, run_id) -> list[ProviderAttempt]:
@@ -301,6 +287,36 @@ def test_cancel_interrupts_blocked_read(monkeypatch):
     assert recorder.started == [(config.primary.id, "initial")]
     assert recorder.finished[-1]["outcome"] == "cancelled"
     assert recorder.finished[-1]["error_code"] == "cancelled"
+
+
+def test_a_cancel_moves_the_fence_a_worker_renews_against(
+    client, authorized_client, monkeypatch
+):
+    """The ask takes ownership away from a worker that would be mid-request.
+
+    The break this catches: a cancel that moves only the run's fence. A
+    running worker renews against its job's, so the desync would leave the
+    blocked provider read consuming until the run deadline - and the two
+    claims this repo makes about cancellation would both be unmet. The
+    composition is settled by the cases beside this one: a fence that moved
+    stops a worker and publishes nothing, and a stop signal closes a blocked
+    read. What is shown here is that the ask moves that fence.
+    """
+    run = _queued_turn(client, authorized_client, monkeypatch)
+    claim = _claim()
+
+    response = client.post(f"/api/runs/{run.id}/cancel", headers=authorized_client)
+    assert response.status_code == 200, f"the owner's ask must be accepted: {response.text}"
+
+    session = TestSessionLocal()
+    assert session.get(Run, run.id).status == "cancelled", "the ask is the run's end"
+    job = session.query(RunJob).filter(RunJob.run_id == run.id).one()
+    assert job.fence != claim.fence, (
+        "a worker mid-request must not still hold a lease it can renew"
+    )
+    assert not renew(session, run.id, claim.fence, lease_seconds=30), (
+        "the lease the worker was about to renew is no longer its own"
+    )
 
 
 def test_lease_loss_stops_dispatch_and_publication(client, authorized_client, monkeypatch):
@@ -451,6 +467,82 @@ def test_completion_message_and_event_commit_together(client, authorized_client,
     )
     assert _assistant(session, second.id) == [], (
         "a completed status must never exist without its message"
+    )
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "error_code"),
+    [("length", "output_limit_exceeded"), ("refusal", "model_refused")],
+    ids=("cut_off_at_the_limit", "refused_by_the_model"),
+)
+def test_an_incomplete_answer_is_not_a_completed_one(
+    client, authorized_client, monkeypatch, finish_reason, error_code
+):
+    """A turn that did not end cleanly publishes a failure, never an answer.
+
+    The break this catches: a worker that reads the graph's own result and
+    publishes whatever text came back, so an answer cut off at the output
+    limit or refused by the model enters history as a completed assistant
+    message. The plan says partial text stays an internal result and never
+    enters history - which is why the guard sits in the model step itself,
+    where no caller can bypass it.
+    """
+    run = _queued_turn(client, authorized_client, monkeypatch)
+    claim = _claim()
+
+    _serve(
+        monkeypatch,
+        chunks=[sdk_chunk(content="Text that never finished.", finish_reason=finish_reason)],
+    )
+
+    _process(claim)
+
+    session = TestSessionLocal()
+    stopped = session.get(Run, run.id)
+    assert stopped.status == "failed", (
+        f"an answer ending {finish_reason!r} is not a completed run"
+    )
+    assert stopped.error_code == error_code, (
+        "the failure names why the answer is not there, in the same words "
+        "the browser reads"
+    )
+    assert _assistant(session, run.id) == [], (
+        "partial text never enters history as a completed assistant answer"
+    )
+    assert _answers(session, run.id), (
+        "the request was made, so its attempt is still recorded"
+    )
+
+
+def test_a_served_alias_is_reported_as_the_model_that_answered(
+    client, authorized_client, monkeypatch
+):
+    """Requested and actual stay separate in what a browser reads.
+
+    The break this catches: a run summary that reports only the pinned name,
+    so a provider that answered under a name the operator qualified is
+    indistinguishable from one that answered as asked. The name that is
+    reported comes from the attempt the provider made, never from the
+    snapshot - which is where only the requested name is knowable.
+    """
+    alias = "fixture-qualified-alias"
+    run = _queued_turn(client, authorized_client, monkeypatch, aliases=(alias,))
+    claim = _claim()
+
+    _serve(
+        monkeypatch,
+        chunks=[sdk_chunk(content="An answer.", finish_reason="stop", model=alias)],
+    )
+
+    _process(claim)
+
+    session = TestSessionLocal()
+    read = project_run_response(session.get(Run, run.id), _answers(session, run.id))
+    assert read.model.requested_model == FIXTURE_MODEL, (
+        "the name a run asked for is still the name it asked for"
+    )
+    assert read.model.actual_model == alias, (
+        "the name the provider stated is what is reported, not the pinned one"
     )
 
 

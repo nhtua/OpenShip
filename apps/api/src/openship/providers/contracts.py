@@ -151,6 +151,24 @@ class _ProfileBase(BaseModel):
     pricing: ProfilePricing | None = None
     limits: RunLimits | None = None
 
+    @model_validator(mode="after")
+    def _claim_only_what_is_wired(self):
+        """A capability may only be claimed where the mechanism is named.
+
+        ``token_counting`` is the one claimed capability that is not a
+        provider behaviour the adapter reads off a stream: it is a call this
+        build makes, and which call is decided by the profile. A profile that
+        claims it without naming a counter would look enforceable and only
+        fail at request time - so the declaration is refused here, and the
+        adapter still refuses a counter it does not implement.
+        """
+        if self.capabilities.token_counting and self.adapter_options.token_counter_id is None:
+            raise ValueError(
+                f"profile {self.id!r} claims token_counting but names no "
+                "token_counter_id for its adapter to call"
+            )
+        return self
+
 
 class ProviderProfile(_ProfileBase):
     """An operator-declared profile, before it is pinned to a run."""

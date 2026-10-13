@@ -6,6 +6,7 @@ it opened. Everything else in a case — the adapter, the contracts, the
 control — is the real component under test.
 """
 
+import asyncio
 import json
 import uuid
 
@@ -183,6 +184,45 @@ class _Stream:
             # A stream that fails after it began: the case's own failure fixture.
             raise item
         return item
+
+    async def aclose(self):
+        self._transport.aclose()
+
+    async def close(self):
+        """The name the Messages SDK uses for the same cleanup."""
+        self._transport.aclose()
+
+
+class BlockingTransport:
+    """A stream whose first read never returns; only cancellation can end it.
+
+    The one shape that separates "stopped consuming" from "asked to stop": a
+    read that is blocked is only interrupted by a stop signal, so a case about
+    cancellation has to be run against this and not a finite stream.
+    """
+
+    def __init__(self):
+        self.closed = False
+        self.requests = 0
+
+    async def create(self, **kwargs):
+        self.requests += 1
+        return _BlockingStream(self)
+
+    def aclose(self):
+        self.closed = True
+
+
+class _BlockingStream:
+    def __init__(self, transport):
+        self._transport = transport
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(30)
+        raise StopAsyncIteration
 
     async def aclose(self):
         self._transport.aclose()

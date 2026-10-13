@@ -25,7 +25,13 @@ class Settings(BaseSettings):
 
     # Worker queue settings
     worker_lease_seconds: int = 30
+    # How often a running worker renews its lease. It is a write, so it stays
+    # infrequent; observing a cancellation is the read below, not this.
     worker_heartbeat_interval: int = 10
+    # The supervisor's read while a turn runs. It is what decides how quickly a
+    # cancellation or a moved fence interrupts a blocked provider read, so it is
+    # well below the two seconds the repo guarantees for local I/O.
+    worker_cancellation_poll_seconds: float = 0.5
     worker_poll_interval: int = 2
     reconciler_interval: int = 60
 

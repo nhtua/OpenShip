@@ -92,7 +92,20 @@ class RunCancelRequest(BaseModel):
     pass
 
 
-def _model_projection(snapshot: str | None) -> ModelSummary | None:
+def _served_model(attempts) -> str | None:
+    """What the last successful attempt says it actually answered with.
+
+    Missing stays missing: an attempt that did not record one is not evidence
+    of a model, and nothing here falls back to the requested name - that is
+    the conflation the plan says must not be made.
+    """
+    for attempt in reversed(tuple(attempts)):
+        if attempt.outcome == "succeeded" and attempt.actual_model:
+            return attempt.actual_model
+    return None
+
+
+def _model_projection(snapshot: str | None, attempts=()) -> ModelSummary | None:
     """A run's own pinned configuration, or nothing for a run that predates it."""
     if not snapshot:
         return None
@@ -103,6 +116,11 @@ def _model_projection(snapshot: str | None) -> ModelSummary | None:
         label=primary["label"],
         adapter=primary["adapter"],
         requested_model=primary["model"],
+        # Requested and actual are separate fields on the contract, and they
+        # stay separate here: a provider that answered from an alias it was
+        # handed would otherwise be indistinguishable from one that answered
+        # from the model the operator named.
+        actual_model=_served_model(attempts),
         destination_label=destination_label(primary["endpoint"]),
         fallback_profile_ids=tuple(profile["id"] for profile in config.get("fallbacks", ())),
     )
@@ -144,7 +162,7 @@ def project_run_response(run: Run, attempts=()) -> RunResponse:
         status=run.status,
         created_at=run.created_at,
         attempt=run.attempt,
-        model=_model_projection(run.model_configuration),
+        model=_model_projection(run.model_configuration, attempts),
         usage=_usage_projection(run.usage),
         error=_error_projection(run.error_code),
         provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
