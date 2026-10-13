@@ -54,6 +54,7 @@ from tests.conftest import (
     profile_spec,
 )
 from tests.providers.conftest import (
+    HTTPTransport,
     StreamTransport,
     make_adapter,
     provider_stream,
@@ -273,6 +274,25 @@ def installation(postgres_session_factory, monkeypatch):
                         "automatic_function_calling": False,
                     },
                 },
+                # A fourth, and a profile that names no credential at all: the
+                # durable path must serve a keyless local endpoint the same way
+                # it serves one that needs a binding.
+                {
+                    **profile_spec(
+                        "compatible-fixture",
+                        endpoint="http://localhost:11434/v1",
+                        credential_ref="",
+                    ),
+                    "adapter": "openai_compatible",
+                    "api_version": "chat-completions",
+                    "adapter_options": {
+                        "adapter": "openai_compatible",
+                        "endpoint_implementation": "chat-completions",
+                        "authentication": "none",
+                        "stream_usage_supported": False,
+                        "output_limit_parameter": "max_tokens",
+                    },
+                },
             ]
         ),
     )
@@ -282,8 +302,15 @@ def installation(postgres_session_factory, monkeypatch):
 
 
 def _serve(monkeypatch, chunks=(), raises=None, adapter="openai"):
-    """The installation's provider answers from a synthetic transport."""
-    transport = StreamTransport(list(chunks), raises=raises)
+    """The installation's provider answers from a synthetic transport.
+
+    The transport is the shape the provider is reached through, which is not
+    the same for every one of them: an SDK's stream, or an HTTP exchange.
+    """
+    if adapter == "openai_compatible":
+        transport = HTTPTransport(list(chunks), raises=raises)
+    else:
+        transport = StreamTransport(list(chunks), raises=raises)
     monkeypatch.setitem(
         _adapter_factories,
         adapter,
@@ -387,8 +414,12 @@ def test_queued_snapshot_survives_worker_restart_and_config_change(installation,
 
 @pytest.mark.parametrize(
     ("adapter", "profile_id"),
-    [("anthropic", "messages-fixture"), ("google", "gemini-fixture")],
-    ids=("messages", "gemini"),
+    [
+        ("anthropic", "messages-fixture"),
+        ("google", "gemini-fixture"),
+        ("openai_compatible", "compatible-fixture"),
+    ],
+    ids=("messages", "gemini", "compatible"),
 )
 def test_a_run_pinned_to_another_adapter_takes_the_same_path(
     installation, monkeypatch, adapter, profile_id
@@ -398,7 +429,8 @@ def test_a_run_pinned_to_another_adapter_takes_the_same_path(
     The break this catches: a worker that reaches the provider differently
     because of the profile's adapter, so the run's own record and the answer
     it publishes stop agreeing - which is the same claim the case above makes,
-    asked of every adapter this build ships rather than of one.
+    asked of every adapter this build ships rather than of one. The keyless
+    profile asks the same claim of a run that never had a credential to reach.
     """
     db = installation()
     run = _turn(db, profile_id=profile_id)["run"]

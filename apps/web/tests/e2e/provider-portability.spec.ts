@@ -67,16 +67,16 @@ test('a profile this installation cannot serve is stated before anything is sent
   // instead of guessing why a name has no button. Two reasons are shown here,
   // because the reason is what a reader acts on and neither one is hidden
   // behind a name with nothing under it: a key this installation does not
-  // configure, and an adapter this build does not ship.
+  // configure, and a declaration this build cannot use.
   await expect(
     page.getByText('Needs a key — Not available in this installation'),
   ).toBeVisible()
   await expect(
-    page.getByText('No adapter yet — This build has no adapter for it'),
+    page.getByText('Needs a binding — This profile needs a credential binding it does not name'),
   ).toBeVisible()
   expect(
     await page
-      .getByRole('button', { name: /Needs a key|No adapter yet/ })
+      .getByRole('button', { name: /Needs a key|Needs a binding/ })
       .count(),
   ).toBe(0)
 })

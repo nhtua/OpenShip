@@ -35,7 +35,7 @@ skips rather than pretending, and the matrix says so.
 | `openai` · Chat Completions | `openai` | `chat-completions` | *not stated* | *not observed* | `openai` 3.24.0 (the version this environment resolves) | streaming, usage reporting; no token counting, no tool calls, no structured output, no attachments | 11 conformance cases + 12 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_openai.py`) | pending — no credential configured | pending | `fixture-tested` |
 | `anthropic` · Messages | `anthropic` | `messages` | *not stated* | *not observed* | `anthropic` 1.13.0 (the version this environment resolves) | streaming, usage reporting (per-field counts; this API reports no total), token counting through the provider's own counter; no tool calls, no structured output, no attachments | 10 of the 11 conformance cases (the eleventh is a shape only Chat Completions produces) + 20 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_anthropic.py`) | pending — no credential configured | pending | `fixture-tested` |
 | `google` · Gemini Developer API | `google` | `generate-content` streaming over `v1` | *not stated* | *not observed* | `google-genai` 2.30.1 (the version this environment resolves) | streaming, usage reporting (per-field counts, including this API's own total, a cached count, and a thought count), token counting through the provider's own counter; no tool calls — a predicted call is never executed here — no structured output, no attachments | 10 of the 11 conformance cases (the eleventh is a shape only Chat Completions produces) + 24 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_google.py`) | pending — no credential configured | pending | `fixture-tested` |
-| `openai_compatible` | `openai_compatible` | pending | pending | pending | pending | pending | pending — unit 3D | pending | pending | not yet testable |
+| `openai_compatible` · Chat Completions at a declared endpoint | `openai_compatible` | `chat-completions` / the profile's own `api_version` | *not stated* | *not observed* | none — the adapter reads HTTP directly (`httpx` 0.28.1, already a declared dependency) | streaming, usage reporting only where the profile declares the endpoint reports it; no token counting, no tool calls, no structured output, no attachments | 11 of the 11 conformance cases + 20 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_openai_compatible.py`) | pending — no such endpoint is installed in this checkout | pending | `fixture-tested` |
 
 The requested/observed model columns stay empty on a `fixture-tested` tuple
 on purpose. The conformance suite runs against a fixture model at a fixture
@@ -110,9 +110,13 @@ A profile may declare no credential at all — the shape is
 is accepted only for those hosts; for a public host it is refused, because an
 insecure public destination is a mistake an operator cannot see in a catalog.
 
-The contract and the endpoint rules for this are in place now; the adapter that
-serves it lands in unit 3D. Until then a profile naming `openai_compatible` is
-a configuration error, not a guess.
+The adapter that serves this shape is in this build. A keyless profile is
+offered as usable — there is no binding to be missing — and its request carries
+no authorization at all, because the installation's own environment is never
+read for a destination the operator named separately. What is still refused is
+a declaration that cannot be used: a profile that asks for bearer
+authentication but names no binding for it is a configuration error, stated in
+the catalog rather than guessed at.
 
 ## Default and fallback behaviour
 

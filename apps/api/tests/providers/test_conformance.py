@@ -12,9 +12,9 @@ under each name is the same for every adapter, which is the point: an
 adapter that passes its own cases but not these has been described, not
 qualified.
 
-One case is single-API and says why: a stream that carries no counts at all
-is a shape only Chat Completions produces, so the suite cannot ask it of an
-API that reports counts on every stream.
+One case is single-shape and says why: a stream that carries no counts at all
+is a shape only Chat Completions and the endpoints that declare it produce, so
+the suite cannot ask it of an API that reports counts on every stream.
 """
 
 import pytest
@@ -40,7 +40,7 @@ CONVERSATION = (
 
 #: Every adapter this suite must pass. Adding one here is what makes the
 #: suite shared rather than a second file that happens to look alike.
-ADAPTERS = ("openai", "anthropic", "google")
+ADAPTERS = ("openai", "anthropic", "google", "openai_compatible")
 
 
 @pytest.mark.asyncio
@@ -124,9 +124,16 @@ async def test_an_empty_answer_is_not_an_answer(adapter):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("adapter", ("openai",))
+@pytest.mark.parametrize("adapter", ("openai", "openai_compatible"))
 async def test_usage_the_provider_omits_stays_unknown(adapter):
-    """No counts means no claims, not zeros."""
+    """No counts means no claims, not zeros.
+
+    The shape - a stream that carries no counts at all - belongs to Chat
+    Completions, and to every endpoint that declares it speaks Chat
+    Completions. The two adapters named here are the ones that reach that
+    shape; the APIs that report counts on every stream cannot be asked to
+    produce it, and that is why the case is not run against them.
+    """
     case = adapter_case(adapter=adapter, chunks=provider_stream(adapter, text=["hi"]))
 
     events, failure = await drain(

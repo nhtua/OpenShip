@@ -6,7 +6,12 @@ it opened. Everything else in a case — the adapter, the contracts, the
 control — is the real component under test.
 """
 
+import json
 import uuid
+
+#: The HTTP client's own vocabulary. A compatible endpoint is reached over
+#: plain HTTP, so the fixture's failures are the client's, not an SDK's.
+import httpx
 
 #: Imported before any case replaces a factory: a lazy import inside a case
 #: would re-register the real adapter over the case's own, so a second
@@ -30,11 +35,22 @@ CREDENTIAL_REF = "FIXTURE_KEY"  # rayloc:ignore
 #: What each API is called and the options its contract requires. A fixture
 #: profile that declared the wrong adapter would not be testing the adapter
 #: the case drives.
-_API_VERSION = {"openai": "chat-completions", "anthropic": "messages", "google": "v1"}
+_API_VERSION = {
+    "openai": "chat-completions",
+    "anthropic": "messages",
+    "google": "v1",
+    "openai_compatible": "chat-completions",
+}
 _REQUIRED_OPTIONS = {
     "openai": {"output_limit_parameter": "max_tokens"},
     "anthropic": {"server_side_fallback": False},
     "google": {"native_api_version": "v1", "automatic_function_calling": False},
+    "openai_compatible": {
+        "endpoint_implementation": "chat-completions",
+        "authentication": "bearer",
+        "stream_usage_supported": True,
+        "output_limit_parameter": "max_tokens",
+    },
 }
 
 
@@ -174,6 +190,95 @@ class _Stream:
     async def close(self):
         """The name the Messages SDK uses for the same cleanup."""
         self._transport.aclose()
+
+
+class HTTPTransport:
+    """An HTTP exchange that records the request and whether the read closed.
+
+    The shape a separately configured endpoint is reached through: a method, a
+    URL, a body, and a status. A fixture that skipped the status would be a
+    claim about a body only, and an endpoint that answers 429 or redirects is
+    one of the cases this adapter has to answer.
+    """
+
+    def __init__(self, lines, *, raises=None, status=200, headers=None):
+        self._lines = list(lines)
+        self._raises = raises
+        self._status = status
+        self._headers = headers or {}
+        self.closed = False
+        self.requests = 0
+
+    def stream(self, method, url, **kwargs):
+        """The request the adapter made, recorded as it made it."""
+        self.requests += 1
+        self._seen = {"method": method, "url": url, **kwargs}
+        return _HTTPResponse(
+            self._lines,
+            self,
+            status=self._status,
+            headers=self._headers,
+            raises=self._raises,
+            seen_url=url,
+        )
+
+    def aclose(self):
+        self.closed = True
+
+    @property
+    def seen_kwargs(self):
+        return getattr(self, "_seen", None)
+
+
+class _HTTPResponse:
+    """A streaming response: a status, headers, the lines it sends, a close."""
+
+    def __init__(self, lines, transport, *, status=200, headers=None, raises=None, seen_url=""
+    ):
+        self._remaining = list(lines)
+        self._transport = transport
+        self._raises = raises
+        self._seen_url = seen_url
+        self.status_code = status
+        self.headers = headers
+
+    async def __aenter__(self):
+        if self._raises is not None:
+            raise self._raises
+        return self
+
+    async def __aexit__(self, *exc):
+        self._transport.aclose()
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"server error {self.status_code}",
+                request=httpx.Request("POST", self._seen_url),
+                response=httpx.Response(self.status_code, headers=self.headers),
+            )
+
+    async def aiter_lines(self):
+        for line in self._remaining:
+            if isinstance(line, BaseException):
+                # A stream that fails after it began: the case's own failure.
+                raise line
+            yield line
+
+
+class CompatibleClient:
+    """The shape an adapter asks of an HTTP client: a streaming request."""
+
+    def __init__(self, transport):
+        self._transport = transport
+
+    def stream(self, method, url, **kwargs):
+        return self._transport.stream(method, url, **kwargs)
+
+    @property
+    def transport(self):
+        return self._transport
 
 
 class SequenceTransport:
@@ -442,6 +547,32 @@ _GOOGLE_REASON = {
 }
 
 
+#: A Chat Completions chunk as the wire carries it. A compatible endpoint is
+#: an HTTP server, so the fixture states the bytes it sends rather than an
+#: SDK's objects - and the adapter is the thing that turns one into the other.
+def compatible_chunk(*, content=None, finish_reason=None, usage=None, model=FIXTURE_MODEL, choices=True):
+    """One SSE event of a Chat Completions stream, as the wire spells it."""
+    event = {
+        "id": "fixture-chunk",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": model,
+        "choices": (
+            [{"index": 0, "delta": {"content": content, "role": "assistant"}, "finish_reason": finish_reason}]
+            if choices
+            else []
+        ),
+    }
+    if usage is not None:
+        input_tokens, output_tokens, total_tokens = usage
+        event["usage"] = {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        }
+    return f"data: {json.dumps(event, separators=(',', ':'))}"
+
+
 def provider_stream(adapter, *, text=(), finish="stop", usage=(), model=FIXTURE_MODEL):
     """The provider-shaped stream that means: these parts, this end, these counts.
 
@@ -502,6 +633,21 @@ def provider_stream(adapter, *, text=(), finish="stop", usage=(), model=FIXTURE_
             )
         return chunks
 
+    if adapter == "openai_compatible":
+        # The same Chat Completions stream, spelled as an HTTP server sends it:
+        # SSE events with a blank line between them, and a terminal marker that
+        # is the end of the stream rather than a field of the last chunk.
+        events = [compatible_chunk(content=part) for part in text]
+        events += [
+            compatible_chunk(choices=False, usage=(counted, output, counted + output))
+            for counted, output in usage
+        ]
+        if finish:
+            events.append(compatible_chunk(finish_reason=_OPENAI_REASON[finish]))
+        lines = [line for event in events for line in (event, "")]
+        lines.append("data: [DONE]")
+        return lines
+
     raise AssertionError(f"no stream shape for adapter {adapter!r}")
 
 
@@ -509,12 +655,16 @@ def asked_turns(adapter, kwargs) -> list[tuple[str, str]]:
     """What the provider was asked for, back as (role, text) pairs.
 
     Each API spells a conversation differently: one puts the system turn in
-    the message list, the other takes it as its own parameter. The shared
-    claim is about the conversation, so this is where the spelling stops and
-    the claim continues.
+    the message list, the other takes it as its own parameter, a third names
+    the assistant role for the model. The claim is about the conversation, so
+    this is where the spelling stops and the claim continues.
     """
     if adapter == "openai":
         return [(turn["role"], turn["content"]) for turn in kwargs["messages"]]
+    if adapter == "openai_compatible":
+        # The same body the first adapter asks for, read where an HTTP client
+        # would have read it.
+        return [(turn["role"], turn["content"]) for turn in kwargs["json"]["messages"]]
     if adapter == "anthropic":
         system = kwargs.get("system")
         opening = [("system", system)] if system else []
@@ -552,6 +702,10 @@ def make_adapter(name: str, transport) -> object:
         from src.openship.providers.google import GoogleAdapter
 
         return GoogleAdapter(client_factory=lambda _config: GoogleClient(transport))
+    if name == "openai_compatible":
+        from src.openship.providers.openai_compatible import OpenAICompatibleAdapter
+
+        return OpenAICompatibleAdapter(client_factory=lambda _config: CompatibleClient(transport))
     raise AssertionError(f"no adapter registered for {name!r}")
 
 
@@ -575,9 +729,21 @@ class CountingAdapter:
         return self._counted
 
 
-def adapter_case(*, chunks, raises=None, adapter="openai", profile_kwargs=None):
-    """A fresh case: a real adapter, a qualified profile, and a transport."""
-    transport = StreamTransport(chunks, raises=raises)
+def adapter_case(
+    *, chunks, raises=None, adapter="openai", profile_kwargs=None, status=200, headers=None
+):
+    """A fresh case: a real adapter, a qualified profile, and a transport.
+
+    The transport is the shape the provider is actually reached through, which
+    is not the same for every one of them: an SDK's stream, or an HTTP
+    exchange with a status. ``status`` and ``headers`` belong to the second
+    shape only - an endpoint that answers 429 or redirects is one of the
+    claims this adapter has to answer, and it is the response that carries it.
+    """
+    if adapter == "openai_compatible":
+        transport = HTTPTransport(chunks, raises=raises, status=status, headers=headers)
+    else:
+        transport = StreamTransport(chunks, raises=raises)
     profile = qualified_profile(adapter=adapter, **(profile_kwargs or {}))
     return _Case(
         adapter=make_adapter(adapter, transport),
@@ -598,7 +764,7 @@ def error_fixture(name: str, kind: str = "rate_limited"):
 
     path = (
         "/chat/completions"
-        if name == "openai"
+        if name in ("openai", "openai_compatible")
         else "/v1/messages"
         if name == "anthropic"
         else f"/models/{FIXTURE_MODEL}:streamGenerateContent"
@@ -679,6 +845,41 @@ def error_fixture(name: str, kind: str = "rate_limited"):
             # A failure this SDK raised without a status it could read - what
             # a transport that answered nothing would leave behind.
             return google_errors.APIError(0, {})
+    if name == "openai_compatible":
+        # There is no SDK here to build a failure: the failure is the HTTP
+        # client's own, which is what a status check raises.
+        if kind == "rate_limited":
+            response = httpx.Response(
+                429,
+                headers={"retry-after": "7", "x-request-id": "req-fixture"},
+                request=request,
+            )
+            return httpx.HTTPStatusError(
+                'secret-body {"error": {"message": "secret-body"}}',
+                request=request,
+                response=response,
+            )
+        if kind == "unreachable":
+            return httpx.ConnectError("secret-body")
+        if kind == "unauthorized":
+            response = httpx.Response(401, request=request)
+            return httpx.HTTPStatusError(
+                "invalid api key", request=request, response=response
+            )
+        if kind == "server":
+            response = httpx.Response(500, request=request)
+            return httpx.HTTPStatusError(
+                "secret-body", request=request, response=response
+            )
+        if kind == "rejected":
+            # The endpoint did not accept the request this build sent - a
+            # parameter it does not have. Nothing here resends it.
+            response = httpx.Response(400, request=request)
+            return httpx.HTTPStatusError(
+                'secret-body {"error": {"message": "unknown parameter"}}',
+                request=request,
+                response=response,
+            )
     raise AssertionError(f"no error fixture {kind!r} for {name!r}")
 
 

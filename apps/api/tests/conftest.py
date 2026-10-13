@@ -154,16 +154,28 @@ CREDENTIAL_BINDING = "TEST_PROVIDER_CREDENTIAL"  # rayloc:ignore
 SENTINEL_CREDENTIAL = "sentinel-credential-value"  # rayloc:ignore
 
 
-def profile_spec(profile_id: str, *, label: str | None = None, allowed_fallbacks=()):
-    """A minimal text-only profile an operator would declare."""
+def profile_spec(
+    profile_id: str,
+    *,
+    label: str | None = None,
+    allowed_fallbacks=(),
+    endpoint: str | None = None,
+    credential_ref: str | None = None,
+):
+    """A minimal text-only profile an operator would declare.
+
+    The destination and the credential binding can be restated because a
+    profile that points somewhere else, or needs no credential at all, is a
+    shape the installation can declare.
+    """
     return {
         "id": profile_id,
         "label": label or f"Fixture profile {profile_id}",
         "adapter": "openai",
         "model": FIXTURE_MODEL,
-        "endpoint": FIXTURE_ENDPOINT,
+        "endpoint": endpoint or FIXTURE_ENDPOINT,
         "api_version": "chat-completions",
-        "credential_ref": CREDENTIAL_BINDING,
+        "credential_ref": CREDENTIAL_BINDING if credential_ref is None else credential_ref,
         "capabilities": {
             "streaming": True,
             "usage_reporting": True,

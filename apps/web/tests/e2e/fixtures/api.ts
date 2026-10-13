@@ -458,25 +458,24 @@ export const E2E_PROFILES: E2EProfileCatalog = {
       destination_label: null,
       capabilities: {},
       available: false,
-      reason: 'credential_missing',
+      reason: 'missing_credentials',
       explanation: 'Not available in this installation',
       allowed_fallback_profile_ids: [],
     },
-    // Unavailable for a different reason: this build has no adapter for it.
-    // The reason is stated the same way, because the reason is what a reader
-    // acts on and the reason is never a guess. The adapter named here is the
-    // one this build genuinely does not have - the others are shipped, so
-    // naming one of them would be a claim the fixture could not make.
+    // Unavailable for a different reason: the declaration itself cannot be
+    // used, so there is no binding to be missing. The reason is stated in the
+    // same place the choices are, because the reason is what a reader acts on
+    // and neither kind is hidden behind a name with nothing under it.
     {
-      profile_id: 'no-adapter',
-      label: 'No adapter yet',
+      profile_id: 'misconfigured',
+      label: 'Needs a binding',
       adapter: 'openai_compatible',
-      model: 'unshipped-fixture',
+      model: 'undeclared-binding-fixture',
       destination_label: null,
       capabilities: {},
       available: false,
-      reason: 'adapter_unavailable',
-      explanation: 'This build has no adapter for it',
+      reason: 'configuration_error',
+      explanation: 'This profile needs a credential binding it does not name',
       allowed_fallback_profile_ids: [],
     },
     // A second adapter this build does ship, at a destination of its own kind.

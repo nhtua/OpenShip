@@ -27,13 +27,18 @@ described.
 | `tests/providers/test_openai.py` | The OpenAI adapter's own obligations: no SDK retries, the output parameter that belongs to the profile, usage asked for when the provider reports it only when asked. |
 | `tests/providers/test_anthropic.py` | The Messages adapter's own obligations: the system turn as its own parameter, blocks that are not answer text, the end names this API uses, and counts this API never reports as a total. |
 | `tests/providers/test_google.py` | The Gemini adapter's own obligations: the system instruction as a field of its own, the assistant role named for the model, parts that are not answer text, the counts this API repeats on every chunk, the ends that name a refusal or a rejected call or a hop, and the SDK behaviours it must never be left to perform. |
+| `tests/providers/test_openai_compatible.py` | The separately configured endpoint's own obligations: the status it answers with rather than an error class, the SSE framing it sends, a parameter it refuses, a destination that redirects, and a profile that holds no credential at all. |
 | `tests/providers/test_runner.py` | One shared budget across initial call, retries, and fallback: bounded attempts, deadline enforcement, reservation before request, and cancellation that never starts another request. |
 
-The transport in `tests/providers/conftest.py` stands in for the SDK at its
-outermost edge: it records the request the adapter actually made and whether
-the adapter closed the stream it opened. Everything else in a case — the
-adapter, the contracts, the control — is the real component under test. That
-is what lets the whole suite run with no vendor API key and no network.
+The transport in `tests/providers/conftest.py` stands in for the provider at
+its outermost edge: it records the request the adapter actually made and
+whether the adapter closed the read it opened. The shape is not the same for
+every provider — three of them are reached through an SDK's stream, and a
+separately configured endpoint is reached through an HTTP exchange that also
+carries a status — so the fixture has both, and each adapter is driven
+through the one it is actually reached through. Everything else in a case —
+the adapter, the contracts, the control — is the real component under test.
+That is what lets the whole suite run with no vendor API key and no network.
 
 The shared cases are written once and run against every adapter this build
 ships. What a case looks like on the wire belongs to the provider, so the
@@ -43,10 +48,10 @@ back through one mapping that turns that API's spelling of a conversation
 back into roles and text. Those two places are the only places any of these
 APIs' shapes is written; the claim under each case name is the same for every
 adapter. A case a provider cannot produce is not skipped quietly — it is
-marked as belonging to one API, and says why in the suite. One case is of
+marked as belonging to one shape, and says why in the suite. One case is of
 that kind: a stream that carries no counts at all is a shape only Chat
-Completions produces, and the two APIs that report counts on every stream
-cannot be asked to produce one.
+Completions and the endpoints that declare it produce, and the two APIs that
+report counts on every stream cannot be asked to produce one.
 
 ```bash
 cd apps/api && uv run pytest tests/providers -q
@@ -70,12 +75,13 @@ What they prove, by name: a queued snapshot survives a worker restart and a
 configuration change, and the same journey taken under the profile of every
 adapter this build ships reaches the provider the same way — the case is
 parametrized over those adapters rather than written once per adapter, because
-nothing in the durable path branches on which adapter a profile names; a
-started request is not blindly replayed after a crash; a cancel fences a late
-result and closes the stream; a stale worker cannot publish an attempt or a
-message; two workers do not duplicate dispatch; the terminal commit is atomic;
-a snapshot after retention still preserves provider usage; and the
-checkpoint's own tables carry no credential value.
+nothing in the durable path branches on which adapter a profile names, and one
+of those profiles holds no credential at all; a started request is not blindly
+replayed after a crash; a cancel fences a late result and closes the stream;
+a stale worker cannot publish an attempt or a message; two workers do not
+duplicate dispatch; the terminal commit is atomic; a snapshot after retention
+still preserves provider usage; and the checkpoint's own tables carry no
+credential value.
 
 The unit lane is the same suite minus those lanes, and it has to pass with no
 PostgreSQL and no vendor credentials — that is what lets an ordinary PR be
@@ -111,8 +117,8 @@ cd apps/web && pnpm test:e2e provider-portability.spec.ts
 ```
 
 Ten cases: an unavailable profile is stated with its reason before anything
-is sent — two reasons, a key this installation does not configure and an
-adapter this build does not ship, stated the same way; choosing another
+is sent — two reasons, a key this installation does not configure and a
+declaration this build cannot use, stated the same way; choosing another
 profile names it and the submitted payload asks for it; a chosen profile
 survives a reload because the run read states it; a destination of a
 different kind — a loopback rather than a public host — reads the same way
@@ -161,8 +167,8 @@ Verified 2026-10-13, on this checkout:
 | Lane | Result |
 | --- | --- |
 | API lint (`ruff check .` over `apps/api`) | no findings |
-| API unit (`-m "not provider_live and not postgres"`) | 267 passed, 17 deselected |
-| API PostgreSQL durable lane | 15 passed, 5 deselected |
+| API unit (`-m "not provider_live and not postgres"`) | 298 passed, 18 deselected |
+| API PostgreSQL durable lane | 16 passed, 5 deselected |
 | Web typecheck / unit / build | clean, 122 passed, clean |
 | Browser portability scenario | 10 passed |
 | Live qualification | **pending** — no credential binding is configured, so the test skips |
@@ -183,8 +189,9 @@ every one of them.
 3. The shared conformance cases pass against the synthetic transport,
    including the cancel case closing the stream it opened.
 4. Its error vocabulary maps onto the shared one (`rate_limited`,
-   `server_error`, `invalid_response`, `unsupported_capability`, …) so the
-   browser's copy is the same for every adapter.
+   `authentication_error`, `invalid_request`, `invalid_response`,
+   `provider_unavailable`, `unsupported_capability`, …) so the browser's copy
+   is the same for every adapter.
 5. Usage is taken only from what the provider reports; missing stays missing.
 6. A live tuple is qualified and then accepted, and the matrix row is filled
    from that tuple's evidence — not from documentation about the model.

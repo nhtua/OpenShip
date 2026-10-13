@@ -105,8 +105,25 @@ def test_unconfigured_profile_explains_configuration_need(client: TestClient, au
     assert SENTINEL_CREDENTIAL not in response.text
 
 
-def test_unregistered_adapter_explains_the_gap(client: TestClient, authorized_client: dict, monkeypatch):
-    """A profile naming an adapter this build does not have is not offered as usable."""
+def test_a_build_without_an_adapter_explains_the_gap(
+    client: TestClient, authorized_client: dict, monkeypatch
+):
+    """A profile whose adapter this build does not ship is not offered as usable.
+
+    Every adapter the contract allows is now registered, so no declared
+    profile can name one this build lacks - the state is only reachable in a
+    build that does not ship one, and that is what this fixture is. Both
+    halves of the lookup are settled: the registry without the factory, and a
+    module that cannot be imported.
+    """
+    import sys
+
+    from src.openship.providers.registry import _adapter_factories
+
+    monkeypatch.delitem(_adapter_factories, "openai_compatible", raising=False)
+    monkeypatch.setitem(
+        sys.modules, "src.openship.providers.openai_compatible", None
+    )
     configure_profiles(
         monkeypatch,
         [
