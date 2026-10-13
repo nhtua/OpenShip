@@ -99,6 +99,12 @@ function dismissError() {
   historyLoadFailed.value = false
 }
 
+// The composer's selector names a profile; the store decides what the next
+// turn uses. A run that already exists keeps its own provider either way.
+function handleSelectProfile(profileId: string | null, fallbackIds: string[]) {
+  chat.selectProfile(profileId, fallbackIds)
+}
+
 async function handleSignOut() {
   auth.logout()
   chat.clearMessages()
@@ -109,6 +115,10 @@ async function handleSignOut() {
 }
 
 onMounted(async () => {
+  // What this installation offers is part of being able to answer at all, so
+  // it is loaded when the page is. A missing catalog is stated by the store
+  // rather than guessed at here, and the next turn simply names no profile.
+  await chat.loadModelProfiles()
   await loadHistory()
   // Auto-create a conversation if none exist so the user can immediately start chatting
   if (!isLoadingConversations.value && chat.conversations.length === 0 && !historyLoadFailed.value) {
@@ -165,7 +175,17 @@ onMounted(async () => {
       </div>
       <!-- The stream/composer components own their data-testid hooks. -->
       <ChatStream :messages="chat.messages" :is-streaming="chat.isStreaming" />
-      <ChatInput :disabled="busy" @send="handleSend" />
+      <ChatInput
+        :disabled="busy"
+        :selection-disabled="chat.isSubmitting"
+        :profiles="chat.modelProfiles?.profiles ?? []"
+        :default-profile-id="chat.modelProfiles?.default_profile_id ?? null"
+        :selected-profile-id="chat.selectedProfileId"
+        :fallback-ids="chat.selectedFallbackIds"
+        :catalog-error="chat.profileError"
+        @send="handleSend"
+        @select="handleSelectProfile"
+      />
     </div>
   </AppLayout>
 </template>

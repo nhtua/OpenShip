@@ -54,6 +54,24 @@ def build_adapter(profile):
     return factory(profile)
 
 
+def _adapter_supported(name: str) -> bool:
+    """Whether this build ships the adapter a profile names.
+
+    Adapters register themselves when their module is first imported, which is
+    what `build_adapter` does; availability asks the same question without
+    building a client, so a catalog never imports an SDK of its own.
+    """
+    if name in _adapter_factories:
+        return True
+    import importlib
+
+    try:
+        importlib.import_module(f"src.openship.providers.{name}")
+    except ImportError:
+        return False
+    return name in _adapter_factories
+
+
 class ProviderRegistry:
     """Immutable, non-secret view of the installation's model profiles."""
 

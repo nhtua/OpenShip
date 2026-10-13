@@ -1,5 +1,5 @@
-import uuid
-from unittest.mock import MagicMock, patch
+from .conftest import declare_two_profiles, run_test_worker
+from .providers.conftest import answered
 
 
 def test_get_workspace(client, auth_token, request):
@@ -23,7 +23,7 @@ def test_get_workspace_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_list_conversations_via_workspace(client, auth_token):
+def test_list_conversations_via_workspace(client, auth_token, monkeypatch):
     """GET /api/workspace/conversations returns user's conversations."""
     headers = {"Authorization": f"Bearer {auth_token}"}
 
@@ -32,30 +32,17 @@ def test_list_conversations_via_workspace(client, auth_token):
     assert conv_resp.status_code == 201
     conv_id = conv_resp.json()["id"]
 
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Test response")
-    mock_done = MagicMock()
-    mock_done.choices = []
-
-    with patch("src.openship.chat.llm.chat") as mock_chat:
-        mock_chat.return_value = [mock_chunk, mock_done]
-
-        with patch("src.openship.chat.routes.settings") as mock_settings:
-            mock_settings.openai_api_key = "fake-key"
-            mock_settings.openai_model = "gpt-4o"
-            mock_settings.openai_base_url = "https://api.openai.com/v1"
-
-            with patch("src.openship.chat.llm.settings") as mock_llm_settings:
-                mock_llm_settings.openai_api_key = "fake-key"
-                mock_llm_settings.openai_model = "gpt-4o"
-                mock_llm_settings.openai_base_url = "https://api.openai.com/v1"
-
-                resp = client.post(
-                    f"/api/chat/{conv_id}/messages",
-                    json={"content": "Test message"},
-                    headers=headers,
-                )
+    declare_two_profiles(monkeypatch)
+    answered(monkeypatch, "Test response")
+    worker = run_test_worker()
+    try:
+        resp = client.post(
+            f"/api/chat/{conv_id}/messages",
+            json={"content": "Test message"},
+            headers=headers,
+        )
+    finally:
+        worker.join(timeout=30)
 
     assert resp.status_code == 200
 
@@ -64,8 +51,9 @@ def test_list_conversations_via_workspace(client, auth_token):
     assert response.status_code == 200
     data = response.json()
     assert len(data) >= 1
-    assert data[0]["title"] == "New Conversation"
-    assert data[0]["message_count"] >= 1
+    listed = {row["id"]: row for row in data}
+    assert conv_id in listed, "the conversation the turn belongs to is listed"
+    assert listed[conv_id]["message_count"] >= 1, "the turn's own message is counted"
 
 
 def test_list_conversations_via_workspace_empty(client, auth_token):

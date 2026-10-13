@@ -396,3 +396,14 @@ def serve_counted(monkeypatch, behaviors, counted: int) -> SequenceTransport:
         lambda _profile: CountingAdapter(transport, counted),
     )
     return transport
+
+
+def answered(monkeypatch, *parts) -> StreamTransport:
+    """The installation's provider answers with these text parts, in order.
+
+    A case about the durable pipeline needs an answer that arrives whole; the
+    parts are only what the caller expects to read back.
+    """
+    chunks = [sdk_chunk(content=part) for part in parts]
+    chunks.append(sdk_chunk(finish_reason="stop"))
+    return serve(monkeypatch, chunks)

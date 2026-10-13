@@ -1,4 +1,9 @@
-import type { ChatMessage, Conversation, User } from '@/types'
+import type {
+  ChatMessage,
+  Conversation,
+  ModelProfileCatalog,
+  User,
+} from '@/types'
 
 export const fixtureUser: User = {
   id: 'u1',
@@ -67,12 +72,64 @@ export function apiError(detail: string): Error {
 }
 
 /**
+ * What this test installation offers. Two profiles can answer, one cannot:
+ * the third states why in a safe reason, never with a credential value or a
+ * full endpoint. The default is named, so "no selection" is a claim a reader
+ * can check rather than a guess.
+ */
+export const modelProfileCatalog: ModelProfileCatalog = {
+  default_profile_id: 'primary-fixture',
+  profiles: [
+    {
+      profile_id: 'primary-fixture',
+      label: 'Fixture primary',
+      adapter: 'openai',
+      model: 'primary-model',
+      destination_label: 'fixture.provider.test',
+      capabilities: { context_tokens: 8192, tool_calling: false },
+      available: true,
+      reason: null,
+      explanation: '',
+      allowed_fallback_profile_ids: ['secondary-fixture'],
+    },
+    {
+      profile_id: 'secondary-fixture',
+      label: 'Fixture backup',
+      adapter: 'openai',
+      model: 'backup-model',
+      destination_label: 'backup.provider.test',
+      capabilities: { context_tokens: 4096, tool_calling: false },
+      available: true,
+      reason: null,
+      explanation: '',
+      allowed_fallback_profile_ids: [],
+    },
+    {
+      profile_id: 'offline-fixture',
+      label: 'Fixture offline',
+      adapter: 'openai',
+      model: 'offline-model',
+      destination_label: null,
+      capabilities: { context_tokens: 8192, tool_calling: false },
+      available: false,
+      reason: 'missing_credentials',
+      explanation: 'this profile needs a credential binding this build lacks',
+      allowed_fallback_profile_ids: [],
+    },
+  ],
+}
+
+/**
  * Healthy implementation for the axios instance used by the chat store:
- * serves the conversation list and per-conversation message endpoints.
+ * serves the conversation list, the model-profile catalog, and per-conversation
+ * message endpoints.
  */
 export function healthyChatApiGet(url: string): { data: unknown } {
   if (url === '/workspace/conversations') {
     return { data: fixtureConversations.map((c) => ({ ...c })) }
+  }
+  if (url === '/model-profiles') {
+    return { data: modelProfileCatalog }
   }
   const match = String(url).match(/^\/conversations\/([^/]+)\/messages$/)
   if (match) {

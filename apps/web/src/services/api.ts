@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AuthResponse, Run, Snapshot, TurnSubmitRequest } from '@/types'
+import type { AuthResponse, Run, Snapshot, TurnSubmitRequest, ModelProfileCatalog } from '@/types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -56,6 +56,13 @@ export const runsApi = {
 
   getRun: (runId: string): Promise<{ data: Run }> =>
     api.get(`/runs/${runId}`),
+}
+
+// The installation's own model profiles: what may be selected, and nothing
+// secret. A browser names a profile and never an endpoint, adapter, or
+// credential.
+export const modelProfilesApi = {
+  list: (): Promise<{ data: ModelProfileCatalog }> => api.get('/model-profiles'),
 }
 
 export default api

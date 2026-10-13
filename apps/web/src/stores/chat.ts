@@ -1,12 +1,16 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import api, { runsApi } from '@/services/api'
+import api, { runsApi, modelProfilesApi } from '@/services/api'
 import type {
   ChatMessage,
   Conversation,
   DurableEvent,
+  ErrorSummary,
+  ModelProfileCatalog,
+  Run,
   RunCard,
   Snapshot,
+  TurnSubmitRequest,
 } from '@/types'
 
 // Stable client request ID generation
@@ -28,12 +32,29 @@ export const useChatStore = defineStore('chat', () => {
   // Durable run state
   // Run cards: one per conversation, keyed by conversation ID
   const runCards = ref<Map<string, RunCard>>(new Map())
-  // Pending requests: request_id -> { conversation_id, content }
-  const pendingRequests = ref<Map<string, { conversation_id: string; content: string }>>(new Map())
+  // Pending requests: request_id -> the exact payload that was sent. A retry
+  // replays this payload, so the provider it named travels with it.
+  const pendingRequests = ref<Map<string, { conversation_id: string; payload: TurnSubmitRequest }>>(
+    new Map(),
+  )
   // Applied event IDs (for deduplication)
   const appliedEventIds = ref<Set<string>>(new Set())
   // Cursor per conversation (last committed sequence)
   const cursors = ref<Map<string, number>>(new Map())
+
+  // What this installation offers, and what the next turn will use. A browser
+  // names a profile only: never an endpoint, adapter, or credential.
+  const modelProfiles = ref<ModelProfileCatalog | null>(null)
+  const selectedProfileId = ref<string | null>(null)
+  const selectedFallbackIds = ref<string[]>([])
+  // A missing catalog is stated where the choice is made, not as a page-wide
+  // failure: the installation still answers with its default.
+  const profileError = ref<string | null>(null)
+  // True only while the submit request itself is in flight. The payload — and
+  // with it the provider — is already fixed, so a selection change cannot
+  // land in this turn. A run that already exists keeps its own provider
+  // regardless of what is selected next.
+  const isSubmitting = ref(false)
 
   async function getConversations() {
     try {
@@ -60,6 +81,47 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // --- Provider selection ----------------------------------------------------
+  //
+  // The catalog is what this installation offers right now; a profile is the
+  // only thing a browser may name. Availability is stated with a safe reason,
+  // never with a credential value or an endpoint.
+
+  async function loadModelProfiles(): Promise<void> {
+    profileError.value = null
+    try {
+      const res = await modelProfilesApi.list()
+      modelProfiles.value = res.data as unknown as ModelProfileCatalog
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      // The catalog is gone, so nothing may be claimed about a provider. The
+      // selection stays: an earlier choice is still what the next turn asks
+      // for, and the selector says it can no longer be confirmed.
+      profileError.value =
+        axiosErr.response?.data?.detail ?? 'Failed to load model profiles'
+      modelProfiles.value = null
+    }
+  }
+
+  function selectProfile(profileId: string | null, fallbackIds: string[] = []): void {
+    // A submission already in flight has its payload, and therefore its
+    // provider, fixed. Changing selection here would be a lie about the turn
+    // that is being sent, so it is ignored rather than queued.
+    if (isSubmitting.value) return
+
+    // A fallback is only offered when the chosen profile allows it; anything
+    // else the caller asks for is not this profile's to serve.
+    const chosen = profileId
+      ? (modelProfiles.value?.profiles ?? []).find(
+          (profile) => profile.profile_id === profileId,
+        )
+      : null
+    const allowed = new Set(chosen ? chosen.allowed_fallback_profile_ids : [])
+
+    selectedProfileId.value = profileId
+    selectedFallbackIds.value = fallbackIds.filter((id) => allowed.has(id))
+  }
+
   async function loadConversation(conversationId: string) {
     try {
       // Load snapshot first to rebuild durable state
@@ -76,6 +138,13 @@ export const useChatStore = defineStore('chat', () => {
           -1,
         )
         cursors.value.set(conversationId, Math.max(snapshot.sequence, maxSeq))
+        // A snapshot may be pruned, so its events alone never say what a run
+        // was pinned to or what it reported. The run read does, and it is the
+        // only place that states it — so the card is hydrated from there.
+        const rebuilt = runCards.value.get(conversationId)
+        if (rebuilt?.run_id) {
+          await hydrateRunCard(conversationId, rebuilt.run_id)
+        }
       } catch (snapErr) {
         // Snapshot may not be available yet; fall through to messages
         console.warn('Snapshot unavailable, falling back to messages', snapErr)
@@ -149,7 +218,7 @@ export const useChatStore = defineStore('chat', () => {
         if (!content && clientId) {
           const pending = pendingRequests.value.get(clientId)
           if (pending) {
-            content = pending.content
+            content = pending.payload.content
           }
         }
 
@@ -214,6 +283,12 @@ export const useChatStore = defineStore('chat', () => {
               ended_at: null,
               usage: null,
               error_code: null,
+              error_message: null,
+              // Nothing is known yet: the run read states the provider, and
+              // guessing one here would be a claim about a model nobody was
+              // necessarily asked.
+              model: null,
+              attempts: [],
             }
             runCards.value.set(convId, runCard)
           }
@@ -292,6 +367,29 @@ export const useChatStore = defineStore('chat', () => {
         card.started_at = ts
       }
       runCards.value.set(convId, card)
+    }
+  }
+
+  async function hydrateRunCard(convId: string, runId: string): Promise<void> {
+    if (!runId) return
+    try {
+      const res = await runsApi.getRun(runId)
+      const run = res.data as unknown as Run
+      const card = runCards.value.get(convId)
+      if (!card) return
+      // A run read is authoritative for what it was pinned to and what it
+      // asked. Null stays null: a run from before profiles exists, and
+      // nothing here guesses a provider, a model, or a count for it.
+      card.model = run.model ?? null
+      card.attempts = run.provider_attempts ?? []
+      card.usage = run.usage ?? null
+      const failure: ErrorSummary | null = run.error ?? null
+      card.error_code = failure?.code ?? card.error_code
+      // The safe copy the API settled on, never a provider's own body.
+      card.error_message = failure?.message ?? card.error_message
+      runCards.value.set(convId, card)
+    } catch (err) {
+      console.warn('Failed to hydrate run card from run read', err)
     }
   }
 
@@ -431,10 +529,19 @@ export const useChatStore = defineStore('chat', () => {
       // Generate stable client request UUID
       const requestId = generateRequestId()
 
+      // The payload is captured once, before anything is sent: a retry of a
+      // lost request replays exactly this turn — same words, same provider.
+      const payload: TurnSubmitRequest = {
+        content,
+        client_request_id: requestId,
+        provider_profile_id: selectedProfileId.value,
+        fallback_profile_ids: [...selectedFallbackIds.value],
+      }
+
       // Store pending request (local draft)
       pendingRequests.value.set(requestId, {
         conversation_id: conversationId || '',
-        content,
+        payload,
       })
 
       // Create optimistic user message for immediate UI feedback
@@ -456,6 +563,11 @@ export const useChatStore = defineStore('chat', () => {
           ended_at: null,
           usage: null,
           error_code: null,
+          error_message: null,
+          // What the run was pinned to is stated by the run read, not here:
+          // the request names a profile, and the server decides what runs.
+          model: null,
+          attempts: [],
         }
         runCards.value.set(conversationId, runCard)
       }
@@ -477,10 +589,10 @@ export const useChatStore = defineStore('chat', () => {
 
       let runId = ''
       try {
-        const runRes = await runsApi.submitTurn(effectiveConvId, {
-          content,
-          client_request_id: requestId,
-        })
+        // The submission is now in flight: selection changes are held back
+        // until it lands, because this turn's provider is already fixed.
+        isSubmitting.value = true
+        const runRes = await runsApi.submitTurn(effectiveConvId, payload)
         runId = runRes.data.id
         console.log('STORE: durable run submitted, runId:', runId)
         // Update run card with actual run ID
@@ -494,6 +606,8 @@ export const useChatStore = defineStore('chat', () => {
         error.value = 'Failed to submit message. Please try again.'
         isStreaming.value = false
         return
+      } finally {
+        isSubmitting.value = false
       }
 
       // Subscribe to events and process stream
@@ -531,6 +645,9 @@ export const useChatStore = defineStore('chat', () => {
         } catch (err) {
           console.error('Event stream error', err)
         }
+        // The stream says the turn ended; the run read says what it was
+        // pinned to and what it reported. Events alone never carry that.
+        await hydrateRunCard(convId, runId)
       }
 
       // Clear pending request
@@ -563,6 +680,9 @@ export const useChatStore = defineStore('chat', () => {
               card[1].ended_at = new Date().toISOString()
               runCards.value.set(card[0], card[1])
             }
+            // A cancelled run still says what it was pinned to and what it
+            // asked for, so the card keeps that honest view.
+            await hydrateRunCard(card?.[0] ?? '', runId)
             break
           }
         } catch (err) {
@@ -593,11 +713,18 @@ export const useChatStore = defineStore('chat', () => {
     currentConversation,
     messages,
     isStreaming,
+    isSubmitting,
     error,
     runCards,
     cursors,
+    modelProfiles,
+    profileError,
+    selectedProfileId,
+    selectedFallbackIds,
     getConversations,
     createConversation,
+    loadModelProfiles,
+    selectProfile,
     loadConversation,
     sendMessage,
     cancelRun,

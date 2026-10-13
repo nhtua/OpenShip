@@ -1,9 +1,11 @@
 """Tests for durable run commands: submit_turn, require_owned_conversation, request_cancel."""
 
 import uuid
-from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
+
+from .conftest import declare_two_profiles, run_test_worker
+from .providers.conftest import answered
 
 
 def test_submit_turn_creates_run_and_message(client: TestClient, authorized_client: dict):
@@ -177,45 +179,31 @@ def test_cancel_replay_idempotent(client: TestClient, authorized_client: dict):
     assert cancel2.status_code == 200, f"Replay cancel failed: {cancel2.status_code} {cancel2.text}"
 
 
-def test_old_chat_stream_adapter(client: TestClient, authorized_client: dict):
+def test_old_chat_stream_adapter(client: TestClient, authorized_client: dict, monkeypatch):
     """The old POST /api/chat/{id}/messages stream still works as an adapter."""
-    # Create conversation explicitly first
     conv_resp = client.post("/api/conversations", json={"title": "Test"}, headers=authorized_client)
     assert conv_resp.status_code == 201
     conv_id = conv_resp.json()["id"]
 
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Hello")
-    mock_done = MagicMock()
-    mock_done.choices = []
+    declare_two_profiles(monkeypatch)
+    answered(monkeypatch, "Hello")
+    worker = run_test_worker()
+    try:
+        response = client.post(
+            f"/api/chat/{conv_id}/messages",
+            json={"content": "Old style message"},
+            headers=authorized_client,
+        )
+    finally:
+        worker.join(timeout=30)
 
-    with patch("src.openship.chat.service.chat") as mock_chat:
-        mock_chat.return_value = [mock_chunk, mock_done]
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
 
-        with patch("src.openship.chat.routes.settings") as mock_settings:
-            mock_settings.openai_api_key = "fake-key"
-            mock_settings.openai_model = "gpt-4o"
-            mock_settings.openai_base_url = "https://api.openai.com/v1"
-
-            with patch("src.openship.chat.llm.settings") as mock_llm_settings:
-                mock_llm_settings.openai_api_key = "fake-key"
-                mock_llm_settings.openai_model = "gpt-4o"
-                mock_llm_settings.openai_base_url = "https://api.openai.com/v1"
-
-                response = client.post(
-                    f"/api/chat/{conv_id}/messages",
-                    json={"content": "Old style message"},
-                    headers=authorized_client,
-                )
-
-                assert response.status_code == 200
-                assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
-
-                # Parse SSE events
-                text = response.text
-                events = [
-                    line for line in text.strip().split("\n") if line.startswith("data:")
-                ]
-                assert any("Hello" in e for e in events)
-                assert any("[DONE]" in e for e in events)
+    # Parse SSE events
+    text = response.text
+    events = [
+        line for line in text.strip().split("\n") if line.startswith("data:")
+    ]
+    assert any("Hello" in e for e in events)
+    assert any("[DONE]" in e for e in events)

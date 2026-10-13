@@ -1,17 +1,19 @@
 import { describe, it, expect, beforeEach, vi, Mock } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useChatStore } from '@/stores/chat'
-import api, { runsApi } from '@/services/api'
+import api, { modelProfilesApi, runsApi } from '@/services/api'
 import {
   apiError,
   fixtureConversations,
   healthyChatApiGet,
   messagesByConversation,
+  modelProfileCatalog,
 } from './helpers/chatFixtures'
 
 vi.mock('@/services/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
   authApi: { login: vi.fn(), register: vi.fn(), logout: vi.fn() },
+  modelProfilesApi: { list: vi.fn() },
   runsApi: {
     submitTurn: vi.fn(),
     cancelRun: vi.fn(),
@@ -21,7 +23,44 @@ vi.mock('@/services/api', () => ({
 }))
 
 const mockApi = vi.mocked(api)
+const mockProfiles = vi.mocked(modelProfilesApi)
 const mockRunsApi = vi.mocked(runsApi)
+
+// A stream that ends with a terminal event, so snapshot recovery is never
+// what a provider-selection case is about.
+function serveStream(...frames: string[]) {
+  const encoder = new TextEncoder()
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+    ok: true,
+    status: 200,
+    body: new ReadableStream({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame))
+        controller.close()
+      },
+    }),
+  } as Response)
+}
+
+function frame(
+  sequence: number,
+  type: string,
+  runId: string,
+  payload: Record<string, unknown> = {},
+): string {
+  const event = {
+    id: `evt-${sequence}`,
+    conversation_id: 'c1',
+    run_id: runId,
+    sequence,
+    type,
+    payload,
+    created_at: '',
+  }
+  // A real frame names the event type in its own field: that is what lets a
+  // reader stop when the turn ends rather than wait for a closed stream.
+  return `id: evt-${sequence}\nevent: ${type}\ndata: ${JSON.stringify(event)}\n\n`
+}
 
 describe('chat store', () => {
   beforeEach(() => {
@@ -33,6 +72,9 @@ describe('chat store', () => {
       (async (url: string) => healthyChatApiGet(url)) as never,
     )
     mockApi.post.mockResolvedValue({ data: null })
+    // What this installation offers. A test that wants a missing catalog
+    // replaces this; nothing here guesses a profile in its place.
+    mockProfiles.list.mockResolvedValue({ data: modelProfileCatalog })
   })
 
   it('loadConversationKeepsKnownTitle', async () => {
@@ -115,11 +157,18 @@ describe('chat store', () => {
 
     await chat.sendMessage('Hello', 'c1')
 
-    // Verify the run command was posted with a client_request_id
-    expect(mockRunsApi.submitTurn).toHaveBeenCalledWith('c1', {
-      content: 'Hello',
-      client_request_id: mockUuid,
-    })
+    // Verify the run command was posted with a client_request_id. Naming no
+    // profile is what lets this installation's default answer; the browser
+    // never names an endpoint, an adapter, or a credential.
+    expect(mockRunsApi.submitTurn).toHaveBeenCalledWith(
+      'c1',
+      expect.objectContaining({
+        content: 'Hello',
+        client_request_id: mockUuid,
+        provider_profile_id: null,
+        fallback_profile_ids: [],
+      }),
+    )
 
     // Verify user message was stored with server-assigned ID (after run response)
     // The store should have a pending draft that gets resolved
@@ -622,5 +671,252 @@ describe('chat store', () => {
     // Run card should show running (not completed)
     expect(chat.runCards.get('c1')?.status).toBe('running')
     expect(chat.cursors.get('c1')).toBe(1)
+  })
+
+  it('offers the profiles this installation can answer with', async () => {
+    const chat = useChatStore()
+    await chat.loadModelProfiles()
+
+    // The default is named, so "no selection" is a claim a reader can check.
+    expect(chat.modelProfiles?.default_profile_id).toBe('primary-fixture')
+    expect(chat.modelProfiles?.profiles).toHaveLength(3)
+
+    const offline = chat.modelProfiles?.profiles.find(
+      (profile) => profile.profile_id === 'offline-fixture',
+    )
+    // One cannot answer, and says why in a safe reason rather than being
+    // hidden.
+    expect(offline?.available).toBe(false)
+    expect(offline?.reason).toBe('missing_credentials')
+    // No credential value and no endpoint ever crosses to the browser.
+    expect(
+      chat.modelProfiles?.profiles.some((profile) => !profile.destination_label),
+    ).toBe(true)
+  })
+
+  it('states a missing catalog where the choice is made', async () => {
+    mockProfiles.list.mockImplementation(() => {
+      throw apiError('catalog unavailable')
+    })
+    const chat = useChatStore()
+    await chat.loadModelProfiles()
+
+    expect(chat.modelProfiles).toBeNull()
+    // A missing catalog is stated beside the choice, not as a page-wide
+    // failure: the installation still answers with its default.
+    expect(chat.profileError).toBe('catalog unavailable')
+    expect(chat.error).toBeNull()
+    // Nothing is claimed about a provider that could not be read.
+    expect(chat.selectedProfileId).toBeNull()
+  })
+
+  it('switching profile affects only the next turn', async () => {
+    const chat = useChatStore()
+    await chat.loadModelProfiles()
+    chat.selectProfile('secondary-fixture', [])
+
+    mockRunsApi.submitTurn.mockResolvedValue({
+      data: {
+        id: 'run-switch-1',
+        conversation_id: 'c1',
+        status: 'queued',
+        created_at: '',
+        attempt: 0,
+      },
+    })
+    serveStream(frame(0, 'run.succeeded', 'run-switch-1', { message_id: 'msg-1' }))
+
+    await chat.sendMessage('Hello', 'c1')
+
+    expect(mockRunsApi.submitTurn).toHaveBeenCalledWith(
+      'c1',
+      expect.objectContaining({ provider_profile_id: 'secondary-fixture' }),
+    )
+  })
+
+  it('keeps a pending run on the provider it was submitted with', async () => {
+    const chat = useChatStore()
+    await chat.loadModelProfiles()
+    chat.selectProfile('primary-fixture', [])
+
+    mockRunsApi.submitTurn.mockResolvedValue({
+      data: {
+        id: 'run-pin-1',
+        conversation_id: 'c1',
+        status: 'queued',
+        created_at: '',
+        attempt: 0,
+      },
+    })
+    // The run read states what this run was pinned to — the primary.
+    mockRunsApi.getRun.mockResolvedValue({
+      data: {
+        id: 'run-pin-1',
+        conversation_id: 'c1',
+        status: 'completed',
+        created_at: '',
+        attempt: 0,
+        model: {
+          profile_id: 'primary-fixture',
+          label: 'Fixture primary',
+          adapter: 'openai',
+          requested_model: 'primary-model',
+          actual_model: null,
+          destination_label: 'fixture.provider.test',
+          fallback_profile_ids: ['secondary-fixture'],
+          recorded: true,
+        },
+      },
+    })
+    serveStream(frame(0, 'run.succeeded', 'run-pin-1', { message_id: 'msg-1' }))
+
+    await chat.sendMessage('Hello', 'c1')
+
+    // Changing selection now is about the next turn, never this run.
+    chat.selectProfile('secondary-fixture', [])
+    expect(chat.selectedProfileId).toBe('secondary-fixture')
+
+    // The card still states the run's own provider.
+    expect(chat.runCards.get('c1')?.model?.profile_id).toBe('primary-fixture')
+  })
+
+  it('does not accept a fallback the chosen profile does not allow', async () => {
+    const chat = useChatStore()
+    await chat.loadModelProfiles()
+
+    // The backup allows none, so asking for one is not this profile's to
+    // promise.
+    chat.selectProfile('secondary-fixture', ['primary-fixture'])
+    expect(chat.selectedFallbackIds).toEqual([])
+
+    // The primary does allow it.
+    chat.selectProfile('primary-fixture', ['secondary-fixture'])
+    expect(chat.selectedFallbackIds).toEqual(['secondary-fixture'])
+  })
+
+  it('keeps the captured payload when selection changes before submission', async () => {
+    const chat = useChatStore()
+    await chat.loadModelProfiles()
+    chat.selectProfile('primary-fixture', [])
+
+    // The conversation is made between capture and submission, so a click in
+    // the selector can land in that window. The turn already has its
+    // provider, so the payload must not change.
+    mockApi.post.mockImplementation(async (url: string) => {
+      if (url === '/conversations') {
+        chat.selectProfile('secondary-fixture', [])
+        return {
+          data: {
+            id: 'c-new',
+            title: 'New Conversation',
+            created_at: '',
+            updated_at: '',
+          },
+        }
+      }
+      return { data: null }
+    })
+    mockRunsApi.submitTurn.mockResolvedValue({
+      data: {
+        id: 'run-captured-1',
+        conversation_id: 'c-new',
+        status: 'queued',
+        created_at: '',
+        attempt: 0,
+      },
+    })
+    serveStream(
+      frame(0, 'run.succeeded', 'run-captured-1', { message_id: 'msg-1' }),
+    )
+
+    await chat.sendMessage('Hello', null)
+
+    expect(mockRunsApi.submitTurn).toHaveBeenCalledWith(
+      'c-new',
+      expect.objectContaining({ provider_profile_id: 'primary-fixture' }),
+    )
+  })
+
+  it('rebuilds provider, usage, and failure from a pruned snapshot', async () => {
+    // Only the submission survives: the events alone never say what a run
+    // was pinned to or what it reported.
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1',
+        sequence: 0,
+        events: [
+          {
+            id: 'evt-1',
+            conversation_id: 'c1',
+            run_id: 'run-pruned-1',
+            sequence: 0,
+            type: 'turn_submitted',
+            payload: { content: 'Hello', client_request_id: 'req-1' },
+            created_at: '',
+          },
+        ],
+      },
+    })
+    mockRunsApi.getRun.mockResolvedValue({
+      data: {
+        id: 'run-pruned-1',
+        conversation_id: 'c1',
+        status: 'failed',
+        created_at: '',
+        attempt: 1,
+        model: {
+          profile_id: 'primary-fixture',
+          label: 'Fixture primary',
+          adapter: 'openai',
+          requested_model: 'primary-model',
+          actual_model: null,
+          destination_label: 'fixture.provider.test',
+          fallback_profile_ids: ['secondary-fixture'],
+          recorded: true,
+        },
+        usage: {
+          input_tokens: 150,
+          output_tokens: null,
+          total_tokens: null,
+          cached_input_tokens: null,
+          reasoning_tokens: null,
+          source: null,
+        },
+        error: {
+          code: 'output_limit_exceeded',
+          message: 'The answer hit the limit set for this profile.',
+          retry_after_seconds: null,
+        },
+        provider_attempts: [
+          {
+            ordinal: 1,
+            profile_id: 'primary-fixture',
+            adapter: 'openai',
+            requested_model: 'primary-model',
+            actual_model: null,
+            destination_label: null,
+            outcome: 'length',
+            error_code: 'output_limit_exceeded',
+            usage: null,
+            started_at: null,
+            ended_at: null,
+          },
+        ],
+      },
+    })
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+
+    const card = chat.runCards.get('c1')
+    expect(card?.model?.profile_id).toBe('primary-fixture')
+    // Missing stays missing: only what the provider reported is rebuilt.
+    expect(card?.usage?.input_tokens).toBe(150)
+    expect(card?.usage?.total_tokens).toBeNull()
+    expect(card?.error_code).toBe('output_limit_exceeded')
+    expect(card?.error_message).toBe(
+      'The answer hit the limit set for this profile.',
+    )
+    expect(card?.attempts).toHaveLength(1)
   })
 })

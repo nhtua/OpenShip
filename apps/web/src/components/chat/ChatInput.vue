@@ -1,17 +1,45 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref, watch } from 'vue'
 import { Button, Icon, Label, Textarea } from '@/components/ui'
+import ProviderSelector from '@/components/ProviderSelector.vue'
+import type { ModelProfileItem } from '@/types'
 
-const props = withDefaults(defineProps<{ disabled?: boolean }>(), {
+// The composer's send control is disabled while a turn is being answered;
+// the profile control is held back only while a submission is in flight,
+// because that turn's provider is already fixed.
+interface Props {
+  disabled?: boolean
+  profiles: ModelProfileItem[]
+  defaultProfileId: string | null
+  selectedProfileId: string | null
+  fallbackIds: string[]
+  catalogError: string | null
+  selectionDisabled: boolean
+}
+
+const props = withDefaults(defineProps<Props>(), {
   disabled: false,
+  profiles: () => [],
+  defaultProfileId: null,
+  selectedProfileId: null,
+  fallbackIds: () => [],
+  catalogError: null,
+  selectionDisabled: false,
 })
 
 const emit = defineEmits<{
   send: [content: string]
+  select: [profileId: string | null, fallbackIds: string[]]
 }>()
 
 const content = ref('')
 const textareaRef = ref<InstanceType<typeof Textarea> | null>(null)
+
+// The selector owns the controls; the composer only passes a choice on, so
+// one place — the store — decides what the next turn will use.
+function forwardSelect(profileId: string | null, fallbackIds: string[]) {
+  emit('select', profileId, fallbackIds)
+}
 
 // Focus input on mount so user can start typing immediately
 onMounted(() => {
@@ -72,6 +100,17 @@ function handleKeydown(event: KeyboardEvent) {
     data-testid="composer"
     @submit.prevent="handleSend"
   >
+    <!-- The profile a next turn answers with belongs to the same decision
+         about what is about to be sent, so it lives with the composer. -->
+    <ProviderSelector
+      :profiles="props.profiles"
+      :default-profile-id="props.defaultProfileId"
+      :selected-profile-id="props.selectedProfileId"
+      :fallback-ids="props.fallbackIds"
+      :catalog-error="props.catalogError"
+      :change-disabled="props.selectionDisabled"
+      @select="forwardSelect"
+    />
     <div class="flex items-end gap-3">
       <div class="min-w-0 flex-1">
         <Label for="message" class="sr-only">Message</Label>

@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from .auth.routes import router as auth_router
 from .chat.routes import router as chat_router
 from .events.routes import router as events_router
+from .providers.routes import router as providers_router
 from .runs.routes import router as runs_router
 from .workspace.routes import router as workspace_router
 
@@ -34,6 +35,7 @@ app.include_router(chat_router)
 app.include_router(runs_router)
 app.include_router(workspace_router)
 app.include_router(events_router)
+app.include_router(providers_router)
 
 
 @app.get("/health")
