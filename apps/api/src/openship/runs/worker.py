@@ -129,14 +129,24 @@ class Worker:
         else:
             try:
                 from langgraph.checkpoint.postgres import PostgresSaver
+                from psycopg.conninfo import make_conninfo
 
                 # from_conn_string takes only the connection string: the pool
                 # keyword arguments this installation once passed are not part
                 # of the saver's API, and passing them left every worker
                 # without a checkpointer at all.
-                self._checkpointer_ctx = PostgresSaver.from_conn_string(
-                    settings.database_url
-                )
+                # psycopg accepts a PostgreSQL URI, not SQLAlchemy's
+                # postgresql+psycopg / postgresql+psycopg2 driver scheme.
+                # Build libpq connection info from parsed fields so query
+                # options and credentials keep their original encoding.
+                checkpoint_url = settings.database_url
+                if self.engine.dialect.name == "postgresql":
+                    connection_fields = self.engine.url.translate_connect_args(
+                        username="user", database="dbname"
+                    )
+                    connection_fields.update(self.engine.url.query)
+                    checkpoint_url = make_conninfo(**connection_fields)
+                self._checkpointer_ctx = PostgresSaver.from_conn_string(checkpoint_url)
                 self.checkpointer = self._checkpointer_ctx.__enter__()
                 # The saver's tables are what make a thread resumable; without
                 # this the graph silently has nowhere to write a checkpoint.

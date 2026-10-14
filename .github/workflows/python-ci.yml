@@ -72,6 +72,7 @@ jobs:
   # cannot wait for each other's locks.
   api-postgres:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -88,7 +89,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U openship -d lane"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -102,13 +103,34 @@ jobs:
       # Selecting the marker is not enough: a job that skipped every case
       # would be green without proving anything, so the summary is checked.
       - name: Run the PostgreSQL lane
+        timeout-minutes: 10
         shell: bash
         env:
           # The service exists only for this job; tests create isolated lane
           # databases from this local connection.
           TEST_POSTGRES_URL: postgresql+psycopg://openship@localhost:5432/lane
+          PYTHONUNBUFFERED: "1"
         run: |
           cd apps/api
           set -o pipefail
-          uv run pytest -q -m postgres tests/integration/test_provider_pinning_migration.py tests/integration/test_provider_worker_postgres.py | tee /tmp/pg-lane.log
+          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/pg-lane.xml -m postgres tests/integration/test_provider_pinning_migration.py tests/integration/test_provider_worker_postgres.py 2>&1 | tee /tmp/pg-lane.log
           ! grep -q skipped /tmp/pg-lane.log
+      - name: Report PostgreSQL waits on failure
+        if: failure()
+        env:
+          PGCONNECT_TIMEOUT: "5"
+          PGOPTIONS: "-c statement_timeout=10000"
+        run: >-
+          psql postgresql://openship@localhost:5432/lane -c
+          "SELECT datname, pid, state, wait_event_type, wait_event,
+          pg_blocking_pids(pid) AS blockers, query FROM pg_stat_activity
+          WHERE backend_type = 'client backend' AND pid <> pg_backend_pid();"
+      - name: Upload PostgreSQL lane results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-postgres-${{ matrix.python-version }}
+          path: |
+            /tmp/pg-lane.log
+            /tmp/pg-lane.xml
+          if-no-files-found: ignore

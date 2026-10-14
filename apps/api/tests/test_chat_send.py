@@ -81,13 +81,19 @@ def test_send_message_unauthorized(client: TestClient):
     assert data["error"]["code"] == "unauthorized"
 
 
-def test_send_message_missing_api_key(client: TestClient, authorized_client: dict, monkeypatch):
+def test_send_message_missing_api_key(
+    client: TestClient, authorized_client: dict, monkeypatch, tmp_path
+):
     """An installation whose credential binding is absent says so, and queues nothing."""
     conv_resp = client.post("/api/conversations", json={"title": "Test"}, headers=authorized_client)
     assert conv_resp.status_code == 201
     conv_id = conv_resp.json()["id"]
 
     # The legacy installation names the binding it needs; no value is ever read.
+    # A developer's profile or .env must not supply a different credential.
+    monkeypatch.setattr("src.openship.config.settings.model_profiles_json", "")
+    monkeypatch.setattr("src.openship.config.settings.model_default_profile_id", "")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     response = client.post(

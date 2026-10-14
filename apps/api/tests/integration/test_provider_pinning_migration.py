@@ -17,6 +17,9 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import MetaData, create_engine, text
+from sqlalchemy.pool import NullPool
+
+from tests.integration.postgres import bounded_postgres_url
 
 PHASE2_HEAD = "ghi789"
 
@@ -40,7 +43,12 @@ def database_url(request, tmp_path):
             "no TEST_POSTGRES_URL; the PostgreSQL lane is opt-in and SQLite "
             "is not substituted for it"
         )
-    return url
+    return bounded_postgres_url(url)
+
+
+def _engine(url: str):
+    """Release each connection rather than leaving a per-helper pool behind."""
+    return create_engine(url, poolclass=NullPool)
 
 
 def _alembic(ini_path: Path, *args: str) -> subprocess.CompletedProcess:
@@ -82,7 +90,7 @@ def alembic_ini(database_url, tmp_path):
     ini_path.write_text(
         f"""[alembic]
 script_location = {script_dir}
-sqlalchemy.url = {database_url}
+sqlalchemy.url = {database_url.replace('%', '%%')}
 
 [loggers]
 keys = root,sqlalchemy,alembic
@@ -125,7 +133,7 @@ datefmt = %H:%M:%S
 def phase2_db(database_url, alembic_ini):
     """A database at Phase 2, empty, ready for one test to fill."""
     _upgrade(alembic_ini, "head")
-    with create_engine(database_url).connect() as conn:
+    with _engine(database_url).connect() as conn:
         for table in ("provider_attempts", "messages", "runs", "conversations", "projects", "users"):
             conn.execute(text(f"DELETE FROM {table}"))
         conn.commit()
@@ -137,7 +145,7 @@ def phase2_db(database_url, alembic_ini):
 def _tables(url: str):
     """The database's current tables, by name."""
     metadata = MetaData()
-    metadata.reflect(bind=create_engine(url))
+    metadata.reflect(bind=_engine(url))
     return metadata.tables
 
 
@@ -151,7 +159,7 @@ def _seed_phase2_rows(url: str) -> dict:
     ids = {name: str(uuidlib.uuid4()) for name in ("user", "project")}
     turns = {status: str(uuidlib.uuid4()) for status in ("completed", "queued", "running")}
 
-    with create_engine(url).connect() as conn:
+    with _engine(url).connect() as conn:
         conn.execute(
             text(
                 "INSERT INTO users (id, username, email, password_hash) "
@@ -211,7 +219,7 @@ def _seed_phase2_rows(url: str) -> dict:
 
 def _record_an_attempt(url: str, run_id: str, ordinal: int) -> None:
     """One attempt, as a worker would have recorded it."""
-    with create_engine(url).connect() as conn:
+    with _engine(url).connect() as conn:
         conn.execute(
             text(
                 "INSERT INTO provider_attempts (id, run_id, ordinal, fence, profile_id, "
@@ -242,7 +250,7 @@ def test_upgrade_preserves_phase2_rows(phase2_db, alembic_ini):
     _upgrade(alembic_ini, "head")
 
     tables = _tables(phase2_db)
-    with create_engine(phase2_db).connect() as conn:
+    with _engine(phase2_db).connect() as conn:
         runs = conn.execute(tables["runs"].select()).fetchall()
         assert len(runs) == 3
         assert {run.status for run in runs} == {"completed", "queued", "running"}
@@ -261,7 +269,7 @@ def test_upgrade_invents_no_provider_for_historical_runs(phase2_db, alembic_ini)
     for column in ("model_selection", "model_configuration"):
         assert column in tables["runs"].columns, f"{column} was not added to runs"
 
-    with create_engine(phase2_db).connect() as conn:
+    with _engine(phase2_db).connect() as conn:
         for run in conn.execute(tables["runs"].select()):
             assert run.model_configuration is None, "a historical run was given a provider"
         assert len(conn.execute(tables["provider_attempts"].select()).fetchall()) == 0
@@ -280,7 +288,7 @@ def test_downgrade_refuses_while_phase3_data_exists(phase2_db, alembic_ini):
     assert "refusing to downgrade" in result.stderr
 
     tables = _tables(phase2_db)
-    with create_engine(phase2_db).connect() as conn:
+    with _engine(phase2_db).connect() as conn:
         assert len(conn.execute(tables["runs"].select()).fetchall()) == 3
         assert len(conn.execute(tables["provider_attempts"].select()).fetchall()) == 1
 

@@ -1,7 +1,6 @@
-# ruff: noqa: BLE001, S110, S112
-# Two probes whose answer is "not there yet": a lane database that does not
-# exist, and a table this installation does not have. Both are expected, and
-# a later case reads what this one skipped.
+# ruff: noqa: BLE001, S112
+# Checkpoint inspection probes tables this installation may not have yet;
+# cancellation thread errors are collected and asserted in the main thread.
 """The durable pipeline's durability, on a real PostgreSQL database.
 
 What the SQLite unit lane cannot show: PostgreSQL's ``FOR UPDATE SKIP LOCKED``
@@ -55,6 +54,7 @@ from tests.conftest import (
     SENTINEL_CREDENTIAL,
     profile_spec,
 )
+from tests.integration.postgres import bounded_postgres_url
 from tests.providers.conftest import (
     BlockingTransport,
     HTTPTransport,
@@ -136,17 +136,17 @@ def _fresh_lane_database(service_url: str) -> str:
     engine = create_engine(service_url).execution_options(
         isolation_level="AUTOCOMMIT"
     )
-    with engine.connect() as conn:
-        try:
-            conn.execute(sa_text(f"DROP DATABASE {_LANE_DATABASE}"))
-        except Exception:
-            pass  # the database does not exist yet
-        conn.execute(sa_text(f"CREATE DATABASE {_LANE_DATABASE}"))
+    try:
+        with engine.connect() as conn:
+            conn.execute(sa_text(f"DROP DATABASE IF EXISTS {_LANE_DATABASE}"))
+            conn.execute(sa_text(f"CREATE DATABASE {_LANE_DATABASE}"))
+    finally:
+        engine.dispose()
     return lane_url
 
 
 @pytest.fixture(scope="module")
-def postgres_lane():
+def postgres_lane(tmp_path_factory):
     """A PostgreSQL database at the current schema, and settings that name it.
 
     The chain is built with alembic rather than from the ORM, because what a
@@ -165,14 +165,14 @@ def postgres_lane():
             "is not substituted for it"
         )
 
-    url = _fresh_lane_database(service_url)
+    url = _fresh_lane_database(bounded_postgres_url(service_url))
 
     api_root = Path(__file__).parents[2]
-    ini_path = api_root / "alembic" / "lane-alembic.ini"
+    ini_path = tmp_path_factory.mktemp("provider-worker-pg") / "alembic.ini"
     ini_path.write_text(
         f"""[alembic]
 script_location = {api_root / 'alembic'}
-sqlalchemy.url = {url}
+sqlalchemy.url = {url.replace('%', '%%')}
 
 [loggers]
 keys = root,sqlalchemy,alembic
@@ -229,15 +229,26 @@ def postgres_session_factory(postgres_lane):
     the two and would otherwise leave a worker checkpointing to SQLite.
     """
     engine = create_engine(postgres_lane)
-    with engine.connect() as conn:
-        for table in _EMPTY_TABLES:
-            conn.execute(sa_text(f"DELETE FROM {table}"))
-        conn.commit()
+    sessions = []
+    factory = sessionmaker(bind=engine)
+
+    def tracked_session():
+        session = factory()
+        sessions.append(session)
+        return session
 
     previous = settings.database_url
-    settings.database_url = postgres_lane
-    yield sessionmaker(bind=engine)
-    settings.database_url = previous
+    try:
+        with engine.begin() as conn:
+            for table in _EMPTY_TABLES:
+                conn.execute(sa_text(f"DELETE FROM {table}"))
+        settings.database_url = postgres_lane
+        yield tracked_session
+    finally:
+        for session in sessions:
+            session.close()
+        engine.dispose()
+        settings.database_url = previous
 
 
 @pytest.fixture
@@ -370,7 +381,14 @@ def _process(db, claim, session_factory, checkpointer=_INSTALLATION):
         session_factory=session_factory,
         checkpointer=checkpointer,
     )
-    return worker.process_job(claim)
+    try:
+        if checkpointer is _INSTALLATION:
+            assert worker.checkpointer is not None, "PostgreSQL checkpoint initialization failed"
+        return worker.process_job(claim)
+    finally:
+        if worker._checkpointer_ctx is not None:
+            worker._checkpointer_ctx.__exit__(None, None, None)
+        worker.engine.dispose()
 
 
 def _attempt_rows(db, run_id):
@@ -379,6 +397,25 @@ def _attempt_rows(db, run_id):
 
 def _assistant(db, run_id):
     return db.query(Message).filter(Message.run_id == run_id, Message.role == "assistant").all()
+
+
+def test_session_factory_teardown_releases_open_transactions(postgres_lane):
+    """A case leaving a transaction open must not lock the next case out."""
+    fixture = postgres_session_factory.__wrapped__(postgres_lane)
+    factory = next(fixture)
+    abandoned = factory()
+    probe = create_engine(postgres_lane)
+    try:
+        abandoned.execute(sa_text("SELECT pg_advisory_xact_lock(8675309)"))
+        fixture.close()
+        with probe.begin() as conn:
+            assert conn.execute(
+                sa_text("SELECT pg_try_advisory_xact_lock(8675309)")
+            ).scalar_one(), "fixture teardown left a transaction holding its lock"
+    finally:
+        fixture.close()
+        abandoned.close()
+        probe.dispose()
 
 
 # --- A queued run keeps what it was pinned to ----------------------------------
@@ -691,21 +728,35 @@ def test_a_cancel_the_owner_asked_stops_a_running_turn(installation, monkeypatch
         _adapter_factories, "openai", lambda _profile: make_adapter("openai", transport)
     )
 
+    user_id, run_id = queued["user"].id, queued["run"].id
+    done = threading.Event()
+    errors = []
+
     def _ask_once_blocked():
         # The owner asks only once the read is blocked, which is the state the
         # claim is about. Nothing here hands a stop signal to the worker.
+        deadline = time.monotonic() + 5
         while transport.requests == 0:
-            time.sleep(0.01)
-        with installation() as session:
-            request_cancel(
-                session, user_id=queued["user"].id, run_id=str(queued["run"].id)
-            )
+            if done.wait(0.01) or time.monotonic() >= deadline:
+                errors.append("the worker never started the provider request")
+                return
+        try:
+            with installation() as session:
+                request_cancel(session, user_id=user_id, run_id=str(run_id))
+        except Exception as error:
+            errors.append(error)
 
     started = time.monotonic()
-    asker = threading.Thread(target=_ask_once_blocked)
+    asker = threading.Thread(target=_ask_once_blocked, daemon=True)
     asker.start()
-    _process(db, claim, installation)
-    asker.join()
+    try:
+        _process(db, claim, installation)
+    finally:
+        done.set()
+        asker.join(timeout=6)
+
+    assert not asker.is_alive(), "cancellation thread did not finish"
+    assert not errors, errors
 
     assert transport.closed is True, "the ask must close the read it started"
     assert transport.requests == 1, "the ask interrupts the read, it does not restart it"
@@ -767,7 +818,11 @@ def test_checkpoint_is_secret_free(completed_run):
     profile the run pinned, because a resumed thread has to run the model it
     pinned rather than today's default.
     """
-    written = _checkpoint_text(create_engine(settings.database_url))
+    engine = create_engine(settings.database_url)
+    try:
+        written = _checkpoint_text(engine)
+    finally:
+        engine.dispose()
     assert written, "an executed run leaves a checkpoint behind"
     assert SENTINEL_CREDENTIAL not in written, "a credential reached a checkpoint"
     assert "primary-fixture" in written, (
