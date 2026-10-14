@@ -300,6 +300,8 @@ class GoogleAdapter:
                             # Only a text part is an answer. A thought is the
                             # model's own work, and a predicted call is the
                             # harness's to run: neither is answer text.
+                            if getattr(part, "thought", False):
+                                continue
                             text = getattr(part, "text", None)
                             if text:
                                 produced_text = True
@@ -393,10 +395,18 @@ class GoogleAdapter:
                 ),
             )
         control.raise_if_stopped()
+        timeout = control.request_timeout_seconds(config.limits.request_timeout_seconds)
+        if timeout <= 0:
+            raise ProviderError("budget_exceeded")
         client = self._client(config)
         system, contents = _system_and_contents(request)
 
-        config_fields = {}
+        config_fields = {
+            "http_options": types.HttpOptions(
+                timeout=max(1, int(timeout * 1000)),
+                retry_options=types.HttpRetryOptions(attempts=1),
+            )
+        }
         if system is not None:
             config_fields["system_instruction"] = system
         kwargs = {"model": config.model, "contents": contents}

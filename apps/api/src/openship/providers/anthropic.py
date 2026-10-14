@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from anthropic import (
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
     AsyncAnthropic,
     AuthenticationError,
@@ -60,6 +61,7 @@ _SDK_ERRORS = (
     BadRequestError,
     OverloadedError,
     RateLimitError,
+    APIStatusError,
 )
 
 
@@ -116,6 +118,18 @@ def _sdk_failure(error: BaseException) -> ProviderError | None:
         return ProviderError("authentication_error", cause=error)
     if isinstance(error, BadRequestError):
         return ProviderError("invalid_request", cause=error)
+    if isinstance(error, APIStatusError):
+        status = error.status_code
+        if 300 <= status < 400:
+            return ProviderError(
+                "configuration_error",
+                safe_message="the model endpoint redirected to another destination; update its configured endpoint",
+                cause=error,
+            )
+        if 500 <= status < 600:
+            return ProviderError("provider_unavailable", cause=error)
+        if 400 <= status < 500:
+            return ProviderError("invalid_request", cause=error)
     return None
 
 
@@ -152,12 +166,14 @@ class AnthropicAdapter:
                     "for this installation; choose another profile"
                 ),
             )
-        return AsyncAnthropic(
+        client = AsyncAnthropic(
             api_key=api_key,
             base_url=config.endpoint,
             timeout=config.limits.request_timeout_seconds,
             max_retries=0,
         )
+        client._client.follow_redirects = False
+        return client
 
     def _client(self, config):
         return (self._client_factory or self.build_client)(config)
@@ -181,6 +197,15 @@ class AnthropicAdapter:
             stream = await client.messages.create(**kwargs)
         except _SDK_ERRORS as error:
             raise _sdk_failure(error) from error
+
+        response = getattr(stream, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None and 300 <= status_code < 400:
+            await response.aclose()
+            raise ProviderError(
+                "configuration_error",
+                safe_message="the model endpoint redirected to another destination; update its configured endpoint",
+            )
 
         input_tokens: int | None = None
         output_tokens: int | None = None
@@ -300,10 +325,13 @@ class AnthropicAdapter:
                 ),
             )
         control.raise_if_stopped()
+        timeout = control.request_timeout_seconds(config.limits.request_timeout_seconds)
+        if timeout <= 0:
+            raise ProviderError("budget_exceeded")
         client = self._client(config)
         system, history = _system_and_history(request)
 
-        kwargs = {"model": config.model, "messages": history}
+        kwargs = {"model": config.model, "messages": history, "timeout": timeout}
         if system is not None:
             kwargs["system"] = system
         try:

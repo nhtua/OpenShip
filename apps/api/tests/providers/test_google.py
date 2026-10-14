@@ -160,6 +160,35 @@ async def test_only_text_parts_become_the_answer():
 
 
 @pytest.mark.asyncio
+async def test_actual_google_thought_part_text_is_not_answer_text():
+    """SDK Parts carry thought text in `text` as well as `thought=True`."""
+    from google.genai import types
+
+    case = adapter_case(
+        adapter="google",
+        chunks=[
+            google_response(
+                candidates=[
+                    google_candidate(
+                        parts=[
+                            types.Part(text="private deliberation", thought=True),
+                            types.Part(text="public answer"),
+                        ]
+                    )
+                ]
+            ),
+            google_response(candidates=[google_candidate(finish=FinishReason.STOP)]),
+        ],
+    )
+
+    events, failure = await drain(
+        case.adapter, conversation(("user", "hi")), case.profile, control()
+    )
+    assert failure is None
+    assert "".join(e.text for e in events if e.type == "text_delta") == "public answer"
+
+
+@pytest.mark.asyncio
 async def test_the_counts_are_the_ones_the_provider_last_stated():
     """Repeated snapshots are replaced; this API's own total is kept."""
     case = adapter_case(
@@ -394,11 +423,15 @@ async def test_counting_asks_the_providers_own_counter():
     adapter = GoogleAdapter(client_factory=lambda _config: client)
     request = conversation(("system", "Be brief."), ("user", "count this"))
 
-    counted = await adapter.count_input_tokens(request, _counting_profile(), control())
+    counted = await adapter.count_input_tokens(
+        request, _counting_profile(), control(remaining=5.0)
+    )
 
     assert counted == 123
     assert client.asked[0]["config"].system_instruction == "Be brief."
     assert [content.role for content in client.asked[0]["contents"]] == ["user"]
+    assert client.asked[0]["config"].http_options.timeout == 5000
+    assert client.asked[0]["config"].http_options.retry_options.attempts == 1
 
 
 @pytest.mark.asyncio

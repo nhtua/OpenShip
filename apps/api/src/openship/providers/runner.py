@@ -127,7 +127,7 @@ async def _reserve(
     if limits.max_total_tokens is None and limits.max_cost_usd is None:
         return None
 
-    counted = await adapter.count_input_tokens(request, profile, control)
+    counted = await _supervised(adapter.count_input_tokens(request, profile, control), control)
     bound = counted + request.max_output_tokens
 
     if limits.max_total_tokens is not None and spent.tokens + bound * attempts_left > (
@@ -178,16 +178,50 @@ async def _drain(stream, observed: _Observed) -> None:
 async def _supervise(turn, control) -> str | None:
     """Watch the stop signal and the deadline, interrupting a blocked read."""
     while not turn.done():
-        await asyncio.sleep(_SUPERVISION_SECONDS)
-        if turn.done():
-            return None
         if control.is_stopped():
             turn.cancel()
             return "cancelled"
         if control.remaining_seconds() <= 0:
             turn.cancel()
             return "budget_exceeded"
+        await asyncio.wait((turn,), timeout=_SUPERVISION_SECONDS)
     return None
+
+
+async def _supervised(awaitable, control):
+    """Run any provider-side wait under the same stop signal and deadline."""
+    control.raise_if_stopped()
+    if control.remaining_seconds() <= 0:
+        raise ProviderError("budget_exceeded")
+    turn = asyncio.ensure_future(awaitable)
+    interrupted = await _supervise(turn, control)
+    if interrupted is not None or turn.cancelled():
+        await asyncio.wait((turn,))
+        raise ProviderError(interrupted if interrupted in INTERRUPTED else "cancelled")
+    return await turn
+
+
+def authorize_current_profile(profile) -> None:
+    """Recheck today's eligibility while retaining the run's pinned settings."""
+    from ..config import settings
+    from .credentials import credential_binding_present
+    from .registry import load_profiles
+
+    registry = load_profiles(settings)
+    availability = registry.availability(profile.id)
+    if not availability.available:
+        raise ProviderError(
+            "configuration_error",
+            safe_message=availability.explanation,
+        )
+    if profile.credential_ref and not credential_binding_present(profile.credential_ref):
+        raise ProviderError(
+            "configuration_error",
+            safe_message=(
+                f"the credential binding {profile.credential_ref!r} is no longer "
+                "configured for this installation; choose another profile"
+            ),
+        )
 
 
 async def _attempt(adapter, request, profile, control, observed: _Observed) -> tuple[str, object]:
@@ -265,6 +299,7 @@ async def run_model_turn(
     *,
     sleeper=None,
     jitter=None,
+    authorize_profile=None,
 ) -> ProviderTurnResult:
     """Run one bounded model turn through the configuration this run pinned.
 
@@ -292,12 +327,20 @@ async def run_model_turn(
             # A fallback is admitted on its own merits, before it is asked.
             _admit(request, limits, profile)
 
+        if authorize_profile is not None:
+            authorize_profile(profile)
         adapter = build_adapter(profile)
         reservation = await _reserve(
             adapter, request, profile, limits, limits.max_attempts - made, spent, control
         )
 
         control.raise_if_stopped()
+        if control.remaining_seconds() <= 0:
+            raise ProviderError("budget_exceeded")
+        # Counting may take time, so authorization is checked again at the
+        # exact boundary before the generation request is admitted.
+        if authorize_profile is not None:
+            authorize_profile(profile)
 
         attempt_id = recorder.start(
             profile,
@@ -344,7 +387,7 @@ async def run_model_turn(
                 continue
 
             delay = _delay(failure, made, control, jitter)
-            await sleeper(delay)
+            await _supervised(sleeper(delay), control)
             # The stop signal and the fence are checked again after the wait,
             # so a cancelled turn never starts another request.
             control.raise_if_stopped()

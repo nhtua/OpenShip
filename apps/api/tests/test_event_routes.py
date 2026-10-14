@@ -1,5 +1,6 @@
 """Tests for event routes: snapshot, stream, and SSE cursor handling."""
 
+import json
 import uuid
 from datetime import UTC
 
@@ -149,6 +150,42 @@ def test_stream_after_sequence():
         assert len(events) == 2
         assert events[0]["sequence"] == 3
         assert events[1]["sequence"] == 4
+
+
+def test_sse_event_uses_complete_event_envelope():
+    """SSE serialization carries the same envelope as snapshot events."""
+    _user_id, project_id, conv_id = setup_user_project_conv()
+    db = SessionLocal()
+    run_id = uuid.uuid4()
+    try:
+        run = Run(
+            id=run_id, conversation_id=conv_id, project_id=project_id,
+            status="running", fence=0,
+        )
+        db.add(run)
+        db.flush()
+        db.add(Event(
+            conversation_id=conv_id,
+            run_id=run_id,
+            sequence=0,
+            type="run.started",
+            payload='{"status":"running"}',
+        ))
+        db.query(Conversation).filter(Conversation.id == conv_id).one().next_event_sequence = 1
+        db.commit()
+    finally:
+        db.close()
+
+    from src.openship.events.routes import _sse_envelope, _sse_format
+
+    event = db.query(Event).filter(Event.run_id == run_id).one()
+    frame = _sse_format(str(event.id), event.type, _sse_envelope(event))
+    data_line = next(line[6:] for line in frame.splitlines() if line.startswith("data: "))
+    envelope = json.loads(data_line)
+    assert envelope["run_id"] == str(run_id)
+    assert envelope["conversation_id"] == str(conv_id)
+    assert envelope["created_at"]
+    assert envelope["sequence"] == 0
 
 
 def test_stream_invalid_cursor():

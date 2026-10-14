@@ -5,6 +5,7 @@ configuration the run carries, a partial answer published as if it were
 complete, and a provider failure that reaches a user as a stack trace.
 """
 
+import json
 import os
 
 import pytest
@@ -31,6 +32,23 @@ from .providers.conftest import (
     sdk_chunk,
     serve,
 )
+
+
+@pytest.fixture(autouse=True)
+def current_fixture_profile(monkeypatch):
+    """The run's fixture profile is currently eligible in these graph tests."""
+    from src.openship.config import settings
+
+    from .providers.conftest import qualified_profile
+
+    profile = qualified_profile()
+    monkeypatch.setattr(
+        settings,
+        "model_profiles_json",
+        json.dumps([profile.model_dump(mode="json", exclude={"limits", "profile_revision"})]),
+    )
+    monkeypatch.setattr(settings, "model_default_profile_id", profile.id)
+    monkeypatch.setenv(CREDENTIAL_REF, "synthetic-fixture-credential")
 
 
 def test_model_step_returns_response_with_mocked_provider(monkeypatch):
@@ -83,6 +101,27 @@ def test_model_step_missing_credential_raises_configuration_error(monkeypatch):
     assert CREDENTIAL_REF in refused.value.safe_message, (
         "the message names the binding the operator has to set, never its value"
     )
+
+
+def test_model_step_rechecks_current_authorization_before_provider_dispatch(monkeypatch):
+    from src.openship.config import settings
+
+    from .providers.conftest import qualified_profile
+
+    other = qualified_profile(id="still-installed", credential_ref=CREDENTIAL_REF)
+    monkeypatch.setattr(
+        settings,
+        "model_profiles_json",
+        json.dumps([other.model_dump(mode="json", exclude={"limits", "profile_revision"})]),
+    )
+    monkeypatch.setattr(settings, "model_default_profile_id", other.id)
+    transport = serve(monkeypatch, chunks=[sdk_chunk(content="must not be sent")])
+
+    with pytest.raises(ProviderError) as revoked:
+        model_step(run_state(("user", "private prompt")), invocation())
+
+    assert revoked.value.code == "configuration_error"
+    assert transport.requests == 0
 
 
 def test_model_step_output_bounded_by_max_tokens(monkeypatch):

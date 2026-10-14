@@ -934,4 +934,165 @@ describe('chat store', () => {
     )
     expect(card?.attempts).toHaveLength(1)
   })
+
+  it('rebuilds terminal run cards from retained runs when events are pruned', async () => {
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1',
+        sequence: 12,
+        events: [],
+        runs: [{
+          id: 'run-retained', status: 'failed', attempt: 2,
+          started_at: '2026-10-12T10:00:00Z', ended_at: '2026-10-12T10:01:00Z',
+          error_code: 'provider_unavailable',
+          error: { code: 'provider_unavailable', message: 'The provider is unavailable.', retry_after_seconds: null },
+          model: { profile_id: 'primary-fixture', label: 'Primary', adapter: 'openai', requested_model: 'm', actual_model: null, destination_label: 'provider.test', fallback_profile_ids: [], recorded: true },
+          usage: null, provider_attempts: [],
+        }],
+      },
+    })
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+
+    expect(chat.runCards.get('c1')).toMatchObject({
+      run_id: 'run-retained', status: 'failed',
+      started_at: '2026-10-12T10:00:00Z', ended_at: '2026-10-12T10:01:00Z',
+      error_code: 'provider_unavailable', error_message: 'The provider is unavailable.',
+      model: { profile_id: 'primary-fixture' }, attempts: [],
+    })
+    expect(mockRunsApi.getRun).not.toHaveBeenCalled()
+  })
+
+  it('retries a lost submission response with the original request and provider choices', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('stable-request')
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    await chat.loadModelProfiles()
+    chat.selectProfile('primary-fixture', ['secondary-fixture'])
+    const committedByRequestId = new Map<string, { id: string; conversation_id: string; status: string; created_at: string; attempt: number }>()
+    let loseFirstResponse = true
+    mockRunsApi.submitTurn.mockImplementation(async (_conversationId, payload) => {
+      const existing = committedByRequestId.get(payload.client_request_id)
+      if (existing) return { data: existing }
+      const committed = { id: 'run-reconciled', conversation_id: 'c1', status: 'queued', created_at: '', attempt: 0 }
+      committedByRequestId.set(payload.client_request_id, committed)
+      if (loseFirstResponse) {
+        loseFirstResponse = false
+        throw new Error('response lost after server commit')
+      }
+      return { data: committed }
+    })
+
+    await chat.sendMessage('Hello', 'c1')
+    chat.selectProfile('secondary-fixture', [])
+    serveStream(frame(0, 'run.succeeded', 'run-reconciled'))
+    await chat.retrySubmission('stable-request')
+
+    const submittedPayload = mockRunsApi.submitTurn.mock.calls.map((call) => call[1])
+    expect(submittedPayload[1]).toEqual(submittedPayload[0])
+    expect(submittedPayload[1]).toMatchObject({
+      content: 'Hello', client_request_id: 'stable-request',
+      provider_profile_id: 'primary-fixture', fallback_profile_ids: ['secondary-fixture'],
+    })
+    expect(committedByRequestId.size).toBe(1)
+    expect(chat.runCards.get('c1')?.run_id).toBe('run-reconciled')
+    expect(chat.pendingRequests.has('stable-request')).toBe(false)
+  })
+
+  it('refreshes failed run details when a reloaded running turn reaches a terminal event', async () => {
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1', sequence: 1, runs: [],
+        events: [
+          { id: 'evt-submit', conversation_id: 'c1', run_id: 'run-reload-live', sequence: 0, type: 'turn_submitted', payload: { content: 'Hello' }, created_at: '' },
+          { id: 'evt-start', conversation_id: 'c1', run_id: 'run-reload-live', sequence: 1, type: 'run.started', payload: {}, created_at: '' },
+        ],
+      },
+    })
+    mockRunsApi.getRun
+      .mockResolvedValueOnce({ data: { id: 'run-reload-live', conversation_id: 'c1', status: 'running', created_at: '', attempt: 1 } })
+      .mockResolvedValueOnce({
+        data: {
+          id: 'run-reload-live', conversation_id: 'c1', status: 'failed', created_at: '', attempt: 1,
+          error: { code: 'provider_unavailable', message: 'The provider is unavailable.', retry_after_seconds: null },
+          usage: { input_tokens: 21, output_tokens: null, total_tokens: null, cached_input_tokens: null, reasoning_tokens: null, source: 'provider' },
+          provider_attempts: [{ ordinal: 1, profile_id: 'primary-fixture', adapter: 'openai', requested_model: 'm', actual_model: null, destination_label: null, outcome: 'provider_unavailable', error_code: 'provider_unavailable', usage: null, started_at: null, ended_at: null }],
+        },
+      })
+    serveStream(frame(2, 'run.failed', 'run-reload-live'))
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+    await vi.waitFor(() => expect(mockRunsApi.getRun).toHaveBeenCalledTimes(2))
+
+    expect(chat.runCards.get('c1')).toMatchObject({
+      run_id: 'run-reload-live', status: 'failed',
+      error_code: 'provider_unavailable', error_message: 'The provider is unavailable.',
+      usage: { input_tokens: 21 }, attempts: [{ profile_id: 'primary-fixture' }],
+    })
+  })
+
+  it('does not let a delayed terminal read replace a newer run card', async () => {
+    let resolveRun: ((value: { data: never }) => void) | undefined
+    mockRunsApi.getRun.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRun = resolve as (value: { data: never }) => void
+    }))
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1', sequence: 0,
+        events: [{ id: 'evt-old', conversation_id: 'c1', run_id: 'run-old', sequence: 0, type: 'turn_submitted', payload: {}, created_at: '' }],
+        runs: [],
+      },
+    })
+    const chat = useChatStore()
+    const load = chat.loadConversation('c1')
+    await vi.waitFor(() => expect(mockRunsApi.getRun).toHaveBeenCalledWith('run-old'))
+    chat.runCards.set('c1', {
+      run_id: 'run-new', status: 'running', started_at: null, ended_at: null,
+      usage: null, error_code: null, error_message: null, model: null, attempts: [],
+    })
+    resolveRun!({ data: { id: 'run-old', conversation_id: 'c1', status: 'failed', created_at: '', attempt: 1 } as never })
+    await load
+
+    expect(chat.runCards.get('c1')?.run_id).toBe('run-new')
+    expect(chat.runCards.get('c1')?.status).toBe('running')
+  })
+
+  it('refreshes fallback attempts when a reloaded turn succeeds', async () => {
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1', sequence: 1, runs: [],
+        events: [
+          { id: 'evt-submit', conversation_id: 'c1', run_id: 'run-fallback-reload', sequence: 0, type: 'turn_submitted', payload: { content: 'Hello' }, created_at: '' },
+          { id: 'evt-start', conversation_id: 'c1', run_id: 'run-fallback-reload', sequence: 1, type: 'run.started', payload: {}, created_at: '' },
+        ],
+      },
+    })
+    const completedRun = {
+      id: 'run-fallback-reload', conversation_id: 'c1', status: 'completed', created_at: '', attempt: 2,
+      model: { profile_id: 'primary-fixture', label: 'Primary', adapter: 'openai', requested_model: 'primary-model', actual_model: 'fallback-served-alias', destination_label: 'primary.test', fallback_profile_ids: ['secondary-fixture'], recorded: true },
+      provider_attempts: [
+        { ordinal: 1, profile_id: 'primary-fixture', adapter: 'openai', requested_model: 'primary-model', actual_model: null, destination_label: 'primary.test', outcome: 'provider_unavailable', error_code: 'provider_unavailable', usage: null, started_at: null, ended_at: null },
+        { ordinal: 2, profile_id: 'secondary-fixture', adapter: 'openai_compatible', requested_model: 'fallback-model', actual_model: 'fallback-served-alias', destination_label: 'backup.test', outcome: 'succeeded', error_code: null, usage: null, started_at: null, ended_at: null },
+      ],
+    }
+    mockRunsApi.getRun
+      .mockResolvedValueOnce({ data: { ...completedRun, status: 'running' } })
+      .mockResolvedValueOnce({ data: completedRun })
+    serveStream(frame(2, 'run.succeeded', 'run-fallback-reload'))
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+    await vi.waitFor(() => expect(mockRunsApi.getRun).toHaveBeenCalledTimes(2))
+
+    expect(chat.runCards.get('c1')).toMatchObject({
+      run_id: 'run-fallback-reload', status: 'succeeded',
+      attempts: [
+        { profile_id: 'primary-fixture', outcome: 'provider_unavailable' },
+        { profile_id: 'secondary-fixture', outcome: 'succeeded', actual_model: 'fallback-served-alias' },
+      ],
+      model: { requested_model: 'primary-model', actual_model: 'fallback-served-alias' },
+    })
+  })
 })

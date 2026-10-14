@@ -20,7 +20,7 @@ import uuid
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from ..chat.models import Message
+from ..chat.models import Conversation, Message
 from ..config import settings
 from ..providers.attempts import DatabaseAttemptRecorder
 from ..providers.control import InvocationControl
@@ -252,7 +252,6 @@ class Worker:
         supervisor_thread = None
 
         try:
-            from ..chat.models import Conversation
             from ..events.service import append_event
 
             run = job.query(Run).filter(Run.id == run_id).first()
@@ -340,14 +339,12 @@ class Worker:
             # ever serialized into graph state or a checkpoint.
             deadline = time.monotonic() + snapshot.limits.run_timeout_seconds
 
-            # One recorder for the run, not one per model step: the statements
-            # it holds are published once, at the run's commit point, in the
-            # same command as the attempt rows they describe. Writing them when
-            # a request is admitted would hold the conversation's lock across
-            # the whole turn and a cancellation the owner asked would wait
-            # behind it; asking a second session to write instead is something
-            # SQLite refuses outright.
-            recorder = DatabaseAttemptRecorder(lambda: job, run_id, fence)
+            # Attempt admission and its event commit in a short transaction
+            # before each provider request. This keeps the conversation lock
+            # out of the network turn and leaves an audit record after a crash.
+            recorder = DatabaseAttemptRecorder(
+                lambda: self.Session(), run_id, fence, commit_each=True
+            )
 
             def invocation():
                 return (
@@ -522,9 +519,14 @@ class Worker:
 
         except Exception as e:
             logger.exception(f"[{self.worker_id}] Error processing run {run_id}")
+            # A failed publication may have staged a success status, answer,
+            # attempts, or event in this session. Discard all of it before a
+            # fresh fenced transaction publishes the failure atomically.
             try:
-                finalize(
-                    db=job,
+                job.rollback()
+                failure_db = self.Session()
+                finalized = finalize(
+                    db=failure_db,
                     run_id=run_id,
                     fence=fence,
                     result={
@@ -532,9 +534,36 @@ class Worker:
                         "error_code": "internal_error",
                         "output": str(e),
                     },
+                    commit=False,
                 )
+                failed_run = failure_db.get(Run, run_id)
+                if finalized and failed_run is not None:
+                    from ..events.service import append_event
+
+                    conversation = failure_db.query(Conversation).filter_by(
+                        id=failed_run.conversation_id
+                    ).first()
+                    if conversation is not None:
+                        append_event(
+                            db=failure_db,
+                            conversation_id=conversation.id,
+                            run_id=run_id,
+                            event_type="run.failed",
+                            payload={
+                                "error_code": "internal_error",
+                                "error": "The run could not be completed.",
+                                "model": _terminal_model(failure_db, failed_run),
+                            },
+                            actor_id=None,
+                        )
+                        failure_db.commit()
+                failure_db.close()
             except Exception:
-                pass
+                try:
+                    failure_db.rollback()
+                    failure_db.close()
+                except Exception:
+                    pass
             return False
         finally:
             if supervisor_thread and supervisor_thread.is_alive():

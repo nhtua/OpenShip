@@ -24,8 +24,6 @@ from src.openship.providers.control import InvocationControl
 from src.openship.providers.registry import build_adapter, load_profiles
 from src.openship.providers.runner import run_model_turn
 
-pytestmark = pytest.mark.provider_live
-
 PROFILE_ID_ENV = "OPENSHIP_LIVE_PROFILE_ID"
 
 #: The smallest turn that still exercises the whole path - a real request, a
@@ -44,6 +42,30 @@ def _selected_profile_id() -> str:
             "you accept a real turn against (it can incur provider charges)"
         )
     return profile_id
+
+
+def _assert_qualified_served_model(profile, actual_model: str | None) -> None:
+    """Apply the runner's requested-name and qualified-alias rule."""
+    assert actual_model, "a qualified turn must report which model served it"
+    if actual_model != profile.model:
+        assert actual_model in profile.qualified_model_aliases, (
+            f"the provider served unqualified model {actual_model!r} for "
+            f"profile {profile.id!r}; requested {profile.model!r}"
+        )
+
+
+def test_smoke_accepts_explicitly_qualified_alias_without_network():
+    """A configured alias is valid evidence while requested and served names stay distinct."""
+    from types import SimpleNamespace
+
+    profile = SimpleNamespace(
+        id="qualified-fixture",
+        model="requested-model",
+        qualified_model_aliases=("served-alias",),
+    )
+
+    _assert_qualified_served_model(profile, "served-alias")
+    assert profile.model == "requested-model"
 
 
 class AttemptLog:
@@ -91,6 +113,7 @@ def _watched_destination(adapter, seen: list) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.provider_live
 async def test_smoke_never_invents_a_profile():
     """The selected profile is one this installation declares and can serve.
 
@@ -109,6 +132,7 @@ async def test_smoke_never_invents_a_profile():
 
 
 @pytest.mark.asyncio
+@pytest.mark.provider_live
 async def test_smoke_turn_answers_once_at_the_declared_destination(monkeypatch):
     """One real turn, through the configuration this installation declares."""
     profile_id = _selected_profile_id()
@@ -145,10 +169,10 @@ async def test_smoke_turn_answers_once_at_the_declared_destination(monkeypatch):
     assert not result.partial
     assert result.text, "the turn reported success without producing an answer"
 
-    # What served is recorded. A provider that answered with another model is
-    # qualified only if the profile said so - the runner rejects it otherwise,
-    # so reaching here means the pair is the profile's own.
-    assert result.actual_model == registry.get(profile_id).model
+    # The runner accepts only the requested model or an explicitly qualified
+    # serving alias. Keep the requested name on the pinned config and the
+    # observed name on the result, even when they differ.
+    _assert_qualified_served_model(registry.get(profile_id), result.actual_model)
 
     # Usage is either what the provider reported or explicitly unknown; the
     # contract never invents a count, so asserting the shape is the claim.

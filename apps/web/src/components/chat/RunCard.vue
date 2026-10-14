@@ -58,16 +58,35 @@ const finished = computed(
 
 // What the run was pinned to. Null means the run predates profiles, and
 // nothing here guesses one for it — the card says what is not known.
-const providerText = computed(() => {
+const requestedText = computed(() => {
   const model: RunModelSummary | null = props.card.model
   if (!model) return 'Provider not recorded'
-  // The model that actually served is stated when it differs from the one
-  // requested; a destination is named as a label, never as a URL.
-  const served = model.actual_model || model.requested_model
   const destination = model.destination_label
     ? ` at ${model.destination_label}`
     : ''
-  return `${model.label} · ${served}${destination}`
+  return `Requested: ${model.label} · ${model.requested_model}${destination}`
+})
+
+const servingText = computed(() => {
+  const model: RunModelSummary | null = props.card.model
+  if (!model) return ''
+  const attempt = [...props.card.attempts]
+    .reverse()
+    .find((candidate) => candidate.outcome === 'succeeded')
+  const profileId = model.serving_profile_id ?? attempt?.profile_id
+  const servedModel = model.actual_model ?? attempt?.actual_model
+
+  // Older run reads may have the observed name without serving destination
+  // metadata. State only that name; never attach it to the pinned destination.
+  if (!profileId && servedModel) return `Served model: ${servedModel}`
+  if (!profileId) return ''
+
+  const label = model.serving_label ?? profileId
+  const adapter = model.serving_adapter ?? attempt?.adapter
+  const destination = model.serving_destination_label ?? attempt?.destination_label
+  const modelName = servedModel ?? attempt?.requested_model ?? model.requested_model
+  const details = [label, adapter, modelName].filter(Boolean).join(' · ')
+  return `Served by: ${details}${destination ? ` at ${destination}` : ''}`
 })
 
 // The requests actually made, in order. A fallback is part of this chain
@@ -104,7 +123,10 @@ const usageText = computed(() => {
     <span v-if="card.ended_at" class="text-slate-500">
       Ended {{ new Date(card.ended_at).toLocaleTimeString() }}
     </span>
-    <span v-if="finished" class="text-slate-400">{{ providerText }}</span>
+    <template v-if="finished">
+      <span class="text-slate-400">{{ requestedText }}</span>
+      <span v-if="servingText" class="text-slate-400">{{ servingText }}</span>
+    </template>
     <span v-if="attemptText" class="text-slate-500">
       {{ attemptText }}
     </span>

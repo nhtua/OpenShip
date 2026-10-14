@@ -404,8 +404,8 @@ def test_heartbeat_has_independent_session(client, authorized_client, monkeypatc
         "the heartbeat thread must not share the worker's session"
     )
     assert transport.closed is True, "a denied lease must interrupt the blocked read"
-    assert _answers(TestSessionLocal(), run.id) == [], (
-        "the heartbeat must not commit the worker's pending attempt"
+    assert [attempt.outcome for attempt in _answers(TestSessionLocal(), run.id)] == ["cancelled"], (
+        "the admitted request's interrupted outcome remains auditable after the worker loses its lease"
     )
     assert _assistant(TestSessionLocal(), run.id) == []
 
@@ -436,6 +436,20 @@ def test_snapshot_schema_mismatch_fails_safely(client, authorized_client, monkey
     assert finalized.status == "failed"
     assert finalized.error_code == "configuration_error"
     assert finalized.usage is None
+    response = client.get(f"/api/runs/{run.id}", headers=authorized_client)
+    assert response.status_code == 200
+    assert response.json()["model"] is None
+    snapshot = client.get(
+        f"/api/conversations/{run.conversation_id}/snapshot", headers=authorized_client
+    )
+    assert snapshot.status_code == 200
+    projected = next(item for item in snapshot.json()["runs"] if item["id"] == str(run.id))
+    assert projected["model"] is None
+    assert projected["error"]["code"] == "configuration_error"
+    assert any(
+        event["type"] == "run.failed" and event["payload"]["error_code"] == "configuration_error"
+        for event in snapshot.json()["events"]
+    ), "an unreadable snapshot still gets a terminal failure event"
 
 
 # --- Publication is one transaction ----------------------------------------------
@@ -496,6 +510,68 @@ def test_completion_message_and_event_commit_together(client, authorized_client,
     assert _assistant(session, second.id) == [], (
         "a completed status must never exist without its message"
     )
+
+
+def test_failure_publication_rolls_back_success_before_recording_failure(
+    client, authorized_client, monkeypatch
+):
+    """A failure while constructing success publication cannot commit half a success."""
+    run = _queued_turn(client, authorized_client, monkeypatch)
+    claim = _claim()
+    _serve(monkeypatch, chunks=[sdk_chunk(content="Answer", finish_reason="stop")])
+
+    from src.openship.events import service as event_service
+
+    original_append = event_service.append_event
+
+    def reject_success(db, conversation_id, run_id, event_type, payload, actor_id=None):
+        if event_type == "run.succeeded":
+            raise RuntimeError("terminal success event construction failed")
+        return original_append(db, conversation_id, run_id, event_type, payload, actor_id)
+
+    monkeypatch.setattr(event_service, "append_event", reject_success)
+    _process(claim)
+
+    session = TestSessionLocal()
+    failed = session.get(Run, run.id)
+    assert failed.status == "failed"
+    assert failed.error_code == "internal_error"
+    assert _assistant(session, run.id) == []
+    event_types = [event.type for event in session.query(Event).filter(Event.run_id == run.id)]
+    assert "run.failed" in event_types
+    assert "run.succeeded" not in event_types
+
+
+def test_worker_attempt_admission_survives_process_exit(client, authorized_client, monkeypatch):
+    """The actual worker commits admission before graph/provider work begins."""
+    run = _queued_turn(client, authorized_client, monkeypatch)
+    claim = _claim()
+    from src.openship.runs import worker as worker_module
+
+    class ProcessExitGraph:
+        def __init__(self, invocation_factory):
+            self.invocation_factory = invocation_factory
+
+        def invoke(self, _state, config=None):
+            _control, recorder = self.invocation_factory()
+            recorder.start(pin_profile(profile_spec("primary-fixture")), reason="initial")
+            raise SystemExit("simulated process exit after request admission")
+
+    monkeypatch.setattr(
+        worker_module,
+        "build_chat_graph",
+        lambda _saver, invocation_factory: ProcessExitGraph(invocation_factory),
+    )
+    monkeypatch.setattr(Worker, "_supervise", lambda *_args: None)
+
+    with pytest.raises(SystemExit, match="simulated process exit"):
+        _process(claim)
+
+    session = TestSessionLocal()
+    attempt = _answers(session, run.id)
+    assert len(attempt) == 1
+    assert attempt[0].outcome == "started"
+    assert session.get(Run, run.id).provider_started_at is not None
 
 
 @pytest.mark.parametrize(
@@ -634,7 +710,11 @@ def test_a_fallback_states_the_move_it_made(client, authorized_client, monkeypat
     claim = _claim()
 
     transport = _RefusedThenAnswering(
-        [sdk_chunk(content="Answered elsewhere.", finish_reason="stop")]
+        [sdk_chunk(
+            content="Answered elsewhere.",
+            finish_reason="stop",
+            model="changed-after-submission",
+        )]
     )
     monkeypatch.setitem(
         _adapter_factories, "openai", lambda _profile: make_adapter("openai", transport)
@@ -655,6 +735,16 @@ def test_a_fallback_states_the_move_it_made(client, authorized_client, monkeypat
         "the pair a reader needs is which profile stopped and which began"
     )
     assert facts["to_model"] == "changed-after-submission"
+
+    run_read = client.get(f"/api/runs/{run.id}", headers=authorized_client).json()
+    assert run_read["model"]["profile_id"] == "primary-fixture"
+    assert run_read["model"]["serving_profile_id"] == "secondary-fixture"
+    assert run_read["model"]["serving_adapter"] == "openai"
+    snapshot = client.get(
+        f"/api/conversations/{run.conversation_id}/snapshot", headers=authorized_client
+    ).json()
+    summarized = next(item for item in snapshot["runs"] if item["id"] == str(run.id))
+    assert summarized["model"]["serving_profile_id"] == "secondary-fixture"
 
 
 def test_a_served_alias_is_reported_as_the_model_that_answered(

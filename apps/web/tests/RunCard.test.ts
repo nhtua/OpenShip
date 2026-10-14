@@ -112,6 +112,33 @@ describe('RunCard', () => {
     expect(wrapper.text()).toContain('fixture.provider.test')
   })
 
+  it('separates requested primary details from the successful fallback destination', () => {
+    const model: Model = {
+      profile_id: 'primary-fixture',
+      label: 'Primary profile',
+      adapter: 'openai',
+      requested_model: 'primary-model',
+      actual_model: 'backup-served-model',
+      destination_label: 'primary.provider.test',
+      serving_profile_id: 'secondary-fixture',
+      serving_label: 'Backup profile',
+      serving_adapter: 'anthropic',
+      serving_destination_label: 'backup.provider.test',
+      fallback_profile_ids: ['secondary-fixture'],
+      recorded: true,
+    }
+    const wrapper = render({
+      run_id: 'run-fallback',
+      status: 'succeeded',
+      model,
+    })
+    const text = wrapper.text()
+
+    expect(text).toContain('Requested: Primary profile · primary-model at primary.provider.test')
+    expect(text).toContain('Served by: Backup profile · anthropic · backup-served-model at backup.provider.test')
+    expect(text).not.toContain('backup-served-model at primary.provider.test')
+  })
+
   it('says so for a run from before profiles existed', () => {
     const wrapper = render({
       run_id: 'run-6',

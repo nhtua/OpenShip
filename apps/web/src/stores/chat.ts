@@ -10,6 +10,7 @@ import type {
   Run,
   RunCard,
   Snapshot,
+  SnapshotRun,
   TurnSubmitRequest,
 } from '@/types'
 
@@ -133,9 +134,15 @@ export const useChatStore = defineStore('chat', () => {
       try {
         const snapRes = await runsApi.getSnapshot(conversationId)
         const snapshot = snapRes.data as unknown as Snapshot
-        // Process snapshot events to rebuild state
+        // Replay retained events for message and title reconstruction.
         for (const event of snapshot.events) {
           processDurableEvent(event)
+        }
+        // Run summaries are authoritative even when every event was pruned.
+        // Apply them after historical events so an older submission cannot
+        // replace the conversation's latest run card.
+        for (const run of snapshot.runs ?? []) {
+          runCards.value.set(conversationId, runSummaryCard(run))
         }
         // Set the cursor to the snapshot's sequence (or the highest event sequence)
         const maxSeq = snapshot.events.reduce(
@@ -147,7 +154,7 @@ export const useChatStore = defineStore('chat', () => {
         // was pinned to or what it reported. The run read does, and it is the
         // only place that states it — so the card is hydrated from there.
         const rebuilt = runCards.value.get(conversationId)
-        if (rebuilt?.run_id) {
+        if (rebuilt?.run_id && !(snapshot.runs ?? []).some((run) => run.id === rebuilt.run_id)) {
           await hydrateRunCard(conversationId, rebuilt.run_id)
         }
       } catch (snapErr) {
@@ -184,6 +191,7 @@ export const useChatStore = defineStore('chat', () => {
             event.type === 'run.failed' ||
             event.type === 'run_cancelled'
           ) {
+            void hydrateRunCard(conversationId, event.run_id ?? '')
             api
               .get(`/conversations/${conversationId}/messages`)
               .then((res) => {
@@ -363,7 +371,7 @@ export const useChatStore = defineStore('chat', () => {
   ): void {
     const card = runCards.value.get(convId)
     if (card) {
-      card.run_id = runId
+      if (runId) card.run_id = runId
       card.status = status
       const ts = timestamp ?? new Date().toISOString()
       if (['succeeded', 'failed', 'cancelled'].includes(status)) {
@@ -381,7 +389,9 @@ export const useChatStore = defineStore('chat', () => {
       const res = await runsApi.getRun(runId)
       const run = res.data as unknown as Run
       const card = runCards.value.get(convId)
-      if (!card) return
+      // A slow read for the previous run must never overwrite the next card.
+      if (!card || card.run_id !== runId) return
+      card.status = cardStatus(run.status)
       // A run read is authoritative for what it was pinned to and what it
       // asked. Null stays null: a run from before profiles exists, and
       // nothing here guesses a provider, a model, or a count for it.
@@ -389,12 +399,33 @@ export const useChatStore = defineStore('chat', () => {
       card.attempts = run.provider_attempts ?? []
       card.usage = run.usage ?? null
       const failure: ErrorSummary | null = run.error ?? null
-      card.error_code = failure?.code ?? card.error_code
+      card.error_code = failure?.code ?? null
       // The safe copy the API settled on, never a provider's own body.
-      card.error_message = failure?.message ?? card.error_message
+      card.error_message = failure?.message ?? null
       runCards.value.set(convId, card)
     } catch (err) {
       console.warn('Failed to hydrate run card from run read', err)
+    }
+  }
+
+  function cardStatus(status: Run['status']): string {
+    if (status === 'completed') return 'succeeded'
+    if (status === 'timed_out' || status === 'stale') return 'failed'
+    if (status === 'created') return 'queued'
+    return status
+  }
+
+  function runSummaryCard(run: SnapshotRun): RunCard {
+    return {
+      run_id: run.id,
+      status: cardStatus(run.status),
+      started_at: run.started_at,
+      ended_at: run.ended_at,
+      usage: run.usage ?? null,
+      error_code: run.error?.code ?? run.error_code ?? null,
+      error_message: run.error?.message ?? null,
+      model: run.model ?? null,
+      attempts: run.provider_attempts ?? [],
     }
   }
 
@@ -592,74 +623,64 @@ export const useChatStore = defineStore('chat', () => {
         currentConversation.value = newConv
       }
 
-      let runId = ''
-      try {
-        // The submission is now in flight: selection changes are held back
-        // until it lands, because this turn's provider is already fixed.
-        isSubmitting.value = true
-        const runRes = await runsApi.submitTurn(effectiveConvId, payload)
-        runId = runRes.data.id
-        console.log('STORE: durable run submitted, runId:', runId)
-        // Update run card with actual run ID
-        const card = runCards.value.get(effectiveConvId)
-        if (card) {
-          card.run_id = runId
-          runCards.value.set(effectiveConvId, card)
-        }
-      } catch (err) {
-        console.error('STORE: Failed to submit durable run', err)
-        error.value = 'Failed to submit message. Please try again.'
-        isStreaming.value = false
-        return
-      } finally {
-        isSubmitting.value = false
-      }
-
-      // Subscribe to events and process stream
-      const convId = effectiveConvId
-      const cursor = cursors.value.get(convId) ?? -1
-
-      if (runId) {
-        // Use durable event stream
-        try {
-          await subscribeToEvents(convId, cursor, (event) => {
-            processDurableEvent(event)
-            // Update cursor (use live value, not captured)
-            const currentCursor = cursors.value.get(convId) ?? -1
-            if (event.sequence > currentCursor) {
-              cursors.value.set(convId, event.sequence)
-            }
-
-            // Check for run completion
-            if (
-              event.type === 'run.succeeded' ||
-              event.type === 'run.failed' ||
-              event.type === 'run_cancelled'
-            ) {
-              // Reload messages to get the assistant response
-              if (convId) {
-                api
-                  .get(`/conversations/${convId}/messages`)
-                  .then((res) => {
-                    messages.value = res.data as unknown as ChatMessage[]
-                  })
-                  .catch((e) => console.error('Failed to reload messages', e))
-              }
-            }
-          })
-        } catch (err) {
-          console.error('Event stream error', err)
-        }
-        // The stream says the turn ended; the run read says what it was
-        // pinned to and what it reported. Events alone never carry that.
-        await hydrateRunCard(convId, runId)
-      }
-
-      // Clear pending request
-      pendingRequests.value.delete(requestId)
+      const pending = pendingRequests.value.get(requestId)
+      if (pending) pending.conversation_id = effectiveConvId
+      await submitPendingRequest(requestId)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       error.value = `Failed to send message: ${message}`
+    } finally {
+      isStreaming.value = false
+    }
+  }
+
+  async function submitPendingRequest(requestId: string): Promise<void> {
+    const pending = pendingRequests.value.get(requestId)
+    if (!pending?.conversation_id) return
+    const convId = pending.conversation_id
+    isSubmitting.value = true
+    try {
+      const runRes = await runsApi.submitTurn(convId, pending.payload)
+      const runId = runRes.data.id
+      const card = runCards.value.get(convId)
+      if (card) {
+        card.run_id = runId
+        runCards.value.set(convId, card)
+      }
+      const cursor = cursors.value.get(convId) ?? -1
+      try {
+        await subscribeToEvents(convId, cursor, (event) => {
+          processDurableEvent(event)
+          const currentCursor = cursors.value.get(convId) ?? -1
+          if (event.sequence > currentCursor) cursors.value.set(convId, event.sequence)
+          if (['run.succeeded', 'run.failed', 'run_cancelled'].includes(event.type)) {
+            void hydrateRunCard(convId, event.run_id ?? runId)
+            api.get(`/conversations/${convId}/messages`).then((res) => {
+              if (currentConversation.value?.id === convId) {
+                messages.value = res.data as unknown as ChatMessage[]
+              }
+            }).catch((e) => console.error('Failed to reload messages', e))
+          }
+        })
+      } catch (err) {
+        console.error('Event stream error', err)
+      }
+      await hydrateRunCard(convId, runId)
+      pendingRequests.value.delete(requestId)
+    } catch (err) {
+      console.error('STORE: Failed to submit durable run', err)
+      error.value = 'Failed to submit message. Please try again.'
+    } finally {
+      isSubmitting.value = false
+    }
+  }
+
+  async function retrySubmission(requestId: string): Promise<void> {
+    if (isSubmitting.value) return
+    error.value = null
+    isStreaming.value = true
+    try {
+      await submitPendingRequest(requestId)
     } finally {
       isStreaming.value = false
     }
@@ -710,6 +731,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
     currentConversation.value = null
     runCards.value.clear()
+    pendingRequests.value.clear()
     cursors.value.clear()
   }
 
@@ -732,6 +754,8 @@ export const useChatStore = defineStore('chat', () => {
     selectProfile,
     loadConversation,
     sendMessage,
+    retrySubmission,
+    pendingRequests,
     cancelRun,
     subscribeToEvents,
     processDurableEvent,

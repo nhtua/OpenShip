@@ -36,6 +36,14 @@ const title = computed(
   () => chat.currentConversation?.title || 'New Conversation',
 )
 
+const pendingSubmissionId = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  if (!conversationId) return null
+  return [...chat.pendingRequests.entries()].find(
+    ([, pending]) => pending.conversation_id === conversationId,
+  )?.[0] ?? null
+})
+
 async function loadHistory() {
   isLoadingConversations.value = true
   historyLoadFailed.value = false
@@ -122,6 +130,11 @@ function dismissError() {
   historyLoadFailed.value = false
 }
 
+async function handleRetrySubmission() {
+  const requestId = pendingSubmissionId.value
+  if (requestId) await chat.retrySubmission(requestId)
+}
+
 // The composer's selector names a profile; the store decides what the next
 // turn uses. A run that already exists keeps its own provider either way.
 function handleSelectProfile(profileId: string | null, fallbackIds: string[]) {
@@ -198,6 +211,11 @@ onMounted(async () => {
            stop, and offering it would be a control that does nothing. -->
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
         <RunCard :card="chat.runCards.get(chat.currentConversation.id)!" />
+        <div v-if="pendingSubmissionId" class="shrink-0 px-4 pt-2">
+          <Button size="sm" @click="handleRetrySubmission">
+            Retry submission
+          </Button>
+        </div>
         <div v-if="activeRunId" class="shrink-0 px-4 pt-2">
           <Button
             size="sm"

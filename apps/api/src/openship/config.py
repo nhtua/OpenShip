@@ -1,7 +1,9 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
@@ -39,9 +41,5 @@ class Settings(BaseSettings):
     event_retention_days: int = 30
     checkpoint_retention_days: int = 30
     log_retention_days: int = 7
-
-    class Config:
-        env_file = ".env"
-
 
 settings = Settings()

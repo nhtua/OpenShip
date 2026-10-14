@@ -14,7 +14,7 @@ from langgraph.graph import END, StateGraph
 
 from ..providers.contracts import ChatMessage, ModelRequest, RunModelConfig
 from ..providers.errors import ProviderError
-from ..providers.runner import run_model_turn
+from ..providers.runner import authorize_current_profile, run_model_turn
 from .service import parse_run_model_config
 
 
@@ -84,7 +84,15 @@ def model_step(state: ChatState, invocation=None) -> dict:
 
     # The model turn is asynchronous; this node owns the event loop so the
     # worker's own thread stays synchronous.
-    result = asyncio.run(run_model_turn(request, config, control, recorder))
+    result = asyncio.run(
+        run_model_turn(
+            request,
+            config,
+            control,
+            recorder,
+            authorize_profile=authorize_current_profile,
+        )
+    )
 
     usage = result.usage.model_dump(mode="json") if result.usage is not None else None
     values = {

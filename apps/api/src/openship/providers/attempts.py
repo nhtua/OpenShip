@@ -1,10 +1,9 @@
 """Recording the bounded generation requests a run made.
 
 An attempt is metadata and an outcome only: no prompt, no provider response
-body, and no credential ever belongs here. The recorder writes into the
-session it is handed and never commits, so an attempt belongs to the same
-transaction as the event and outbox row a worker is writing — a command that
-fails leaves neither behind.
+body, and no credential ever belongs here. The worker admits each attempt and
+its event in a short fenced transaction before dispatch, then records its
+outcome separately.
 """
 
 from __future__ import annotations
@@ -37,41 +36,43 @@ def _now() -> datetime:
 class DatabaseAttemptRecorder:
     """Records one run's attempts under the fence its worker holds.
 
-    A row is written the moment its request is admitted - before the network
-    call - so the ordering a retry is judged under exists before the answer
-    does. The matching **statement** in the durable stream is held back and
-    written by ``publish`` at the run's commit point, in the same command as
-    the rows and the publication.
-
-    Holding them back is the whole point, not a style choice. Appending an
-    event takes the conversation's row lock; taking it when a request is
-    admitted would hold that lock for the whole model turn, and a cancellation
-    the owner asked would wait behind the turn instead of interrupting it -
-    the bounded window this repo claims for local provider I/O. It would also
-    ask a second session to write while the worker's transaction is open,
-    which SQLite refuses. One writer, one lock, taken once, at the end.
-
-    A run that lost its lease therefore publishes neither rows nor statements:
-    the fence promises that a command which is not this worker's leaves no
-    record, and a reader never sees an attempt the run's own record denies.
+    Worker mode commits admission metadata and its event before dispatch in a
+    short fenced transaction, then records the outcome in another transaction.
+    Callers that share a transaction can leave ``commit_each`` disabled and
+    publish the buffered events with their own command.
     """
 
-    def __init__(self, session_factory, run_id: uuid.UUID, fence: int) -> None:
+    def __init__(
+        self, session_factory, run_id: uuid.UUID, fence: int, commit_each: bool = False
+    ) -> None:
         self._session_of = session_factory
         self._run_id = run_id
         self._fence = fence
+        self._commit_each = commit_each
         #: Statements waiting for the run's commit point, in the order made.
         self._pending: list[tuple[uuid.UUID, str, dict]] = []
 
     def _run(self, session) -> Run:
         """The run, only while this worker still holds its lease."""
-        run = session.get(Run, self._run_id)
+        if self._commit_each:
+            # Serialize admission with cancellation/finalization. A plain
+            # identity-map read could approve an attempt on a fence that moved
+            # while this short transaction was being prepared.
+            run = (
+                session.query(Run)
+                .filter(Run.id == self._run_id)
+                .with_for_update()
+                .populate_existing()
+                .first()
+            )
+        else:
+            run = session.get(Run, self._run_id)
         if run is None:
             raise ProviderError(
                 "configuration_error",
                 safe_message=f"run {self._run_id} does not exist in this installation",
             )
-        if run.fence != self._fence:
+        if run.fence != self._fence or (self._commit_each and run.status != "running"):
             raise ProviderError(
                 "lease_lost",
                 safe_message=(
@@ -81,14 +82,24 @@ class DatabaseAttemptRecorder:
             )
         return run
 
-    def _say(self, run: Run, event_type: str, facts: dict) -> None:
-        """Hold the statement of what this recorder just recorded.
+    def _say(self, session, run: Run, event_type: str, facts: dict) -> None:
+        """Buffer or append the statement of what this recorder just recorded.
 
         The payload is an attempt's metadata only: a profile, an adapter, a
         destination label, an outcome. No prompt, no answer, no credential -
         none of those belong in a record a browser reads.
         """
-        self._pending.append((run.conversation_id, event_type, facts))
+        if self._commit_each:
+            append_event(
+                db=session,
+                conversation_id=run.conversation_id,
+                run_id=self._run_id,
+                event_type=event_type,
+                payload=facts,
+                actor_id=None,
+            )
+        else:
+            self._pending.append((run.conversation_id, event_type, facts))
 
     def publish(self, session) -> int:
         """Write the statements this run made, in the order it made them.
@@ -112,109 +123,73 @@ class DatabaseAttemptRecorder:
         self._pending.clear()
         return written
 
-    def _run(self, session) -> Run:
-        """The run, only while this worker still holds its lease."""
-        run = session.get(Run, self._run_id)
-        if run is None:
-            raise ProviderError(
-                "configuration_error",
-                safe_message=f"run {self._run_id} does not exist in this installation",
-            )
-        if run.fence != self._fence:
-            raise ProviderError(
-                "lease_lost",
-                safe_message=(
-                    f"this worker holds fence {self._fence} of run {self._run_id}, "
-                    f"which is now at fence {run.fence}"
-                ),
-            )
-        return run
-    def _tell(self, session, run: Run, event_type: str, facts: dict) -> None:
-        """State what this recorder just recorded, on its own transaction.
-
-        The payload is an attempt's metadata only: a profile, an adapter, a
-        destination label, an outcome. No prompt, no answer, no credential -
-        none of those belong in a record a browser reads.
-
-        When a statement session was supplied the event is committed there, so
-        the conversation's lock is taken and released inside one short
-        transaction rather than held across the turn. Without one, the
-        statement lands in the caller's transaction - which is what a test
-        installation with a single session wants.
-        """
-        stated_separately = self._statement_of is not None
-        where = self._statement_of() if stated_separately else session
-        append_event(
-            db=where,
-            conversation_id=run.conversation_id,
-            run_id=self._run_id,
-            event_type=event_type,
-            payload=facts,
-            actor_id=None,
-        )
-        if stated_separately:
-            where.commit()
-            where.close()
-
     def start(self, profile: PinnedProviderConfig, reason: str, reserved_cost_usd=None) -> uuid.UUID:
         """Open an attempt for one bounded request, and return its ID."""
         session = self._session_of()
-        run = self._run(session)
+        try:
+            run = self._run(session)
 
-        ordinal = self._next_ordinal(session)
-        attempt_id = uuid.uuid4()
-        session.add(
-            ProviderAttempt(
-                id=attempt_id,
-                run_id=self._run_id,
-                ordinal=ordinal,
-                fence=self._fence,
-                profile_id=profile.id,
-                profile_revision=profile.profile_revision,
-                adapter=profile.adapter,
-                requested_model=profile.model,
-                destination_label=destination_label(profile.endpoint),
-                started_at=_now(),
-                outcome="started",
-                reserved_cost_usd=reserved_cost_usd,
+            ordinal = self._next_ordinal(session)
+            attempt_id = uuid.uuid4()
+            session.add(
+                ProviderAttempt(
+                    id=attempt_id,
+                    run_id=self._run_id,
+                    ordinal=ordinal,
+                    fence=self._fence,
+                    profile_id=profile.id,
+                    profile_revision=profile.profile_revision,
+                    adapter=profile.adapter,
+                    requested_model=profile.model,
+                    destination_label=destination_label(profile.endpoint),
+                    started_at=_now(),
+                    outcome="started",
+                    reserved_cost_usd=reserved_cost_usd,
+                )
             )
-        )
-        # Written into the caller's transaction, not committed: an attempt
-        # belongs to the same command as the event and outbox row it opened.
-        session.flush()
+            # Flush first so the row and its event are committed together in
+            # worker mode, or stay in the caller's transaction otherwise.
+            session.flush()
 
-        self._say(
-            run,
-            ATTEMPT_STARTED,
-            {
-                "profile_id": profile.id,
-                "profile_revision": profile.profile_revision,
-                "adapter": profile.adapter,
-                "requested_model": profile.model,
-                "destination_label": destination_label(profile.endpoint),
-                "ordinal": ordinal,
-                "reason": reason,
-            },
-        )
-        if reason == "fallback":
-            # Moving to another profile is a decision, not another request, so
-            # it is stated as its own event: the pair a reader needs is which
-            # profile a run stopped asking and the one it began asking.
-            previous = self._asked(session, ordinal - 1)
             self._say(
+                session,
                 run,
-                FALLBACK_SELECTED,
+                ATTEMPT_STARTED,
                 {
-                    "from_profile_id": previous[0] if previous else None,
-                    "from_adapter": previous[1] if previous else None,
-                    "from_model": previous[2] if previous else None,
-                    "to_profile_id": profile.id,
-                    "to_adapter": profile.adapter,
-                    "to_model": profile.model,
+                    "profile_id": profile.id,
+                    "profile_revision": profile.profile_revision,
+                    "adapter": profile.adapter,
+                    "requested_model": profile.model,
                     "destination_label": destination_label(profile.endpoint),
+                    "ordinal": ordinal,
+                    "reason": reason,
                 },
             )
-        return attempt_id
+            if reason == "fallback":
+                # Moving to another profile is a decision, not another request, so
+                # it is stated as its own event: the pair a reader needs is which
+                # profile a run stopped asking and the one it began asking.
+                previous = self._asked(session, ordinal - 1)
+                self._say(
+                    session,
+                    run,
+                    FALLBACK_SELECTED,
+                    {
+                        "from_profile_id": previous[0] if previous else None,
+                        "from_adapter": previous[1] if previous else None,
+                        "from_model": previous[2] if previous else None,
+                        "to_profile_id": profile.id,
+                        "to_adapter": profile.adapter,
+                        "to_model": profile.model,
+                        "destination_label": destination_label(profile.endpoint),
+                    },
+                )
+            if self._commit_each:
+                session.commit()
+            return attempt_id
+        finally:
+            if self._commit_each:
+                session.close()
 
     def _asked(self, session, ordinal: int) -> tuple | None:
         """The profile the previous ordinal was asked for, if any."""
@@ -243,35 +218,55 @@ class DatabaseAttemptRecorder:
             raise ValueError(f"unknown attempt outcome: {outcome!r}")
 
         session = self._session_of()
-        run = self._run(session)
+        try:
+            run = session.get(Run, self._run_id)
+            if run is None:
+                raise ProviderError(
+                    "configuration_error",
+                    safe_message=f"run {self._run_id} does not exist in this installation",
+                )
 
-        attempt = session.query(ProviderAttempt).filter(
-            ProviderAttempt.id == attempt_id
-        ).one()
-        attempt.outcome = outcome
-        attempt.ended_at = _now()
-        attempt.error_code = error_code
-        if actual_model is not None:
-            attempt.actual_model = actual_model
-        if usage is not None:
-            attempt.usage = json.dumps(usage.model_dump(mode="json"), sort_keys=True)
+            # Admission is fenced and committed before dispatch. Completion is
+            # attached to that immutable admission, even if cancellation or lease
+            # recovery moved the run fence while the request was in flight. Only a
+            # still-open attempt with this original fence can be closed, so a
+            # stale worker cannot replace an outcome another path already wrote.
+            attempt = session.query(ProviderAttempt).filter(
+                ProviderAttempt.id == attempt_id,
+                ProviderAttempt.run_id == self._run_id,
+                ProviderAttempt.fence == self._fence,
+                ProviderAttempt.outcome == "started",
+            ).one()
+            attempt.outcome = outcome
+            attempt.ended_at = _now()
+            attempt.error_code = error_code
+            if actual_model is not None:
+                attempt.actual_model = actual_model
+            if usage is not None:
+                attempt.usage = json.dumps(usage.model_dump(mode="json"), sort_keys=True)
 
-        self._say(
-            run,
-            ATTEMPT_FINISHED,
-            {
-                "profile_id": attempt.profile_id,
-                "profile_revision": attempt.profile_revision,
-                "adapter": attempt.adapter,
-                "requested_model": attempt.requested_model,
-                "actual_model": attempt.actual_model,
-                "destination_label": attempt.destination_label,
-                "ordinal": attempt.ordinal,
-                "outcome": outcome,
-                "error_code": error_code,
-                "usage": usage.model_dump(mode="json") if usage is not None else None,
-            },
-        )
+            self._say(
+                session,
+                run,
+                ATTEMPT_FINISHED,
+                {
+                    "profile_id": attempt.profile_id,
+                    "profile_revision": attempt.profile_revision,
+                    "adapter": attempt.adapter,
+                    "requested_model": attempt.requested_model,
+                    "actual_model": attempt.actual_model,
+                    "destination_label": attempt.destination_label,
+                    "ordinal": attempt.ordinal,
+                    "outcome": outcome,
+                    "error_code": error_code,
+                    "usage": usage.model_dump(mode="json") if usage is not None else None,
+                },
+            )
+            if self._commit_each:
+                session.commit()
+        finally:
+            if self._commit_each:
+                session.close()
 
     def _next_ordinal(self, session) -> int:
         """Attempts are numbered per run, in the order the worker made them."""

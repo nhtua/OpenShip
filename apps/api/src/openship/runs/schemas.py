@@ -28,6 +28,10 @@ class ModelSummary(BaseModel):
     requested_model: str
     actual_model: str | None = None
     destination_label: str | None = None
+    serving_profile_id: str | None = None
+    serving_label: str | None = None
+    serving_adapter: str | None = None
+    serving_destination_label: str | None = None
     fallback_profile_ids: tuple[str, ...] = ()
     recorded: bool = True
 
@@ -105,24 +109,49 @@ def _served_model(attempts) -> str | None:
     return None
 
 
+def _serving_attempt(attempts):
+    """The successful request that actually served the run, if recorded."""
+    return next(
+        (attempt for attempt in reversed(tuple(attempts)) if attempt.outcome == "succeeded"),
+        None,
+    )
+
+
 def _model_projection(snapshot: str | None, attempts=()) -> ModelSummary | None:
     """A run's own pinned configuration, or nothing for a run that predates it."""
     if not snapshot:
         return None
-    config = json.loads(snapshot)
-    primary = config["primary"]
+    try:
+        config = json.loads(snapshot)
+        primary = config["primary"]
+        profile_id = primary["id"]
+        label = primary["label"]
+        adapter = primary["adapter"]
+        model = primary["model"]
+        endpoint = primary["endpoint"]
+        fallback_ids = tuple(profile["id"] for profile in config.get("fallbacks", ()))
+        labels = {profile["id"]: profile["label"] for profile in (primary, *config.get("fallbacks", ()))}
+    except (json.JSONDecodeError, TypeError, KeyError, ValueError):
+        # A snapshot can outlive the schema that wrote it. Its normalized
+        # failure remains readable even when its provider metadata does not.
+        return None
+    serving = _serving_attempt(attempts)
     return ModelSummary(
-        profile_id=primary["id"],
-        label=primary["label"],
-        adapter=primary["adapter"],
-        requested_model=primary["model"],
+        profile_id=profile_id,
+        label=label,
+        adapter=adapter,
+        requested_model=model,
         # Requested and actual are separate fields on the contract, and they
         # stay separate here: a provider that answered from an alias it was
         # handed would otherwise be indistinguishable from one that answered
         # from the model the operator named.
-        actual_model=_served_model(attempts),
-        destination_label=destination_label(primary["endpoint"]),
-        fallback_profile_ids=tuple(profile["id"] for profile in config.get("fallbacks", ())),
+        actual_model=serving.actual_model if serving and serving.actual_model else _served_model(attempts),
+        destination_label=destination_label(endpoint),
+        serving_profile_id=serving.profile_id if serving else None,
+        serving_label=labels.get(serving.profile_id, serving.profile_id) if serving else None,
+        serving_adapter=serving.adapter if serving else None,
+        serving_destination_label=serving.destination_label if serving else None,
+        fallback_profile_ids=fallback_ids,
     )
 
 

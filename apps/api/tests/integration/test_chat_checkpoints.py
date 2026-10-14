@@ -8,6 +8,7 @@ The graph is driven by the configuration a run carries, so a case supplies one
 instead of today's settings: what a resumed thread runs is what its run pinned.
 """
 
+import json
 import os
 import uuid
 
@@ -35,6 +36,21 @@ from tests.providers.conftest import (
     qualified_profile,
     sdk_chunk,
 )
+
+
+@pytest.fixture(autouse=True)
+def current_fixture_profile(monkeypatch):
+    """The run's fixture profile is currently eligible in these graph tests."""
+    from src.openship.config import settings
+
+    profile = qualified_profile()
+    monkeypatch.setattr(
+        settings,
+        "model_profiles_json",
+        json.dumps([profile.model_dump(mode="json", exclude={"limits", "profile_revision"})]),
+    )
+    monkeypatch.setattr(settings, "model_default_profile_id", profile.id)
+    monkeypatch.setenv(CREDENTIAL_REF, SENTINEL_CREDENTIAL)
 
 
 @pytest.fixture

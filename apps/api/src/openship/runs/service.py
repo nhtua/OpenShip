@@ -321,7 +321,16 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
             detail={"error": {"code": "invalid_run_id", "message": "Invalid run ID format"}},
         )
 
-    run = db.query(Run).filter(Run.id == rid).first()
+    # Lock the run before checking its state. Finalization also updates this
+    # row, so exactly one of completion and cancellation can win the terminal
+    # transition. Refresh because the identity map may predate the lock wait.
+    run = (
+        db.query(Run)
+        .filter(Run.id == rid)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
     if not run:
         raise HTTPException(
             status_code=404,

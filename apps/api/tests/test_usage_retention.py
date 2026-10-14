@@ -3,6 +3,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -10,6 +11,23 @@ from src.openship.runs.graph import model_step
 from src.openship.runs.worker import _usage_record
 
 from .providers.conftest import invocation, run_state, sdk_chunk, serve
+
+
+@pytest.fixture(autouse=True)
+def current_fixture_profile(monkeypatch):
+    """The run's fixture profile is currently eligible in these graph tests."""
+    from src.openship.config import settings
+
+    from .providers.conftest import CREDENTIAL_REF, qualified_profile
+
+    profile = qualified_profile()
+    monkeypatch.setattr(
+        settings,
+        "model_profiles_json",
+        json.dumps([profile.model_dump(mode="json", exclude={"limits", "profile_revision"})]),
+    )
+    monkeypatch.setattr(settings, "model_default_profile_id", profile.id)
+    monkeypatch.setenv(CREDENTIAL_REF, "synthetic-fixture-credential")
 
 
 def test_model_step_captures_usage(monkeypatch):

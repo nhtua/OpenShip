@@ -80,11 +80,10 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_USER: openship
-          # A throwaway database, but a credential literal would still be a
-          # secret in a public repository, so the value lives in a repo secret.
-          # TEST_POSTGRES_URL, used by the step below, has to name this same
-          # user and password.
-          POSTGRES_PASSWORD: ${{ secrets.TEST_POSTGRES_PASSWORD }}
+          # This disposable service is isolated to the GitHub Actions runner.
+          # Trust auth keeps fork pull requests independent of repository
+          # secrets; no production database credentials are used here.
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: lane
         ports:
           - 5432:5432
@@ -103,14 +102,13 @@ jobs:
       # Selecting the marker is not enough: a job that skipped every case
       # would be green without proving anything, so the summary is checked.
       - name: Run the PostgreSQL lane
+        shell: bash
         env:
-          # The connection string is a repo secret rather than a literal: any
-          # URI that carries a credential is a secret in a public repository.
-          # It has to name this job's service - the same user and password as
-          # the service above - and the lanes create their own databases inside
-          # it, so the two modules never wait for each other's locks.
-          TEST_POSTGRES_URL: ${{ secrets.TEST_POSTGRES_URL }}
+          # The service exists only for this job; tests create isolated lane
+          # databases from this local connection.
+          TEST_POSTGRES_URL: postgresql+psycopg://openship@localhost:5432/lane
         run: |
           cd apps/api
+          set -o pipefail
           uv run pytest -q -m postgres tests/integration/test_provider_pinning_migration.py tests/integration/test_provider_worker_postgres.py | tee /tmp/pg-lane.log
           ! grep -q skipped /tmp/pg-lane.log

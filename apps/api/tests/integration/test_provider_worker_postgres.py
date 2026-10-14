@@ -475,9 +475,10 @@ def test_started_request_is_not_blindly_replayed_after_crash(installation, monke
     # The worker reached the provider and then died. The attempt is written and
     # flushed before dispatch, so it survives the process; the run records that
     # a call had started.
-    recorder = DatabaseAttemptRecorder(lambda: db, run.id, first.fence)
+    recorder = DatabaseAttemptRecorder(
+        installation, run.id, first.fence, commit_each=True
+    )
     recorder.start(pin_profile(profile_spec("primary-fixture")), reason="initial")
-    db.commit()
     assert mark_provider_started(db, first.run_id, first.fence)
     db.commit()
 
@@ -636,6 +637,36 @@ def test_cancel_fences_late_result_and_closes_stream(held_run, monkeypatch):
     assert any(event.type == "run_cancelled" for event in closing), (
         "the stream is closed by the cancellation itself"
     )
+
+
+def test_late_cancel_refreshes_run_after_completion_commits(installation):
+    """A cancel waiting behind completion returns the winning terminal state."""
+    creator = installation()
+    queued = _turn(creator)
+    claim = _claim(creator)
+
+    cancel_session = installation()
+    stale = cancel_session.get(Run, queued["run"].id)
+    assert stale.status == "running"
+
+    completion_session = installation()
+    assert finalize(
+        completion_session,
+        queued["run"].id,
+        claim.fence,
+        {"status": "success"},
+        commit=False,
+    )
+    completion_session.commit()
+
+    result = request_cancel(
+        cancel_session,
+        user_id=queued["user"].id,
+        run_id=str(queued["run"].id),
+    )
+    assert result.status == "completed"
+    with installation() as verify:
+        assert verify.get(Run, queued["run"].id).status == "completed"
 
 
 # --- What a run reported survives its events ----------------------------------

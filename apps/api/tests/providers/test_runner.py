@@ -134,6 +134,7 @@ async def _turn(
     counted=None,
     sleeper=no_wait,
     jitter=no_jitter,
+    authorize_profile=None,
 ):
     """One turn through the runner against a sequence of transport answers."""
     if counted is None:
@@ -148,6 +149,7 @@ async def _turn(
         recorder if recorder is not None else FakeRecorder(),
         sleeper=sleeper,
         jitter=jitter,
+        authorize_profile=authorize_profile,
     )
     return result, transport
 
@@ -258,6 +260,109 @@ async def test_cancel_during_backoff_stops_next_request(monkeypatch):
 
     assert refused.value.code == "cancelled"
     assert transport.requests == 1, "the next request is never made"
+
+
+@pytest.mark.asyncio
+async def test_a_profile_removed_after_submission_is_not_dispatched(monkeypatch):
+    transport = serve_requests(monkeypatch, [{"raises": error_fixture("openai", "rate_limited")}])
+    eligible = {PRIMARY, FALLBACK}
+
+    def authorize(profile):
+        if profile.id not in eligible:
+            raise ProviderError("configuration_error")
+
+    def revoke_after_first_dispatch(profile):
+        if transport.requests:
+            eligible.discard(profile.id)
+        authorize(profile)
+
+    with pytest.raises(ProviderError) as revoked:
+        await run_model_turn(
+            conversation(*CONVERSATION),
+            _config(max_attempts=2),
+            control(),
+            FakeRecorder(),
+            authorize_profile=revoke_after_first_dispatch,
+            sleeper=no_wait,
+            jitter=no_jitter,
+        )
+
+    assert revoked.value.code == "configuration_error"
+    assert transport.requests == 1, "the retry does not dispatch after the revocation check"
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_token_counter_is_interrupted_by_cancellation(monkeypatch):
+    import asyncio
+
+    from src.openship.providers import runner
+
+    monkeypatch.setattr(runner, "_SUPERVISION_SECONDS", 0.01)
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+    streamed = {"value": False}
+
+    class BlockedCounter:
+        async def count_input_tokens(self, _request, _profile, _control):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def stream(self, *_args):
+            streamed["value"] = True
+            raise AssertionError("generation must not start")
+
+    monkeypatch.setattr(runner, "build_adapter", lambda _profile: BlockedCounter())
+    pending = asyncio.create_task(
+        run_model_turn(
+            conversation(*CONVERSATION),
+            _config(primary=_counting(), max_total_tokens=500),
+            control(stop=stopped.is_set),
+            FakeRecorder(),
+            authorize_profile=lambda _profile: None,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    stopped.set()
+    with pytest.raises(ProviderError) as interrupted:
+        await asyncio.wait_for(pending, timeout=1)
+
+    assert interrupted.value.code == "cancelled"
+    assert streamed["value"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_backoff_is_interrupted_by_cancellation(monkeypatch):
+    import asyncio
+
+    from src.openship.providers import runner
+
+    monkeypatch.setattr(runner, "_SUPERVISION_SECONDS", 0.01)
+    stopped = asyncio.Event()
+    waiting = asyncio.Event()
+    transport = serve_requests(monkeypatch, [{"raises": error_fixture("openai", "rate_limited")}])
+
+    async def blocked_sleep(_seconds):
+        waiting.set()
+        await asyncio.Event().wait()
+
+    pending = asyncio.create_task(
+        run_model_turn(
+            conversation(*CONVERSATION),
+            _config(),
+            control(stop=stopped.is_set),
+            FakeRecorder(),
+            sleeper=blocked_sleep,
+            jitter=no_jitter,
+            authorize_profile=lambda _profile: None,
+        )
+    )
+    await asyncio.wait_for(waiting.wait(), timeout=1)
+    stopped.set()
+    with pytest.raises(ProviderError) as interrupted:
+        await asyncio.wait_for(pending, timeout=1)
+
+    assert interrupted.value.code == "cancelled"
+    assert transport.requests == 1
 
 
 @pytest.mark.asyncio

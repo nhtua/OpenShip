@@ -7,13 +7,14 @@ so no catalog, event, checkpoint, or log line can carry it.
 
 from __future__ import annotations
 
+import ipaddress
 import json
-import os
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
 from src.openship.providers.contracts import ProviderProfile
+from src.openship.providers.credentials import credential_value
 from src.openship.providers.errors import ProviderError, describe_validation
 
 _PRIVATE_HOSTS = frozenset(
@@ -72,13 +73,15 @@ def validate_endpoint(profile: ProviderProfile) -> None:
 
 def _is_private_host(host: str) -> bool:
     """Local or private: a bare container name, a loopback, or a private IP."""
-    if host in _PRIVATE_HOSTS or "." not in host:
+    if host in _PRIVATE_HOSTS:
         return True
-    if host.startswith(("10.", "127.", "0.")):
-        return True
-    if host.startswith("192."):
-        return True
-    return host.startswith("172.")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # Single-label names are commonly used by local/container services.
+        # A dotted DNS name is public unless it is an explicit local alias.
+        return "." not in host and ":" not in host
+    return address.is_private or address.is_loopback or address.is_link_local
 
 
 def destination_label(endpoint: str) -> str:
@@ -137,9 +140,7 @@ def parse_profiles(raw: str) -> tuple[ProviderProfile, ...]:
 
 def resolve_credential(ref: str) -> str | None:
     """Read one operator-declared binding. Called only where a client is built."""
-    if not ref:
-        return None
-    return os.environ.get(ref) or None
+    return credential_value(ref)
 
 
 # An installation that predates profiles keeps working through the legacy

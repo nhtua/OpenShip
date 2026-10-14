@@ -348,6 +348,7 @@ def test_sdk_retries_are_disabled_and_the_request_is_bounded():
 
         assert client.max_retries == 0
         assert client.timeout == profile.limits.request_timeout_seconds
+        assert client._client.follow_redirects is False
         assert str(client.base_url).startswith(profile.endpoint)
     finally:
         os.environ.pop(FIXTURE_KEY, None)
@@ -371,11 +372,14 @@ async def test_counting_asks_the_providers_own_counter():
     adapter = AnthropicAdapter(client_factory=lambda _config: client)
     request = conversation(("system", "Be brief."), ("user", "count this"))
 
-    counted = await adapter.count_input_tokens(request, _counting_profile(), control())
+    counted = await adapter.count_input_tokens(
+        request, _counting_profile(), control(remaining=5.0)
+    )
 
     assert counted == 123
     assert client.asked[0]["system"] == "Be brief."
     assert [turn["role"] for turn in client.asked[0]["messages"]] == ["user"]
+    assert client.asked[0]["timeout"] == 5.0
 
 
 @pytest.mark.asyncio
@@ -418,6 +422,84 @@ async def test_a_counter_this_adapter_does_not_implement_is_not_substituted():
 
     assert caught.value.code == "unsupported_capability"
     assert "some-other-counter" in caught.value.safe_message
+
+
+@pytest.mark.asyncio
+async def test_native_sdk_redirect_is_not_followed_or_forwarded_with_credentials():
+    import httpx2
+    from anthropic import AsyncAnthropic
+    from anthropic._streaming import AsyncStream
+    from anthropic.types import RawMessageStreamEvent
+
+    profile = qualified_profile(adapter="anthropic")
+    sdk_client = AsyncAnthropic(api_key="sentinel-credential-value", base_url=profile.endpoint)
+    request = httpx2.Request("POST", profile.endpoint + "/messages")
+    response = httpx2.Response(
+        307,
+        headers={"location": "https://unapproved.example/steal"},
+        request=request,
+    )
+    sdk_stream = AsyncStream(cast_to=RawMessageStreamEvent, response=response, client=sdk_client)
+
+    class StreamClient:
+        class messages:
+            @staticmethod
+            async def create(**_kwargs):
+                return sdk_stream
+
+    adapter = AnthropicAdapter(client_factory=lambda _profile: StreamClient())
+    _events, failure = await drain(
+        adapter, conversation(("user", "synthetic private context")), profile, control()
+    )
+    await sdk_client.close()
+
+    assert failure.code == "configuration_error"
+
+
+@pytest.mark.asyncio
+async def test_constructed_sdk_http_client_does_not_forward_anthropic_redirect(monkeypatch):
+    import httpx2
+
+    monkeypatch.setenv(FIXTURE_KEY, "sentinel-credential-value")  # rayloc:ignore
+    profile = qualified_profile(adapter="anthropic")
+    client = AnthropicAdapter().build_client(profile)
+    seen = []
+
+    async def respond(request):
+        seen.append(request)
+        return httpx2.Response(
+            307,
+            headers={"location": "https://unapproved.example/steal"},
+            request=request,
+        )
+
+    client._client._transport = httpx2.MockTransport(respond)
+    request = client._client.build_request(
+        "POST",
+        profile.endpoint + "/messages",
+        headers={"x-api-key": "sentinel-credential-value"},
+        json={"messages": [{"role": "user", "content": "synthetic private context"}]},
+    )
+    await client._client.send(request)
+    await client.close()
+    assert len(seen) == 1
+    assert str(seen[0].url) == profile.endpoint.rstrip("/") + "/messages"
+    assert b"synthetic private context" in seen[0].content
+    assert seen[0].headers["x-api-key"] == "sentinel-credential-value"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [500, 503])
+async def test_native_sdk_server_errors_are_provider_unavailable(status):
+    import httpx2
+    from anthropic import APIStatusError
+
+    from src.openship.providers.anthropic import _sdk_failure
+
+    request = httpx2.Request("POST", "https://fixture.provider.test/v1/messages")
+    response = httpx2.Response(status, request=request)
+    failure = _sdk_failure(APIStatusError("provider error", response=response, body=None))
+    assert failure.code == "provider_unavailable"
 
 
 @pytest.mark.asyncio

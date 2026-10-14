@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from openai import (
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
     AsyncOpenAI,
     AuthenticationError,
@@ -79,6 +80,18 @@ def _sdk_failure(error: BaseException) -> ProviderError | None:
         return ProviderError("authentication_error", cause=error)
     if isinstance(error, BadRequestError):
         return ProviderError("invalid_request", cause=error)
+    if isinstance(error, APIStatusError):
+        status = error.status_code
+        if 300 <= status < 400:
+            return ProviderError(
+                "configuration_error",
+                safe_message="the model endpoint redirected to another destination; update its configured endpoint",
+                cause=error,
+            )
+        if 500 <= status < 600:
+            return ProviderError("provider_unavailable", cause=error)
+        if 400 <= status < 500:
+            return ProviderError("invalid_request", cause=error)
     return None
 
 
@@ -88,6 +101,7 @@ _SDK_ERRORS = (
     AuthenticationError,
     BadRequestError,
     RateLimitError,
+    APIStatusError,
 )
 
 
@@ -108,12 +122,14 @@ class OpenAIAdapter:
                     "for this installation; choose another profile"
                 ),
             )
-        return AsyncOpenAI(
+        client = AsyncOpenAI(
             api_key=api_key,
             base_url=config.endpoint,
             timeout=config.limits.request_timeout_seconds,
             max_retries=0,
         )
+        client._client.follow_redirects = False
+        return client
 
     def _client(self, config):
         return (self._client_factory or self.build_client)(config)
@@ -136,6 +152,15 @@ class OpenAIAdapter:
         except _SDK_ERRORS as error:
             raise _sdk_failure(error) from error
 
+        response = getattr(stream, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None and 300 <= status_code < 400:
+            await response.aclose()
+            raise ProviderError(
+                "configuration_error",
+                safe_message="the model endpoint redirected to another destination; update its configured endpoint",
+            )
+
         finish_reason: str | None = None
         actual_model: str | None = None
         produced_text = False
@@ -148,11 +173,18 @@ class OpenAIAdapter:
                     )
                 for choice in chunk.choices or []:
                     delta = getattr(choice, "delta", None)
+                    refusal = getattr(delta, "refusal", None) if delta else None
+                    if refusal:
+                        finish_reason = "refusal"
                     if delta and delta.content:
                         produced_text = True
                         yield ProviderEvent(type="text_delta", text=delta.content)
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
+                    if choice.finish_reason and finish_reason != "refusal":
+                        finish_reason = (
+                            "refusal"
+                            if choice.finish_reason == "content_filter"
+                            else choice.finish_reason
+                        )
                 if chunk.model:
                     actual_model = chunk.model
 

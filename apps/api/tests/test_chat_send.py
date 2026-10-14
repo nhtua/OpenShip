@@ -29,7 +29,6 @@ def test_send_message(client: TestClient, authorized_client: dict, monkeypatch):
     declare_two_profiles(monkeypatch)
     transport = answered(monkeypatch, "Hello", " world!")
     worker = run_test_worker()
-    worker = run_test_worker()
     try:
         response = client.post(
             f"/api/chat/{conv_id}/messages",

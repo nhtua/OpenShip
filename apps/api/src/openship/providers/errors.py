@@ -7,10 +7,13 @@ HTTP body never reach a user, an event, or a persisted record.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 
 from pydantic import ValidationError
+
+from src.openship.providers.credentials import (
+    credential_binding_present as _credential_binding_present,
+)
 
 SAFE_MESSAGES: Mapping[str, str] = {
     "configuration_error": (
@@ -126,4 +129,4 @@ def credential_binding_present(name: str) -> bool:
     Presence only — the value is never read here, so it cannot leak into a
     catalog, an event, or a log line.
     """
-    return bool(os.environ.get(name, ""))
+    return _credential_binding_present(name)

@@ -146,6 +146,10 @@ export interface RunModelSummary {
   requested_model: string
   actual_model: string | null
   destination_label: string | null
+  serving_profile_id?: string | null
+  serving_label?: string | null
+  serving_adapter?: string | null
+  serving_destination_label?: string | null
   fallback_profile_ids: string[]
   recorded: boolean
 }
@@ -195,4 +199,18 @@ export interface Snapshot {
   conversation_id: string
   sequence: number
   events: DurableEvent[]
+  runs?: SnapshotRun[]
+}
+
+export interface SnapshotRun {
+  id: string
+  status: Run['status']
+  attempt: number
+  started_at: string | null
+  ended_at: string | null
+  error_code: string | null
+  model?: RunModelSummary | null
+  usage?: UsageSummary | null
+  error?: ErrorSummary | null
+  provider_attempts?: ProviderAttemptSummary[]
 }

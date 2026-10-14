@@ -163,6 +163,62 @@ def test_endpoints_cannot_smuggle_credentials_or_use_insecure_remote_hosts():
     assert profile.endpoint == "http://localhost:8080/v1"
 
 
+@pytest.mark.parametrize(
+    "host,allowed",
+    [
+        ("10.1.2.3", True),
+        ("172.16.0.4", True),
+        ("172.67.1.1", False),
+        ("192.168.2.3", True),
+        ("192.88.99.1", False),
+        ("127.1.2.3", True),
+        ("::1", True),
+        ("fc00::1", True),
+        ("2001:4860:4860::8888", False),
+        ("10.attacker.example", False),
+        ("model-service", True),
+    ],
+)
+def test_plain_http_private_host_classification_uses_ip_ranges(host, allowed):
+    endpoint = f"http://[{host}]/v1" if ":" in host else f"http://{host}/v1"
+    profile = {**LOCAL_PROFILE, "endpoint": endpoint}
+    if allowed:
+        assert parse_profiles(json.dumps([profile]))[0].endpoint == endpoint
+    else:
+        with pytest.raises(ProviderError) as caught:
+            parse_profiles(json.dumps([profile]))
+        assert caught.value.code == "configuration_error"
+
+
+def test_dotenv_credentials_are_available_to_settings_catalog_and_adapter(tmp_path, monkeypatch):
+    """Arbitrary credential references in the documented .env work at startup."""
+    from src.openship.providers.configuration import resolve_credential
+    from src.openship.providers.openai import OpenAIAdapter
+
+    from .conftest import qualified_profile
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=test-openai-value\n"
+        "ANTHROPIC_API_KEY=test-anthropic-value\n"
+        "MODEL_PROFILES_JSON='[]'\n",
+        encoding="utf-8",
+    )
+    profile = qualified_profile(credential_ref="ANTHROPIC_API_KEY")
+    settings = Settings(
+        _env_file=tmp_path / ".env",
+        model_profiles_json=json.dumps(
+            [profile.model_dump(mode="json", exclude={"limits", "profile_revision"})]
+        ),
+        model_default_profile_id=profile.id,
+    )
+    assert settings.openai_api_key == "test-openai-value"
+    assert resolve_credential("ANTHROPIC_API_KEY") == "test-anthropic-value"
+    assert load_profiles(settings).availability(profile.id).available is True
+    client = OpenAIAdapter().build_client(profile)
+    assert client.api_key == "test-anthropic-value"
+
+
 def test_fallback_requires_an_explicit_allowed_list():
     """A user cannot reach a destination the operator did not authorize."""
     primary = {
@@ -232,3 +288,26 @@ def test_registry_never_resolves_a_credential_value_at_load(monkeypatch):
 
     assert pinned.credential_ref == "OPENAI_API_KEY"
     assert "sentinel-credential-value" not in pinned.model_dump_json()
+
+
+def test_dispatch_rechecks_current_profile_id_without_replacing_pinned_destination(monkeypatch):
+    from src.openship.config import settings as live_settings
+    from src.openship.providers.runner import authorize_current_profile
+
+    pinned_spec = {**LOCAL_PROFILE, "id": "pinned", "endpoint": "http://model-service:8080/v1"}
+    current_spec = {**pinned_spec, "endpoint": "http://new-service:8080/v1"}
+    monkeypatch.setattr(live_settings, "model_profiles_json", json.dumps([current_spec]))
+    monkeypatch.setattr(live_settings, "model_default_profile_id", "pinned")
+    pinned = load_profiles(Settings(
+        model_profiles_json=json.dumps([pinned_spec]),
+        model_default_profile_id="pinned",
+    )).get("pinned")
+
+    authorize_current_profile(pinned)
+    assert pinned.endpoint == "http://model-service:8080/v1"
+
+    monkeypatch.setattr(live_settings, "model_profiles_json", json.dumps([LOCAL_PROFILE]))
+    monkeypatch.setattr(live_settings, "model_default_profile_id", "local-llama")
+    with pytest.raises(ProviderError) as revoked:
+        authorize_current_profile(pinned)
+    assert revoked.value.code == "configuration_error"
