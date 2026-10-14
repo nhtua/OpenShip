@@ -12,22 +12,24 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v2
         with:
-          python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: cd apps/agent && uv sync --extra dev
       - run: cd apps/agent && uv run pytest tests/ -v
 
   lint:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v2
         with:
-          python-version: "3.13"
           enable-cache: true
       - run: uv tool install ruff
       - run: cd apps/agent && ruff check .
@@ -39,11 +41,12 @@ jobs:
   # so new code is still checked.
   api-lint:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v2
         with:
-          python-version: "3.13"
           enable-cache: true
       - run: uv tool install ruff
       - run: cd apps/api && ruff check .
@@ -57,11 +60,12 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v2
         with:
-          python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: cd apps/api && uv sync --extra dev
       - run: cd apps/api && uv run pytest -q -m "not postgres and not provider_live"
@@ -76,6 +80,8 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     services:
       postgres:
         image: postgres:15
@@ -97,7 +103,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v2
         with:
-          python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: cd apps/api && uv sync --extra dev
       # Selecting the marker is not enough: a job that skipped every case
