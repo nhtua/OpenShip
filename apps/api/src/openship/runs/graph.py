@@ -8,9 +8,9 @@ provider client are injected per invocation and never reach a checkpoint.
 import asyncio
 import uuid
 from dataclasses import dataclass
-from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
+from typing_extensions import TypedDict
 
 from ..providers.contracts import ChatMessage, ModelRequest, RunModelConfig
 from ..providers.errors import ProviderError

@@ -2,11 +2,11 @@ import asyncio
 import json
 import time
 import uuid
-from typing import TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from typing_extensions import TypedDict
 
 from ..auth.models import User
 from ..auth.routes import require_jwt
