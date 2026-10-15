@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
+from src.openship.auth.models import User
 from src.openship.chat.models import Conversation, Message
 from src.openship.events.retention import prune_events
 from src.openship.providers.contracts import (
@@ -32,6 +33,7 @@ from src.openship.runs.queue import claim_next, finalize, renew
 from src.openship.runs.schemas import project_run_response
 from src.openship.runs.service import bind_run_model_config, load_run_model_config
 from src.openship.runs.worker import Worker
+from src.openship.workspace.models import Project
 
 from .conftest import (
     FIXTURE_MODEL,
@@ -124,6 +126,77 @@ def _queued_turn(
     return run
 
 
+def _queued_title_turn(
+    monkeypatch, content: str, conversation_id=None
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Persist a worker turn directly, without making this worker test an API test."""
+    _two_destinations(monkeypatch)
+    session = TestSessionLocal()
+    if conversation_id is None:
+        user = User(
+            username=f"title_{uuid.uuid4().hex}",
+            email=f"title_{uuid.uuid4().hex}@example.com",
+            password_hash="unused-by-worker-test",
+        )
+        session.add(user)
+        session.flush()
+        project = Project(owner_user_id=user.id, name="Title worker test")
+        session.add(project)
+        session.flush()
+        conversation = Conversation(
+            user_id=user.id,
+            project_id=project.id,
+            title="Fixture",
+        )
+        session.add(conversation)
+        session.flush()
+        conversation_id = conversation.id
+        project_id = project.id
+    else:
+        conversation = session.get(Conversation, conversation_id)
+        assert conversation is not None
+        project_id = conversation.project_id
+
+    run_id = uuid.uuid4()
+    client_request_id = str(uuid.uuid4())
+    sequence = conversation.next_event_sequence
+    session.add_all(
+        [
+            Run(
+                id=run_id,
+                conversation_id=conversation_id,
+                project_id=project_id,
+                client_request_id=client_request_id,
+                status="queued",
+                fence=0,
+                attempt=0,
+                model_configuration=_pinned_config().model_dump_json(),
+            ),
+            RunJob(run_id=run_id, available_at=_QUEUE_EPOCH, fence=0),
+            Message(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                role="user",
+                content=content,
+            ),
+            Event(
+                project_id=project_id,
+                conversation_id=conversation_id,
+                run_id=run_id,
+                sequence=sequence,
+                type="turn_submitted",
+                payload=json.dumps(
+                    {"content": content, "client_request_id": client_request_id}
+                ),
+            ),
+        ]
+    )
+    conversation.next_event_sequence = sequence + 1
+    session.commit()
+    session.close()
+    return run_id, conversation_id
+
+
 def _run_on(conversation_id: str) -> Run:
     session = TestSessionLocal()
     return session.query(Run).filter(Run.conversation_id == uuid.UUID(conversation_id)).one()
@@ -210,6 +283,28 @@ def _assistant(session, run_id) -> list[Message]:
     ).all()
 
 
+def test_title_marker_in_answer_prose_is_not_treated_as_generated_title():
+    """Only a title marker on its own line can change conversation metadata."""
+    worker = object.__new__(Worker)
+
+    title = worker._extract_title_from_response(
+        "The log literally contains ## Title: from the user's configuration."
+    )
+
+    assert title is None
+
+
+def test_removing_title_drops_the_complete_overlong_metadata_line():
+    """Visible answer cleanup removes all metadata even past the title limit."""
+    worker = object.__new__(Worker)
+
+    answer = worker._remove_title_from_response(
+        f"The deployment is ready.\n\n## Title: {'A' * 64}"
+    )
+
+    assert answer == "The deployment is ready."
+
+
 # --- The worker runs the run's own snapshot ---------------------------------------
 
 
@@ -236,6 +331,151 @@ def test_worker_uses_snapshot_not_global_settings(client, authorized_client, mon
     recorded = _answers(TestSessionLocal(), run.id)
     assert [attempt.profile_id for attempt in recorded] == ["primary-fixture"]
     assert recorded[0].requested_model == FIXTURE_MODEL
+
+
+def test_first_answer_saves_clean_message_and_publishes_generated_title(
+    monkeypatch,
+):
+    """The title belongs to the conversation, not the assistant's visible answer."""
+    run_id, conversation_id = _queued_title_turn(monkeypatch, "What should I deploy?")
+    transport = _serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(
+                content="Use the staging profile for this deployment.\n\n## Title: Deploy with the staging profile",
+                finish_reason="stop",
+            ),
+            sdk_chunk(choices=False, usage=(5, 8, 13)),
+        ],
+    )
+
+    _process(_claim())
+
+    session = TestSessionLocal()
+    conversation = session.get(Conversation, conversation_id)
+    assert conversation.title == "Deploy with the staging profile"
+    assert [message.content for message in _assistant(session, run_id)] == [
+        "Use the staging profile for this deployment."
+    ]
+
+    title_events = (
+        session.query(Event)
+        .filter(
+            Event.conversation_id == conversation_id,
+            Event.type == "title_updated",
+        )
+        .all()
+    )
+    assert len(title_events) == 1
+    assert json.loads(title_events[0].payload) == {
+        "conversation_id": str(conversation_id),
+        "title": "Deploy with the staging profile",
+    }
+    assert "## Title:" in transport.seen_kwargs["messages"][0]["content"]
+
+
+def test_first_answer_removes_an_overlong_title_line_from_visible_answer(
+    monkeypatch,
+):
+    """A provider that exceeds the title limit cannot leak title text to the user."""
+    run_id, conversation_id = _queued_title_turn(monkeypatch, "What should I deploy?")
+    _serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(
+                content=f"The deployment is ready.\n\n## Title: {'A' * 64}",
+                finish_reason="stop",
+            ),
+            sdk_chunk(choices=False, usage=(5, 8, 13)),
+        ],
+    )
+
+    _process(_claim())
+
+    session = TestSessionLocal()
+    conversation = session.get(Conversation, conversation_id)
+    assert conversation.title == "A" * 50
+    assert [message.content for message in _assistant(session, run_id)] == [
+        "The deployment is ready."
+    ]
+
+
+def test_first_answer_with_empty_title_marker_uses_fallback_without_leaking_marker(
+    monkeypatch,
+):
+    """An empty metadata line falls back to the user's prompt and stays hidden."""
+    run_id, conversation_id = _queued_title_turn(monkeypatch, "What should I deploy?")
+    _serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(
+                content="The deployment is ready.\n\n## Title: ",
+                finish_reason="stop",
+            ),
+            sdk_chunk(choices=False, usage=(5, 8, 13)),
+        ],
+    )
+
+    _process(_claim())
+
+    session = TestSessionLocal()
+    conversation = session.get(Conversation, conversation_id)
+    assert conversation.title == "What should I deploy?"
+    assert [message.content for message in _assistant(session, run_id)] == [
+        "The deployment is ready."
+    ]
+
+
+def test_later_turn_keeps_title_and_does_not_request_another(
+    monkeypatch,
+):
+    """Only the first assistant response can title a conversation."""
+    _, conversation_id = _queued_title_turn(monkeypatch, "What should I deploy?")
+    _serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(content="First answer.\n\n## Title: Initial title", finish_reason="stop"),
+            sdk_chunk(choices=False, usage=(3, 4, 7)),
+        ],
+    )
+    _process(_claim())
+
+    second_run_id, _ = _queued_title_turn(
+        monkeypatch,
+        "A follow-up question",
+        conversation_id=conversation_id,
+    )
+    queue = TestSessionLocal()
+    queue.query(RunJob).filter(RunJob.run_id == second_run_id).one().available_at = (
+        _QUEUE_EPOCH + timedelta(seconds=1)
+    )
+    queue.commit()
+
+    transport = _serve(
+        monkeypatch,
+        chunks=[
+            sdk_chunk(content="A follow-up answer.", finish_reason="stop"),
+            sdk_chunk(choices=False, usage=(6, 4, 10)),
+        ],
+    )
+    _process(_claim())
+
+    session = TestSessionLocal()
+    conversation = session.get(Conversation, conversation_id)
+    assert conversation.title == "Initial title"
+    title_events = (
+        session.query(Event)
+        .filter(
+            Event.conversation_id == conversation_id,
+            Event.type == "title_updated",
+        )
+        .all()
+    )
+    assert len(title_events) == 1
+    assert all(
+        "## Title:" not in message["content"]
+        for message in transport.seen_kwargs["messages"]
+    )
 
 
 def test_legacy_queued_run_binds_once_under_fence(client, authorized_client, monkeypatch):

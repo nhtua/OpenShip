@@ -242,11 +242,17 @@ class Worker:
         return title
 
     def _extract_title_from_response(self, response):
-        """Extract a conversation title from the LLM response."""
-        match = re.search(r'## Title:\s*(.{1,50})', response)
+        """Extract a standalone, at-most-50-character title line."""
+        match = re.search(r"(?m)^## Title:[ \t]*(.*)$", response)
         if match:
-            return match.group(1).strip()
+            title = match.group(1).strip()
+            return title[:50] or None
         return None
+
+    def _remove_title_from_response(self, response):
+        """Remove complete standalone title lines from the visible answer."""
+        cleaned = re.sub(r"(?m)^## Title:[^\r\n]*(?:\r?\n|$)", "", response)
+        return cleaned.strip() if cleaned != response else response
 
     def process_job(self, claim):
         """Process a single claimed job: supervise one model turn, then publish it."""
@@ -420,10 +426,12 @@ class Worker:
             cleaned_response = result.assistant_response
             if is_first and failure is None:
                 new_title = self._extract_title_from_response(result.assistant_response)
-                if new_title:
-                    # Remove the title line from the response before storing
-                    cleaned_response = re.sub(r'## Title:\s*.{1,50}', '', result.assistant_response).strip()
-                else:
+                # A blank title still needs to stay out of the visible answer;
+                # when no standalone marker exists, this leaves the response intact.
+                cleaned_response = self._remove_title_from_response(
+                    result.assistant_response
+                )
+                if not new_title:
                     # Fallback: generate title from user message
                     new_title = self._generate_title(user_msg.content)
 

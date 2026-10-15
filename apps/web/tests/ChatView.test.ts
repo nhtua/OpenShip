@@ -72,6 +72,36 @@ describe('ChatView', () => {
     expect(row.attributes('data-active')).toBe('true')
   })
 
+  it('shows a generated conversation title in the active chat header', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    await vi.waitFor(
+      () => expect(wrapper.text()).toContain('Deploy pipeline'),
+      { timeout: wait },
+    )
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: { conversation_id: 'c1', sequence: 0, events: [], runs: [] },
+    })
+    await findByText(wrapper, 'Deploy pipeline')!.trigger('click')
+    await vi.waitFor(
+      () => expect(wrapper.find('h1').text()).toBe('Deploy pipeline'),
+      { timeout: wait },
+    )
+
+    const chat = useChatStore()
+    chat.processDurableEvent({
+      id: 'evt-title-1',
+      conversation_id: 'c1',
+      run_id: 'run-title-1',
+      sequence: 1,
+      type: 'title_updated',
+      payload: { conversation_id: 'c1', title: 'Deploy with the staging profile' },
+      created_at: '',
+    } as never)
+    await nextTick()
+
+    expect(wrapper.find('h1').text()).toBe('Deploy with the staging profile')
+  })
+
   it('creates and selects a conversation immediately on click', async () => {
     const created: Conversation = {
       id: 'c3',

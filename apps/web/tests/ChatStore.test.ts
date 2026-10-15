@@ -123,6 +123,32 @@ describe('chat store', () => {
     expect(chat.error).toBeNull()
   })
 
+  it('updates the conversation list and header when a title event arrives', () => {
+    const chat = useChatStore()
+    chat.conversations = [
+      { id: 'c1', title: 'New Conversation', created_at: '', updated_at: '' },
+    ]
+    chat.currentConversation = {
+      id: 'c1',
+      title: 'New Conversation',
+      created_at: '',
+      updated_at: '',
+    }
+
+    chat.processDurableEvent({
+      id: 'evt-title-1',
+      conversation_id: 'c1',
+      run_id: 'run-title-1',
+      sequence: 1,
+      type: 'title_updated',
+      payload: { conversation_id: 'c1', title: 'Deploy with the staging profile' },
+      created_at: '',
+    } as never)
+
+    expect(chat.conversations[0].title).toBe('Deploy with the staging profile')
+    expect(chat.currentConversation?.title).toBe('Deploy with the staging profile')
+  })
+
   it('sendMessage creates a durable run and subscribes to events', async () => {
     // Mock UUID generation
     const mockUuid = 'req-uuid-123'
