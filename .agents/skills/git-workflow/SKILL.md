@@ -94,9 +94,8 @@ quotes, backticks, dollar signs, and newlines without shell interpolation.
    ```
    Prepare separate files for the commit message, PR description, and comment.
    Use real newlines, not literal `\n` sequences.
-3. Review each file for the intended wording and accidental secrets before
-   committing or publishing it.
-4. **Immediately before every Git or GitHub command that consumes a message
+3. Review the file's wording, then use Rayloc to check for secrets and credentials.
+   **Immediately before every Git or GitHub command that consumes a message
    file**, scan that exact file in a separate tool call:
    ```bash
    rayloc scan '/tmp/openship-<task>-commit-message.txt'
@@ -107,7 +106,7 @@ quotes, backticks, dollar signs, and newlines without shell interpolation.
    rescan. Scan again after every edit and before every retry, including when
    reusing the same file for another operation. A staged secret scan does not
    replace this check because message files live outside the repository.
-5. After the clean scan, run the appropriate short command as a separate tool call:
+4. After the clean scan, run the appropriate short command as a separate tool call:
 
    | Operation | Required command pattern |
    | --- | --- |
