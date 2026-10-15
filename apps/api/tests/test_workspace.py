@@ -1,5 +1,4 @@
-from .conftest import declare_two_profiles, run_test_worker
-from .providers.conftest import answered
+import uuid
 
 
 def test_get_workspace(client, auth_token, request):
@@ -23,7 +22,7 @@ def test_get_workspace_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_list_conversations_via_workspace(client, auth_token, monkeypatch):
+def test_list_conversations_via_workspace(client, auth_token):
     """GET /api/workspace/conversations returns user's conversations."""
     headers = {"Authorization": f"Bearer {auth_token}"}
 
@@ -32,19 +31,12 @@ def test_list_conversations_via_workspace(client, auth_token, monkeypatch):
     assert conv_resp.status_code == 201
     conv_id = conv_resp.json()["id"]
 
-    declare_two_profiles(monkeypatch)
-    answered(monkeypatch, "Test response")
-    worker = run_test_worker()
-    try:
-        resp = client.post(
-            f"/api/chat/{conv_id}/messages",
-            json={"content": "Test message"},
-            headers=headers,
-        )
-    finally:
-        worker.join(timeout=30)
-
-    assert resp.status_code == 200
+    resp = client.post(
+        f"/api/runs/{conv_id}/turns",
+        json={"content": "Test message", "client_request_id": str(uuid.uuid4())},
+        headers=headers,
+    )
+    assert resp.status_code == 202
 
     # Now list conversations via workspace endpoint
     response = client.get("/api/workspace/conversations", headers=headers)

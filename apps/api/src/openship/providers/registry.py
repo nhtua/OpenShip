@@ -9,11 +9,7 @@ from __future__ import annotations
 
 import hashlib
 
-from src.openship.providers.configuration import (
-    LEGACY_PROFILE_ID,
-    legacy_profile_spec,
-    parse_profiles,
-)
+from src.openship.providers.configuration import parse_profiles
 from src.openship.providers.contracts import (
     ProfileAvailability,
     RunLimits,
@@ -174,9 +170,6 @@ def _configuration_digest(settings) -> str:
         "profiles": settings.model_profiles_json,
         "default": settings.model_default_profile_id,
         "max_output_tokens": settings.model_max_tokens,
-        "legacy_model": settings.openai_model,
-        "legacy_endpoint": settings.openai_base_url,
-        "legacy_credential_present": bool(settings.openai_api_key),
     }
     return hashlib.sha256(repr(sorted(material.items())).encode("utf-8")).hexdigest()
 
@@ -184,38 +177,34 @@ def _configuration_digest(settings) -> str:
 def _build_registry(settings) -> ProviderRegistry:
     """Parse, validate, and freeze every profile this installation declares."""
     declared = settings.model_profiles_json.strip()
-    if declared:
-        profiles = parse_profiles(declared)
-        default_id = settings.model_default_profile_id
-        known = {profile.id for profile in profiles}
-        if default_id not in known:
+    if not declared:
+        raise ProviderError(
+            "configuration_error",
+            safe_message="MODEL_PROFILES_JSON must declare at least one model profile",
+        )
+    profiles = parse_profiles(declared)
+    if not profiles:
+        raise ProviderError(
+            "configuration_error",
+            safe_message="MODEL_PROFILES_JSON must declare at least one model profile",
+        )
+    default_id = settings.model_default_profile_id
+    known = {profile.id for profile in profiles}
+    if not default_id or default_id not in known:
+        raise ProviderError(
+            "configuration_error",
+            safe_message="MODEL_DEFAULT_PROFILE_ID must name one of the declared model profiles",
+        )
+    for profile in profiles:
+        unknown = [
+            name for name in profile.allowed_fallback_profile_ids if name not in known
+        ]
+        if unknown:
             raise ProviderError(
                 "configuration_error",
                 safe_message=(
-                    f"the default profile {default_id!r} is not among the declared profiles"
-                ),
-            )
-        for profile in profiles:
-            unknown = [
-                name for name in profile.allowed_fallback_profile_ids if name not in known
-            ]
-            if unknown:
-                raise ProviderError(
-                    "configuration_error",
-                    safe_message=(
-                        f"profile {profile.id!r} allows fallback to "
-                        f"{unknown[0]!r}, which is not declared"
-                    ),
-                )
-    else:
-        profiles = (legacy_profile_spec(settings),)
-        default_id = settings.model_default_profile_id or LEGACY_PROFILE_ID
-        if default_id != LEGACY_PROFILE_ID:
-            raise ProviderError(
-                "configuration_error",
-                safe_message=(
-                    f"no profile named {default_id!r} is declared; "
-                    "declare profiles before setting a default"
+                    f"profile {profile.id!r} allows fallback to "
+                    f"{unknown[0]!r}, which is not declared"
                 ),
             )
 

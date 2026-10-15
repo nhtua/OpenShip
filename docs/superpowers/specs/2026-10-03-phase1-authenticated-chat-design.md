@@ -1,5 +1,9 @@
 # Phase 1: Authenticated Browser Chat
 
+> Historical phase design. Its direct OpenAI chat execution and POST SSE
+> contract were replaced by Phase 3's explicit profiles and durable run/event
+> API. Do not restore those compatibility paths when implementing later phases.
+
 **Date:** 2026-10-03
 **Status:** Proposed
 **Milestone:** "I can install OpenShip, open my browser, sign in, and have a conversation."

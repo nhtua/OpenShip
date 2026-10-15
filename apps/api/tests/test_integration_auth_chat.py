@@ -8,24 +8,29 @@ The chat turns are durable, so each one needs a worker to run it and a
 synthetic provider to answer it — the journey itself is unchanged.
 """
 
+import uuid
+
 from fastapi.testclient import TestClient
 
-from .conftest import declare_two_profiles, run_test_worker
+from .conftest import declare_two_profiles, execute_test_run
 from .providers.conftest import answered
 
 
-def _legacy_turn(client, headers, conversation_id, content, monkeypatch, *answer):
-    """One legacy turn: a synthetic provider answers, and a test worker runs it."""
+def _durable_turn(client, headers, conversation_id, content, monkeypatch, *answer):
+    """Submit a turn, execute it in the worker, and read its durable outcome."""
     answered(monkeypatch, *answer)
-    worker = run_test_worker()
-    try:
-        return client.post(
-            f"/api/chat/{conversation_id}/messages",
-            json={"content": content},
-            headers=headers,
-        )
-    finally:
-        worker.join(timeout=30)
+    response = client.post(
+        f"/api/runs/{conversation_id}/turns",
+        json={"content": content, "client_request_id": str(uuid.uuid4())},
+        headers=headers,
+    )
+    assert response.status_code == 202, response.text
+    run_id = response.json()["id"]
+    execute_test_run(run_id)
+    result = client.get(f"/api/runs/{run_id}", headers=headers)
+    assert result.status_code == 200
+    assert result.json()["status"] == "completed", result.text
+    return response
 
 
 def test_full_auth_then_chat_flow(client: TestClient, monkeypatch):
@@ -62,13 +67,12 @@ def test_full_auth_then_chat_flow(client: TestClient, monkeypatch):
     assert conv_resp.status_code == 201
     conv_id = conv_resp.json()["id"]
 
-    resp = _legacy_turn(
+    resp = _durable_turn(
         client, headers, conv_id, "Hello from integration test", monkeypatch,
         "Integration test response",
     )
 
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "text/event-stream; charset=utf-8"
+    assert resp.status_code == 202
 
     # --- Step 4: List conversations (should include the one we just created) ---
     convs = client.get("/api/conversations", headers=headers)
@@ -83,12 +87,12 @@ def test_full_auth_then_chat_flow(client: TestClient, monkeypatch):
     assert conv_id_2_resp.status_code == 201
     conv_id_2 = conv_id_2_resp.json()["id"]
 
-    resp2 = _legacy_turn(
+    resp2 = _durable_turn(
         client, headers, conv_id_2, "Second conversation", monkeypatch,
         "Second message",
     )
 
-    assert resp2.status_code == 200
+    assert resp2.status_code == 202
 
     # --- Step 6: List conversations again (should now have 2) ---
     convs2 = client.get("/api/conversations", headers=headers)
@@ -119,19 +123,15 @@ def test_auth_then_multiple_chat_turns(client: TestClient, monkeypatch):
     conv_id = conv_resp.json()["id"]
 
     declare_two_profiles(monkeypatch)
-    answered(monkeypatch, "Turn")
-    worker = run_test_worker()
-    try:
-        # Send 10 turns
-        for i in range(10):
-            resp = client.post(
-                f"/api/chat/{conv_id}/messages",
-                json={"content": f"Turn number {i}"},
-                headers=headers,
-            )
-            assert resp.status_code == 200
-    finally:
-        worker.join(timeout=60)
+    for i in range(10):
+        response = _durable_turn(
+            client, headers, conv_id, f"Turn number {i}", monkeypatch, "Turn"
+        )
+        assert response.status_code == 202
+
+    history = client.get(f"/api/conversations/{conv_id}/messages", headers=headers)
+    assert history.status_code == 200
+    assert len(history.json()) == 20
 
     # Verify all 10 turns are in conversations list
     convs = client.get("/api/conversations", headers=headers)

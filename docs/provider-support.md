@@ -92,7 +92,6 @@ profile that omits or invents one: `openai` needs `output_limit_parameter`
 | `MODEL_PROFILES_JSON` | at startup, once per process, when the registry is built | no |
 | `MODEL_DEFAULT_PROFILE_ID` | the profile that answers when the browser chooses nothing | no |
 | `MODEL_MAX_TOKENS` | the output ceiling a turn asks for, when a profile declares none | no |
-| `OPENAI_MODEL`, `OPENAI_BASE_URL` | only for an installation that declares no profile (the legacy path) | no |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and any name a profile's `credential_ref` gives | only where a client is constructed | **yes** |
 | `TEST_POSTGRES_URL` | the durable-pipeline test lane | throwaway |
 | `OPENSHIP_LIVE_PROFILE_ID` | the opt-in live qualification test | n/a |
@@ -120,10 +119,11 @@ the catalog rather than guessed at.
 
 ## Default and fallback behaviour
 
-* **Default.** The default profile is named by configuration, never invented at
-  runtime. An installation that declares no profile keeps working through the
-  legacy settings as one synthetic profile; the moment profiles are declared,
-  a default outside them is refused at startup.
+* **Default.** `MODEL_PROFILES_JSON` must declare at least one profile and
+  `MODEL_DEFAULT_PROFILE_ID` must name one of them. A missing declaration or
+  unknown default produces an actionable configuration error. Model names and
+  endpoints belong in profiles; `OPENAI_MODEL` and `OPENAI_BASE_URL` do not
+  configure this application.
 * **Fallback.** A fallback is only offered where the profile that answers
   declares it in `allowed_fallback_profile_ids`. The browser shows the opt-in
   only then, the store refuses a fallback that profile does not allow, and the
@@ -200,3 +200,15 @@ cd apps/api && OPENSHIP_LIVE_PROFILE_ID=<an installed profile id> \
 Run without a credential configured, it fails with the reason the
 installation cannot serve that profile rather than skipping — which is the
 honest state, and the reason names the binding, never a value.
+
+
+## Chat API
+
+Chat uses one durable path: `POST /api/runs/{conversation_id}/turns` accepts
+an idempotent turn and returns HTTP 202. The worker executes its pinned model
+profile, and the browser reads the run and replays conversation events through
+`GET /api/conversations/{conversation_id}/events/stream`. Conversation listing,
+message history, and worker-generated conversation titles use this same path.
+There is no Phase 1 `POST /api/chat/{conversation_id}/messages` endpoint or
+direct OpenAI chat service. Historical database migrations preserve stored
+conversations and runs; they do not enable an alternate chat implementation.

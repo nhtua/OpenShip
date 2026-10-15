@@ -80,7 +80,7 @@ test('captures populated chat (dark)', async ({ page }) => {
 
 test('captures error state (dark)', async ({ page }) => {
   await clearApiRoutes(page)
-  await mockApi(page, { chatStatus: 500 })
+  await mockApi(page, { turnsStatus: 500 })
   await setAuthToken(page)
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/')

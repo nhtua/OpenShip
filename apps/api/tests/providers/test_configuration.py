@@ -1,6 +1,6 @@
 """Operator profile configuration, registry lookup, and per-run pinning tests.
 
-The break each test catches: legacy settings ignored, a profile resolved that
+The break each test catches: a profile resolved that
 the operator never allowed, an endpoint that smuggles a secret in its URL,
 or a fallback the user did not authorize.
 """
@@ -45,39 +45,15 @@ LOCAL_PROFILE = {
 }
 
 
-def legacy_settings():
-    return Settings(
-        openai_api_key="test-key-not-a-secret",
-        openai_model="gpt-4o",
-        openai_base_url="https://api.openai.com/v1",
-        model_max_tokens=4000,
-        model_profiles_json="",
-        model_default_profile_id="",
-    )
-
-
-def test_legacy_settings_still_produce_a_working_default_profile():
-    """An installation that predates profiles keeps working unchanged."""
-    registry = load_profiles(legacy_settings())
-
-    assert registry.default_profile_id == "openai-default"
-    pinned = registry.get("openai-default")
-    assert pinned.adapter == "openai"
-    assert pinned.model == "gpt-4o"
-    assert pinned.endpoint == "https://api.openai.com/v1"
-    assert pinned.credential_ref == "OPENAI_API_KEY"
-    assert pinned.limits.max_output_tokens == 4000
-
-
-def test_declaring_profiles_replaces_the_legacy_default():
-    """Explicit configuration never blends legacy values into a new profile."""
+def test_only_declared_profiles_are_available():
+    """The registry offers exactly the profiles the operator configured."""
     profiles = [
         {**LOCAL_PROFILE, "id": "primary", "label": "Primary"},
         LOCAL_PROFILE,
     ]
     registry = load_profiles(
         Settings(
-            openai_model="gpt-4o",
+            _env_file=None,
             model_profiles_json=json.dumps(profiles),
             model_default_profile_id="local-llama",
         )
@@ -86,7 +62,6 @@ def test_declaring_profiles_replaces_the_legacy_default():
     assert registry.default_profile_id == "local-llama"
     assert sorted(registry.profile_ids) == ["local-llama", "primary"]
     assert registry.get("local-llama").model == "qwen3-32b"
-    assert "openai-default" not in registry.profile_ids
 
 
 def test_declared_profile_must_name_its_own_model():
@@ -212,7 +187,7 @@ def test_dotenv_credentials_are_available_to_settings_catalog_and_adapter(tmp_pa
         ),
         model_default_profile_id=profile.id,
     )
-    assert settings.openai_api_key == "test-openai-value"
+    assert resolve_credential("OPENAI_API_KEY") == "test-openai-value"
     assert resolve_credential("ANTHROPIC_API_KEY") == "test-anthropic-value"
     assert load_profiles(settings).availability(profile.id).available is True
     client = OpenAIAdapter().build_client(profile)
@@ -284,7 +259,14 @@ def test_availability_never_leaks_a_bound_credential(monkeypatch):
 def test_registry_never_resolves_a_credential_value_at_load(monkeypatch):
     """Configuration is secret-free; only adapters bind a value, at dispatch."""
     monkeypatch.setenv("OPENAI_API_KEY", "sentinel-credential-value")
-    pinned = load_profiles(legacy_settings()).get("openai-default")
+    from tests.conftest import profile_spec
+
+    registry = load_profiles(Settings(
+        _env_file=None,
+        model_profiles_json=json.dumps([profile_spec("primary", credential_ref="OPENAI_API_KEY")]),
+        model_default_profile_id="primary",
+    ))
+    pinned = registry.get("primary")
 
     assert pinned.credential_ref == "OPENAI_API_KEY"
     assert "sentinel-credential-value" not in pinned.model_dump_json()

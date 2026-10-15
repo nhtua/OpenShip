@@ -36,46 +36,6 @@ export interface Conversation {
   updated_at: string
 }
 
-export interface SendMessageRequest {
-  content: string
-  conversation_id?: string | null
-}
-
-// Legacy SSE events (still emitted by the adapter)
-export interface SSEChunkEvent {
-  type: 'chunk'
-  content: string
-}
-
-export interface SSECompleteEvent {
-  type: 'complete'
-  message_id: string
-}
-
-export interface SSEConversationCreatedEvent {
-  type: 'conversation_created'
-  conversation_id: string
-}
-
-export interface SSETitleUpdatedEvent {
-  type: 'title_updated'
-  conversation_id: string
-  title: string
-}
-
-export interface SSEMessageUpdatedEvent {
-  type: 'message_updated'
-  message_id: string
-  content: string
-}
-
-export type SSEEvent =
-  | SSEChunkEvent
-  | SSECompleteEvent
-  | SSEConversationCreatedEvent
-  | SSETitleUpdatedEvent
-  | SSEMessageUpdatedEvent
-
 // Durable run types
 export interface Run {
   id: string

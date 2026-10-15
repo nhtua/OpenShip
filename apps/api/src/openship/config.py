@@ -4,15 +4,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # OpenAI
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
-    openai_base_url: str = "https://api.openai.com/v1"
-    model_max_tokens: int = 4000
-
     # Model profiles (non-secret). Credentials stay in their own named bindings.
     model_profiles_json: str = ""
     model_default_profile_id: str = ""
+    model_max_tokens: int = 4000
 
     # Database
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"

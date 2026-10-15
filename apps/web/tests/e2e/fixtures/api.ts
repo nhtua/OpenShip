@@ -102,32 +102,16 @@ export function makeMessages(
   }))
 }
 
-/**
- * Fulfilled SSE fixture: chunk + complete events in canonical
- * `data: {json}\n\n` framing. A fulfilled body verifies final rendering;
- * progressive streaming timing is covered by the component/store unit tests
- * with a controlled ReadableStream (plan Task 7.2).
- */
-function sseBody(chunks: string[], messageId: string): string {
-  const events = chunks.map(
-    (chunk) => `data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`,
-  )
-  events.push(`data: ${JSON.stringify({ type: 'complete', message_id: messageId })}\n\n`)
-  return events.join('')
-}
-
 export interface MockApiOptions {
   loginStatus?: number
   registerStatus?: number
   conversationsStatus?: number
   conversationMessagesStatus?: number
-  chatStatus?: number
+  turnsStatus?: number
   /** Artificial latency (ms) before the login response resolves. */
   loginDelay?: number
-  /** Artificial latency (ms) before the chat SSE response resolves. */
-  chatDelay?: number
-  sseChunks?: string[]
-  sseMessageId?: string
+  /** Artificial latency (ms) before durable terminal events arrive. */
+  streamDelay?: number
   conversations?: E2EConversation[]
   messages?: Record<string, E2EMessage[]>
 }
@@ -149,16 +133,12 @@ export async function mockApi(
     registerStatus = 200,
     conversationsStatus = 200,
     conversationMessagesStatus = 200,
-    chatStatus = 200,
+    turnsStatus = 202,
     loginDelay = 0,
-    chatDelay = 0,
-    sseChunks = ['He', 'llo', ' world'],
-    sseMessageId = 'msg-900',
+    streamDelay = 0,
     conversations = E2E_CONVERSATIONS,
     messages = E2E_MESSAGES,
   } = options
-
-  let sentMessages: { conversation_id: string; content: string }[] = []
 
   const json = (route: Route, status: number, body: unknown): Promise<void> =>
     route.fulfill({
@@ -203,79 +183,17 @@ export async function mockApi(
     })
   })
 
-  await page.route('**/api/conversations/*/messages', (route) => {
-    const url = route.request().url()
-    const id = decodeURIComponent(
-      url.split('/conversations/')[1]?.split('/')[0] ?? '',
-    )
-    console.log('FIXTURE: messages requested for', id, 'sentMessages:', sentMessages.length)
-    if (conversationMessagesStatus !== 200) {
-      return json(route, conversationMessagesStatus, {
-        detail: 'Conversation not found',
-      })
-    }
-    // If a message was sent to this conversation, include the assistant response
-    const sent = sentMessages.find((s) => s.conversation_id === id)
-    if (sent) {
-      const msgs = messages[id] ? [...messages[id]] : []
-      msgs.push({
-        id: 'msg-user-e2e',
-        role: 'user',
-        content: sent.content,
-        conversation_id: id,
-        created_at: new Date().toISOString(),
-      })
-      msgs.push({
-        id: 'msg-assistant-1',
-        role: 'assistant',
-        content: 'Hello world',
-        conversation_id: id,
-        created_at: new Date().toISOString(),
-      })
-      console.log('FIXTURE: returning messages with assistant response')
-      return json(route, 200, msgs)
-    }
-    console.log('FIXTURE: returning base messages')
-    return json(route, 200, messages[id] ?? [])
-  })
-
-  await page.route('**/api/chat/*/messages', async (route) => {
-    if (chatDelay > 0) await new Promise((r) => setTimeout(r, chatDelay))
-    if (chatStatus !== 200) {
-      return json(route, chatStatus, { detail: 'Chat backend unavailable' })
-    }
-    return route.fulfill({
-      status: 200,
-      contentType: 'text/event-stream',
-      body: sseBody(sseChunks, sseMessageId),
-    })
-  })
-
-  // Durable run command endpoint (return error to force legacy fallback)
-  await page.route('**/api/runs/*/turns', (route) => {
-    return json(route, 500, { error: { code: 'server_error', message: 'Durable runs unavailable' } })
-  })
-
-  // Durable event snapshot endpoint
-  await page.route('**/api/conversations/*/snapshot', (route) => {
-    return json(route, 200, {
-      conversation_id: 'c1',
-      sequence: -1,
-      events: [],
-    })
-  })
-
-  // Durable event stream endpoint (emit run.succeeded after a delay)
-  await page.route('**/api/conversations/*/events/stream', async (route) => {
-    console.log('FIXTURE: event stream requested')
-    // Send a run.succeeded event after a brief delay to simulate completion
-    await new Promise((r) => setTimeout(r, 500))
-    console.log('FIXTURE: sending run.succeeded event')
-    return route.fulfill({
-      status: 200,
-      contentType: 'text/event-stream',
-      body: 'data: {"id":"evt-succ-1","sequence":1,"type":"run.succeeded","payload":{"message_id":"msg-assistant-1"}}\n\n',
-    })
+  await mockDurableApi(page, {
+    turnsStatus,
+    streamDelay,
+    baseMessages: messages,
+    conversationMessagesStatus,
+    assistantContent: 'Hello world',
+    streamEvents: [
+      durableEvent(1, 'run.succeeded', {
+        payload: { message_id: 'msg-assistant-fixture' },
+      }),
+    ],
   })
 }
 
@@ -302,10 +220,9 @@ export async function setAuthToken(
  * response is local and fixed; no provider is contacted and no fixture names
  * a credential.
  *
- * These are registered after `mockApi` rather than inside it, which is what
- * makes them win: Playwright keeps the most recently added handler for a
- * matching URL. A test that wants the durable path opts in, and every other
- * test keeps seeing the legacy fixture it was written against.
+ * `mockApi` installs these for the ordinary chat journey. Provider-specific
+ * cases may call this again to override the same Phase 3 endpoints with
+ * different profiles, outcomes, or retained events.
  */
 
 export interface E2EProfileItem {
@@ -778,6 +695,8 @@ export interface DurableApiOptions {
   snapshotEvents?: E2EDurableEvent[]
   streamEvents?: E2EDurableEvent[]
   streamStatus?: number
+  streamDelay?: number
+  conversationMessagesStatus?: number
 }
 
 export async function mockDurableApi(
@@ -791,7 +710,7 @@ export async function mockDurableApi(
   const {
     profilesStatus = 200,
     profiles = E2E_PROFILES,
-    turnsStatus = 201,
+    turnsStatus = 202,
     submittedRun = E2E_RUN_QUEUED,
     runReads = [E2E_RUN_COMPLETED],
     cancelStatus = 200,
@@ -801,6 +720,8 @@ export async function mockDurableApi(
     snapshotEvents = [],
     streamEvents = [],
     streamStatus = 200,
+    streamDelay = 0,
+    conversationMessagesStatus = 200,
   } = options
 
   // What the browser actually asked for. A test that wants to know whether a
@@ -853,6 +774,9 @@ export async function mockDurableApi(
 
   await page.route('**/api/conversations/*/messages', (route) => {
     const conversationId = conversationFrom(route.request().url(), '/conversations/')
+    if (conversationMessagesStatus !== 200) {
+      return json(route, conversationMessagesStatus, { detail: 'Conversation not found' })
+    }
     const list = [...(baseMessages[conversationId] ?? [])]
     for (const { conversation_id, payload } of capture.submitted) {
       if (conversation_id !== conversationId) continue
@@ -895,7 +819,8 @@ export async function mockDurableApi(
   // glob ends at the pattern: the trailing wildcard is what lets the query
   // through. Without it the fixture is never asked and the browser sees a
   // 404 instead of the record.
-  await page.route('**/api/conversations/*/events/stream**', (route) => {
+  await page.route('**/api/conversations/*/events/stream**', async (route) => {
+    if (streamDelay > 0) await new Promise((resolve) => setTimeout(resolve, streamDelay))
     capture.stream.push(route.request().url())
     if (streamStatus !== 200) {
       return json(route, streamStatus, { detail: 'Event stream unavailable' })
@@ -908,7 +833,7 @@ export async function mockDurableApi(
   })
 
   await page.route('**/api/runs/*/turns', async (route) => {
-    if (turnsStatus !== 201) {
+    if (turnsStatus !== 202) {
       return json(route, turnsStatus, { detail: 'Turn could not be submitted' })
     }
     const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>
@@ -916,7 +841,7 @@ export async function mockDurableApi(
       conversation_id: conversationFrom(route.request().url(), '/runs/'),
       payload: body,
     })
-    json(route, 201, submittedRun)
+    json(route, 202, submittedRun)
   })
 
   await page.route('**/api/runs/*/cancel', (route) => {

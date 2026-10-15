@@ -1,7 +1,5 @@
 import os
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -221,57 +219,33 @@ def declare_two_profiles(monkeypatch) -> None:
     )
 
 
-# --- A worker a request can rely on ------------------------------------------
-#
-# The durable pipeline does its work where a worker owns it, so a route that
-# answers inside one response needs a worker running while the request is in
-# flight. These fixtures give a test the real Worker against the test
-# installation; the provider itself stays synthetic, supplied by the caller.
+@pytest.fixture(autouse=True)
+def configured_model_profiles(monkeypatch):
+    """Tests declare a synthetic installation instead of relying on host settings."""
+    declare_two_profiles(monkeypatch)
 
-def _clear_queue() -> None:
-    """Start this case from an empty queue.
 
-    Earlier cases queue turns and never run them, and a turn somebody else
-    queued is not this case's to wait for. A test installation therefore
-    begins with nothing queued; the runs those cases asserted on are already
-    asserted, and only the queue rows are left over.
-    """
+def execute_test_run(run_id: str) -> None:
+    """Claim and execute one submitted turn with the real worker, without polling."""
+    import uuid
+
     from src.openship.runs.models import RunJob
-
-    with TestSessionLocal() as session:
-        session.query(RunJob).delete()
-        session.commit()
-
-
-def run_test_worker(worker_id: str = "test-worker", idle_polls: int = 100) -> threading.Thread:
-    """Start a worker that keeps up with whatever the requests queue.
-
-    The thread is the point: a route that answers inside one response waits
-    while this worker claims and publishes. It stops once the queue has been
-    quiet for ``idle_polls`` polls — so a test only has to make its
-    request, and may join the thread to be sure the worker is done.
-    """
     from src.openship.runs.queue import claim_next
     from src.openship.runs.worker import Worker
 
-    _clear_queue()
-
-    def _pump() -> None:
-        idle = 0
-        while idle < idle_polls:
-            with TestSessionLocal() as session:
-                claim = claim_next(db=session, worker_id=worker_id, lease_seconds=30)
-            if claim is None:
-                idle += 1
-                time.sleep(0.02)
-                continue
-            idle = 0
-            Worker(
-                worker_id=worker_id,
-                session_factory=lambda: TestSessionLocal(),
-                checkpointer=None,
-            ).process_job(claim)
-
-    thread = threading.Thread(target=_pump, name=worker_id, daemon=True)
-    thread.start()
-    return thread
+    with TestSessionLocal() as session:
+        # Other cases may intentionally leave queued turns after asserting on
+        # submission. This helper executes only the turn its caller submitted.
+        session.query(RunJob).filter(RunJob.run_id != uuid.UUID(run_id)).delete()
+        session.commit()
+        claim = claim_next(session, worker_id="test-worker", lease_seconds=30)
+    assert claim is not None and str(claim.run_id) == run_id
+    worker = Worker(
+        worker_id=claim.worker_id,
+        session_factory=TestSessionLocal,
+        checkpointer=None,
+    )
+    try:
+        assert worker.process_job(claim), "the worker did not publish a terminal result"
+    finally:
+        worker.engine.dispose()

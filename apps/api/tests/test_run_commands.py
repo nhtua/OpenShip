@@ -4,9 +4,6 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from .conftest import declare_two_profiles, run_test_worker
-from .providers.conftest import answered
-
 
 def test_submit_turn_creates_run_and_message(client: TestClient, authorized_client: dict):
     """Submitting a turn creates a conversation, run, message, job, event, and outbox entry."""
@@ -177,33 +174,3 @@ def test_cancel_replay_idempotent(client: TestClient, authorized_client: dict):
     # Replay cancel should be idempotent
     cancel2 = client.post(f"/api/runs/{run_id}/cancel", headers=authorized_client)
     assert cancel2.status_code == 200, f"Replay cancel failed: {cancel2.status_code} {cancel2.text}"
-
-
-def test_old_chat_stream_adapter(client: TestClient, authorized_client: dict, monkeypatch):
-    """The old POST /api/chat/{id}/messages stream still works as an adapter."""
-    conv_resp = client.post("/api/conversations", json={"title": "Test"}, headers=authorized_client)
-    assert conv_resp.status_code == 201
-    conv_id = conv_resp.json()["id"]
-
-    declare_two_profiles(monkeypatch)
-    answered(monkeypatch, "Hello")
-    worker = run_test_worker()
-    try:
-        response = client.post(
-            f"/api/chat/{conv_id}/messages",
-            json={"content": "Old style message"},
-            headers=authorized_client,
-        )
-    finally:
-        worker.join(timeout=30)
-
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
-
-    # Parse SSE events
-    text = response.text
-    events = [
-        line for line in text.strip().split("\n") if line.startswith("data:")
-    ]
-    assert any("Hello" in e for e in events)
-    assert any("[DONE]" in e for e in events)

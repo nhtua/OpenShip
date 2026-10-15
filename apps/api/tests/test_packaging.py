@@ -134,6 +134,24 @@ def test_the_documented_environment_names_every_binding_the_packaging_asks_for()
     )
 
 
+def test_the_documented_profiles_form_a_usable_installation_configuration():
+    """Copying the example supplies valid profiles and an explicit default."""
+    from dotenv import dotenv_values
+
+    from src.openship.config import Settings
+
+    declared = dotenv_values(ENVIRONMENT)
+    registry = load_profiles(Settings(
+        _env_file=None,
+        model_profiles_json=declared["MODEL_PROFILES_JSON"],
+        model_default_profile_id=declared["MODEL_DEFAULT_PROFILE_ID"],
+    ))
+
+    assert registry.profile_ids
+    assert registry.default_profile_id in registry.profile_ids
+    assert registry.get(registry.default_profile_id).credential_ref == "OPENAI_API_KEY"
+
+
 def test_qualification_is_opted_into_by_the_name_the_packaging_documents():
     """The opt-in an operator sets is the one the live test reads.
 

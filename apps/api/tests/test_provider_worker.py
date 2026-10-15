@@ -225,7 +225,8 @@ def test_worker_uses_snapshot_not_global_settings(client, authorized_client, mon
             sdk_chunk(choices=False, usage=(3, 4, 7)),
         ],
     )
-    monkeypatch.setattr("src.openship.config.settings.openai_model", "changed-after-submission")
+    changed_profile = {**profile_spec("primary-fixture"), "model": "changed-after-submission"}
+    configure_profiles(monkeypatch, [changed_profile], "primary-fixture")
 
     _process(claim)
 

@@ -11,7 +11,7 @@ for a person to recognise where their words go, and it is the same string
 the run's own records use.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..auth.models import User
@@ -19,6 +19,7 @@ from ..auth.routes import require_jwt
 from ..config import settings
 from ..providers.configuration import destination_label
 from ..providers.contracts import ProfileAvailability
+from ..providers.errors import ProviderError
 from ..providers.registry import _adapter_supported, load_profiles
 
 router = APIRouter(prefix="/api", tags=["providers"])
@@ -87,7 +88,13 @@ async def list_model_profiles(
     user: User = Depends(require_jwt),
 ):
     """The installation's own profiles, in the order it declares them."""
-    registry = load_profiles(settings)
+    try:
+        registry = load_profiles(settings)
+    except ProviderError as refused:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": {"code": refused.code, "message": refused.safe_message}},
+        ) from refused
     return ModelCatalogResponse(
         default_profile_id=registry.default_profile_id,
         profiles=[_catalog_entry(registry, profile_id) for profile_id in registry.profile_ids],

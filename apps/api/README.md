@@ -7,27 +7,39 @@ Backend API server for OpenShip, built with FastAPI.
 ```bash
 cd apps/api
 uv sync
+cp .env.example .env
+# Configure PostgreSQL, JWT_SECRET, model profiles, and credential bindings in .env.
+uv run alembic upgrade head
 uv run uvicorn src.openship.main:app --host 0.0.0.0 --port 8000
 ```
 
 Then visit `http://localhost:8000/api/health` to verify the server is running.
 
-## Configuration
-
-Copy `.env.example` to `.env` and fill in your values:
+Start the chat worker in a second terminal from `apps/api`:
 
 ```bash
-cp .env.example .env
+uv run python -m src.openship.runs.worker
 ```
+
+## Configuration
+
+Declare model profiles and select their default in `.env`. The example supplies
+an OpenAI profile whose `credential_ref` points to `OPENAI_API_KEY`; set that
+binding locally. Other profiles can use different bindings or no credentials.
+See [provider configuration](../../docs/provider-support.md) for profile fields,
+capabilities, and local provider examples.
+
+Chat uses durable run submission and the worker for every provider. There is no
+implicit OpenAI profile or Phase 1 chat endpoint.
 
 ## Configuration Options
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | (required) | OpenAI API key |
-| `OPENAI_MODEL` | `gpt-4o` | Model to use |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API base URL |
-| `MODEL_MAX_TOKENS` | `4000` | Maximum tokens for model response |
+| `MODEL_PROFILES_JSON` | (required) | Explicit model profiles, endpoints, capabilities, and credential references |
+| `MODEL_DEFAULT_PROFILE_ID` | (required) | ID of a declared profile to use by default |
+| `OPENAI_API_KEY` | (unset) | Credential binding used by the example OpenAI profile |
+| `MODEL_MAX_TOKENS` | `4000` | Default output token limit when a profile does not declare one |
 | `DATABASE_URL` | `postgresql://postgres:change_me@localhost:5432/openship` | Database connection string |
 | `JWT_SECRET` | `dev-secret-change-in-production` | JWT signing secret |
 | `JWT_EXPIRY_HOURS` | `24` | JWT token expiry |

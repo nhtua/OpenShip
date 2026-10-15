@@ -1,5 +1,10 @@
 # Phase 3 Model-Provider Portability Implementation Plan
 
+> Current implementation reference (updated 2026-10-14): chat uses explicitly
+> declared profiles and the durable run/event API. Phase 1 POST chat streams,
+> direct OpenAI chat services, and implicit single-provider profiles are retired.
+> Do not restore those paths when implementing later phases.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans, or superpowers:subagent-driven-development if the user selects delegation, to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A signed-in user can continue the same durable conversation using an explicitly selected, supported model provider, with consistent cancellation, errors, usage, and execution authority.
@@ -13,7 +18,7 @@
 **Type:** plan  
 **Summary:** Staged provider portability with run pinning, conformance tests, bounded retries, explicit fallback, and independent adapter acceptance.  
 **Date:** 2026-10-12  
-**Status:** Proposed; implementation has not started.
+**Status:** Implemented in the Phase 3 branch; compatibility decisions updated 2026-10-14.
 
 ## Global Constraints
 
@@ -42,7 +47,7 @@
 
 | Existing area | Observation | Phase 3 consequence |
 | --- | --- | --- |
-| `chat/llm.py` | One cached OpenAI client; global key/base URL/model; returns raw SDK chunks. | Replace worker-facing use with adapters; preserve the legacy `chat()` caller contract through a compatibility facade. |
+| `chat/llm.py` | One cached OpenAI client; global key/base URL/model; returns raw SDK chunks. | Removed; the worker uses normalized provider adapters exclusively. |
 | `runs/graph.py` | Reads global settings, checks `OPENAI_API_KEY`, parses OpenAI `choices`/`usage`, buffers text, and accepts empty output. | Consume normalized events and require an explicit valid finish. |
 | `runs/service.py`, `runs/models.py` | Submission persists a durable run but no provider configuration. | Add immutable snapshots and include profile selection in idempotency semantics. |
 | `runs/worker.py` | Invokes a synchronous graph; heartbeat shares its SQLAlchemy session; cancellation fences publication but does not directly stop a model stream. | Give supervision its own DB session and an explicit cancellation/deadline path. |
@@ -53,7 +58,7 @@
 
 ### Verified planning baseline
 
-The new worktree's frontend typecheck, 100 unit tests, and production build passed. The API suite completed with **102 passed, 7 failed** after rerunning outside the sandbox; the sandboxed test client stalled in its thread bridge. Six failures patch the absent `src.openship.chat.routes.settings` attribute, and one expects authentication on the absent legacy `POST /api/chat/{conversation_id}/messages` route but receives 404. This is the unchanged `d0aa5a7` baseline, not a Phase 3 regression. The documented Phase 2 compatibility contract and its tests are inconsistent with the registered routes; Task 9 restores that thin durable-command adapter and updates obsolete mocks. Do not delete those tests or claim a clean API baseline before the compatibility checks pass.
+The new worktree's frontend typecheck, 100 unit tests, and production build passed. The API suite completed with **102 passed, 7 failed** after rerunning outside the sandbox; the sandboxed test client stalled in its thread bridge. Six failures patch the absent `src.openship.chat.routes.settings` attribute, and one expects authentication on the absent legacy `POST /api/chat/{conversation_id}/messages` route but receives 404. This is the unchanged `d0aa5a7` baseline, not a Phase 3 regression. This is a historical baseline observation. The Phase 1 adapter and its tests have since been retired; useful auth/chat coverage now exercises durable run commands. Do not restore the old endpoint.
 
 ### Recommended approach and alternatives
 
@@ -86,7 +91,7 @@ All API paths below are relative to `apps/api/`; web paths are relative to `apps
 | Create `providers/configuration.py`, `registry.py`, `routes.py` | Operator profile parsing, runtime credential resolution, exact profile lookup, authenticated public catalog. |
 | Create `providers/openai.py`, `anthropic.py`, `google.py`, `openai_compatible.py` | Provider-specific mapping and transport lifecycle; import SDKs only here. |
 | Create `providers/control.py`, `runner.py`, `attempts.py` | Deadlines/cancellation, retry/fallback/budget decisions, fenced attempt persistence. |
-| Modify `config.py`, `main.py`, `chat/llm.py`, `chat/routes.py`, `runs/graph.py` | Settings/router integration, legacy facade/HTTP compatibility adapter, provider-neutral graph node. |
+| Modify `config.py`, `main.py`, `chat/routes.py`, `runs/graph.py`; remove `chat/llm.py` and `chat/service.py` | Settings/router integration, removal of Phase 1 execution paths, provider-neutral graph node. |
 | Modify `runs/models.py`, `runs/schemas.py`, `runs/service.py`, `runs/routes.py`, `runs/queue.py`, `runs/worker.py` | Pin selection, record attempts, supervise execution, publish only while owning the run. |
 | Create `alembic/versions/005_phase3_provider_configuration.py` | Snapshot/selection columns and provider-attempt table; existing migration head is `004`. |
 | Modify `events/schemas.py`, `events/service.py`, `events/logging.py` | Safe provider/run projections, ordered attempt events, redacted structured metadata. |
@@ -103,7 +108,7 @@ All API paths below are relative to `apps/api/`; web paths are relative to `apps
 
 ### Configuration, selection, and pinning
 
-- Add `MODEL_PROFILES_JSON`, a JSON array of non-secret installation profiles, and `MODEL_DEFAULT_PROFILE_ID`. Keep `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`, and `MODEL_MAX_TOKENS` working: when no array is supplied, create a synthetic `openai-default` profile from them. Explicit profile configuration takes precedence without silently merging legacy values.
+- Require `MODEL_PROFILES_JSON`, a non-empty JSON array of non-secret installation profiles, and `MODEL_DEFAULT_PROFILE_ID`, naming one declared profile. Model names and endpoints live in profiles. `MODEL_MAX_TOKENS` is the installation output ceiling. Provider credentials, including `OPENAI_API_KEY`, are resolved only through explicit profile binding references; no synthetic single-provider profile is created.
 - Each profile has `id`, `label`, `adapter` (`openai`, `anthropic`, `google`, `openai_compatible`), `model`, `endpoint`, `api_version`, `credential_ref`, `capabilities`, `limits`, `allowed_fallback_profile_ids`, `qualified_model_aliases: tuple[str, ...] = ()`, typed `adapter_options`, and optional `pricing`. Require operator-supplied model IDs for new adapters; do not guess a current model or select a `latest` alias on the user's behalf.
 - Define an adapter-discriminated options union: OpenAI options choose `output_limit_parameter: Literal['max_tokens', 'max_completion_tokens']` and `token_counter_id: str | None`; Anthropic options disable server-side fallback and name the qualified counting strategy; Google options pin its native API version and disable automatic function calling; compatible options add `stream_usage_supported: bool`, `authentication: Literal['bearer', 'none']`, and `endpoint_implementation: str`. Reject arbitrary SDK kwargs. Optional pricing records `revision`, `currency: Literal['USD']`, and conservative input/output rates per million tokens that cover all admitted billing categories.
 - `credential_ref` references an operator-declared environment credential binding. Resolve its value only in adapter/client construction. Keep reference names and full endpoints server-side; the catalog exposes a safe destination label, not URL query strings or headers. Local compatible endpoints may explicitly declare no authentication.
@@ -169,7 +174,7 @@ Before generation, token-aware profiles count the actual mapped request and rese
 Create `provider_attempts` with UUID ID/run FK, ordinal, current fence, profile ID/revision, adapter, requested/actual model, destination label, start/end times, outcome, normalized error code, and nullable usage/cost reservation. Enforce `UNIQUE(run_id, ordinal)` and access through the run's owned conversation. Do not store prompts or SDK response bodies there.
 
 - `GET /api/model-profiles`: authenticated catalog `{default_profile_id, profiles}`. Each item exposes ID/label/adapter/model/destination label, effective capabilities, available/configuration-needed state, safe reason, and allowed fallback profile IDs. Return profile availability without secret values or internal credential references.
-- Keep `POST /api/runs/{conversation_id}/turns`, `GET /api/runs/{run_id}`, and `POST /api/runs/{run_id}/cancel`. Add selection fields to submit and safe `model`, `usage`, `error`, and `provider_attempts` projections to run reads/snapshot run summaries. Restore the documented legacy `POST /api/chat/{conversation_id}/messages` as an authenticated compatibility adapter over the same submit/event pipeline; translate the completed durable answer into legacy `chunk`, `complete`, and `[DONE]` shapes without invoking a provider in the API process. Preserve its 401/404 authentication/ownership behavior and safe 503 missing-provider-configuration response while the modern submit endpoint uses structured 422 validation.
+- Keep `POST /api/runs/{conversation_id}/turns`, `GET /api/runs/{run_id}`, and `POST /api/runs/{run_id}/cancel`. Add selection fields to submit and safe `model`, `usage`, `error`, and `provider_attempts` projections to run reads/snapshot run summaries. Use the durable run/event API exclusively. Authentication and ownership remain enforced on those endpoints, configuration errors use structured validation responses, and the model catalog reports missing installation configuration safely. The retired Phase 1 POST chat endpoint is not registered.
 - Missing/unknown/unavailable requested profiles and incompatible capabilities produce actionable structured 422 errors before queuing. Revocation after queuing produces a visible run failure before dispatch. Validate ownership first so these errors cannot expose another user's run.
 - Add durable `model.attempt.started`, `model.attempt.finished`, and `model.fallback.selected` events with safe metadata. Keep existing `turn_submitted`, `run.started`, `run.succeeded`, `run.failed`, and `run_cancelled` names. Include safe provider/usage/error summary fields in terminal events; snapshot reconstruction must work after those events are pruned.
 - Persist each admitted attempt before network dispatch. Commit attempt updates with their events/outbox under the active fence. Finalize run, assistant message, final attempt/usage, and terminal event/outbox in one transaction; refactor the queue helper's internal commit so a successful status cannot precede a lost message.
@@ -183,7 +188,7 @@ Create `provider_attempts` with UUID ID/run FK, ordinal, current fence, profile 
 
 **Interfaces:** Produce the types in §3; `load_profiles(settings: Settings) -> ProviderRegistry`; `ProviderRegistry.get(profile_id: str) -> PinnedProviderConfig`; `pin_selection(profile_id: str | None, fallback_ids: list[str]) -> RunModelConfig`; `validate_request(request: ModelRequest, profile: PinnedProviderConfig) -> None`. Registry contains only allowlisted adapter factories and non-secret configuration.
 
-- [ ] **Write failing tests:** `test_legacy_settings_create_openai_default`, `test_explicit_profiles_do_not_merge_legacy_settings`, `test_snapshot_roundtrip_is_frozen_and_secret_free`, `test_reject_unknown_profile_duplicate_id_and_extra_fields`, `test_reject_endpoint_userinfo_and_external_redirect`, `test_unsupported_capability_fails_before_adapter_creation`, `test_fallback_requires_explicit_allowed_ids`. Assert defaults `4000/3/120/45/65536`, empty fallback list, positive limits, and false advanced capability fields.
+- [ ] **Write failing tests:** `test_single_provider_settings_cannot_create_an_implicit_profile`, `test_explicit_profiles_require_a_named_default`, `test_snapshot_roundtrip_is_frozen_and_secret_free`, `test_reject_unknown_profile_duplicate_id_and_extra_fields`, `test_reject_endpoint_userinfo_and_external_redirect`, `test_unsupported_capability_fails_before_adapter_creation`, `test_fallback_requires_explicit_allowed_ids`. Assert defaults `4000/3/120/45/65536`, empty fallback list, positive limits, and false advanced capability fields.
 - [ ] **Run red:** `cd apps/api && uv run pytest tests/providers/test_contracts.py tests/providers/test_configuration.py -q`; expect missing contracts/functions.
 - [ ] **Implement:** Parse profiles once per process, validate schema and adapter-specific endpoint/API settings, create immutable deep snapshots, and compute stable canonical digests. Add an operator-owned credential resolver with a redacted representation; do not use user input to select arbitrary environment variables.
 - [ ] **Run green:** Repeat the targeted command; assert no test resolves a live credential or makes a network request. Add tests for cost/token ceilings without counters/pricing and explicit unauthenticated local profiles.
@@ -191,14 +196,14 @@ Create `provider_attempts` with UUID ID/run FK, ordinal, current fence, profile 
 
 ### Task 2: Normalize OpenAI streaming and establish the conformance suite
 
-**Files:** Create `providers/openai.py`, `control.py`, `tests/providers/test_openai.py`, `test_conformance.py`, `tests/providers/conftest.py`; modify `chat/llm.py` only for the legacy facade.
+**Files:** Create `providers/openai.py`, `control.py`, `tests/providers/test_openai.py`, `test_conformance.py`, `tests/providers/conftest.py`; remove the obsolete `chat/llm.py` and `chat/service.py` execution path.
 
 **Interfaces:** Produce `OpenAIAdapter.stream()` and `count_input_tokens()` with the common signatures, `InvocationControl`, and reusable fixture `adapter_case`. Each case supplies a real adapter against a synthetic SDK/transport, qualified profile, event fixtures, and a cleanup assertion.
 
 - [ ] **Write failing tests:** Shared cases `test_system_and_history_mapping`, `test_unicode_deltas_preserve_order`, `test_finish_is_required`, `test_empty_and_partial_stream_are_not_completed`, `test_usage_missing_stays_unknown`, `test_cumulative_usage_is_not_summed`, `test_error_is_safe`, `test_close_on_cancel_and_deadline`, `test_capability_rejected_before_network`. OpenAI-specific tests assert empty `choices` on the usage chunk, `stream_options.include_usage=True`, correct profile-specific output parameter, and SDK retries disabled.
 - [ ] **Run red:** `cd apps/api && uv run pytest tests/providers/test_openai.py tests/providers/test_conformance.py -q`; expect the new adapter boundary to be absent.
 - [ ] **Implement:** Use `AsyncOpenAI` with explicit endpoint/timeouts and `max_retries=0`; translate SDK chunks/errors into the common contracts and close transports in `finally`. Keep Chat Completions as the qualified baseline API. Request usage explicitly. Output parameter selection belongs to the model profile; do not assume all models accept the existing `max_tokens` argument.
-- [ ] **Verify counting and legacy callers:** Implement a qualified local tokenizer strategy for supported OpenAI profiles or declare counting unavailable and reject token/cost ceilings. Keep `chat()` available for existing `chat/service.py` callers with its old chunk facade; new worker code will use the normalized runner. Test that no graph/runtime module receives SDK objects.
+- [ ] **Verify counting and the provider boundary:** Implement a qualified local tokenizer strategy for supported OpenAI profiles or declare counting unavailable and reject token/cost ceilings. The worker uses the normalized runner; there is no direct chat facade or alternate execution service. Test that no graph/runtime module receives SDK objects.
 - [ ] **Run green:** Repeat targeted tests plus `uv run pytest tests/test_model_step.py tests/test_usage_retention.py -q` before graph migration. Assert proper cleanup even when no chunk is ever received.
 - [ ] **Commit:** `feat: add conformant OpenAI streaming adapter`.
 
@@ -294,7 +299,7 @@ The maintained [Google Gen AI SDK documentation](https://googleapis.github.io/py
 
 - [ ] **Write failing API tests:** Catalog requires authentication; reveals no credentials/endpoints with secrets; unconfigured profiles return a safe reason; unknown profile rejected; run reads/snapshots include pinned metadata and nullable usage; foreign conversation/run remains 404.
 - [ ] **Run red:** `cd apps/api && uv run pytest tests/test_provider_routes.py -q`; expect absent catalog/projections.
-- [ ] **Implement API:** Return only installation-approved profiles and safe capability metadata. Extend serializers without dumping ORM columns or credential references. Include fallback choice and actual serving model in run projections. Restore the documented legacy route as the thin submit/event adapter specified in §3; give synthetic test workers controlled provider fixtures and replace obsolete route-settings mocks with configuration/adapter fixtures. Assert legacy disconnect does not cancel the durable run, and rerun the seven inherited compatibility failures before claiming this task passes.
+- [ ] **Implement API:** Return only installation-approved profiles and safe capability metadata. Extend serializers without dumping ORM columns or credential references. Include fallback choice and actual serving model in run projections. Give test workers explicitly declared synthetic profiles and exercise chat through the durable turn submission, run reads, history, and event replay. Assert the retired POST chat endpoint is absent and missing profiles cannot create an implicit default. Browser disconnect does not cancel a durable run.
 - [ ] **Write failing browser tests:** Default selected; switch affects only next turn; disabled profile explains configuration need; pending run retains provider after changing selection; explicit fallback opt-in shows destinations; network retry keeps original payload; usage unknown displays “Not reported”; old run displays “Provider not recorded”; snapshot alone reconstructs provider/error/usage after event pruning.
 - [ ] **Implement browser:** Use existing UI primitives and accessible labelled controls. Disable selection changes while the current submission is pending; after a run exists, next-turn selection is independent. Preserve an earlier choice if still eligible, otherwise show why it needs replacement. Provider errors use common copy, and run cards show actual attempts/fallback. Do not display raw SDK errors or private reasoning.
 - [ ] **Run green:** `cd apps/web && pnpm typecheck` and `pnpm test:run`; run API selection/event regression suites. Verify keyboard selection, missing catalog recovery, and stale/duplicate event handling.
