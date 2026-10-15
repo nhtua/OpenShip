@@ -6,6 +6,7 @@ Invoke this skill for any Git-related work on this repository.
 
 - Work in an **isolated worktree**, never directly on `main`.
 - One worktree per feature/fix; reuse it for related follow-ups.
+- Always read commit messages, PR descriptions (creation and updates), and comments from text files. Follow **File-Based Messages** below, even for short messages.
 
 ## Worktree Lifecycle
 
@@ -72,6 +73,49 @@ Invoke this skill for any Git-related work on this repository.
 - **Commit atomic, working changes.** Each commit should be a complete, tested unit of work that leaves the codebase in a working state.
 - One feature/fix per branch. Group related changes; do not open PRs after every small edit.
 - Open a PR only when the feature/fix is complete and ready for review.
+
+## File-Based Messages
+
+Keep message content out of shell command arguments. This preserves Markdown,
+quotes, backticks, dollar signs, and newlines without shell interpolation.
+
+1. Create a temporary directory with `mktemp -d`. Use the returned path in
+   place of `<message-dir>` below; keep message files outside the repository.
+2. Write the exact UTF-8 text with a file-writing/editing tool. If a shell is
+   needed, use a **single-quoted heredoc delimiter**, chosen so it does not
+   occur as a line in the message:
+   ```bash
+   cat > '<message-dir>/commit-message.txt' <<'COMMIT_MESSAGE_EOF'
+   docs: require file-based Git messages
+
+   Preserve literal `code`, $variables, and $(expressions) as text.
+   COMMIT_MESSAGE_EOF
+   ```
+   Prepare separate files for the commit message, PR description, and comment.
+   Use real newlines, not literal `\n` sequences.
+3. Review each file for the intended wording and accidental secrets before
+   committing or publishing it.
+4. Run the appropriate short command as a separate tool call:
+
+   | Operation | Required command pattern |
+   | --- | --- |
+   | Commit | `git commit --file '<message-dir>/commit-message.txt'` |
+   | Create PR | `gh pr create --base main --head '<branch-name>' --title 'Short literal title' --body-file '<message-dir>/pr-description.md'` |
+   | Update PR description | `gh pr edit <pr-number> --body-file '<message-dir>/pr-description.md'` |
+   | Add PR comment | `gh pr comment <pr-number> --body-file '<message-dir>/comment.md'` |
+
+   Use `--body-file` for issue comments and comment edits as well. For a PR
+   description update, put the complete replacement description in the file.
+   GitHub CLI has no `--title-file`; keep `--title` a short, safely quoted literal.
+
+Never use inline `git commit -m/--message` or `gh --body/-b`, even for one line.
+Do not embed message content in `echo`, `printf`, unquoted heredocs, `bash -c`,
+`eval`, or chained commands. Do not read files back into command arguments with
+`$(cat ...)` or backticks. JSON serialization is not shell escaping. Pass only
+the quoted file path to `--file` or `--body-file`.
+
+Keep the files for a retry if the operation fails; remove only the temporary
+files you created after success.
 
 ## Completing a Task
 
