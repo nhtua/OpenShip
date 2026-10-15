@@ -1,5 +1,5 @@
+
 from src.openship.auth.models import User
-import pytest
 
 
 def test_user_model_fields():

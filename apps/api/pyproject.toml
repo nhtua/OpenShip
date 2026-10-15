@@ -11,12 +11,16 @@ dependencies = [
     "alembic>=1.13.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
+    "typing-extensions>=4.8.0",
+    "python-dotenv>=1.0.0",
     "pyjwt>=2.8.0",
     "bcrypt>=4.0.0",
     "openai>=1.10.0",
     "httpx>=0.26.0",
     "langgraph>=1.2.12",
     "langgraph-checkpoint-postgres>=3.1.2",
+    "anthropic>=1.13.0",
+    "google-genai>=2.30.1",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +29,27 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "ruff>=0.2.0",
     "pre-commit>=3.6.0",
+]
+
+# The gate CI runs over apps/api. The rule set stays at ruff's defaults;
+# one rule is turned off, and the reason is stated here rather than hidden
+# in a green run: FastAPI's dependency-injection idiom puts Depends() in
+# argument defaults, which is the framework's required form and has no
+# alternative spelling. B008 flags that shape in every route signature.
+# Where a broad except is deliberate - a health endpoint reporting degraded
+# instead of failing, a worker that keeps serving after one run fails, an
+# alembic shim that is idempotent across backends - the suppression lives
+# on that module, so new code is still checked.
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+markers = [
+    "postgres: requires a real PostgreSQL database named by TEST_POSTGRES_URL",
+    "provider_live: contacts a real provider; opt-in via OPENSHIP_LIVE_PROFILE_ID",
 ]
 
 [dependency-groups]

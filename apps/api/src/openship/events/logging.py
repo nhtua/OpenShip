@@ -5,11 +5,10 @@ IDs and state transitions. Logs must not include access tokens, model keys,
 prompts, or raw responses.
 """
 
-import json
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +16,12 @@ logger = logging.getLogger(__name__)
 def structured_log(
     event: str,
     *,
-    request_id: Optional[str] = None,
-    project_id: Optional[str | uuid.UUID] = None,
-    conversation_id: Optional[str | uuid.UUID] = None,
-    run_id: Optional[str | uuid.UUID] = None,
-    event_id: Optional[str | uuid.UUID] = None,
-    status: Optional[str] = None,
+    request_id: str | None = None,
+    project_id: str | uuid.UUID | None = None,
+    conversation_id: str | uuid.UUID | None = None,
+    run_id: str | uuid.UUID | None = None,
+    event_id: str | uuid.UUID | None = None,
+    status: str | None = None,
     **extra: Any,
 ) -> dict:
     """Create a structured log entry.
@@ -41,7 +40,7 @@ def structured_log(
         A dict representing the structured log entry.
     """
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "event": event,
     }
 
@@ -68,8 +67,8 @@ def log_state_transition(
     from_status: str,
     to_status: str,
     *,
-    conversation_id: Optional[str | uuid.UUID] = None,
-    reason: Optional[str] = None,
+    conversation_id: str | uuid.UUID | None = None,
+    reason: str | None = None,
 ) -> dict:
     """Log a run state transition.
 
@@ -98,9 +97,9 @@ def log_state_transition(
 def log_run_completed(
     run_id: str | uuid.UUID,
     *,
-    conversation_id: Optional[str | uuid.UUID] = None,
-    usage: Optional[dict] = None,
-    duration_ms: Optional[int] = None,
+    conversation_id: str | uuid.UUID | None = None,
+    usage: dict | None = None,
+    duration_ms: int | None = None,
 ) -> dict:
     """Log a completed run.
 
@@ -130,8 +129,8 @@ def log_run_failed(
     run_id: str | uuid.UUID,
     error_code: str,
     *,
-    conversation_id: Optional[str | uuid.UUID] = None,
-    error_message: Optional[str] = None,
+    conversation_id: str | uuid.UUID | None = None,
+    error_message: str | None = None,
 ) -> dict:
     """Log a failed run.
 

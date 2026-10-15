@@ -1,3 +1,6 @@
+# ruff: noqa: BLE001
+# Pruning is best-effort per run: one checkpoint this installation cannot
+# delete must not stop the rest, and the reason is logged rather than raised.
 """Event retention and pruning.
 
 Handles durable workspace data retention policies:
@@ -7,12 +10,10 @@ Handles durable workspace data retention policies:
 - Retention as a worker maintenance command with dry-run metrics
 """
 
-import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..chat.models import Conversation
@@ -78,8 +79,8 @@ def dry_run_retention(
     Returns:
         Dict with eligible counts for each data type.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=event_retention_days)
-    checkpoint_cutoff = datetime.now(timezone.utc) - timedelta(days=checkpoint_retention_days)
+    cutoff = datetime.now(UTC) - timedelta(days=event_retention_days)
+    checkpoint_cutoff = datetime.now(UTC) - timedelta(days=checkpoint_retention_days)
 
     # Eligible events: from completed/failed/cancelled runs older than cutoff
     eligible_events = (
@@ -144,8 +145,8 @@ def run_retention(
     Returns:
         Dict with counts of pruned items.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=event_retention_days)
-    checkpoint_cutoff = datetime.now(timezone.utc) - timedelta(days=checkpoint_retention_days)
+    cutoff = datetime.now(UTC) - timedelta(days=event_retention_days)
+    checkpoint_cutoff = datetime.now(UTC) - timedelta(days=checkpoint_retention_days)
     logger.info("Running retention policy, event cutoff: %s, checkpoint cutoff: %s", cutoff.isoformat(), checkpoint_cutoff.isoformat())
 
     metrics = dry_run_retention(db, event_retention_days, checkpoint_retention_days, dry_run)

@@ -12,22 +12,130 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v2
         with:
-          python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: cd apps/agent && uv sync --extra dev
       - run: cd apps/agent && uv run pytest tests/ -v
 
   lint:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v2
         with:
-          python-version: "3.13"
           enable-cache: true
       - run: uv tool install ruff
       - run: cd apps/agent && ruff check .
+
+  # The API's own lint gate. It is a gate rather than a suggestion: the rule
+  # set is ruff's defaults, and the one rule turned off (B008, which flags
+  # FastAPI's required Depends() form) is stated in apps/api/pyproject.toml.
+  # Where a broad except is deliberate the suppression lives on that module,
+  # so new code is still checked.
+  api-lint:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          enable-cache: true
+      - run: uv tool install ruff
+      - run: cd apps/api && ruff check .
+
+  # The API suite minus the lanes that need a service or a live provider. It
+  # has to pass with no PostgreSQL and no vendor credentials, which is what
+  # lets an ordinary PR be reviewed at all: every response in it is a
+  # fixture.
+  api-unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          enable-cache: true
+      - run: cd apps/api && uv sync --extra dev
+      - run: cd apps/api && uv run pytest -q -m "not postgres and not provider_live"
+
+  # The durable pipeline's promises are only proved where the real locks,
+  # JSON serialization, and saver writes exist. The service only has to
+  # exist: each lane names its own database inside it, so the two modules
+  # cannot wait for each other's locks.
+  api-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: openship
+          # This disposable service is isolated to the GitHub Actions runner.
+          # Trust auth keeps fork pull requests independent of repository
+          # secrets; no production database credentials are used here.
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: lane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openship -d lane"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          enable-cache: true
+      - run: cd apps/api && uv sync --extra dev
+      # Selecting the marker is not enough: a job that skipped every case
+      # would be green without proving anything, so the summary is checked.
+      - name: Run the PostgreSQL lane
+        timeout-minutes: 10
+        shell: bash
+        env:
+          # The service exists only for this job; tests create isolated lane
+          # databases from this local connection.
+          TEST_POSTGRES_URL: postgresql+psycopg://openship@localhost:5432/lane
+          PYTHONUNBUFFERED: "1"
+        run: |
+          cd apps/api
+          set -o pipefail
+          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/pg-lane.xml -m postgres tests/integration/test_provider_pinning_migration.py tests/integration/test_provider_worker_postgres.py 2>&1 | tee /tmp/pg-lane.log
+          ! grep -q skipped /tmp/pg-lane.log
+      - name: Report PostgreSQL waits on failure
+        if: failure()
+        env:
+          PGCONNECT_TIMEOUT: "5"
+          PGOPTIONS: "-c statement_timeout=10000"
+        run: >-
+          psql postgresql://openship@localhost:5432/lane -c
+          "SELECT datname, pid, state, wait_event_type, wait_event,
+          pg_blocking_pids(pid) AS blockers, query FROM pg_stat_activity
+          WHERE backend_type = 'client backend' AND pid <> pg_backend_pid();"
+      - name: Upload PostgreSQL lane results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-postgres-${{ matrix.python-version }}
+          path: |
+            /tmp/pg-lane.log
+            /tmp/pg-lane.xml
+          if-no-files-found: ignore

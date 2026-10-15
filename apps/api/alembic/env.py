@@ -1,12 +1,10 @@
+import os
+import sys
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
+from sqlalchemy import engine_from_config, pool
 
 from alembic import context
-
-import sys
-import os
 
 # Ensure the src directory is on the Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -22,7 +20,7 @@ if config.config_file_name is not None:
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-from openship.database.models import Base  # noqa: E402
+from openship.database.models import Base
 
 target_metadata = Base.metadata
 

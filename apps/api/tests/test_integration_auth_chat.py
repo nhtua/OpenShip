@@ -4,15 +4,36 @@ These tests verify the complete user journey:
   register → login → send messages → list conversations
 
 All API interactions use the real FastAPI app with the test database.
+The chat turns are durable, so each one needs a worker to run it and a
+synthetic provider to answer it — the journey itself is unchanged.
 """
 
 import uuid
-from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from .conftest import declare_two_profiles, execute_test_run
+from .providers.conftest import answered
 
-def test_full_auth_then_chat_flow(client: TestClient):
+
+def _durable_turn(client, headers, conversation_id, content, monkeypatch, *answer):
+    """Submit a turn, execute it in the worker, and read its durable outcome."""
+    answered(monkeypatch, *answer)
+    response = client.post(
+        f"/api/runs/{conversation_id}/turns",
+        json={"content": content, "client_request_id": str(uuid.uuid4())},
+        headers=headers,
+    )
+    assert response.status_code == 202, response.text
+    run_id = response.json()["id"]
+    execute_test_run(run_id)
+    result = client.get(f"/api/runs/{run_id}", headers=headers)
+    assert result.status_code == 200
+    assert result.json()["status"] == "completed", result.text
+    return response
+
+
+def test_full_auth_then_chat_flow(client: TestClient, monkeypatch):
     """End-to-end: register, login, send message, list conversations."""
 
     # --- Step 1: Register ---
@@ -38,40 +59,20 @@ def test_full_auth_then_chat_flow(client: TestClient):
     assert login_data["user"]["username"] == "integration_user"
 
     headers = {"Authorization": f"Bearer {token}"}
+    declare_two_profiles(monkeypatch)
 
-    # --- Step 3: Send a chat message (mocked LLM) ---
+    # --- Step 3: Send a chat message ---
     # Phase 2: must create conversation explicitly (no auto-creation)
     conv_resp = client.post("/api/conversations", json={"title": "First"}, headers=headers)
     assert conv_resp.status_code == 201
     conv_id = conv_resp.json()["id"]
 
-    mock_chunk = MagicMock()
-    mock_chunk.choices = [MagicMock()]
-    mock_chunk.choices[0].delta = MagicMock(content="Integration test response")
-    mock_done = MagicMock()
-    mock_done.choices = []
+    resp = _durable_turn(
+        client, headers, conv_id, "Hello from integration test", monkeypatch,
+        "Integration test response",
+    )
 
-    with patch("src.openship.chat.service.chat") as mock_chat:
-        mock_chat.return_value = [mock_chunk, mock_done]
-
-        with patch("src.openship.chat.routes.settings") as mock_settings:
-            mock_settings.openai_api_key = "fake-key"
-            mock_settings.openai_model = "gpt-4o"
-            mock_settings.openai_base_url = "https://api.openai.com/v1"
-
-            with patch("src.openship.chat.llm.settings") as mock_llm_settings:
-                mock_llm_settings.openai_api_key = "fake-key"
-                mock_llm_settings.openai_model = "gpt-4o"
-                mock_llm_settings.openai_base_url = "https://api.openai.com/v1"
-
-                resp = client.post(
-                    f"/api/chat/{conv_id}/messages",
-                    json={"content": "Hello from integration test"},
-                    headers=headers,
-                )
-
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "text/event-stream; charset=utf-8"
+    assert resp.status_code == 202
 
     # --- Step 4: List conversations (should include the one we just created) ---
     convs = client.get("/api/conversations", headers=headers)
@@ -85,32 +86,13 @@ def test_full_auth_then_chat_flow(client: TestClient):
     conv_id_2_resp = client.post("/api/conversations", json={"title": "Second"}, headers=headers)
     assert conv_id_2_resp.status_code == 201
     conv_id_2 = conv_id_2_resp.json()["id"]
-    mock_chunk2 = MagicMock()
-    mock_chunk2.choices = [MagicMock()]
-    mock_chunk2.choices[0].delta = MagicMock(content="Second message")
-    mock_done2 = MagicMock()
-    mock_done2.choices = []
 
-    with patch("src.openship.chat.service.chat") as mock_chat:
-        mock_chat.return_value = [mock_chunk2, mock_done2]
+    resp2 = _durable_turn(
+        client, headers, conv_id_2, "Second conversation", monkeypatch,
+        "Second message",
+    )
 
-        with patch("src.openship.chat.routes.settings") as mock_settings:
-            mock_settings.openai_api_key = "fake-key"
-            mock_settings.openai_model = "gpt-4o"
-            mock_settings.openai_base_url = "https://api.openai.com/v1"
-
-            with patch("src.openship.chat.llm.settings") as mock_llm_settings:
-                mock_llm_settings.openai_api_key = "fake-key"
-                mock_llm_settings.openai_model = "gpt-4o"
-                mock_llm_settings.openai_base_url = "https://api.openai.com/v1"
-
-                resp2 = client.post(
-                    f"/api/chat/{conv_id_2}/messages",
-                    json={"content": "Second conversation"},
-                    headers=headers,
-                )
-
-    assert resp2.status_code == 200
+    assert resp2.status_code == 202
 
     # --- Step 6: List conversations again (should now have 2) ---
     convs2 = client.get("/api/conversations", headers=headers)
@@ -119,7 +101,7 @@ def test_full_auth_then_chat_flow(client: TestClient):
     assert len(data2) == 2
 
 
-def test_auth_then_multiple_chat_turns(client: TestClient):
+def test_auth_then_multiple_chat_turns(client: TestClient, monkeypatch):
     """Simulate 10 conversation turns in a single conversation."""
 
     # Register and login
@@ -140,34 +122,16 @@ def test_auth_then_multiple_chat_turns(client: TestClient):
     assert conv_resp.status_code == 201
     conv_id = conv_resp.json()["id"]
 
-    # Send 10 turns
+    declare_two_profiles(monkeypatch)
     for i in range(10):
-        mock_chunk = MagicMock()
-        mock_chunk.choices = [MagicMock()]
-        mock_chunk.choices[0].delta = MagicMock(content=f"Turn {i}")
-        mock_done = MagicMock()
-        mock_done.choices = []
+        response = _durable_turn(
+            client, headers, conv_id, f"Turn number {i}", monkeypatch, "Turn"
+        )
+        assert response.status_code == 202
 
-        with patch("src.openship.chat.service.chat") as mock_chat:
-            mock_chat.return_value = [mock_chunk, mock_done]
-
-            with patch("src.openship.chat.routes.settings") as mock_settings:
-                mock_settings.openai_api_key = "fake-key"
-                mock_settings.openai_model = "gpt-4o"
-                mock_settings.openai_base_url = "https://api.openai.com/v1"
-
-                with patch("src.openship.chat.llm.settings") as mock_llm_settings:
-                    mock_llm_settings.openai_api_key = "fake-key"
-                    mock_llm_settings.openai_model = "gpt-4o"
-                    mock_llm_settings.openai_base_url = "https://api.openai.com/v1"
-
-                    resp = client.post(
-                        f"/api/chat/{conv_id}/messages",
-                        json={"content": f"Turn number {i}"},
-                        headers=headers,
-                    )
-
-        assert resp.status_code == 200
+    history = client.get(f"/api/conversations/{conv_id}/messages", headers=headers)
+    assert history.status_code == 200
+    assert len(history.json()) == 20
 
     # Verify all 10 turns are in conversations list
     convs = client.get("/api/conversations", headers=headers)

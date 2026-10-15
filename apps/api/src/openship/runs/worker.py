@@ -1,37 +1,117 @@
+# ruff: noqa: BLE001, S110
+# Worker supervision is deliberately broad: a run whose heartbeat, cleanup, or
+# reconciliation failed must not stop the worker from serving the next one,
+# and each site records what it could not do.
 """Worker entry point for processing queued chat turns.
 
-Claims jobs with lease-based ownership, executes the LangGraph chat turn,
-and finalizes the run with fence-based optimistic concurrency control.
+Claims jobs with lease-based ownership, executes the LangGraph chat turn
+through the configuration the run pinned, and finalizes the run with fence-
+based optimistic concurrency control.
 """
 
 import argparse
 import logging
-import os
 import re
 import signal
-import sys
 import threading
 import time
 import uuid
 
-import psycopg2
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from ..chat.models import Message
+from ..chat.models import Conversation, Message
 from ..config import settings
-from ..database.session import get_db
-from .checkpoints import get_checkpointer
-from .graph import build_chat_graph, ModelResult
-from .queue import claim_next, renew, finalize, mark_provider_started, reconcile_expired
+from ..providers.attempts import DatabaseAttemptRecorder
+from ..providers.control import InvocationControl
+from ..providers.errors import ProviderError
+from ..runs.schemas import _model_projection
+from ..runs.service import bind_run_model_config
+from .graph import ModelResult, build_chat_graph
+from .models import ProviderAttempt, Run, RunJob
+from .queue import claim_next, finalize, mark_provider_started, reconcile_expired, renew
 
 logger = logging.getLogger("worker")
+
+#: Built in __init__ when the caller did not say which checkpointer to use.
+_INSTALLATION = object()
+
+#: The run status a normalized provider failure shows.
+_OUTCOME = {"budget_exceeded": "timed_out", "cancelled": "cancelled"}
+
+#: The usage record a run keeps: provider counts, plus what old consumers read.
+USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_input_tokens",
+    "reasoning_tokens",
+)
+USAGE_SCHEMA_VERSION = 1
+
+
+def _run_outcome(error_code: str) -> str:
+    """The run status a normalized provider failure shows."""
+    return _OUTCOME.get(error_code, "failed")
+
+
+def _terminal_model(job, run) -> dict | None:
+    """The safe provider summary a terminal event carries.
+
+    A terminal event has to be readable on its own: a conversation whose
+    events were pruned by retention still has to say which profile a run was
+    pinned to and which model answered. The run's own record is what says
+    that, so the summary is projected from it and from the attempts it made -
+    never from the events that may already be gone.
+    """
+    attempts = job.query(ProviderAttempt).filter(
+        ProviderAttempt.run_id == run.id
+    ).all()
+    summary = _model_projection(run.model_configuration, attempts)
+    return summary.model_dump(mode="json") if summary is not None else None
+
+
+def _usage_record(usage) -> dict | None:
+    """A run's own usage as JSON text, schema-versioned, never an invention.
+
+    ``estimated`` is kept for old consumers and means the provider's totals
+    are incomplete, not that any value was estimated here.
+    """
+    if usage is None:
+        return None
+    record = {name: usage.get(name) for name in USAGE_FIELDS}
+    record["schema_version"] = USAGE_SCHEMA_VERSION
+    reported = [name for name in ("input_tokens", "output_tokens", "total_tokens") if record[name] is not None]
+    record["estimated"] = len(reported) < 3
+    return record
+
+
+class Supervision:
+    """The stop signal one job's model turn obeys, and why it was set."""
+
+    def __init__(self):
+        self._stop = threading.Event()
+        self._lease_lost = threading.Event()
+
+    def stop(self) -> bool:
+        return self._stop.is_set()
+
+    def lease_lost(self) -> bool:
+        return self._lease_lost.is_set()
+
+    def interrupt(self) -> None:
+        self._stop.set()
+
+    def deny_lease(self) -> None:
+        """A denied heartbeat or failed ownership check stops the turn."""
+        self._stop.set()
+        self._lease_lost.set()
 
 
 class Worker:
     """A chat turn worker that claims and executes queued jobs."""
 
-    def __init__(self, worker_id: str = None):
+    def __init__(self, worker_id: str | None = None, session_factory=None, checkpointer=_INSTALLATION):
         if worker_id is None:
             worker_id = f"worker-{uuid.uuid4().hex[:8]}"
         self.worker_id = worker_id
@@ -39,43 +119,112 @@ class Worker:
 
         # Set up database connection
         self.engine = create_engine(settings.database_url)
-        self.Session = sessionmaker(bind=self.engine)
+        self.Session = session_factory or sessionmaker(bind=self.engine)
 
         # Set up checkpointer
         self.checkpointer = None
         self._checkpointer_ctx = None
-        try:
-            from langgraph.checkpoint.postgres import PostgresSaver
-            # Use persistent connection with pool
-            self._checkpointer_ctx = PostgresSaver.from_conn_string(
-                settings.database_url,
-                pool_size=5,
-                max_overflow=10,
-                pool_timeout=30,
-                pool_recycle=1800,
-            )
-            self.checkpointer = self._checkpointer_ctx.__enter__()
-            logger.info("Checkpointer initialized")
-        except Exception as e:
-            logger.warning(f"Failed to initialize checkpointer: {e}")
-            self.checkpointer = None
+        if checkpointer is not _INSTALLATION:
+            self.checkpointer = checkpointer
+        else:
+            try:
+                from langgraph.checkpoint.postgres import PostgresSaver
+                from psycopg.conninfo import make_conninfo
+
+                # from_conn_string takes only the connection string: the pool
+                # keyword arguments this installation once passed are not part
+                # of the saver's API, and passing them left every worker
+                # without a checkpointer at all.
+                # psycopg accepts a PostgreSQL URI, not SQLAlchemy's
+                # postgresql+psycopg / postgresql+psycopg2 driver scheme.
+                # Build libpq connection info from parsed fields so query
+                # options and credentials keep their original encoding.
+                checkpoint_url = settings.database_url
+                if self.engine.dialect.name == "postgresql":
+                    connection_fields = self.engine.url.translate_connect_args(
+                        username="user", database="dbname"
+                    )
+                    connection_fields.update(self.engine.url.query)
+                    checkpoint_url = make_conninfo(**connection_fields)
+                self._checkpointer_ctx = PostgresSaver.from_conn_string(checkpoint_url)
+                self.checkpointer = self._checkpointer_ctx.__enter__()
+                # The saver's tables are what make a thread resumable; without
+                # this the graph silently has nowhere to write a checkpoint.
+                self.checkpointer.setup()
+                logger.info("Checkpointer initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize checkpointer: {e}")
+                self.checkpointer = None
 
         logger.info(f"Worker {self.worker_id} initialized")
 
-    def _heartbeat(self, db, run_id, fence, stop_event, interval=None):
-        """Background heartbeat thread that renews the lease periodically."""
-        if interval is None:
-            interval = getattr(settings, "worker_heartbeat_interval", 10)
+    def _supervise(self, supervision, db, run_id, fence):
+        """Watch the run while its turn runs, and keep its lease alive.
 
-        while not stop_event.wait(timeout=interval):
+        Two concerns, one loop, because they are not the same kind of work.
+        The frequent one is a **read**: the run's own fence and status are
+        what a cancellation the owner asked changes, and reading them on a
+        short interval is what interrupts a blocked provider read inside the
+        bounded window this repo guarantees. The rare one is a **write** -
+        renewing the lease so a long turn is not reclaimed by another worker.
+        A write on the short interval would race the worker's own open
+        transaction, which is exactly what a short turn on SQLite does, so the
+        two intervals are kept apart.
+        """
+        poll = getattr(settings, "worker_cancellation_poll_seconds", 0.5)
+        renew_every = getattr(settings, "worker_heartbeat_interval", 10)
+
+        waited = 0.0
+        while not supervision.stop():
+            # A poll on an interval: the first check happens while the turn is
+            # still running, so a lease that moved interrupts a blocked read
+            # rather than deciding the turn before it began.
+            time.sleep(poll)
+            waited += poll
+            if supervision.stop():
+                return
             try:
-                ok = renew(db, run_id, fence)
-                if not ok:
-                    logger.warning(f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})")
-                    break
+                if self._ownership_lost(db, run_id, fence):
+                    logger.warning(
+                        f"[{self.worker_id}] Ownership moved for run {run_id} (fence={fence})"
+                    )
+                    supervision.deny_lease()
+                    return
+            except Exception as e:
+                logger.warning(f"[{self.worker_id}] Supervisor error for run {run_id}: {e}")
+                supervision.deny_lease()
+                return
+
+            if waited < renew_every:
+                continue
+            waited = 0.0
+            try:
+                if not renew(db, run_id, fence):
+                    logger.warning(
+                        f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})"
+                    )
+                    supervision.deny_lease()
+                    return
             except Exception as e:
                 logger.warning(f"[{self.worker_id}] Heartbeat error for run {run_id}: {e}")
-                break
+                supervision.deny_lease()
+                return
+
+    def _ownership_lost(self, db, run_id, fence) -> bool:
+        """Whether this worker is still the owner of the run it is working on.
+
+        A read of both halves of the invariant the queue keeps: a claim moves
+        the run's fence and its job's together, and so does a cancellation the
+        owner asked. Either half having moved means this worker no longer holds
+        the turn, so its read must stop.
+        """
+        run = db.query(Run).filter(Run.id == run_id).first()
+        if run is None or run.fence != fence:
+            return True
+        if run.status not in ("queued", "running", "paused"):
+            return True
+        job = db.query(RunJob).filter(RunJob.run_id == run_id).first()
+        return job is None or job.fence != fence
 
     def _is_first_message(self, db, conversation, user_msg):
         """Check if this is the first message in the conversation."""
@@ -93,39 +242,45 @@ class Worker:
         return title
 
     def _extract_title_from_response(self, response):
-        """Extract a conversation title from the LLM response."""
-        match = re.search(r'## Title:\s*(.{1,50})', response)
+        """Extract a standalone, at-most-50-character title line."""
+        match = re.search(r"(?m)^## Title:[ \t]*(.*)$", response)
         if match:
-            return match.group(1).strip()
+            title = match.group(1).strip()
+            return title[:50] or None
         return None
 
+    def _remove_title_from_response(self, response):
+        """Remove complete standalone title lines from the visible answer."""
+        cleaned = re.sub(r"(?m)^## Title:[^\r\n]*(?:\r?\n|$)", "", response)
+        return cleaned.strip() if cleaned != response else response
+
     def process_job(self, claim):
-        """Process a single claimed job with lease heartbeat."""
+        """Process a single claimed job: supervise one model turn, then publish it."""
         run_id = claim.run_id
         fence = claim.fence
         logger.info(f"[{self.worker_id}] Processing run {run_id} (fence={fence})")
 
-        db = self.Session()
-        heartbeat_stop = threading.Event()
-        heartbeat_thread = None
+        # One session per thread: the worker's own work stays in one transaction,
+        # and the supervisor thread gets a session of its own.
+        job = self.Session()
+        supervisor_db = self.Session()
+        supervision = Supervision()
+        supervisor_thread = None
 
         try:
-            # Get run and conversation info
-            from ..runs.models import Run
-            from ..chat.models import Conversation
+            from ..events.service import append_event
 
-            run = db.query(Run).filter(Run.id == run_id).first()
+            run = job.query(Run).filter(Run.id == run_id).first()
             if not run:
                 logger.warning(f"Run {run_id} not found")
                 return False
 
-            conv = db.query(Conversation).filter(Conversation.id == run.conversation_id).first()
+            conv = job.query(Conversation).filter(Conversation.id == run.conversation_id).first()
             if not conv:
                 logger.warning(f"Conversation {run.conversation_id} not found")
                 return False
 
-            # Get user message
-            user_msg = db.query(Message).filter(
+            user_msg = job.query(Message).filter(
                 Message.run_id == run_id,
                 Message.role == "user",
             ).first()
@@ -133,11 +288,45 @@ class Worker:
                 logger.warning(f"No user message for run {run_id}")
                 return False
 
+            # A run from before profiles records nothing; it gets one snapshot now,
+            # under the fence this worker holds, marked as bound at execution.
+            try:
+                snapshot = bind_run_model_config(job, run, fence)
+            except ProviderError as refused:
+                logger.warning(f"[{self.worker_id}] Run {run_id} cannot be run: {refused.code}")
+                finalized = finalize(
+                    db=job,
+                    run_id=run_id,
+                    fence=fence,
+                    result={
+                        "status": _run_outcome(refused.code),
+                        "error_code": refused.code,
+                        "output": refused.safe_message,
+                    },
+                    commit=False,
+                )
+                if finalized:
+                    # The run's status and its terminal event land in one command.
+                    append_event(
+                        db=job,
+                        conversation_id=conv.id,
+                        run_id=run_id,
+                        event_type="run.failed",
+                        payload={
+                            "error_code": refused.code,
+                            "error": refused.safe_message,
+                            "model": _terminal_model(job, run),
+                        },
+                        actor_id=None,
+                    )
+                    job.commit()
+                return bool(finalized)
+
             # Check if this is the first message (for auto-titling)
-            is_first = self._is_first_message(db, conv, user_msg)
+            is_first = self._is_first_message(job, conv, user_msg)
 
             # Load conversation history for context
-            history = db.query(Message).filter(
+            history = job.query(Message).filter(
                 Message.conversation_id == conv.id,
                 Message.id != user_msg.id,
             ).order_by(Message.created_at.asc()).all()
@@ -159,99 +348,139 @@ class Worker:
                 "messages": messages,
                 "run_id": str(run_id),
                 "conversation_id": str(conv.id),
+                "model_configuration": snapshot.model_dump_json(),
             }
 
-            # Build the graph with the checkpointer
-            graph = build_chat_graph(self.checkpointer)
+            # The control and recorder are injected per invocation: neither is
+            # ever serialized into graph state or a checkpoint.
+            deadline = time.monotonic() + snapshot.limits.run_timeout_seconds
+
+            # Attempt admission and its event commit in a short transaction
+            # before each provider request. This keeps the conversation lock
+            # out of the network turn and leaves an audit record after a crash.
+            recorder = DatabaseAttemptRecorder(
+                lambda: self.Session(), run_id, fence, commit_each=True
+            )
+
+            def invocation():
+                return (
+                    InvocationControl(
+                        deadline=deadline,
+                        clock=time.monotonic,
+                        stop=supervision.stop,
+                    ),
+                    recorder,
+                )
+
+            graph = build_chat_graph(self.checkpointer, invocation_factory=invocation)
 
             # Construct the thread ID and persist it on the Run record
             thread_id = f"{run_id}-{claim.checkpoint_ns}"
             run.graph_thread_id = thread_id
-            db.flush()
+            job.flush()
 
-            # Mark provider call as started
-            mark_provider_started(db, run_id, fence)
+            # Provider dispatch boundary: immediately before the generation request
+            # this worker is about to make. A lease this no longer holds stops here.
+            if not mark_provider_started(job, run_id, fence):
+                logger.warning(f"[{self.worker_id}] Lease already lost for run {run_id} before dispatch")
+                supervision.deny_lease()
+                return False
 
-            # Start heartbeat thread to renew lease during processing
-            heartbeat_thread = threading.Thread(
-                target=self._heartbeat,
-                args=(db, run_id, fence, heartbeat_stop),
+            # Start the supervisor: it watches the run while its turn runs.
+            supervisor_thread = threading.Thread(
+                target=self._supervise,
+                args=(supervision, supervisor_db, run_id, fence),
                 daemon=True,
             )
-            heartbeat_thread.start()
+            supervisor_thread.start()
 
             # Invoke the graph with checkpointing via thread_id
             print(f"[worker] About to invoke graph for run {run_id}")
+            failure = None
             try:
-                config = {"configurable": {"thread_id": thread_id}}
-                print(f"[worker] Invoking graph.invoke...")
-                graph_state = graph.invoke(state, config=config)
-                print(f"[worker] graph.invoke returned")
+                graph_state = graph.invoke(state, config={"configurable": {"thread_id": thread_id}})
+                print("[worker] graph.invoke returned")
                 result = ModelResult(
                     assistant_response=graph_state.get("assistant_response", ""),
                     usage=graph_state.get("usage"),
+                    finish_reason=graph_state.get("finish_reason"),
                 )
-            except Exception as e:
-                import traceback
-                print(f"[worker] graph.invoke failed: {type(e).__name__}: {e}")
-                traceback.print_exc()
-                result = ModelResult(assistant_response="", error=str(e))
+            except ProviderError as refused:
+                print(f"[worker] provider turn failed: {refused.code}")
+                failure = refused
+                result = ModelResult(assistant_response="")
 
-            # Stop heartbeat
-            heartbeat_stop.set()
-            if heartbeat_thread.is_alive():
-                heartbeat_thread.join(timeout=5)
+            # Stop the heartbeat before reading anything it may have changed.
+            supervision.interrupt()
+            if supervisor_thread.is_alive():
+                supervisor_thread.join(timeout=5)
 
-            # Finalize the run first to check ownership
-            from ..events.service import append_event
+            # A lease this worker no longer holds publishes nothing: another
+            # worker owns the run, and the reconciler will finish it.
+            if supervision.lease_lost() or (failure is not None and failure.code == "lease_lost"):
+                logger.warning(f"[{self.worker_id}] Lease lost for run {run_id}; publishing nothing")
+                return False
 
             # Auto-title the conversation if this is the first message
             new_title = None
             cleaned_response = result.assistant_response
-            if is_first and not result.error:
+            if is_first and failure is None:
                 new_title = self._extract_title_from_response(result.assistant_response)
-                if new_title:
-                    # Remove the title line from the response before storing
-                    cleaned_response = re.sub(r'## Title:\s*.{1,50}', '', result.assistant_response).strip()
-                else:
+                # A blank title still needs to stay out of the visible answer;
+                # when no standalone marker exists, this leaves the response intact.
+                cleaned_response = self._remove_title_from_response(
+                    result.assistant_response
+                )
+                if not new_title:
                     # Fallback: generate title from user message
                     new_title = self._generate_title(user_msg.content)
 
-            if result.error:
+            if failure is not None:
+                status = _run_outcome(failure.code)
                 finalized = finalize(
-                    db=db,
+                    db=job,
                     run_id=run_id,
                     fence=fence,
                     result={
-                        "status": "failed",
-                        "error_code": "provider_error",
-                        "output": result.error,
+                        "status": status,
+                        "error_code": failure.code,
+                        "output": failure.safe_message,
                     },
+                    commit=False,
                 )
                 if finalized:
-                    # Emit run.failed event
+                    # What the run asked first, then what it ended as: a reader
+                    # follows the requests in the order they were made.
+                    recorder.publish(job)
+                    # The run's status, its event, and its outbox row are one command.
                     append_event(
-                        db=db,
+                        db=job,
                         conversation_id=conv.id,
                         run_id=run_id,
                         event_type="run.failed",
-                        payload={"error_code": "provider_error", "error": result.error},
+                        payload={
+                            "error_code": failure.code,
+                            "error": failure.safe_message,
+                            "model": _terminal_model(job, run),
+                        },
                         actor_id=None,
                     )
-                    logger.info(f"[{self.worker_id}] Run {run_id} failed: {result.error}")
+                    job.commit()
+                    logger.info(f"[{self.worker_id}] Run {run_id} failed: {failure.safe_message}")
                 else:
                     logger.warning(f"[{self.worker_id}] Run {run_id} already finalized by another worker")
             else:
                 # Try to finalize first to check ownership
                 finalized = finalize(
-                    db=db,
+                    db=job,
                     run_id=run_id,
                     fence=fence,
                     result={
                         "status": "success",
                         "output": cleaned_response,
-                        "usage": result.usage,
+                        "usage": _usage_record(result.usage),
                     },
+                    commit=False,
                 )
                 if finalized:
                     # Only save assistant message if we own the run
@@ -261,26 +490,34 @@ class Worker:
                         role="assistant",
                         content=cleaned_response,
                     )
-                    db.add(assistant_msg)
+                    job.add(assistant_msg)
 
                     # Update conversation title if this was the first message
                     if is_first and new_title:
                         conv.title = new_title
 
+                    # The requests this turn made, stated in the order they
+                    # were made, before the answer that one of them produced.
+                    recorder.publish(job)
+
                     # Emit run.succeeded event
                     append_event(
-                        db=db,
+                        db=job,
                         conversation_id=conv.id,
                         run_id=run_id,
                         event_type="run.succeeded",
-                        payload={"message_id": str(assistant_msg.id), "usage": result.usage},
+                        payload={
+                            "message_id": str(assistant_msg.id),
+                            "usage": result.usage,
+                            "model": _terminal_model(job, run),
+                        },
                         actor_id=None,
                     )
 
                     # Emit title_updated event if title changed
                     if is_first and new_title:
                         append_event(
-                            db=db,
+                            db=job,
                             conversation_id=conv.id,
                             run_id=run_id,
                             event_type="title_updated",
@@ -288,7 +525,8 @@ class Worker:
                             actor_id=None,
                         )
 
-                    db.commit()
+                    # A completed status, its message, and its event land together.
+                    job.commit()
                     logger.info(f"[{self.worker_id}] Run {run_id} completed")
                     if is_first and new_title:
                         logger.info(f"[{self.worker_id}] Auto-titled conversation: {new_title}")
@@ -299,9 +537,14 @@ class Worker:
 
         except Exception as e:
             logger.exception(f"[{self.worker_id}] Error processing run {run_id}")
+            # A failed publication may have staged a success status, answer,
+            # attempts, or event in this session. Discard all of it before a
+            # fresh fenced transaction publishes the failure atomically.
             try:
-                finalize(
-                    db=db,
+                job.rollback()
+                failure_db = self.Session()
+                finalized = finalize(
+                    db=failure_db,
                     run_id=run_id,
                     fence=fence,
                     result={
@@ -309,15 +552,42 @@ class Worker:
                         "error_code": "internal_error",
                         "output": str(e),
                     },
+                    commit=False,
                 )
+                failed_run = failure_db.get(Run, run_id)
+                if finalized and failed_run is not None:
+                    from ..events.service import append_event
+
+                    conversation = failure_db.query(Conversation).filter_by(
+                        id=failed_run.conversation_id
+                    ).first()
+                    if conversation is not None:
+                        append_event(
+                            db=failure_db,
+                            conversation_id=conversation.id,
+                            run_id=run_id,
+                            event_type="run.failed",
+                            payload={
+                                "error_code": "internal_error",
+                                "error": "The run could not be completed.",
+                                "model": _terminal_model(failure_db, failed_run),
+                            },
+                            actor_id=None,
+                        )
+                        failure_db.commit()
+                failure_db.close()
             except Exception:
-                pass
+                try:
+                    failure_db.rollback()
+                    failure_db.close()
+                except Exception:
+                    pass
             return False
         finally:
-            heartbeat_stop.set()
-            if heartbeat_thread and heartbeat_thread.is_alive():
-                heartbeat_thread.join(timeout=5)
-            db.close()
+            if supervisor_thread and supervisor_thread.is_alive():
+                supervisor_thread.join(timeout=5)
+            job.close()
+            supervisor_db.close()
 
     def run(self):
         """Main worker loop with automatic reconciliation."""
@@ -362,7 +632,7 @@ class Worker:
             except KeyboardInterrupt:
                 self.running = False
                 logger.info(f"[{self.worker_id}] Interrupted, shutting down")
-            except Exception as e:
+            except Exception:
                 logger.exception(f"[{self.worker_id}] Error in worker loop")
                 time.sleep(1)
             finally:

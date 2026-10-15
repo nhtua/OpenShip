@@ -1,3 +1,6 @@
+# ruff: noqa: BLE001, S110
+# A maintenance command reports what it found; a health probe that cannot
+# reach the database answers "not ok" rather than raising.
 """Worker maintenance commands.
 
 Provides CLI-accessible commands for worker operations including
@@ -6,8 +9,6 @@ retention, health checks, and reconciliation.
 
 import json
 import sys
-import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -74,7 +75,7 @@ def health_check_command():
     try:
         db.execute("SELECT 1")
         db_ok = True
-    except Exception as e:
+    except Exception:
         pass
 
     db.close()

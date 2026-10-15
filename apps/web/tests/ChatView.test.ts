@@ -4,8 +4,8 @@ import { mountWithRouter } from './helpers/mountWithRouter'
 import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
-import api from '@/services/api'
-import type { Conversation } from '@/types'
+import api, { runsApi } from '@/services/api'
+import type { Conversation, RunCard as RunCardType } from '@/types'
 import {
   apiError,
   fixtureConversations,
@@ -16,9 +16,18 @@ import {
 vi.mock('@/services/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
   authApi: { login: vi.fn(), register: vi.fn(), logout: vi.fn() },
+  // The view reaches the durable endpoints only through a run's card:
+  // cancelling asks, and the read answers with what the cancellation left.
+  runsApi: {
+    submitTurn: vi.fn(),
+    cancelRun: vi.fn(),
+    getSnapshot: vi.fn(),
+    getRun: vi.fn(),
+  },
 }))
 
 const mockApi = vi.mocked(api)
+const mockRunsApi = vi.mocked(runsApi)
 
 const wait = 3000
 
@@ -61,6 +70,36 @@ describe('ChatView', () => {
       { timeout: wait },
     )
     expect(row.attributes('data-active')).toBe('true')
+  })
+
+  it('shows a generated conversation title in the active chat header', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    await vi.waitFor(
+      () => expect(wrapper.text()).toContain('Deploy pipeline'),
+      { timeout: wait },
+    )
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: { conversation_id: 'c1', sequence: 0, events: [], runs: [] },
+    })
+    await findByText(wrapper, 'Deploy pipeline')!.trigger('click')
+    await vi.waitFor(
+      () => expect(wrapper.find('h1').text()).toBe('Deploy pipeline'),
+      { timeout: wait },
+    )
+
+    const chat = useChatStore()
+    chat.processDurableEvent({
+      id: 'evt-title-1',
+      conversation_id: 'c1',
+      run_id: 'run-title-1',
+      sequence: 1,
+      type: 'title_updated',
+      payload: { conversation_id: 'c1', title: 'Deploy with the staging profile' },
+      created_at: '',
+    } as never)
+    await nextTick()
+
+    expect(wrapper.find('h1').text()).toBe('Deploy with the staging profile')
   })
 
   it('creates and selects a conversation immediately on click', async () => {
@@ -223,6 +262,77 @@ describe('ChatView', () => {
     expect((newButton.element as HTMLButtonElement).disabled).toBe(true)
     const row = findByText(wrapper, 'Deploy pipeline')!
     expect((row.element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('offers cancel only for a run that can still be stopped', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    const chat = useChatStore()
+    await vi.waitFor(
+      () => {
+        expect(wrapper.text()).toContain('Deploy pipeline')
+      },
+      { timeout: wait },
+    )
+
+    chat.currentConversation = {
+      id: 'c1',
+      title: 'Deploy pipeline',
+      created_at: '',
+      updated_at: '',
+    } as Conversation
+    chat.runCards = new Map([
+      [
+        'c1',
+        {
+          run_id: 'run-1',
+          status: 'running',
+          started_at: null,
+          ended_at: null,
+          usage: null,
+          error_code: null,
+          error_message: null,
+          model: null,
+          attempts: [],
+        } as RunCardType,
+      ],
+    ])
+
+    // The control sits beside the run it names, and it is not disabled while
+    // a turn streams: stopping a run is what a person does while one is
+    // running, and a control that could not be pressed would be a lie.
+    await vi.waitFor(
+      () => {
+        expect(findByText(wrapper, 'Cancel run')).toBeTruthy()
+      },
+      { timeout: wait },
+    )
+    const cancel = findByText(wrapper, 'Cancel run')!
+    expect((cancel.element as HTMLButtonElement).disabled).toBe(false)
+
+    mockRunsApi.cancelRun.mockResolvedValue({ data: { id: 'run-1' } })
+    // The read is what the card becomes: the store waits for it rather than
+    // assuming a cancellation took effect.
+    mockRunsApi.getRun.mockResolvedValue({
+      data: { id: 'run-1', status: 'cancelled' },
+    })
+
+    await cancel.trigger('click')
+
+    await vi.waitFor(
+      () => {
+        expect(mockRunsApi.cancelRun).toHaveBeenCalledWith('run-1')
+      },
+      { timeout: wait },
+    )
+
+    // A run that reached an end has nothing left to stop, so the control
+    // disappears with it rather than offering an action that does nothing.
+    await vi.waitFor(
+      () => {
+        expect(findByText(wrapper, 'Cancel run')).toBeFalsy()
+      },
+      { timeout: wait },
+    )
   })
 
   it('keeps the empty chat state when there are no messages', async () => {

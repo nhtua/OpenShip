@@ -4,9 +4,9 @@ Uses the maintained PostgresSaver with strict msgpack serialization.
 Checkpoint setup is an install/migration step, never on a request.
 """
 
-import os
 import contextlib
-from typing import Generator
+import os
+from collections.abc import Generator
 
 # Enable strict msgpack serialization (no pickle fallback)
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")

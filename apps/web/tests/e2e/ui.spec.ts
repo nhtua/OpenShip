@@ -172,6 +172,7 @@ test.describe('responsive layout (7.4)', () => {
     await setAuthToken(page)
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/')
+    await page.getByRole('button', { name: 'Show 42 more' }).click()
     await page.getByRole('button', { name: /Conversation 50/ }).waitFor()
 
     // Open the long-title conversation to load 100 messages.

@@ -126,6 +126,11 @@ Dependencies identify prerequisites; they do not require every preceding phase t
 
 #### Phase 3 — Model-Provider Portability
 
+**Current chat contract:** Use explicit model profiles and the durable run/event
+API. The Phase 1 POST chat stream, direct OpenAI service, and implicit single-provider
+configuration are retired. Authentication, conversation history, auto-titles, and
+historical data migrations remain part of the application.
+
 **Milestone:** "I can choose my model provider without changing how I use OpenShip."
 
 **Build**

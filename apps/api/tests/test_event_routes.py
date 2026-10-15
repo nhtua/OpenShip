@@ -1,15 +1,17 @@
 """Tests for event routes: snapshot, stream, and SSE cursor handling."""
 
+import json
 import uuid
-import time
+from datetime import UTC
 
 from fastapi.testclient import TestClient
-from src.openship.main import app
+
 from src.openship.auth.models import User
-from src.openship.workspace.models import Project
 from src.openship.chat.models import Conversation
-from src.openship.runs.models import Run, RunJob, Event, Outbox
 from src.openship.database.session import SessionLocal
+from src.openship.main import app
+from src.openship.runs.models import Event, Outbox, Run
+from src.openship.workspace.models import Project
 
 app_test = app
 
@@ -49,7 +51,7 @@ def get_user_token(user_id):
 
 def test_snapshot_empty():
     """Empty snapshot returns no events with sequence -1."""
-    user_id, project_id, conv_id = setup_user_project_conv()
+    user_id, _project_id, conv_id = setup_user_project_conv()
     token = get_user_token(user_id)
 
     with TestClient(app_test) as client:
@@ -150,11 +152,47 @@ def test_stream_after_sequence():
         assert events[1]["sequence"] == 4
 
 
+def test_sse_event_uses_complete_event_envelope():
+    """SSE serialization carries the same envelope as snapshot events."""
+    _user_id, project_id, conv_id = setup_user_project_conv()
+    db = SessionLocal()
+    run_id = uuid.uuid4()
+    try:
+        run = Run(
+            id=run_id, conversation_id=conv_id, project_id=project_id,
+            status="running", fence=0,
+        )
+        db.add(run)
+        db.flush()
+        db.add(Event(
+            conversation_id=conv_id,
+            run_id=run_id,
+            sequence=0,
+            type="run.started",
+            payload='{"status":"running"}',
+        ))
+        db.query(Conversation).filter(Conversation.id == conv_id).one().next_event_sequence = 1
+        db.commit()
+    finally:
+        db.close()
+
+    from src.openship.events.routes import _sse_envelope, _sse_format
+
+    event = db.query(Event).filter(Event.run_id == run_id).one()
+    frame = _sse_format(str(event.id), event.type, _sse_envelope(event))
+    data_line = next(line[6:] for line in frame.splitlines() if line.startswith("data: "))
+    envelope = json.loads(data_line)
+    assert envelope["run_id"] == str(run_id)
+    assert envelope["conversation_id"] == str(conv_id)
+    assert envelope["created_at"]
+    assert envelope["sequence"] == 0
+
+
 def test_stream_invalid_cursor():
     """Malformed cursor returns 422."""
     db = SessionLocal()
     try:
-        user_id, project_id, conv_id = setup_user_project_conv()
+        user_id, _project_id, conv_id = setup_user_project_conv()
     finally:
         db.close()
 
@@ -171,7 +209,7 @@ def test_stream_negative_cursor():
     """Negative cursor (-1) is valid and means 'start from beginning'."""
     db = SessionLocal()
     try:
-        user_id, project_id, conv_id = setup_user_project_conv()
+        user_id, _project_id, conv_id = setup_user_project_conv()
     finally:
         db.close()
 
@@ -188,7 +226,7 @@ def test_stream_future_cursor():
     """Future cursor (past max sequence) returns empty list."""
     db = SessionLocal()
     try:
-        user_id, project_id, conv_id = setup_user_project_conv()
+        user_id, _project_id, conv_id = setup_user_project_conv()
     finally:
         db.close()
 
@@ -219,8 +257,8 @@ def test_snapshot_foreign_user():
     """Snapshot for another user's conversation returns 404."""
     db = SessionLocal()
     try:
-        user1_id, project1_id, conv1_id = setup_user_project_conv()
-        user2_id, project2_id, conv2_id = setup_user_project_conv()
+        _user1_id, _project1_id, conv1_id = setup_user_project_conv()
+        user2_id, _project2_id, _conv2_id = setup_user_project_conv()
     finally:
         db.close()
 
@@ -339,11 +377,11 @@ def test_outbox_deduplication():
 
 def test_run_status_event_atomic():
     """Run status update and event should be committed together."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     db = SessionLocal()
     try:
-        user_id, project_id, conv_id = setup_user_project_conv()
+        _user_id, project_id, conv_id = setup_user_project_conv()
 
         run = Run(
             conversation_id=conv_id, project_id=project_id, status="queued", fence=0
@@ -363,7 +401,7 @@ def test_run_status_event_atomic():
         run = db.query(Run).filter(Run.id == run_id).first()
         run.status = "completed"
         run.fence = 1
-        run.ended_at = datetime.now(timezone.utc)
+        run.ended_at = datetime.now(UTC)
 
         ev = Event(
             conversation_id=conv_id,
@@ -485,7 +523,7 @@ def test_sse_stream_future_cursor():
     """Future cursor on SSE endpoint returns 422."""
     db = SessionLocal()
     try:
-        user_id, project_id, conv_id = setup_user_project_conv()
+        user_id, _project_id, conv_id = setup_user_project_conv()
     finally:
         db.close()
 

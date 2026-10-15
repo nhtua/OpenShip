@@ -32,6 +32,9 @@ agent_history/
 *.swo
 *~
 
+# Test artifacts (Playwright's local run output)
+test-results/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,12 +1,17 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import api, { runsApi } from '@/services/api'
+import api, { runsApi, modelProfilesApi } from '@/services/api'
 import type {
   ChatMessage,
   Conversation,
   DurableEvent,
+  ErrorSummary,
+  ModelProfileCatalog,
+  Run,
   RunCard,
   Snapshot,
+  SnapshotRun,
+  TurnSubmitRequest,
 } from '@/types'
 
 // Stable client request ID generation
@@ -28,12 +33,29 @@ export const useChatStore = defineStore('chat', () => {
   // Durable run state
   // Run cards: one per conversation, keyed by conversation ID
   const runCards = ref<Map<string, RunCard>>(new Map())
-  // Pending requests: request_id -> { conversation_id, content }
-  const pendingRequests = ref<Map<string, { conversation_id: string; content: string }>>(new Map())
+  // Pending requests: request_id -> the exact payload that was sent. A retry
+  // replays this payload, so the provider it named travels with it.
+  const pendingRequests = ref<Map<string, { conversation_id: string; payload: TurnSubmitRequest }>>(
+    new Map(),
+  )
   // Applied event IDs (for deduplication)
   const appliedEventIds = ref<Set<string>>(new Set())
   // Cursor per conversation (last committed sequence)
   const cursors = ref<Map<string, number>>(new Map())
+
+  // What this installation offers, and what the next turn will use. A browser
+  // names a profile only: never an endpoint, adapter, or credential.
+  const modelProfiles = ref<ModelProfileCatalog | null>(null)
+  const selectedProfileId = ref<string | null>(null)
+  const selectedFallbackIds = ref<string[]>([])
+  // A missing catalog is stated where the choice is made, not as a page-wide
+  // failure: the installation still answers with its default.
+  const profileError = ref<string | null>(null)
+  // True only while the submit request itself is in flight. The payload — and
+  // with it the provider — is already fixed, so a selection change cannot
+  // land in this turn. A run that already exists keeps its own provider
+  // regardless of what is selected next.
+  const isSubmitting = ref(false)
 
   async function getConversations() {
     try {
@@ -60,15 +82,67 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // --- Provider selection ----------------------------------------------------
+  //
+  // The catalog is what this installation offers right now; a profile is the
+  // only thing a browser may name. Availability is stated with a safe reason,
+  // never with a credential value or an endpoint.
+
+  async function loadModelProfiles(): Promise<void> {
+    profileError.value = null
+    try {
+      const res = await modelProfilesApi.list()
+      modelProfiles.value = res.data as unknown as ModelProfileCatalog
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      // The catalog is gone, so nothing may be claimed about a provider. The
+      // selection stays: an earlier choice is still what the next turn asks
+      // for, and the selector says it can no longer be confirmed.
+      profileError.value =
+        axiosErr.response?.data?.detail ?? 'Failed to load model profiles'
+      modelProfiles.value = null
+    }
+  }
+
+  function selectProfile(profileId: string | null, fallbackIds: string[] = []): void {
+    // A submission already in flight has its payload, and therefore its
+    // provider, fixed. Changing selection here would be a lie about the turn
+    // that is being sent, so it is ignored rather than queued.
+    if (isSubmitting.value) return
+
+    // A fallback is only offered when the profile that answers allows it;
+    // anything else the caller asks for is not this profile's to serve. The
+    // profile that answers is the chosen one, or the default when nothing is
+    // chosen — which is the same rule the selector applies when it decides
+    // whether to offer the opt-in at all. Refusing it here would leave the
+    // browser offering a control the store then ignores.
+    const answering = profileId ?? modelProfiles.value?.default_profile_id
+    const chosen = answering
+      ? (modelProfiles.value?.profiles ?? []).find(
+          (profile) => profile.profile_id === answering,
+        )
+      : null
+    const allowed = new Set(chosen ? chosen.allowed_fallback_profile_ids : [])
+
+    selectedProfileId.value = profileId
+    selectedFallbackIds.value = fallbackIds.filter((id) => allowed.has(id))
+  }
+
   async function loadConversation(conversationId: string) {
     try {
       // Load snapshot first to rebuild durable state
       try {
         const snapRes = await runsApi.getSnapshot(conversationId)
         const snapshot = snapRes.data as unknown as Snapshot
-        // Process snapshot events to rebuild state
+        // Replay retained events for message and title reconstruction.
         for (const event of snapshot.events) {
           processDurableEvent(event)
+        }
+        // Run summaries are authoritative even when every event was pruned.
+        // Apply them after historical events so an older submission cannot
+        // replace the conversation's latest run card.
+        for (const run of snapshot.runs ?? []) {
+          runCards.value.set(conversationId, runSummaryCard(run))
         }
         // Set the cursor to the snapshot's sequence (or the highest event sequence)
         const maxSeq = snapshot.events.reduce(
@@ -76,6 +150,13 @@ export const useChatStore = defineStore('chat', () => {
           -1,
         )
         cursors.value.set(conversationId, Math.max(snapshot.sequence, maxSeq))
+        // A snapshot may be pruned, so its events alone never say what a run
+        // was pinned to or what it reported. The run read does, and it is the
+        // only place that states it — so the card is hydrated from there.
+        const rebuilt = runCards.value.get(conversationId)
+        if (rebuilt?.run_id && !(snapshot.runs ?? []).some((run) => run.id === rebuilt.run_id)) {
+          await hydrateRunCard(conversationId, rebuilt.run_id)
+        }
       } catch (snapErr) {
         // Snapshot may not be available yet; fall through to messages
         console.warn('Snapshot unavailable, falling back to messages', snapErr)
@@ -110,6 +191,7 @@ export const useChatStore = defineStore('chat', () => {
             event.type === 'run.failed' ||
             event.type === 'run_cancelled'
           ) {
+            void hydrateRunCard(conversationId, event.run_id ?? '')
             api
               .get(`/conversations/${conversationId}/messages`)
               .then((res) => {
@@ -149,7 +231,7 @@ export const useChatStore = defineStore('chat', () => {
         if (!content && clientId) {
           const pending = pendingRequests.value.get(clientId)
           if (pending) {
-            content = pending.content
+            content = pending.payload.content
           }
         }
 
@@ -214,6 +296,12 @@ export const useChatStore = defineStore('chat', () => {
               ended_at: null,
               usage: null,
               error_code: null,
+              error_message: null,
+              // Nothing is known yet: the run read states the provider, and
+              // guessing one here would be a claim about a model nobody was
+              // necessarily asked.
+              model: null,
+              attempts: [],
             }
             runCards.value.set(convId, runCard)
           }
@@ -283,7 +371,7 @@ export const useChatStore = defineStore('chat', () => {
   ): void {
     const card = runCards.value.get(convId)
     if (card) {
-      card.run_id = runId
+      if (runId) card.run_id = runId
       card.status = status
       const ts = timestamp ?? new Date().toISOString()
       if (['succeeded', 'failed', 'cancelled'].includes(status)) {
@@ -292,6 +380,52 @@ export const useChatStore = defineStore('chat', () => {
         card.started_at = ts
       }
       runCards.value.set(convId, card)
+    }
+  }
+
+  async function hydrateRunCard(convId: string, runId: string): Promise<void> {
+    if (!runId) return
+    try {
+      const res = await runsApi.getRun(runId)
+      const run = res.data as unknown as Run
+      const card = runCards.value.get(convId)
+      // A slow read for the previous run must never overwrite the next card.
+      if (!card || card.run_id !== runId) return
+      card.status = cardStatus(run.status)
+      // A run read is authoritative for what it was pinned to and what it
+      // asked. Null stays null: a run from before profiles exists, and
+      // nothing here guesses a provider, a model, or a count for it.
+      card.model = run.model ?? null
+      card.attempts = run.provider_attempts ?? []
+      card.usage = run.usage ?? null
+      const failure: ErrorSummary | null = run.error ?? null
+      card.error_code = failure?.code ?? null
+      // The safe copy the API settled on, never a provider's own body.
+      card.error_message = failure?.message ?? null
+      runCards.value.set(convId, card)
+    } catch (err) {
+      console.warn('Failed to hydrate run card from run read', err)
+    }
+  }
+
+  function cardStatus(status: Run['status']): string {
+    if (status === 'completed') return 'succeeded'
+    if (status === 'timed_out' || status === 'stale') return 'failed'
+    if (status === 'created') return 'queued'
+    return status
+  }
+
+  function runSummaryCard(run: SnapshotRun): RunCard {
+    return {
+      run_id: run.id,
+      status: cardStatus(run.status),
+      started_at: run.started_at,
+      ended_at: run.ended_at,
+      usage: run.usage ?? null,
+      error_code: run.error?.code ?? run.error_code ?? null,
+      error_message: run.error?.message ?? null,
+      model: run.model ?? null,
+      attempts: run.provider_attempts ?? [],
     }
   }
 
@@ -431,10 +565,19 @@ export const useChatStore = defineStore('chat', () => {
       // Generate stable client request UUID
       const requestId = generateRequestId()
 
+      // The payload is captured once, before anything is sent: a retry of a
+      // lost request replays exactly this turn — same words, same provider.
+      const payload: TurnSubmitRequest = {
+        content,
+        client_request_id: requestId,
+        provider_profile_id: selectedProfileId.value,
+        fallback_profile_ids: [...selectedFallbackIds.value],
+      }
+
       // Store pending request (local draft)
       pendingRequests.value.set(requestId, {
         conversation_id: conversationId || '',
-        content,
+        payload,
       })
 
       // Create optimistic user message for immediate UI feedback
@@ -456,6 +599,11 @@ export const useChatStore = defineStore('chat', () => {
           ended_at: null,
           usage: null,
           error_code: null,
+          error_message: null,
+          // What the run was pinned to is stated by the run read, not here:
+          // the request names a profile, and the server decides what runs.
+          model: null,
+          attempts: [],
         }
         runCards.value.set(conversationId, runCard)
       }
@@ -475,69 +623,64 @@ export const useChatStore = defineStore('chat', () => {
         currentConversation.value = newConv
       }
 
-      let runId = ''
-      try {
-        const runRes = await runsApi.submitTurn(effectiveConvId, {
-          content,
-          client_request_id: requestId,
-        })
-        runId = runRes.data.id
-        console.log('STORE: durable run submitted, runId:', runId)
-        // Update run card with actual run ID
-        const card = runCards.value.get(effectiveConvId)
-        if (card) {
-          card.run_id = runId
-          runCards.value.set(effectiveConvId, card)
-        }
-      } catch (err) {
-        console.error('STORE: Failed to submit durable run', err)
-        error.value = 'Failed to submit message. Please try again.'
-        isStreaming.value = false
-        return
-      }
-
-      // Subscribe to events and process stream
-      const convId = effectiveConvId
-      const cursor = cursors.value.get(convId) ?? -1
-
-      if (runId) {
-        // Use durable event stream
-        try {
-          await subscribeToEvents(convId, cursor, (event) => {
-            processDurableEvent(event)
-            // Update cursor (use live value, not captured)
-            const currentCursor = cursors.value.get(convId) ?? -1
-            if (event.sequence > currentCursor) {
-              cursors.value.set(convId, event.sequence)
-            }
-
-            // Check for run completion
-            if (
-              event.type === 'run.succeeded' ||
-              event.type === 'run.failed' ||
-              event.type === 'run_cancelled'
-            ) {
-              // Reload messages to get the assistant response
-              if (convId) {
-                api
-                  .get(`/conversations/${convId}/messages`)
-                  .then((res) => {
-                    messages.value = res.data as unknown as ChatMessage[]
-                  })
-                  .catch((e) => console.error('Failed to reload messages', e))
-              }
-            }
-          })
-        } catch (err) {
-          console.error('Event stream error', err)
-        }
-      }
-
-      // Clear pending request
-      pendingRequests.value.delete(requestId)
+      const pending = pendingRequests.value.get(requestId)
+      if (pending) pending.conversation_id = effectiveConvId
+      await submitPendingRequest(requestId)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       error.value = `Failed to send message: ${message}`
+    } finally {
+      isStreaming.value = false
+    }
+  }
+
+  async function submitPendingRequest(requestId: string): Promise<void> {
+    const pending = pendingRequests.value.get(requestId)
+    if (!pending?.conversation_id) return
+    const convId = pending.conversation_id
+    isSubmitting.value = true
+    try {
+      const runRes = await runsApi.submitTurn(convId, pending.payload)
+      const runId = runRes.data.id
+      const card = runCards.value.get(convId)
+      if (card) {
+        card.run_id = runId
+        runCards.value.set(convId, card)
+      }
+      const cursor = cursors.value.get(convId) ?? -1
+      try {
+        await subscribeToEvents(convId, cursor, (event) => {
+          processDurableEvent(event)
+          const currentCursor = cursors.value.get(convId) ?? -1
+          if (event.sequence > currentCursor) cursors.value.set(convId, event.sequence)
+          if (['run.succeeded', 'run.failed', 'run_cancelled'].includes(event.type)) {
+            void hydrateRunCard(convId, event.run_id ?? runId)
+            api.get(`/conversations/${convId}/messages`).then((res) => {
+              if (currentConversation.value?.id === convId) {
+                messages.value = res.data as unknown as ChatMessage[]
+              }
+            }).catch((e) => console.error('Failed to reload messages', e))
+          }
+        })
+      } catch (err) {
+        console.error('Event stream error', err)
+      }
+      await hydrateRunCard(convId, runId)
+      pendingRequests.value.delete(requestId)
+    } catch (err) {
+      console.error('STORE: Failed to submit durable run', err)
+      error.value = 'Failed to submit message. Please try again.'
+    } finally {
+      isSubmitting.value = false
+    }
+  }
+
+  async function retrySubmission(requestId: string): Promise<void> {
+    if (isSubmitting.value) return
+    error.value = null
+    isStreaming.value = true
+    try {
+      await submitPendingRequest(requestId)
     } finally {
       isStreaming.value = false
     }
@@ -563,6 +706,9 @@ export const useChatStore = defineStore('chat', () => {
               card[1].ended_at = new Date().toISOString()
               runCards.value.set(card[0], card[1])
             }
+            // A cancelled run still says what it was pinned to and what it
+            // asked for, so the card keeps that honest view.
+            await hydrateRunCard(card?.[0] ?? '', runId)
             break
           }
         } catch (err) {
@@ -585,6 +731,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
     currentConversation.value = null
     runCards.value.clear()
+    pendingRequests.value.clear()
     cursors.value.clear()
   }
 
@@ -593,13 +740,22 @@ export const useChatStore = defineStore('chat', () => {
     currentConversation,
     messages,
     isStreaming,
+    isSubmitting,
     error,
     runCards,
     cursors,
+    modelProfiles,
+    profileError,
+    selectedProfileId,
+    selectedFallbackIds,
     getConversations,
     createConversation,
+    loadModelProfiles,
+    selectProfile,
     loadConversation,
     sendMessage,
+    retrySubmission,
+    pendingRequests,
     cancelRun,
     subscribeToEvents,
     processDurableEvent,

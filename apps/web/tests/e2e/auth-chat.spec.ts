@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { E2E_TOKEN, clearApiRoutes, mockApi, setAuthToken } from './fixtures/api'
+import { E2E_TOKEN, E2E_RUN_QUEUED, E2E_RUN_RUNNING, E2E_RUN_COMPLETED, durableEvent, clearApiRoutes, mockApi, setAuthToken } from './fixtures/api'
 import type { Route } from '@playwright/test'
 
 /**
@@ -101,8 +101,11 @@ test('loading guard disables the submit button and blocks double submit', async 
 test('logout leaves the workspace, clears the token, and lands on login', async ({
   page,
 }) => {
-  await setAuthToken(page)
-  await page.goto('/')
+  await page.goto('/login')
+  await page.getByLabel('Username').fill('testuser')
+  await page.getByLabel('Password').fill('password123')
+  await page.getByRole('button', { name: 'Sign In' }).click()
+  await page.waitForURL('http://127.0.0.1:4173/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
 
   // Expand the sidebar if collapsed (user menu is only visible in expanded mode)
@@ -142,7 +145,7 @@ test('create a conversation, select another, send with Enter, and render the moc
   await page.getByRole('button', { name: /Deploy pipeline/ }).click()
   await page.getByText('Staging deployed successfully.').waitFor()
 
-  // Send with Enter; the fulfilled SSE fixture renders the response.
+  // Send with Enter; durable terminal events load the persisted response.
   const composer = page.getByLabel('Message')
   await composer.fill('Hello agent')
   await composer.press('Enter')
@@ -161,7 +164,7 @@ test('composer is disabled while streaming and re-enabled after completion', asy
   page,
 }) => {
   await clearApiRoutes(page)
-  await mockApi(page, { chatDelay: 800 })
+  await mockApi(page, { streamDelay: 800 })
   await setAuthToken(page)
   await page.goto('/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).click()
@@ -186,7 +189,7 @@ test('composer is disabled while streaming and re-enabled after completion', asy
 
 test('Shift+Enter inserts a newline without sending', async ({ page }) => {
   let chatRequests = 0
-  await page.route('**/api/chat/*', async (route) => {
+  await page.route('**/api/runs/*/turns', async (route) => {
     chatRequests += 1
     await route.continue()
   })
@@ -207,7 +210,7 @@ test('mocked chat failure shows an actionable alert with Dismiss', async ({
   page,
 }) => {
   await clearApiRoutes(page)
-  await mockApi(page, { chatStatus: 500 })
+  await mockApi(page, { turnsStatus: 500 })
   await setAuthToken(page)
   await page.goto('/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
@@ -218,7 +221,7 @@ test('mocked chat failure shows an actionable alert with Dismiss', async ({
 
   const alert = page.getByRole('alert')
   await expect(alert).toBeVisible()
-  await expect(alert).toContainText('Failed to send message')
+  await expect(alert).toContainText('Failed to submit message')
 
   await page.getByRole('button', { name: 'Dismiss' }).click()
   await expect(alert).toBeHidden()
@@ -245,111 +248,75 @@ test('no fake workspaces, sessions, export, or stop controls', async ({
   }
 })
 
-test('reconnect after page reload shows eventual run completion', async ({
-  page,
-  context,
-}) => {
-  // This test simulates: send message, page reloads mid-run, reconnect
-  // shows the run completing and the assistant message arriving.
-
-  // Set up durable run API mocks
-  let snapshotCalled = false
-  let eventStreamCalled = false
-  let messageReloadCalled = false
-
+test('reconnect after page reload shows eventual run completion', async ({ page }) => {
   await clearApiRoutes(page)
+  await mockApi(page)
   await setAuthToken(page)
 
-  // Mock: conversation list
-  await page.route('**/api/workspace/conversations', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify([
-        { id: 'c1', title: 'Deploy pipeline', created_at: '', updated_at: '' },
-      ]),
+  let submitted = false
+  let reloading = false
+  let completed = false
+  let streamRequests = 0
+  const record = [
+    durableEvent(0, 'turn_submitted', { payload: { content: 'Hello' } }),
+    durableEvent(1, 'run.started'),
+  ]
+  const json = (route: Route, status: number, body: unknown) => route.fulfill({
+    status,
+    contentType: 'application/json',
+    body: JSON.stringify(body),
+  })
+
+  await page.route('**/api/runs/c1/turns', (route) => {
+    submitted = true
+    return json(route, 202, E2E_RUN_QUEUED)
+  })
+  await page.route('**/api/runs/run-e2e-1', (route) =>
+    json(route, 200, completed ? E2E_RUN_COMPLETED : E2E_RUN_RUNNING),
+  )
+  await page.route('**/api/conversations/c1/snapshot', (route) =>
+    json(route, 200, {
+      conversation_id: 'c1',
+      sequence: submitted ? 1 : -1,
+      events: submitted ? record : [],
     }),
   )
-
-  // Mock: conversation messages (initially no assistant response)
   await page.route('**/api/conversations/c1/messages', (route) => {
-    messageReloadCalled = true
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify([
-        { id: 'm1', role: 'user', content: 'Hello', conversation_id: 'c1', created_at: '' },
-        { id: 'm2', role: 'assistant', content: 'Hello world', conversation_id: 'c1', created_at: '' },
-      ]),
+    const messages = submitted
+      ? [{ id: 'm1', role: 'user', content: 'Hello', conversation_id: 'c1', created_at: '' }]
+      : []
+    if (completed) messages.push({
+      id: 'm2', role: 'assistant', content: 'Hello world', conversation_id: 'c1', created_at: '',
     })
+    return json(route, 200, messages)
   })
-
-  // Mock: snapshot (shows run was submitted and started)
-  await page.route('**/api/conversations/c1/snapshot', (route) => {
-    snapshotCalled = true
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        conversation_id: 'c1',
-        sequence: 1,
-        events: [
-          {
-            id: 'evt-1',
-            conversation_id: 'c1',
-            run_id: 'run-reconnect-1',
-            sequence: 0,
-            type: 'turn_submitted',
-            payload: { content: 'Hello' },
-            created_at: '2026-10-04T00:00:00Z',
-          },
-          {
-            id: 'evt-2',
-            conversation_id: 'c1',
-            run_id: 'run-reconnect-1',
-            sequence: 1,
-            type: 'run.started',
-            payload: {},
-            created_at: '2026-10-04T00:00:01Z',
-          },
-        ],
-      }),
-    })
-  })
-
-  // Mock: event stream (sends run.succeeded after delay)
-  await page.route('**/api/conversations/c1/events/stream*', async (route) => {
-    eventStreamCalled = true
-    await new Promise((r) => setTimeout(r, 500))
+  await page.route('**/api/conversations/c1/events/stream**', async (route) => {
+    streamRequests += 1
+    if (!reloading) {
+      return route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' })
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    completed = true
     return route.fulfill({
       status: 200,
       contentType: 'text/event-stream',
-      body: 'data: {"id":"evt-3","sequence":2,"type":"run.succeeded","payload":{"message_id":"m2"}}\n\n',
+      body: 'id: evt-completed\nevent: run.succeeded\ndata: ' + JSON.stringify({
+        sequence: 2, run_id: 'run-e2e-1', payload: { message_id: 'm2' },
+      }) + '\n\n',
     })
   })
 
-  // First page load: send a message
   await page.goto('/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByLabel('Message').fill('Hello')
+  await page.getByLabel('Message').press('Enter')
+  await expect(page.getByText('Running', { exact: true })).toBeVisible()
+  await expect(page.getByText('Idle', { exact: true })).toBeVisible()
+  await expect(page.getByText('Hello world')).toHaveCount(0)
 
-  const composer = page.getByLabel('Message')
-  await composer.fill('Hello')
-  await composer.press('Enter')
-
-  // Wait for user message bubble to appear
-  await page.getByTestId('bubble-user').getByText('Hello').first().waitFor()
-
-  // Reload the page (simulates tab reload mid-run)
+  reloading = true
   await page.reload()
   await page.getByRole('button', { name: /Deploy pipeline/ }).click()
-
-  // After reload, snapshot should be loaded - user message should be visible
-  await expect(page.getByTestId('bubble-user').getByText('Hello').first()).toBeVisible()
-
-  // Eventually the run should complete and assistant message should appear
-  await page.getByText('Hello world').waitFor({ timeout: 5000 })
-
-  expect(snapshotCalled).toBe(true)
-  expect(eventStreamCalled).toBe(true)
-  expect(messageReloadCalled).toBe(true)
+  await expect(page.getByText('Hello world')).toBeVisible()
+  await expect.poll(() => streamRequests).toBeGreaterThanOrEqual(2)
 })

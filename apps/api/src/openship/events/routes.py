@@ -15,7 +15,7 @@ from ..chat.models import Conversation
 from ..database.session import get_db
 from ..runs.models import Event
 from .schemas import SnapshotResponse, StreamResponse
-from .service import read_snapshot, stream_events
+from .service import _event_to_read, read_snapshot, stream_events
 
 router = APIRouter(prefix="/api/conversations", tags=["events"])
 
@@ -24,6 +24,11 @@ def _sse_format(event_id: str, event_type: str, data: dict) -> str:
     """Format an SSE event."""
     payload = json.dumps(data)
     return f"id: {event_id}\nevent: {event_type}\ndata: {payload}\n\n"
+
+
+def _sse_envelope(event: Event) -> dict:
+    """Serialize the same complete event contract used by snapshot reads."""
+    return _event_to_read(event).model_dump(mode="json")
 
 
 def _sse_heartbeat() -> str:
@@ -147,22 +152,8 @@ async def stream_event_stream(
 
                 if events:
                     for ev in events:
-                        payload = {}
-                        try:
-                            payload = json.loads(ev.payload) if ev.payload else {}
-                        except (json.JSONDecodeError, TypeError):
-                            payload = {"raw": ev.payload}
-
-                        yield _sse_format(
-                            str(ev.id),
-                            ev.type,
-                            {
-                                "id": str(ev.id),
-                                "sequence": ev.sequence,
-                                "type": ev.type,
-                                "payload": payload,
-                            },
-                        )
+                        envelope = _sse_envelope(ev)
+                        yield _sse_format(str(ev.id), ev.type, envelope)
                         last_sequence = ev.sequence
 
                 # Sleep and retry (async)

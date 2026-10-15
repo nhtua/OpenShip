@@ -8,7 +8,7 @@ optimistic concurrency control for all status updates.
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from sqlalchemy import and_, func, or_, update
@@ -46,10 +46,10 @@ def _db_now():
 
 def _py_now():
     """Get current UTC time for setting values."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-def claim_next(db: Session, worker_id: str, lease_seconds: int = None) -> Claim | None:
+def claim_next(db: Session, worker_id: str, lease_seconds: int | None = None) -> Claim | None:
     """Claim the next available job from the queue.
 
     Uses FOR UPDATE SKIP LOCKED to safely claim jobs under concurrent
@@ -116,7 +116,7 @@ def claim_next(db: Session, worker_id: str, lease_seconds: int = None) -> Claim 
     )
 
 
-def renew(db: Session, run_id: uuid.UUID, fence: int, lease_seconds: int = None) -> bool:
+def renew(db: Session, run_id: uuid.UUID, fence: int, lease_seconds: int | None = None) -> bool:
     """Renew a job's lease atomically.
 
     Uses UPDATE ... WHERE fence = :fence with returning to atomically check
@@ -148,7 +148,11 @@ def renew(db: Session, run_id: uuid.UUID, fence: int, lease_seconds: int = None)
     return row is not None
 
 
-def finalize(db: Session, run_id: uuid.UUID, fence: int, result: dict) -> bool:
+#: A requested status that is terminal as-named; anything else is a failure.
+TERMINAL_STATUSES = {"success": "completed", "cancelled": "cancelled", "timed_out": "timed_out"}
+
+
+def finalize(db: Session, run_id: uuid.UUID, fence: int, result: dict, commit: bool = True) -> bool:
     """Finalize a job atomically.
 
     Uses UPDATE ... WHERE fence = :fence AND status = 'running' with returning
@@ -160,12 +164,15 @@ def finalize(db: Session, run_id: uuid.UUID, fence: int, result: dict) -> bool:
         fence: Current fence value (must match).
         result: Result data including status and output. Usage is persisted
             only on success and only if provided.
+        commit: When False, the update stays in the caller's transaction so a
+            worker can finalize a run, its assistant message, and its terminal
+            event as one command.
 
     Returns:
         True if finalization succeeded, False if fence mismatch or job not found.
     """
     status = result.get("status", "success")
-    new_status = "completed" if status == "success" else "failed"
+    new_status = TERMINAL_STATUSES.get(status, "failed")
 
     values = {
         "status": new_status,
@@ -190,7 +197,8 @@ def finalize(db: Session, run_id: uuid.UUID, fence: int, result: dict) -> bool:
         .returning(Run.id)
     )
     row = result_obj.fetchone()
-    db.commit()
+    if commit:
+        db.commit()
     return row is not None
 
 
@@ -255,11 +263,12 @@ def fenced_update_run(
     db: Session,
     run_id: uuid.UUID,
     fence: int,
-    status: str = None,
-    error_code: str = None,
+    status: str | None = None,
+    error_code: str | None = None,
     ended_at=None,
     provider_started_at=None,
-    usage: str = None,
+    usage: str | None = None,
+    model_configuration: str | None = None,
 ) -> bool:
     """Update a run with atomic fence-based optimistic concurrency control.
 
@@ -275,6 +284,7 @@ def fenced_update_run(
         ended_at: New ended_at timestamp (use _db_now() for current time).
         provider_started_at: New provider_started_at timestamp (use _db_now() for current time).
         usage: New usage string.
+        model_configuration: A provider snapshot to bind under this fence.
 
     Returns:
         True if update succeeded, False if fence mismatch or run not found.
@@ -290,6 +300,8 @@ def fenced_update_run(
         values["provider_started_at"] = provider_started_at
     if usage is not None:
         values["usage"] = usage
+    if model_configuration is not None:
+        values["model_configuration"] = model_configuration
 
     if not values:
         return True

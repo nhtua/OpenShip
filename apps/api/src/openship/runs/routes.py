@@ -1,14 +1,23 @@
+# ruff: noqa: BLE001
+# A request that cannot be served becomes a 500 with a code the client can
+# act on; which exception reached here is part of the message, not the answer.
 """Routes for durable run commands."""
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..auth.models import User
 from ..auth.routes import require_jwt
 from ..database.session import get_db
-from .schemas import RunResponse, RunCancelRequest, TurnSubmitRequest
-from .service import request_cancel, submit_turn, get_run
+from .models import ProviderAttempt
+from .schemas import (
+    RunResponse,
+    TurnSubmitRequest,
+    project_run_response,
+)
+from .service import get_run, request_cancel, submit_turn
 
 logger = logging.getLogger("runs.routes")
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -27,7 +36,10 @@ async def get_run_status(
             user_id=user.id,
             run_id=run_id,
         )
-        return run
+        attempts = db.query(ProviderAttempt).filter(
+            ProviderAttempt.run_id == run.id
+        ).order_by(ProviderAttempt.ordinal).all()
+        return project_run_response(run, attempts)
     except HTTPException:
         raise
     except Exception as e:
@@ -53,14 +65,16 @@ async def submit_chat_turn(
             conversation_id=conversation_id,
             content=req.content,
             client_request_id=req.client_request_id,
+            provider_profile_id=req.provider_profile_id,
+            fallback_profile_ids=req.fallback_profile_ids,
         )
         logger.info(f"submit_chat_turn success: run={run.id}")
-        return run
+        return project_run_response(run)
     except HTTPException as e:
         logger.warning(f"submit_chat_turn HTTPException: {e.status_code} - {e.detail}")
         raise
     except Exception as e:
-        logger.exception(f"submit_chat_turn failed with exception: {type(e).__name__}: {e}")
+        logger.exception("submit_chat_turn failed")
         raise HTTPException(
             status_code=500,
             detail={"error": {"code": "submit_failed", "message": str(e)}},
@@ -80,7 +94,7 @@ async def cancel_run(
             user_id=user.id,
             run_id=run_id,
         )
-        return run
+        return project_run_response(run)
     except HTTPException:
         raise
     except Exception as e:

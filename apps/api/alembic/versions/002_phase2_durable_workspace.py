@@ -9,20 +9,23 @@ Create Date: 2026-10-04
 """
 
 import uuid
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'def456'
-down_revision: Union[str, None] = 'abc123'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = 'abc123'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Every id keeps 001's type: a foreign key whose target is a different
+    # type is refused on PostgreSQL (SQLite accepts it silently, which is why
+    # the mismatch only shows in the PostgreSQL lane).
     # 1. Create projects table
     op.create_table(
         'projects',
@@ -39,7 +42,7 @@ def upgrade() -> None:
     # 2. Add project_id to conversations (nullable for now, backfilled later)
     with op.batch_alter_table('conversations') as batch_op:
         batch_op.add_column(
-            sa.Column('project_id', sa.String(36), nullable=True),
+            sa.Column('project_id', sa.Uuid(), nullable=True),
         )
         batch_op.create_foreign_key(
             'fk_conversations_project_id', 'projects', ['project_id'], ['id'], ondelete='CASCADE'
@@ -48,9 +51,9 @@ def upgrade() -> None:
     # 3. Create runs table
     op.create_table(
         'runs',
-        sa.Column('id', sa.String(36), nullable=False),
-        sa.Column('conversation_id', sa.String(36), sa.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('project_id', sa.String(36), sa.ForeignKey('projects.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('conversation_id', sa.Uuid(), sa.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('project_id', sa.Uuid(), sa.ForeignKey('projects.id', ondelete='CASCADE'), nullable=False),
         sa.Column('graph_thread_id', sa.String(255), nullable=True),
         sa.Column('status', sa.String(20), nullable=False, server_default='created'),
         sa.Column('attempt', sa.Integer(), nullable=False, server_default='0'),
@@ -72,8 +75,8 @@ def upgrade() -> None:
     # 4. Create run_jobs table (queue + fencing)
     op.create_table(
         'run_jobs',
-        sa.Column('id', sa.String(36), nullable=False),
-        sa.Column('run_id', sa.String(36), sa.ForeignKey('runs.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('run_id', sa.Uuid(), sa.ForeignKey('runs.id', ondelete='CASCADE'), nullable=False),
         sa.Column('available_at', sa.DateTime(), nullable=False, server_default=sa.func.now()),
         sa.Column('lease_until', sa.DateTime(), nullable=True),
         sa.Column('owner_id', sa.String(50), nullable=True),
@@ -93,10 +96,10 @@ def upgrade() -> None:
     # 6. Create events table
     op.create_table(
         'events',
-        sa.Column('id', sa.String(36), nullable=False),
-        sa.Column('project_id', sa.String(36), sa.ForeignKey('projects.id', ondelete='CASCADE'), nullable=True),
-        sa.Column('conversation_id', sa.String(36), sa.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('run_id', sa.String(36), sa.ForeignKey('runs.id', ondelete='SET NULL'), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('project_id', sa.Uuid(), sa.ForeignKey('projects.id', ondelete='CASCADE'), nullable=True),
+        sa.Column('conversation_id', sa.Uuid(), sa.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('run_id', sa.Uuid(), sa.ForeignKey('runs.id', ondelete='SET NULL'), nullable=True),
         sa.Column('sequence', sa.Integer(), nullable=False),
         sa.Column('type', sa.String(100), nullable=False),
         sa.Column('payload', sa.Text(), nullable=False),
@@ -110,9 +113,9 @@ def upgrade() -> None:
     # 7. Create outbox table (SSE notification pattern)
     op.create_table(
         'outbox',
-        sa.Column('id', sa.String(36), nullable=False),
-        sa.Column('conversation_id', sa.String(36), sa.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('event_id', sa.String(36), sa.ForeignKey('events.id', ondelete='CASCADE'), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('conversation_id', sa.Uuid(), sa.ForeignKey('conversations.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('event_id', sa.Uuid(), sa.ForeignKey('events.id', ondelete='CASCADE'), nullable=True),
         sa.Column('type', sa.String(100), nullable=False),
         sa.Column('payload', sa.Text(), nullable=False),
         sa.Column('created_at', sa.DateTime(), server_default=sa.func.now()),
@@ -125,7 +128,7 @@ def upgrade() -> None:
     # 8. Add run_id to messages (nullable for historical messages)
     with op.batch_alter_table('messages') as batch_op:
         batch_op.add_column(
-            sa.Column('run_id', sa.String(36), nullable=True),
+            sa.Column('run_id', sa.Uuid(), nullable=True),
         )
         batch_op.create_foreign_key(
             'fk_messages_run_id', 'runs', ['run_id'], ['id'], ondelete='SET NULL'

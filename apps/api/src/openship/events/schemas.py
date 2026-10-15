@@ -1,21 +1,24 @@
 """Pydantic schemas for event API."""
 
-from typing import Any, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field
+
+from ..runs.schemas import AttemptSummary, ErrorSummary, ModelSummary, UsageSummary
 
 
 class EventInput(BaseModel):
     """Input for appending an event."""
     type: str = Field(..., min_length=1, max_length=100)
     payload: dict[str, Any] = Field(default_factory=dict)
-    run_id: Optional[str] = None
+    run_id: str | None = None
 
 
 class EventRead(BaseModel):
     """Event as returned to client."""
     id: str
     conversation_id: str
-    run_id: Optional[str]
+    run_id: str | None
     sequence: int
     type: str
     payload: dict[str, Any]
@@ -27,18 +30,22 @@ class MessageSummary(BaseModel):
     id: str
     role: str
     content: str
-    run_id: Optional[str]
+    run_id: str | None
     created_at: str
 
 
 class RunSummary(BaseModel):
-    """Summary of a run."""
+    """Summary of a run. Only the public projection: no credential, no SDK setting."""
     id: str
     status: str
     attempt: int
-    started_at: Optional[str]
-    ended_at: Optional[str]
-    error_code: Optional[str]
+    started_at: str | None
+    ended_at: str | None
+    error_code: str | None
+    model: ModelSummary | None = None
+    usage: UsageSummary | None = None
+    error: ErrorSummary | None = None
+    provider_attempts: list[AttemptSummary] = Field(default_factory=list)
 
 
 class SnapshotResponse(BaseModel):

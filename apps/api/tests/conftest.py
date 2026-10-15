@@ -7,8 +7,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.openship.auth.models import Base, User
-from src.openship.chat.models import Conversation, Message
 import src.openship.database.session as db_session
 
 # Use a temporary file so the in-memory DB survives across connections
@@ -45,6 +43,7 @@ def setup_db(request):
         "test_phase2_migration" in test_path
         or "test_run_commands_pg" in test_path
         or "test_retention_pg" in test_path
+        or "test_provider_pinning" in test_path
     ):
         yield
         return
@@ -108,6 +107,7 @@ datefmt = %H:%M:%S
         env=env,
         cwd=Path(__file__).parents[1],
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, f"Migration failed: {result.stderr}"
 
@@ -143,3 +143,109 @@ def auth_token(client: TestClient, request) -> str:
 def authorized_client(client: TestClient, auth_token: str):
     """Return headers with Bearer token for authenticated requests."""
     return {"Authorization": f"Bearer {auth_token}"}
+
+# --- Model profile configuration helpers (non-secret; credentials stay in bindings) ---
+
+FIXTURE_ENDPOINT = "https://fixture.provider.test/v1"  # rayloc:ignore
+FIXTURE_MODEL = "fixture-model"  # rayloc:ignore
+CREDENTIAL_BINDING = "TEST_PROVIDER_CREDENTIAL"  # rayloc:ignore
+SENTINEL_CREDENTIAL = "sentinel-credential-value"  # rayloc:ignore
+
+
+def profile_spec(
+    profile_id: str,
+    *,
+    label: str | None = None,
+    allowed_fallbacks=(),
+    endpoint: str | None = None,
+    credential_ref: str | None = None,
+    aliases=(),
+):
+    """A minimal text-only profile an operator would declare.
+
+    The destination and the credential binding can be restated because a
+    profile that points somewhere else, or needs no credential at all, is a
+    shape the installation can declare. So can the aliases: a provider that
+    answers under a name the operator qualified is a real shape, and the
+    difference between the name a run asked for and the name that answered
+    is a claim the installation has to keep.
+    """
+    return {
+        "id": profile_id,
+        "label": label or f"Fixture profile {profile_id}",
+        "adapter": "openai",
+        "model": FIXTURE_MODEL,
+        "endpoint": endpoint or FIXTURE_ENDPOINT,
+        "api_version": "chat-completions",
+        "credential_ref": CREDENTIAL_BINDING if credential_ref is None else credential_ref,
+        "capabilities": {
+            "streaming": True,
+            "usage_reporting": True,
+            "context_tokens": 32768,
+            "max_output_tokens": 4096,
+            "token_counting": False,
+            "tool_calls": False,
+            "structured_output": False,
+            "attachment_types": [],
+            "parallel_tool_calls": False,
+        },
+        "allowed_fallback_profile_ids": list(allowed_fallbacks),
+        "qualified_model_aliases": list(aliases),
+        "adapter_options": {
+            "adapter": "openai",
+            "output_limit_parameter": "max_tokens",
+        },
+    }
+
+
+def configure_profiles(monkeypatch, specs, default_id: str):
+    """Declare the installation's profiles for one test."""
+    import json
+
+    monkeypatch.setattr("src.openship.config.settings.model_profiles_json", json.dumps(specs))
+    monkeypatch.setattr("src.openship.config.settings.model_default_profile_id", default_id)
+    monkeypatch.setenv(CREDENTIAL_BINDING, SENTINEL_CREDENTIAL)
+
+
+def declare_two_profiles(monkeypatch) -> None:
+    """Two profiles where the second is an allowed fallback of the first."""
+    configure_profiles(
+        monkeypatch,
+        [
+            profile_spec("primary-fixture", allowed_fallbacks=["secondary-fixture"]),
+            profile_spec("secondary-fixture"),
+        ],
+        "primary-fixture",
+    )
+
+
+@pytest.fixture(autouse=True)
+def configured_model_profiles(monkeypatch):
+    """Tests declare a synthetic installation instead of relying on host settings."""
+    declare_two_profiles(monkeypatch)
+
+
+def execute_test_run(run_id: str) -> None:
+    """Claim and execute one submitted turn with the real worker, without polling."""
+    import uuid
+
+    from src.openship.runs.models import RunJob
+    from src.openship.runs.queue import claim_next
+    from src.openship.runs.worker import Worker
+
+    with TestSessionLocal() as session:
+        # Other cases may intentionally leave queued turns after asserting on
+        # submission. This helper executes only the turn its caller submitted.
+        session.query(RunJob).filter(RunJob.run_id != uuid.UUID(run_id)).delete()
+        session.commit()
+        claim = claim_next(session, worker_id="test-worker", lease_seconds=30)
+    assert claim is not None and str(claim.run_id) == run_id
+    worker = Worker(
+        worker_id=claim.worker_id,
+        session_factory=TestSessionLocal,
+        checkpointer=None,
+    )
+    try:
+        assert worker.process_job(claim), "the worker did not publish a terminal result"
+    finally:
+        worker.engine.dispose()

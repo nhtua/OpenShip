@@ -113,12 +113,23 @@ createdb -U postgres openship
 ```bash
 cd apps/api
 uv sync
-cp .env.example .env  # Edit to add OPENAI_API_KEY
+cp .env.example .env  # Configure MODEL_PROFILES_JSON, its default, and credential bindings
 uv run alembic upgrade head
 uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 API docs available at [http://localhost:8000/docs](http://localhost:8000/docs).
+
+Run the chat worker in a second terminal from `apps/api`:
+
+```bash
+uv run python -m src.openship.runs.worker
+```
+
+Chat uses explicitly declared model profiles and durable run commands. Configure
+`MODEL_PROFILES_JSON` and `MODEL_DEFAULT_PROFILE_ID` in `.env`; credentials are
+read from the bindings each profile names. See [provider setup](docs/provider-support.md).
+The worker generates the conversation title from the first model response.
 
 ### Frontend (Vue.js)
 
@@ -135,10 +146,11 @@ Frontend available at [http://localhost:5173](http://localhost:5173) (proxies AP
 Alternative: run the full stack in containers:
 
 ```bash
+cp apps/api/.env.example .env  # Configure profiles and credential bindings
 docker compose up --build
 ```
 
-This starts PostgreSQL, API, and frontend services. Access at [http://localhost:8080](http://localhost:8080).
+This starts PostgreSQL, migrations, API, worker, and frontend services. Access at [http://localhost:8080](http://localhost:8080).
 
 ### Running Tests
 

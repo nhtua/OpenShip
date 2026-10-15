@@ -1,3 +1,7 @@
+# ruff: noqa: BLE001, S110
+# These shims are idempotent across backends: "the constraint already exists"
+# is a success, and which error each backend raises for it is not a question
+# this migration can answer.
 """add actor_id column to events table
 
 Tracks the user/actor who triggered each durable semantic event.
@@ -7,25 +11,24 @@ Revises: fed789
 Create Date: 2026-10-04
 """
 
-import uuid
-from typing import Sequence, Union
+from collections.abc import Sequence
+
+import sqlalchemy as sa
 
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
-
 
 # revision identifiers, used by Alembic.
 revision: str = 'ghi789'
-down_revision: Union[str, None] = 'fed789'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = 'fed789'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
     # Check if column already exists (idempotent for test re-runs)
-    from alembic import op
     from sqlalchemy import inspect
+
+    from alembic import op
 
     inspector = inspect(op.get_bind())
     columns = [c['name'] for c in inspector.get_columns('events')]
@@ -33,7 +36,9 @@ def upgrade() -> None:
     if 'actor_id' not in columns:
         with op.batch_alter_table('events') as batch_op:
             batch_op.add_column(
-                sa.Column('actor_id', UUID(as_uuid=True), nullable=True)
+                # Same id type as every other revision: a foreign key to a
+                # differently typed column is refused on PostgreSQL.
+                sa.Column('actor_id', sa.Uuid(), nullable=True)
             )
 
     # Add foreign key separately for SQLite compatibility
