@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Badge } from '@/components/ui'
-import ToolOperationCard from '@/components/chat/ToolOperationCard.vue'
 import type {
   ProviderAttemptSummary,
   RunCard,
@@ -14,7 +13,6 @@ interface Props {
 }
 
 const props = defineProps<Props>()
-const emit = defineEmits<{ downloadArtifact: [artifactId: string, name: string] }>()
 const kind = computed(() => props.card.kind ?? 'chat')
 
 const statusLabel = computed(() => {
@@ -143,11 +141,5 @@ const usageText = computed(() => {
         ({{ card.error_code }})
       </span>
     </div>
-    <ToolOperationCard
-      v-for="operation in card.operations"
-      :key="operation.id"
-      :operation="operation"
-      @download="(artifactId) => emit('downloadArtifact', artifactId, operation.artifacts.find((item) => item.id === artifactId)?.name ?? 'search-results.json')"
-    />
   </div>
 </template>

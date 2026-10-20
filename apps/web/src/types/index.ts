@@ -258,6 +258,8 @@ export interface ToolOperationSummary {
   status: 'admitted' | 'dispatching' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
   error_code: string | null
   error: ToolFailureSummary | null
+  // Added with the owned operation summary; absent on legacy snapshots.
+  query?: string | null
   result: {
     operation_id?: string
     observed_at?: string

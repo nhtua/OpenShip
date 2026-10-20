@@ -19,6 +19,7 @@ vi.mock('@/services/api', () => ({
     cancelRun: vi.fn(),
     getSnapshot: vi.fn(),
     getRun: vi.fn(),
+    getOperations: vi.fn(),
   },
 }))
 
@@ -72,6 +73,12 @@ describe('chat store', () => {
       (async (url: string) => healthyChatApiGet(url)) as never,
     )
     mockApi.post.mockResolvedValue({ data: null })
+    mockRunsApi.getSnapshot.mockImplementation(async (id: string) => ({
+      data: { conversation_id: id, sequence: -1, events: [], runs: [] },
+    } as never))
+    mockRunsApi.getOperations.mockResolvedValue({
+      data: { items: [], next_cursor: null },
+    } as never)
     // What this installation offers. A test that wants a missing catalog
     // replaces this; nothing here guesses a profile in its place.
     mockProfiles.list.mockResolvedValue({ data: modelProfileCatalog })
@@ -280,6 +287,112 @@ describe('chat store', () => {
     expect(mockRunsApi.getSnapshot).toHaveBeenCalledWith('c1')
     // Verify cursor was stored
     expect(chat.cursors.get('c1')).toBe(0)
+  })
+
+  it('retains operations from every snapshot run and deduplicates durable refreshes per conversation', async () => {
+    const operation = (id: string, runId: string) => ({
+      id,
+      run_id: runId,
+      conversation_id: 'c1',
+      logical_call_id: id,
+      capability_id: 'brave_web_search',
+      capability_version: '1.0.0',
+      manifest_digest: 'a'.repeat(64),
+      status: 'succeeded',
+      error_code: null,
+      error: null,
+      result: { query: id, items: [] },
+      artifacts: [],
+      attempts: [],
+      created_at: '2026-10-20T12:00:00Z',
+      updated_at: '2026-10-20T12:00:00Z',
+      finished_at: '2026-10-20T12:00:00Z',
+    })
+    const first = operation('search-1', 'run-1')
+    const second = operation('search-2', 'run-2')
+    mockRunsApi.getSnapshot.mockImplementation(async (id: string) => ({
+      data: {
+        conversation_id: id,
+        sequence: -1,
+        events: [],
+        runs: id === 'c1' ? [
+          { id: 'run-1', status: 'completed', attempt: 1, started_at: null, ended_at: null, error_code: null, kind: 'tool', operations: [first], operations_next_cursor: null },
+          { id: 'run-2', status: 'completed', attempt: 1, started_at: null, ended_at: null, error_code: null, kind: 'tool', operations: [second], operations_next_cursor: null },
+        ] : [],
+      },
+    } as never))
+    mockRunsApi.getOperations.mockResolvedValue({
+      data: { items: [first], next_cursor: null },
+    } as never)
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url === '/conversations/c2/messages') return { data: [] } as never
+      if (url === '/conversations/c1/messages') return { data: [] } as never
+      return healthyChatApiGet(url)
+    })
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+    expect([...chat.toolOperationsByConversation.get('c1')!.keys()]).toEqual(['search-1', 'search-2'])
+
+    const event = {
+      id: 'evt-tool-complete', conversation_id: 'c1', run_id: 'run-1', sequence: 2,
+      type: 'tool.completed', payload: {}, created_at: '2026-10-20T12:00:01Z',
+    }
+    chat.processDurableEvent(event as never)
+    chat.processDurableEvent(event as never)
+    await vi.waitFor(() => expect(mockRunsApi.getOperations).toHaveBeenCalledTimes(1))
+    expect([...chat.toolOperationsByConversation.get('c1')!.keys()]).toEqual(['search-1', 'search-2'])
+
+    await chat.loadConversation('c2')
+    expect([...chat.toolOperationsByConversation.get('c1')!.keys()]).toEqual(['search-1', 'search-2'])
+    expect(chat.toolOperationsByConversation.get('c2')?.size ?? 0).toBe(0)
+  })
+
+  it('continues every snapshot operation page into the conversation timeline', async () => {
+    const operation = (id: string) => ({
+      id,
+      run_id: 'run-paged',
+      conversation_id: 'c1',
+      logical_call_id: id,
+      capability_id: 'tavily_web_search',
+      capability_version: '1.0.0',
+      manifest_digest: 'b'.repeat(64),
+      status: 'succeeded',
+      error_code: null,
+      error: null,
+      result: { query: id, items: [] },
+      artifacts: [],
+      attempts: [],
+      created_at: '2026-10-20T12:00:00Z',
+      updated_at: '2026-10-20T12:00:00Z',
+      finished_at: '2026-10-20T12:00:00Z',
+    })
+    const first = operation('page-one')
+    const second = operation('page-two')
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1', sequence: -1, events: [],
+        runs: [{
+          id: 'run-paged', status: 'completed', attempt: 1, started_at: null,
+          ended_at: null, error_code: null, kind: 'tool', operations: [first],
+          operations_next_cursor: 'cursor-next',
+        }],
+      },
+    } as never)
+    mockRunsApi.getOperations.mockResolvedValue({
+      data: { items: [second], next_cursor: null },
+    } as never)
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url === '/conversations/c1/messages') return { data: [] } as never
+      return healthyChatApiGet(url)
+    })
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+    await vi.waitFor(() => {
+      expect([...chat.toolOperationsByConversation.get('c1')!.keys()]).toEqual(['page-one', 'page-two'])
+    })
+    expect(mockRunsApi.getOperations).toHaveBeenCalledWith('run-paged', { cursor: 'cursor-next' })
   })
 
   it('maintains cursor per conversation and resumes from last position', async () => {

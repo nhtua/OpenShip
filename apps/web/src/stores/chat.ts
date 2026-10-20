@@ -13,6 +13,7 @@ import type {
   Snapshot,
   SnapshotRun,
   ToolCommandRequest,
+  ToolOperationSummary,
   TurnSubmitRequest,
 } from '@/types'
 
@@ -35,6 +36,9 @@ export const useChatStore = defineStore('chat', () => {
   // Durable run state
   // Run cards: one per conversation, keyed by conversation ID
   const runCards = ref<Map<string, RunCard>>(new Map())
+  // Search operations are independent durable timeline entries. Keep them by
+  // conversation because the pinned run card only describes the latest run.
+  const toolOperationsByConversation = ref<Map<string, Map<string, ToolOperationSummary>>>(new Map())
   // Pending requests: request_id -> the exact payload that was sent. A retry
   // replays this payload, so the provider it named travels with it.
   const pendingRequests = ref<Map<string, { conversation_id: string; payload: TurnSubmitRequest }>>(
@@ -165,6 +169,14 @@ export const useChatStore = defineStore('chat', () => {
         // replace the conversation's latest run card.
         for (const run of snapshot.runs ?? []) {
           runCards.value.set(conversationId, runSummaryCard(run))
+          mergeToolOperations(conversationId, run.operations ?? [])
+          if (run.operations_next_cursor) {
+            void hydrateOperationContinuation(
+              conversationId,
+              run.id,
+              run.operations_next_cursor,
+            )
+          }
         }
         // Set the cursor to the snapshot's sequence (or the highest event sequence)
         const maxSeq = snapshot.events.reduce(
@@ -230,6 +242,51 @@ export const useChatStore = defineStore('chat', () => {
       const axiosErr = err as { response?: { data?: { detail?: string } } }
       error.value =
         axiosErr.response?.data?.detail ?? 'Failed to load conversation'
+    }
+  }
+
+  function mergeToolOperations(
+    conversationId: string,
+    operations: ToolOperationSummary[],
+  ): void {
+    if (!operations.length) return
+    const nextById = toolOperationsByConversation.value.get(conversationId) ?? new Map()
+    for (const operation of operations) {
+      const current = nextById.get(operation.id)
+      const incomingTime = operation.updated_at ? Date.parse(operation.updated_at) : Number.NaN
+      const currentTime = current?.updated_at ? Date.parse(current.updated_at) : Number.NaN
+      // An older response can finish after a live event-triggered read. Keep
+      // the most recently persisted projection for the same operation ID.
+      if (
+        current &&
+        Number.isFinite(currentTime) &&
+        (!Number.isFinite(incomingTime) || incomingTime < currentTime)
+      ) continue
+      nextById.set(operation.id, operation)
+    }
+    toolOperationsByConversation.value.set(conversationId, nextById)
+  }
+
+  async function hydrateOperationContinuation(
+    conversationId: string,
+    runId: string,
+    cursor: string | null,
+  ): Promise<void> {
+    let nextCursor = cursor
+    try {
+      while (nextCursor) {
+        const response = await runsApi.getOperations(runId, { cursor: nextCursor })
+        mergeToolOperations(conversationId, response.data.items)
+        const card = runCards.value.get(conversationId)
+        if (card?.run_id === runId) {
+          card.operations = [...(card.operations ?? []), ...response.data.items]
+          card.operations_next_cursor = response.data.next_cursor
+          runCards.value.set(conversationId, card)
+        }
+        nextCursor = response.data.next_cursor
+      }
+    } catch (err) {
+      console.warn('Failed to continue tool operation history', err)
     }
   }
 
@@ -461,6 +518,7 @@ export const useChatStore = defineStore('chat', () => {
       card.kind = run.kind ?? card.kind
       card.graph_version = run.graph_version ?? card.graph_version
       if (run.operations) {
+        mergeToolOperations(convId, run.operations)
         card.operations = run.operations
         card.operations_next_cursor = run.operations_next_cursor ?? null
       }
@@ -470,7 +528,9 @@ export const useChatStore = defineStore('chat', () => {
       // The safe copy the API settled on, never a provider's own body.
       card.error_message = failure?.message ?? null
       runCards.value.set(convId, card)
-      if (card.kind === 'tool') void hydrateRunOperations(convId, runId)
+      if (run.operations_next_cursor) {
+        void hydrateOperationContinuation(convId, runId, run.operations_next_cursor)
+      }
     } catch (err) {
       console.warn('Failed to hydrate run card from run read', err)
     }
@@ -505,13 +565,18 @@ export const useChatStore = defineStore('chat', () => {
     if (!runId) return
     try {
       const response = await runsApi.getOperations(runId)
+      mergeToolOperations(convId, response.data.items)
       const card = runCards.value.get(convId)
-      // A delayed response for a replaced run is historical data, not the
-      // current card's operation state.
-      if (!card || card.run_id !== runId) return
-      card.operations = response.data.items
-      card.operations_next_cursor = response.data.next_cursor
-      runCards.value.set(convId, card)
+      // Historical operation reads remain useful to the conversation
+      // timeline even after a newer run has replaced the pinned card.
+      if (card?.run_id === runId) {
+        card.operations = response.data.items
+        card.operations_next_cursor = response.data.next_cursor
+        runCards.value.set(convId, card)
+      }
+      if (response.data.next_cursor) {
+        void hydrateOperationContinuation(convId, runId, response.data.next_cursor)
+      }
     } catch (err) {
       console.warn('Failed to hydrate tool operations', err)
     }
@@ -817,6 +882,7 @@ export const useChatStore = defineStore('chat', () => {
         operations: run.operations ?? [],
         operations_next_cursor: run.operations_next_cursor ?? null,
       })
+      mergeToolOperations(convId, run.operations ?? [])
       pendingToolRequests.value.delete(requestId)
       void hydrateRunOperations(convId, run.id)
       const cursor = cursors.value.get(convId) ?? -1
@@ -892,6 +958,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
     currentConversation.value = null
     runCards.value.clear()
+    toolOperationsByConversation.value.clear()
     pendingRequests.value.clear()
     pendingToolRequests.value.clear()
     cursors.value.clear()
@@ -905,6 +972,7 @@ export const useChatStore = defineStore('chat', () => {
     isSubmitting,
     error,
     runCards,
+    toolOperationsByConversation,
     cursors,
     modelProfiles,
     profileError,

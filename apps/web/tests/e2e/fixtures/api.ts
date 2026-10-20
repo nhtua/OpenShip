@@ -372,7 +372,7 @@ export const E2E_PROFILES: E2EProfileCatalog = {
       profile_id: 'primary-model',
       label: 'Primary model',
       adapter: 'openai',
-      model: 'primary-fixture',
+      model: 'gpt-6-luna',
       destination_label: 'api.primary.test',
       capabilities: {},
       available: true,

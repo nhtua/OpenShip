@@ -49,18 +49,18 @@ turn confirms it.
 
 Profile configuration is non-secret. `MODEL_PROFILES_JSON` is a JSON array;
 every field the adapter needs is explicit, and arbitrary SDK kwargs are not
-accepted. This example names no real deployment and no real key.
+accepted. The supplied OpenAI example uses `gpt-6-luna`; it names no real key.
 
 ```json
 [
   {
     "id": "primary",
-    "label": "Primary model",
+    "label": "OpenAI GPT-6 Luna",
     "adapter": "openai",
-    "model": "<the exact model this deployment serves>",
-    "endpoint": "https://api.<destination>.test/v1",
+    "model": "gpt-6-luna",
+    "endpoint": "https://api.openai.com/v1",
     "api_version": "chat-completions",
-    "credential_ref": "PRIMARY_KEY",
+    "credential_ref": "OPENAI_API_KEY",
     "capabilities": {
       "streaming": true,
       "usage_reporting": true,
@@ -71,7 +71,7 @@ accepted. This example names no real deployment and no real key.
     "qualified_model_aliases": [],
     "adapter_options": {
       "adapter": "openai",
-      "output_limit_parameter": "max_tokens"
+      "output_limit_parameter": "max_completion_tokens"
     }
   }
 ]

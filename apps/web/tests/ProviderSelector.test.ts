@@ -12,7 +12,7 @@ function findButton(wrapper, text: string) {
 }
 
 describe('ProviderSelector', () => {
-  it('names the default when nothing is selected', () => {
+  it('keeps the default compact and names gpt-6-luna', () => {
     const wrapper = mount(ProviderSelector, {
       props: {
         profiles,
@@ -22,13 +22,11 @@ describe('ProviderSelector', () => {
       },
     })
 
-    // "No selection" is a claim a reader can check, not a guess.
-    expect(wrapper.text()).toContain('Answering with')
-    expect(wrapper.text()).toContain('Fixture primary')
-    expect(wrapper.text()).toContain('(chosen)')
+    expect(wrapper.get('[data-testid="model-trigger"]').text()).toContain('gpt-6-luna')
+    expect(wrapper.findAll('[data-testid="provider-option"]')).toHaveLength(0)
   })
 
-  it('lists every profile including one that cannot answer, with its reason', () => {
+  it('lists every profile including one that cannot answer, with its reason, when opened', async () => {
     const wrapper = mount(ProviderSelector, {
       props: {
         profiles,
@@ -38,6 +36,7 @@ describe('ProviderSelector', () => {
       },
     })
 
+    await wrapper.get('[data-testid="model-trigger"]').trigger('click')
     expect(wrapper.findAll('[data-testid="provider-option"]')).toHaveLength(3)
     const offline = profiles.find((p) => p.profile_id === 'offline-fixture')
     // A profile this build cannot serve is still shown, with the reason it
@@ -58,6 +57,7 @@ describe('ProviderSelector', () => {
       },
     })
 
+    await wrapper.get('[data-testid="model-trigger"]').trigger('click')
     const backup = profiles.find((p) => p.profile_id === 'secondary-fixture')
     await findButton(wrapper, backup.label)!.trigger('click')
 
@@ -65,6 +65,46 @@ describe('ProviderSelector', () => {
     // Fallbacks the new profile does not allow are dropped rather than kept
     // as a promise it cannot keep.
     expect(wrapper.emitted('select')?.[0]).toEqual(['secondary-fixture', []])
+  })
+
+  it('closes the model menu with Escape and restores focus to the trigger', async () => {
+    const wrapper = mount(ProviderSelector, {
+      attachTo: document.body,
+      props: {
+        profiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+      },
+    })
+    const trigger = wrapper.get('[data-testid="model-trigger"]')
+    await trigger.trigger('click')
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true)
+    await wrapper.get('[role="menu"]').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(trigger.element)
+    wrapper.unmount()
+  })
+
+  it('moves between enabled model choices with arrow keys', async () => {
+    const wrapper = mount(ProviderSelector, {
+      attachTo: document.body,
+      props: {
+        profiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+      },
+    })
+    await wrapper.get('[data-testid="model-trigger"]').trigger('click')
+    const choices = wrapper.findAll('[role="menuitemradio"]')
+    expect(choices.length).toBeGreaterThan(1)
+    expect(document.activeElement).toBe(choices[0].element)
+    await choices[0].trigger('keydown', { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(choices[1].element)
+    await choices[1].trigger('keydown', { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(choices[0].element)
+    wrapper.unmount()
   })
 
   it('holds a change back while a submission is in flight', async () => {
@@ -78,6 +118,7 @@ describe('ProviderSelector', () => {
       },
     })
 
+    await wrapper.get('[data-testid="model-trigger"]').trigger('click')
     const backup = profiles.find((p) => p.profile_id === 'secondary-fixture')
     await findButton(wrapper, backup.label)!.trigger('click')
 
@@ -96,10 +137,11 @@ describe('ProviderSelector', () => {
       },
     })
 
+    await wrapper.get('[data-testid="model-trigger"]').trigger('click')
     const backup = profiles.find((p) => p.profile_id === 'secondary-fixture')
-    // The destination is shown as something to opt into, and nothing else.
-    expect(wrapper.text()).toContain('Falls back to')
-    const toggle = findButton(wrapper, `Fall back to ${backup.label}`)
+    // The configured fallback is shown as an optional choice in the expanded menu.
+    expect(wrapper.text()).toContain('Fallback models')
+    const toggle = wrapper.find('[data-testid="fallback-option"]')
     expect(toggle).toBeTruthy()
 
     await toggle!.trigger('click')
@@ -120,6 +162,7 @@ describe('ProviderSelector', () => {
     })
 
     // The backup allows no fallbacks, so there is nothing to opt into.
+    await wrapper.get('[data-testid="model-trigger"]').trigger('click')
     expect(wrapper.text()).not.toContain('Falls back to')
   })
 
@@ -134,10 +177,10 @@ describe('ProviderSelector', () => {
     })
 
     // An earlier choice is kept visible rather than dropped quietly.
-    expect(wrapper.text()).toContain('Needs replacement')
+    expect(wrapper.get('[data-testid="model-trigger"]').text()).toContain('Needs replacement')
   })
 
-  it('states a missing catalog where the choice is made', () => {
+  it('states a missing catalog where the choice is made', async () => {
     const wrapper = mount(ProviderSelector, {
       props: {
         profiles: [],
@@ -148,9 +191,9 @@ describe('ProviderSelector', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('Catalog unavailable')
+    expect(wrapper.get('[data-testid="model-trigger"]').text()).toContain('Catalog unavailable')
+    await wrapper.get('[data-testid="model-trigger"]').trigger('click')
     expect(wrapper.text()).toContain('catalog unavailable')
-    // Nothing is claimed about a provider that could not be read.
     expect(wrapper.text()).not.toContain('Fixture primary')
   })
 })

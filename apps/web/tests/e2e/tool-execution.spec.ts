@@ -47,6 +47,7 @@ test('submits a manual search, renders its retained result, and downloads the sn
     status: 'succeeded',
     error_code: null,
     error: null,
+    query: 'terraform module registry',
     result: {
       operation_id: 'operation-search-1',
       observed_at: '2026-10-20T12:00:00Z',
@@ -87,14 +88,17 @@ test('submits a manual search, renders its retained result, and downloads the sn
   await page.goto('/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).click()
 
-  await page.getByLabel('Search service').selectOption('tavily_web_search')
-  await page.getByLabel('Search query').fill('terraform module registry')
+  await page.getByRole('button', { name: 'Add tool' }).click()
+  await page.getByTestId('tool-choice').filter({ hasText: 'Tavily Search' }).click()
+  await page.getByLabel('Message').fill('terraform module registry')
   await page.getByRole('button', { name: 'Search', exact: true }).click()
 
   const operationCard = page.getByTestId('tool-operation-card')
   await expect(operationCard).toContainText('Tavily Search')
   await expect(operationCard).toContainText('Completed')
-  await expect(operationCard).toContainText('Observed Oct 20')
+  await expect(operationCard).toContainText('1 result')
+  await page.getByRole('button', { name: 'Show results for terraform module registry' }).click()
+  await expect(operationCard).toContainText('Searched Oct 20')
   await expect(operationCard.getByRole('link', { name: 'Terraform module registry' })).toHaveAttribute(
     'href',
     'https://docs.example.test/registry',

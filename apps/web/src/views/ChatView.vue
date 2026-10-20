@@ -8,7 +8,6 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import RunCard from '@/components/chat/RunCard.vue'
-import SearchToolForm from '@/components/chat/SearchToolForm.vue'
 import {
   Alert,
   AlertDescription,
@@ -25,6 +24,7 @@ const artifacts = useArtifactsStore()
 const isLoadingConversations = ref(false)
 const isCreatingConversation = ref(false)
 const isLoadingConversation = ref(false)
+const isToolSubmitting = ref(false)
 // Driven from the resulting store error, never inferred from an empty list.
 const historyLoadFailed = ref(false)
 
@@ -44,6 +44,13 @@ const busy = computed(
 const title = computed(
   () => chat.currentConversation?.title || 'New Conversation',
 )
+
+const conversationOperations = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  return conversationId
+    ? [...(chat.toolOperationsByConversation.get(conversationId)?.values() ?? [])]
+    : []
+})
 
 const pendingSubmissionId = computed(() => {
   const conversationId = chat.currentConversation?.id
@@ -151,21 +158,30 @@ async function handleRetrySubmission() {
 
 async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: { query: string; max_results: number } }) {
   if (busy.value || hasActiveRun.value) return
-  if (!chat.currentConversation) {
-    isCreatingConversation.value = true
-    try {
-      const conversation = await chat.createConversation('New Conversation')
-      if (conversation) await loadConversationById(conversation.id)
-    } finally {
-      isCreatingConversation.value = false
+  isToolSubmitting.value = true
+  try {
+    if (!chat.currentConversation) {
+      isCreatingConversation.value = true
+      try {
+        const conversation = await chat.createConversation('New Conversation')
+        if (conversation) await loadConversationById(conversation.id)
+      } finally {
+        isCreatingConversation.value = false
+      }
     }
+    const conversationId = chat.currentConversation?.id
+    if (conversationId) await chat.submitToolSearch(conversationId, command)
+  } finally {
+    isToolSubmitting.value = false
   }
-  const conversationId = chat.currentConversation?.id
-  if (conversationId) await chat.submitToolSearch(conversationId, command)
 }
 
 function handleDownloadArtifact(artifactId: string, name: string) {
   void artifacts.download(artifactId, name)
+}
+
+function handleCancelOperation(runId: string) {
+  if (activeRunId.value === runId) void chat.cancelRun(runId)
 }
 
 // The composer's selector names a profile; the store decides what the next
@@ -209,7 +225,7 @@ onMounted(async () => {
 <template>
   <AppLayout
     :title="title"
-    :is-streaming="chat.isStreaming"
+    :is-streaming="chat.isStreaming && !isToolSubmitting"
     :username="auth.user?.username ?? null"
     :conversations="chat.conversations"
     :current-conversation-id="chat.currentConversation?.id ?? null"
@@ -246,15 +262,15 @@ onMounted(async () => {
            stop, and offering it would be a control that does nothing. -->
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
         <RunCard
+          v-if="chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool'"
           :card="chat.runCards.get(chat.currentConversation.id)!"
-          @download-artifact="handleDownloadArtifact"
         />
         <div v-if="pendingSubmissionId" class="shrink-0 px-4 pt-2">
           <Button size="sm" @click="handleRetrySubmission">
             Retry submission
           </Button>
         </div>
-        <div v-if="activeRunId" class="shrink-0 px-4 pt-2">
+        <div v-if="activeRunId && chat.runCards.get(chat.currentConversation.id)?.kind !== 'tool'" class="shrink-0 px-4 pt-2">
           <Button
             size="sm"
             variant="destructive"
@@ -265,13 +281,12 @@ onMounted(async () => {
         </div>
       </div>
       <!-- The stream/composer components own their data-testid hooks. -->
-      <ChatStream :messages="chat.messages" :is-streaming="chat.isStreaming" />
-      <SearchToolForm
-        v-if="chat.currentConversation"
-        :capabilities="chat.searchCapabilities"
-        :catalog-error="chat.capabilityError"
-        :disabled="busy || hasActiveRun"
-        @submit="handleSearch"
+      <ChatStream
+        :messages="chat.messages"
+        :operations="conversationOperations"
+        :is-streaming="chat.isStreaming"
+        @download="handleDownloadArtifact"
+        @cancel="handleCancelOperation"
       />
       <p v-if="artifacts.error" class="shrink-0 px-4 pb-2 text-xs text-red-400" role="alert">
         {{ artifacts.error }}
@@ -284,7 +299,11 @@ onMounted(async () => {
         :selected-profile-id="chat.selectedProfileId"
         :fallback-ids="chat.selectedFallbackIds"
         :catalog-error="chat.profileError"
+        :capabilities="chat.searchCapabilities"
+        :tool-submission-disabled="hasActiveRun"
+        :submission-error="chat.error"
         @send="handleSend"
+        @search="handleSearch"
         @select="handleSelectProfile"
       />
     </div>

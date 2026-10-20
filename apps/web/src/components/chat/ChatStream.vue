@@ -1,12 +1,19 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ChatMessage } from '@/types'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { ChatMessage, ToolOperationSummary } from '@/types'
+import { buildConversationTimeline } from '@/lib/chatTimeline'
 import AgentMessage from './AgentMessage.vue'
 import UserMessage from './UserMessage.vue'
+import ToolOperationCard from './ToolOperationCard.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   messages: ChatMessage[]
+  operations?: ToolOperationSummary[]
   isStreaming: boolean
+}>(), { operations: () => [] })
+const emit = defineEmits<{
+  download: [artifactId: string, name: string]
+  cancel: [runId: string]
 }>()
 
 /**
@@ -20,6 +27,11 @@ const SCROLL_THRESHOLD = 48
 const scrollRef = ref<HTMLElement | null>(null)
 const nearBottom = ref(true)
 const initialLoad = ref(true)
+const timeline = computed(() => buildConversationTimeline(props.messages, props.operations))
+const awaitingAssistant = computed(() => {
+  const latest = timeline.value.at(-1)
+  return latest?.kind === 'message' && latest.message.role === 'user'
+})
 
 const standaloneStatus: ChatMessage = {
   id: '',
@@ -56,14 +68,9 @@ function jumpToLatest() {
 }
 
 watch(
-  () => [
-    props.messages.length,
-    props.messages.at(-1)?.content,
-    props.isStreaming,
-  ],
-  () => {
-    void maybeFollowScroll()
-  },
+  () => [props.messages, props.operations, props.isStreaming],
+  () => { void maybeFollowScroll() },
+  { deep: true },
 )
 
 onMounted(() => {
@@ -83,20 +90,27 @@ onBeforeUnmount(() => {
       class="h-full min-h-0 space-y-6 overflow-y-auto p-4 md:p-6"
       data-testid="stream"
     >
-      <template v-for="msg in props.messages" :key="msg.id || msg.created_at">
-        <UserMessage v-if="msg.role === 'user'" :message="msg" />
+      <template v-for="entry in timeline" :key="`${entry.kind}:${entry.id}`">
+        <UserMessage v-if="entry.kind === 'message' && entry.message.role === 'user'" :message="entry.message" />
         <AgentMessage
-          v-else-if="msg.role === 'assistant'"
-          :message="msg"
+          v-else-if="entry.kind === 'message' && entry.message.role === 'assistant'"
+          :message="entry.message"
           :is-streaming="
-            isStreaming && msg.id === '' && msg === props.messages.at(-1)
+            isStreaming && entry.message.id === '' && entry.message === props.messages.at(-1)
           "
+        />
+        <ToolOperationCard
+          v-else-if="entry.kind === 'tool'"
+          :operation="entry.operation"
+          @download="(artifactId, name) => emit('download', artifactId, name)"
+          @cancel="emit('cancel', $event)"
+          @layout-change="maybeFollowScroll"
         />
       </template>
 
       <!-- Typing indicator: agent is working (streaming but no assistant message yet) -->
       <div
-        v-if="isStreaming && props.messages.length > 0 && props.messages.at(-1)?.role === 'user'"
+        v-if="isStreaming && awaitingAssistant"
         class="message flex min-w-0 items-start gap-4"
         data-testid="typing-indicator"
       >
@@ -134,13 +148,13 @@ onBeforeUnmount(() => {
       <!-- One standalone status when streaming with no messages at all:
            never a second placeholder. -->
       <AgentMessage
-        v-if="isStreaming && props.messages.length === 0"
+        v-if="isStreaming && timeline.length === 0"
         :message="standaloneStatus"
         :is-streaming="true"
       />
 
       <div
-        v-if="props.messages.length === 0 && !isStreaming"
+        v-if="timeline.length === 0 && !isStreaming"
         class="flex min-h-full items-center justify-center"
         data-testid="empty-state"
       >

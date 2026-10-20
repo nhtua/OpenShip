@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from src.openship.artifacts.contracts import ArtifactSummary
 from src.openship.artifacts.models import Artifact
 from src.openship.capabilities.contracts import ToolFailure
-from src.openship.tools.search.contracts import SearchToolResult
+from src.openship.tools.search.contracts import SearchArguments, SearchToolResult
 
 from .models import ToolAttempt
 
@@ -31,6 +31,7 @@ class OperationSummary(BaseModel):
     status: str = Field(max_length=24)
     error_code: str | None = Field(default=None, max_length=64)
     error: ToolFailure | None = None
+    query: str | None = Field(default=None, max_length=512)
     result: dict[str, Any] | None = None
     artifacts: tuple[ArtifactSummary, ...] = ()
     attempts: tuple[ToolAttemptSummary, ...] = ()
@@ -54,6 +55,16 @@ class ToolAttemptSummary(BaseModel):
 
 def operation_summary(operation) -> OperationSummary:
     """Project only safe operation metadata; args, credentials and raw bodies stay private."""
+    query = None
+    if operation.capability_id in {"brave_web_search", "tavily_web_search"}:
+        try:
+            arguments = SearchArguments.model_validate_json(operation.arguments_json)
+            query = arguments.query
+        except (TypeError, ValueError):
+            # Malformed or historical private arguments are not copied into
+            # the public read model. The result projection may still have its
+            # own independently validated query after a successful run.
+            pass
     return OperationSummary(
         id=operation.id,
         run_id=operation.run_id,
@@ -64,6 +75,7 @@ def operation_summary(operation) -> OperationSummary:
         manifest_digest=operation.manifest_digest,
         status=operation.status,
         error_code=operation.error_code,
+        query=query,
         created_at=operation.created_at,
         updated_at=operation.updated_at,
         finished_at=operation.finished_at,

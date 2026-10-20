@@ -5,7 +5,7 @@ import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import api, { runsApi } from '@/services/api'
-import type { Conversation, RunCard as RunCardType } from '@/types'
+import type { Conversation, RunCard as RunCardType, ToolOperationSummary } from '@/types'
 import {
   apiError,
   fixtureConversations,
@@ -100,6 +100,36 @@ describe('ChatView', () => {
     await nextTick()
 
     expect(wrapper.find('h1').text()).toBe('Deploy with the staging profile')
+  })
+
+  it('places compact search operations in chronological conversation history', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    const chat = useChatStore()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Deploy pipeline'), { timeout: wait })
+    chat.currentConversation = { id: 'c1', title: 'Search and chat', created_at: '', updated_at: '' }
+    chat.messages = [
+      { id: 'user-before', role: 'user', content: 'Find Terraform modules', conversation_id: 'c1', created_at: '2026-10-20T12:00:00Z' },
+      { id: 'assistant-after', role: 'assistant', content: 'I found useful modules.', conversation_id: 'c1', created_at: '2026-10-20T12:00:02Z' },
+    ]
+    const operation: ToolOperationSummary = {
+      id: 'search-middle', run_id: 'run-search', conversation_id: 'c1',
+      logical_call_id: 'manual-search', capability_id: 'brave_web_search',
+      capability_version: '1.0.0', manifest_digest: 'a'.repeat(64),
+      status: 'succeeded', error_code: null, error: null, query: 'terraform modules',
+      result: { query: 'terraform modules', items: [{ title: 'Modules', url: 'https://docs.example.test/modules', snippet: 'Browse modules.', rank: 1 }] },
+      artifacts: [], attempts: [], created_at: '2026-10-20T12:00:01Z',
+      updated_at: '2026-10-20T12:00:01Z', finished_at: '2026-10-20T12:00:01Z',
+    }
+    chat.toolOperationsByConversation.set('c1', new Map([[operation.id, operation]]))
+    await nextTick()
+
+    const stream = wrapper.get('[data-testid="stream"]')
+    const content = stream.text()
+    expect(content.indexOf('Find Terraform modules')).toBeLessThan(content.indexOf('Brave Search'))
+    expect(content.indexOf('Brave Search')).toBeLessThan(content.indexOf('I found useful modules.'))
+    expect(stream.findAll('[data-testid="tool-operation-card"]')).toHaveLength(1)
+    expect(stream.find('a[href="https://docs.example.test/modules"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="search-tool-form"]').exists()).toBe(false)
   })
 
   it('creates and selects a conversation immediately on click', async () => {

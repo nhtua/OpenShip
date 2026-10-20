@@ -159,6 +159,7 @@ def test_snapshot_rebuilds_operations_and_artifacts_after_events_are_pruned():
         assert snapshot.runs[0].graph_version == 1
         read_operation = snapshot.runs[0].operations[0]
         assert read_operation.id == operation.id
+        assert read_operation.query == "terraform modules"
         assert read_operation.result["query"] == "terraform modules"
         assert read_operation.result["items"][0]["url"] == "https://docs.example.test/modules"
         assert read_operation.attempts[0].outcome == "succeeded"
@@ -189,6 +190,46 @@ def test_operation_pages_are_bounded_ordered_and_secret_safe():
         assert "credential_binding_ref" not in serialized
         assert "arguments_json" not in serialized
         assert "request_digest" not in serialized
+    finally:
+        db.close()
+
+
+def test_operation_projection_keeps_validated_query_for_a_failed_search():
+    db = SessionLocal()
+    try:
+        user, project, conversation, run = _conversation(db)
+        operation, _ = _published_search(db, user, project, conversation, run)
+        operation.status = "failed"
+        operation.error_code = "provider_unavailable"
+        operation.result_json = None
+        db.commit()
+
+        projected = read_operation_page(db, run.id).items[0]
+
+        assert projected.query == "terraform modules"
+        assert projected.result is None
+        assert projected.error is not None
+        assert "arguments_json" not in projected.model_dump_json()
+    finally:
+        db.close()
+
+
+def test_operation_projection_omits_a_query_that_fails_search_validation():
+    db = SessionLocal()
+    try:
+        user, project, conversation, run = _conversation(db)
+        operation, _ = _published_search(db, user, project, conversation, run)
+        operation.status = "failed"
+        operation.error_code = "provider_unavailable"
+        operation.result_json = None
+        operation.arguments_json = json.dumps({"query": " padded query ", "max_results": 5})
+        db.commit()
+
+        projected = read_operation_page(db, run.id).items[0]
+
+        assert projected.query is None
+        assert "padded query" not in projected.model_dump_json()
+        assert "arguments_json" not in projected.model_dump_json()
     finally:
         db.close()
 

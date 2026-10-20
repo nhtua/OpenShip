@@ -48,25 +48,32 @@ function operation(overrides: Partial<ToolOperationSummary> = {}): ToolOperation
 }
 
 describe('ToolOperationCard', () => {
-  it('shows service identity, observation time, safe result links, and retained download', async () => {
+  it('keeps a compact search row collapsed, then shows safe results and retained downloads', async () => {
     const wrapper = mount(ToolOperationCard, { props: { operation: operation() } })
 
     expect(wrapper.text()).toContain('Brave Search')
     expect(wrapper.text()).toContain('terraform modules')
     expect(wrapper.text()).toContain('Completed')
+    expect(wrapper.text()).toContain('2 results')
+    expect(wrapper.findAll('[data-testid="operation-status"]')).toHaveLength(1)
+    expect(wrapper.find('a[href="https://docs.example.test/modules"]').exists()).toBe(false)
+
+    await wrapper.get('button[aria-label="Show results for terraform modules"]').trigger('click')
+
     expect(wrapper.findAll('a[href="https://docs.example.test/modules"]')).toHaveLength(1)
     expect(wrapper.find('a[href="javascript:alert(1)"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('Observed Oct')
+    expect(wrapper.text()).toContain('Searched Oct')
 
     await wrapper.get('button[aria-label="Download search-results.json"]').trigger('click')
-    expect(wrapper.emitted('download')?.[0]).toEqual(['artifact-1'])
+    expect(wrapper.emitted('download')?.[0]).toEqual(['artifact-1', 'search-results.json'])
   })
 
-  it('shows safe failure copy and never promotes an event payload into a result', () => {
+  it('shows safe failure copy, keeps a persisted query when there is no result, and never trusts event payloads', () => {
     const wrapper = mount(ToolOperationCard, {
       props: {
         operation: operation({
           status: 'failed',
+          query: 'persisted failed query',
           error_code: 'provider_timeout',
           error: {
             code: 'provider_timeout',
@@ -79,7 +86,63 @@ describe('ToolOperationCard', () => {
     })
 
     expect(wrapper.text()).toContain('Failed')
+    expect(wrapper.text()).toContain('persisted failed query')
     expect(wrapper.text()).toContain('The search service did not respond within the allowed time.')
     expect(wrapper.text()).not.toContain('terraform modules')
+  })
+
+  it('states an empty result set and offers cancellation only while work can still stop', async () => {
+    const wrapper = mount(ToolOperationCard, {
+      props: {
+        operation: operation({
+          status: 'running',
+          result: null,
+          artifacts: [],
+          attempts: [],
+        }),
+      },
+    })
+    expect(wrapper.text()).toContain('Running')
+    expect(wrapper.findAll('[data-testid="operation-status"]')).toHaveLength(1)
+    await wrapper.get('button[aria-label="Cancel Brave Search"]').trigger('click')
+    expect(wrapper.emitted('cancel')?.[0]).toEqual(['run-1'])
+
+    await wrapper.setProps({
+      operation: operation({ result: { query: 'nothing found', items: [] } }),
+    })
+    await wrapper.get('button[aria-label="Show results for nothing found"]').trigger('click')
+    expect(wrapper.text()).toContain('No results returned')
+    expect(wrapper.find('button[aria-label="Cancel Brave Search"]').exists()).toBe(false)
+  })
+
+  it('renders hostile titles and snippets as text', async () => {
+    const wrapper = mount(ToolOperationCard, {
+      props: {
+        operation: operation({
+          result: {
+            query: 'safe query',
+            items: [{
+              title: '<img src=x onerror=alert(1)>',
+              url: 'https://docs.example.test/safe',
+              snippet: '<script>steal()</script>',
+              rank: 1,
+            }],
+          },
+        }),
+      },
+    })
+    await wrapper.get('button[aria-label="Show results for safe query"]').trigger('click')
+    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.find('script').exists()).toBe(false)
+    expect(wrapper.text()).toContain('<script>steal()</script>')
+  })
+
+  it('labels a legacy operation with no retained query honestly', async () => {
+    const wrapper = mount(ToolOperationCard, {
+      props: { operation: operation({ status: 'interrupted', query: undefined, result: null, artifacts: [] }) },
+    })
+    expect(wrapper.text()).toContain('Search query unavailable')
+    await wrapper.get('button[aria-label="Show results for this search"]').trigger('click')
+    expect(wrapper.text()).toContain('The search query is not available in this saved history.')
   })
 })

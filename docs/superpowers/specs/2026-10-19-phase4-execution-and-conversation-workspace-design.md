@@ -21,7 +21,7 @@ This specification supersedes the earlier log-summary/sandbox-first Phase 4 draf
 - One user initially, one active run per conversation, configurable installation capacity with queued waiting, conservative visible interruption rather than automatic redispatch, and no optimization objective.
 - OpenAI Chat Completions is 4B's first qualified tool-capable model adapter; retain accepted text behavior for all existing adapters.
 
-The detailed schemas, values and interfaces below are the approved implementation target. Implementation and qualification evidence are tracked in the plan and acceptance record; this specification does not claim that later phase tasks or live provider qualification are complete.
+The base schemas, values and interfaces below are the approved implementation target. Following the user's Phase 4A walkthrough, the composer and result presentation amendment in §8.1 was approved for Task 9A implementation. Its three requirements are compact inline search results, a tool attachment menu below the input, and a compact model dropdown defaulting to `gpt-6-luna`. The implementation and fixture evidence are recorded in the plan and acceptance record; the user visually accepted the result on 2026-10-20 and directed continuation through the remaining plan. This specification does not claim that later phase tasks or live provider qualification are complete.
 
 ### Acceptance units
 
@@ -83,6 +83,7 @@ No duplicate queue, runtime, event service, secret store or search-routing domai
 | R16 | Compatible additive migrations, protected downgrade and coordinated DB/filesystem restore | All |
 | R17 | Distinct unit/real PostgreSQL/filesystem/browser/real-stack/live evidence; no Phase 4 sandbox gate | All |
 | R18 | Secret-safe errors/audit and untrusted search/file content cannot change authority or execute browser code | All |
+| R19 | Compact chronological tool results, one composer with tool attachments, and a model dropdown defaulting to the configured `gpt-6-luna` profile; screenshot-led UX review before acceptance | 4A revision/4B |
 
 ## 4. Capability and execution contracts
 
@@ -219,11 +220,33 @@ All routes use current JWT/project-owner checks. Foreign object IDs return 404; 
 
 New events: `tool.submitted`, `tool.requested`, `tool.started`, `tool.completed`, `tool.failed`, `tool.cancelled`, `artifact.created`, `artifact.deleted`, `workspace.ready`. New payloads have schema version 1 and safe IDs/digests/statuses; current project/actor envelope, sequence/outbox transaction and existing event names remain. Snapshots read authoritative rows after event retention. Reducers deduplicate by event ID and upsert object IDs; old responses/events cannot replace a newly selected conversation.
 
-4A adds an explicit tool selector/query form, status, result links and retained artifact download in existing ChatView/run cards. Missing one search key affects only its own tool; model credentials are not needed for manual search. Display the selected external service and safe missing-key/rate/timeout messages. No key-entry UI or generic settings domain.
+4A initially delivered a separate tool selector/query form and expanded run cards. The user's acceptance walkthrough requested replacement with the integrated composer and compact conversation entries in §8.1. Missing one search key affects only its own tool; model credentials are not needed for manual search. Display the selected external service and safe missing-key/rate/timeout messages. No key-entry UI or generic settings domain.
 
-4B adds tool enablement and operation cards to existing chat; retries retain exact original payload/tool selection. Unsupported model profiles explain limitations while preserving text chat. Model claims do not determine whether a tool succeeded.
+4B extends the same composer and operation entries with automatic model tool selection from the authorized allowlist; retries retain exact original payload/tool selection. Unsupported model profiles explain limitations while preserving text chat. Model claims do not determine whether a tool succeeded.
 
 4C adds a compact Conversation files panel with bounded list/read/select/download/delete, provenance/time/quota/availability and safe text rendering. Stored search observations show their original time; rereading does not issue a fresh external request.
+
+### 8.1 Composer and tool-result UX amendment
+
+The user's annotated screenshot identified three problems, in priority order: oversized search results outside the conversation, a separate always-visible search form, and duplicate model labels above the input. Task 9A implements the approved interaction design below before the Phase 4A acceptance decision and Task 10. Automatic model invocation remains Phase 4B.
+
+**1. Compact tool entries in the conversation.** Render each operation at its submission position in the single scrolling conversation timeline, using durable run/operation IDs and recorded creation time with stable ID tie-breaking. Keep search → chat → search in that order after reload; changing the latest run cannot remove earlier operations. These are presentation entries derived from existing snapshots/events, not fabricated user/assistant messages or a new transcript persistence system.
+
+Default each search entry to a collapsed row showing a search icon, exact service label, a visually truncated query, one status indicator and result count when known. For example: `Brave Search · nearest star system with planets · 5 results ▾`. A successful zero-result search says `No results`; a failed search shows its safe explanation inline. Do not nest another completed run panel around the entry. Show cancel only for a cancellable operation and preserve existing explicit submission-retry behavior; expanding or reopening a result never issues another search.
+
+Expanding the row reveals safe result titles, source domains, snippets limited to two visual lines with an explicit expansion affordance, original observation time, and a secondary download action for the immutable snapshot. Keep full content accessible on demand. Use existing theme tokens, readable contrast and responsive widths; do not fetch site favicons/thumbnails. Additional run/provenance/attempt details remain available on demand without repeated badges in the default view. Preserve the existing scroll-follow and jump-to-latest behavior when entries update or expand.
+
+The owned operation projection may add `query: str | None` for the validated search query so queued/failed operations remain understandable after reload. Read it from validated persisted search arguments, bound it to the existing query limits, and return it only through authorized operation/snapshot reads. Legacy or malformed records yield null. Do not expose arbitrary arguments or add queries to SSE payloads/logs.
+
+**2. One composer with a tool attachment menu.** Remove the separate permanent search form. Place a small `[+]` button below the existing text input; it opens the available-tools menu with independent Brave/Tavily availability and safe unavailable explanations. Choosing a tool adds a removable named chip to the draft. In 4A allow one attached search tool; the same input becomes its query and Send calls the existing model-free tool endpoint with that exact capability ref. Keep the service name visible before sending. Default to five results; place the supported 1–10 result-count setting behind the attached chip's options rather than a permanent field. Removing the chip returns the draft to normal chat without deleting its text.
+
+In 4B, a chat turn can also let the LLM invoke available authorized tools automatically, without requiring a forced tool attachment. Explicit attachment continues to request a direct manual call; automatic tool eligibility is represented by the existing tool-mode/allowlist contract and cannot exceed operator enablement or gateway authority. Explain availability in the menu; do not offer working automatic invocation in 4A. Both paths produce the same operation-entry presentation. Capture input, exact capability refs, count, request ID, model/tool mode and any profile selection at submission; retries reuse that submitted payload even if the current draft changes. Preserve the draft on definite submission failure, and keep uncertain submissions tied to their original idempotency key.
+
+**3. Compact model selection below the input.** Place a small `gpt-6-luna ▾` control beside `[+]`, showing the actual selected model name. The menu lists configured model profiles, marks the current/default choice and explains unavailable entries. Put profile labels, endpoint metadata and existing fallback controls in menu/details content as needed; remove the permanent `Answering with`, repeated `Primary model`/`chosen` badges and endpoint pill.
+
+Set the supplied installation profile/default to `gpt-6-luna` with `output_limit_parameter=max_completion_tokens`. A fresh conversation starts with that server-declared default; an explicit choice affects subsequent unsent chat drafts in that conversation. Do not restore an unrelated conversation's last selection as the default. Resolve configured profile IDs through the server catalog; do not invent a client-owned model profile or credentials. If the installation lacks an available Luna profile, show a clear unavailable/default-configuration state rather than labelling another model as Luna. Preserve historical pinned profiles, exact retry payloads, explicit text fallback and independently qualified tool-capability checks. Model selection does not gate a 4A manual search.
+
+**UX acceptance evidence.** Review the composer and collapsed/expanded/empty/queued/running/failed/cancelled result states at 375px and 1440px widths in light and dark themes. Check keyboard opening, navigation, Escape, focus return, accessible control names/expanded state and readable wrapped content. Capture representative screenshots and demonstrate draft preservation, tool removal, model switching, mixed chat/search ordering, reopen/reconnect and independent tool unavailability. Functional test results alone do not accept the revised visual design.
 
 ## 9. Basic workspace and Phase 6 versioning boundary
 

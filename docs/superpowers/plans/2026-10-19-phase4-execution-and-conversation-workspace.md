@@ -9,6 +9,8 @@ date: 2026-10-20
 
 > **Approval:** The user approved implementation on 2026-10-20. Work is underway. The 4A, 4B and 4C acceptance units remain review gates before moving to the next unit.
 >
+> **UI revision:** The user reports that Phase 4A functionality works and requested three UX changes in an annotated screenshot. The approved Task 9A/spec §8.1 revision is implemented, fixture-verified and visually accepted on 2026-10-20. The user directed continuation through the remaining plan; Task 10 is now underway.
+>
 > **For agentic workers:** Use `superpowers:executing-plans` for native execution. Do not delegate unless the user explicitly selects it. Checkboxes track implementation progress.
 
 **Goal:** Run `brave_web_search` and `tavily_web_search` manually and from qualified OpenAI chat, preserving bounded results in persistent conversation directories for later list/read use.
@@ -27,6 +29,7 @@ date: 2026-10-20
 - Phase 4 output policy is immutable snapshots. Phase 6 adds mutable logical file heads and captured immutable versions; do not introduce future edit/history tables now or make immutability a permanent workspace constraint.
 - One active run per conversation; initial `TOOL_CONCURRENCY=1`, configurable and shared across workers. Busy work waits through the existing run/queue/supervision foundation. Dispatched interruption fails visibly and never silently repeats a search.
 - Exact limits, output schemas, transaction boundaries, credential rules and error copy follow spec §§4–11. Python 3.11/PostgreSQL 15 remain the baseline; no runtime/SDK migration is implied.
+- Follow proposed spec §8.1 for Task 9A: one composer, tools under `[+]`, compact chronological operation entries and a model dropdown defaulting to the configured `gpt-6-luna` profile. Automatic model invocation belongs to Tasks 10–14. Preserve exact IDs, historical provider provenance and retry payloads.
 - User approval for implementation is recorded above. No subagent/delegation is preselected. Git operations follow `.agents/skills/git-workflow/SKILL.md`, including scanned file-based commit messages; do not push/merge/clean this managed worktree merely because tasks finish.
 
 ## Review focus
@@ -41,7 +44,7 @@ date: 2026-10-20
 
 | Unit | Tasks | Acceptance |
 | --- | --- | --- |
-| 4A | 1–9 | Explicit Brave then Tavily calls, no model requirement, durable result artifacts, HTTP/cancel/recovery/secret handling |
+| 4A | 1–9, 9A | Explicit Brave then Tavily calls, no model requirement, durable result artifacts, HTTP/cancel/recovery/secret handling, and user-reviewed integrated composer/result UX |
 | 4B | 10–14 | Same tools through one qualified OpenAI loop with complete transcript, exact tool IDs and cumulative budgets |
 | 4C | 15–17 | Stable workspace association, bounded file tools/UI, restart continuation, retention/restore |
 
@@ -195,6 +198,22 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 - [x] Run actual app/runtime/PG/filesystem with synthetic Brave/Tavily: manual call saves a snapshot, restart/reconnect reads exact bytes, cancel/recovery has no duplicate upstream request. Run cumulative unit/lint/PG/browser checks; record evidence and 4A accept/revise/stop before Task 10.
   - Validation: `ruff check .` clean and packaging assertions 4 passed; Compose config valid; PostgreSQL lane 28 passed/0 skipped; synthetic API/runtime/PG/filesystem test 1 passed/0 skipped; browser unit tests 137 passed; typecheck and production build passed; fixture Playwright 49 passed; full-stack Playwright 1 passed against the synthetic API/runtime with real `/api` calls. No live providers were called. Acceptance remains pending user review; Task 10 has not started.
 
+### Task 9A — Integrated composer and compact conversation tool results
+
+**Placement:** After Task 9 and before Task 10; Phase 4A acceptance revision. Follow the user's screenshot priorities in order: compact results, `[+]` tool attachment, model dropdown. Spec §8.1 defines the approved interaction. Do not begin 4B to obtain automatic invocation early.
+
+**Files:** Modify browser `src/components/chat/{ChatInput,ChatStream,ToolOperationCard,RunCard}.vue`, `src/components/ProviderSelector.vue`, `src/views/ChatView.vue`, `src/stores/chat.ts`, `src/types/index.ts`; create `src/components/chat/ToolAttachmentMenu.vue`, `src/lib/chatTimeline.ts`. Replace the permanent use of `SearchToolForm.vue`; after checking there were no other app consumers, remove it and migrate its applicable tests to the integrated flow. Extend API `execution/projections.py` and operation/snapshot tests with the additive owned `query` field for queued/failed query hydration. Update root/API `.env.example`, `docs/provider-support.md` and `docs/testing/phase4-acceptance.md`. Tests: browser `ToolOperationCard.test.ts`, `ChatStore.test.ts`, `ChatView.test.ts`, `ProviderSelector.test.ts`, new `ChatInput.test.ts`, `ToolAttachmentMenu.test.ts`, `ChatTimeline.test.ts`, fixture tool-execution journeys, and the visual UX capture test. The full-stack tool journey was not rerun because it submits a real external search.
+
+**Interfaces:** Keep `runsApi.submitTool` and its server-owned capability refs/idempotency contract. `ChatInput` accepts the existing model catalog/selection plus capability summaries and emits ordinary chat or the existing manual-tool command; a manual command uses the shared text input and one attached capability with a default count of 5. `ToolAttachmentMenu` emits attach/remove and bounded count changes; it never dispatches a tool. `buildConversationTimeline(messages: ChatMessage[], operations: ToolOperationSummary[]): ConversationEntry[]` yields a discriminated union of message and tool entries, keyed by existing IDs and ordered by recorded creation time/stable ID. The store retains operation maps per conversation and hydrates them from every available snapshot run/operation page, not only the latest run. `ToolOperationCard` owns expanded/collapsed presentation; opening it performs no search. An additive nullable operation `query` is validated from persisted search arguments on authorized reads only, with no raw argument/SSE/log exposure. No new database tables, graph versions or model calls are needed.
+
+- [x] **Pin the UX acceptance cases:** Added failing tests for a collapsed search row with exact service/query/status/count, expandable safe results/time/download, zero results, inline errors, cancellable states and one status indicator. Covered mixed chronology, snapshot operation retention, duplicate durable refresh, conversation switching, pagination, missing/legacy query and hostile content without synthetic persisted messages. `ChatTimeline` tests cover stable ordering.
+- [x] **Verify the gaps before changes:** Ran the focused browser tests first and recorded the expected failures before implementation. The local Python HTTP test harness was already known to stall; after implementation, the targeted operation projection/event service suites passed (6 and 5 tests) and Ruff passed. See the acceptance record for test evidence and limits.
+- [x] **Implement compact conversation results:** Built the presentation timeline from existing authoritative data, moved operations into `ChatStream`'s scroll region and removed duplicated pinned search run/result panels. Added collapsed/expanded result presentation and preserved run provenance, cancellation, scroll-follow/jump-to-latest and operation paging. The authorized operation projection exposes only the validated owned query field.
+- [x] **Pin composer behavior:** Added failing-first `ChatInput`/menu/selector tests for `[+]`, available/unavailable tools, removable chip/draft preservation, count range/default, direct search, normal chat, IME handling, failed-submission draft recovery, model choice and Escape/focus return. Existing store tests cover immutable pending retry payloads and conversation-scoped state. Manual search remains model-independent.
+- [x] **Implement the unified composer:** Replaced and removed the permanent search form after confirming no other app consumer, integrated `ToolAttachmentMenu` and removable tool chip, and moved the model selector below the input. Updated supplied Luna examples to `max_completion_tokens`; historical profile IDs and run snapshots remain untouched. Automatic model invocation remains Phase 4B.
+- [x] **Verify interaction and visual evidence:** Browser unit suite passed (151 tests across 16 files), typecheck and production build passed, fixture Playwright passed (50 tests), and the focused visual-capture test passed on the final source. API operation projection/event tests passed (6) and event-service tests passed (5); Ruff passed. Captured 375px/1440px states in both themes, with viewport-width assertions. Keyboard arrow navigation, Escape/focus return and IME handling are covered. The full-stack browser tool journey and live providers were not run because it would issue an external search; asynchronous stale-conversation behavior is protected by generation/ownership checks but was not given a new dedicated delayed-response test here. Screenshot path: `.superpowers/sdd/2026-10-19-phase4-execution-and-conversation-workspace/screenshots/`.
+- [x] **User visual acceptance:** The user accepted Task 9A on 2026-10-20 and directed continuation through the remaining implementation plan. Functional and visual evidence are recorded in the 4A acceptance record. Suggested verified commit subject: `feat: integrate compact search results and composer controls`.
+
 ### Task 10 — Complete tool-message contracts and durable transcript
 
 **Files:** Extend model contracts, run admission/config and model registration; create `runs/transcript.py`, migration 007. Tests: `tests/providers/test_tool_contracts.py`, `tests/test_tool_turn_commands.py`, `tests/integration/test_tool_transcript_migration.py`, `tests/integration/test_tool_transcript_postgres.py`.
@@ -232,9 +251,9 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Files:** Extend browser types/services/chat/artifact stores, composer/ChatView/run/operation cards; tests `tests/ChatStore.test.ts`, `ChatView.test.ts`, `ToolOperationCard.test.ts`, `tests/e2e/tool-chat.spec.ts` and fixtures.
 
-**Interfaces:** Tool enablement names allowed catalog capabilities; it has no search-provider field. A profile change affects an unsent draft only. Submitted request retries preserve original tool mode, selected version IDs and profile/fallback selection. Results show exact executed tool identity and observation/artifact refs.
+**Interfaces:** Reuse Task 9A's composer, `[+]` menu, model dropdown and compact conversation entries. Explicit tool chips retain the model-free manual path; chat tool mode enables automatic LLM invocation from the exact allowed catalog capabilities without requiring a forced attachment. It has no search-provider field. A profile change affects an unsent draft only. Submitted request retries preserve original tool mode, selected version IDs and profile/fallback selection. Results show exact executed tool identity and observation/artifact refs.
 
-- [ ] Write failing supported/unsupported model, independent unavailable search tools, no-upload search, exact retry payload, unsafe snippet/link and old-conversation response cases. Failed operations must not appear successful because final model text says so.
+- [ ] Write failing supported/unsupported model, independent unavailable search tools, no-upload search, exact retry payload, unsafe snippet/link and old-conversation response cases. Exercise attached manual invocation separately from automatic LLM search without an attached chip, using the authorized tool-mode allowlist. Both appear in the same compact timeline. Failed operations must not appear successful because final model text says so.
 - [ ] Run targeted tests, implement in existing components, and verify typecheck/unit/build plus fixture tool-chat/auth/provider/title/cancel/reconnect journeys.
 - [ ] Commit verified task; subject: `feat: expose trusted tool use in the chat composer`.
 
@@ -303,9 +322,10 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 | R16 | 2–3, 10, 15–16 | Sequential migrations, legacy data/downgrade and coordinated restore |
 | R17 | 9, 14, 17 | Honest unit/PG/filesystem/fixture-browser/real-stack/live lane evidence |
 | R18 | 1, 3–8, 10–17 | Sentinel credential/query leakage, untrusted snippets/files, safe bounded errors |
+| R19 | 9A, 13 | Annotated-screenshot requirements, compact timeline/composer, Luna default, responsive/accessibility evidence and user visual acceptance |
 
 ## 5. Review and handoff
 
-The user approved this plan on 2026-10-20. Tasks 1–3 are complete; remaining checkboxes are the implementation and acceptance work still ahead. The document-preparation checks predated implementation and are not product verification. The active SDD ledger records task evidence and local environment limits.
+The user approved the base plan on 2026-10-20. Tasks 1–9 have recorded implementation evidence. The user's walkthrough found the functionality satisfactory and requested a UI/UX revision; Task 9A/spec §8.1 are now implemented, documented and visually accepted. The user directed continuation through the remaining plan. Task 10 is underway; Tasks 11–17 remain unstarted. The active SDD ledger records task evidence and local environment limits.
 
-Complete 4A and present its acceptance evidence before starting 4B; complete 4B and present its evidence before starting 4C. User review remains the gate between those acceptance units. No PR, merge, deployment or Phase 4 completion is implied by implementation approval.
+Complete the 4A Task 9A revision and present its functional/visual acceptance evidence before starting 4B; complete 4B and present its evidence before starting 4C. User review remains the gate between those acceptance units. No PR, merge, deployment or Phase 4 completion is implied by implementation approval.

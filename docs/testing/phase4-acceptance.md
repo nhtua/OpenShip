@@ -7,7 +7,16 @@ date: 2026-10-20
 
 # Phase 4A Acceptance
 
-**Decision: pending review.** Phase 4A is limited to explicit, model-free Brave
+**Decision: Task 9A visually accepted; continue implementation.** The user
+reports Phase 4A functionality works but requested compact search entries in
+the conversation, tool attachment through `[+]` below the input, and a small
+model dropdown defaulting to `gpt-6-luna`. Spec §8.1 and plan Task 9A record the
+approved design. Task 9A is implemented and fixture-verified; the user accepted
+the visual result and directed continuation on 2026-10-20. This report is user
+walkthrough feedback, not qualification of every live provider/model tuple. The earlier
+technical evidence below remains historical evidence for Tasks 1–9.
+
+Phase 4A is limited to explicit, model-free Brave
 and Tavily search runs, safe operation snapshots, and immutable filesystem
 artifacts. It does not include model-directed tool calls, a provider-configuration
 UI, mutable workspace files, or sandbox execution. Those remain in later phases.
@@ -36,6 +45,18 @@ process restart, or persistent filesystem proof.
   requests and require no provider credentials.
 - Frontend CI runs unit tests, Vue typecheck, and production build. Fixture E2E
   evidence remains labeled separately from full-stack browser evidence.
+- Task 9A: search operations appear as compact expandable entries in the
+  chronological conversation, with one status, visible query/service, bounded
+  result details and secondary retained-file actions; earlier searches survive
+  later chat/search runs and reload.
+- Task 9A: one composer provides `[+]` tool attachment and a model-name dropdown
+  below the input. An attached search uses the existing manual path; ordinary
+  chat defaults to the configured `gpt-6-luna` profile. Exact retries, draft
+  preservation, independent tool availability and historical provider records
+  remain correct. Automatic model invocation is still Phase 4B.
+- Task 9A: provide keyboard/accessibility checks and screenshots at 375px and
+  1440px in both themes for key composer/result states, followed by the user's
+  visual accept/revise/stop decision.
 
 ## Local evidence recorded for this review
 
@@ -46,11 +67,28 @@ process restart, or persistent filesystem proof.
 | Compose configuration | `podman compose --env-file .env.example config` passed | Uses placeholder-only values; rendered configuration was kept out of the terminal output. |
 | PostgreSQL integration lane | 28 passed, 0 skipped | Ran against a disposable local PostgreSQL 15 container. |
 | Synthetic API/runtime process-stack lane | 1 passed, 0 skipped | Runs the real API and worker with PostgreSQL and filesystem artifacts; synthetic transport covers both tools, API restart/download recovery, cancellation, and no duplicate upstream request. |
-| Browser unit tests | 137 passed | All service responses are local fixtures. |
+| Tasks 1–9 browser unit baseline | 137 passed | All service responses are local fixtures. |
 | Vue typecheck and production build | Passed | — |
-| Fixture browser journeys | 49 passed in the complete E2E suite | Brave/Tavily behavior used deterministic browser fixtures. |
+| Tasks 1–9 fixture browser journeys | 49 passed in the complete E2E suite | Brave/Tavily behavior used deterministic browser fixtures. |
 | Browser full-stack test | 1 passed against the temporary synthetic API/runtime stack | Playwright used the real API and worker through Vite, with both synthetic search tools enabled and no `/api` interception. No deployed Compose browser stack was used. |
 | Live provider qualification | Not run | It is opt-in and is not required for ordinary CI or Phase 4A acceptance. |
+
+## Task 9A implementation evidence
+
+| Check | Evidence | Limit |
+| --- | --- | --- |
+| Browser unit tests | 151 passed across 16 files | Deterministic local fixtures; expected failure-path logging and legacy component test warnings do not fail the suite. |
+| Vue typecheck and production build | Passed | — |
+| Fixture Playwright | 50 passed in the full fixture suite; the updated visual capture test also passed on the final source | No live Brave, Tavily or model requests. A local Vite server required loopback execution permission. |
+| API projection/event service tests | 6 operation projection/event tests and 5 event-service tests passed; changed API Ruff checks passed | The existing local Python HTTP harness stall still prevents claiming end-to-end HTTP route serialization from this run. |
+| Responsive and theme review | Captured and inspected 375px and 1440px views in light and dark themes. The capture test checks document width against viewport width at desktop and mobile sizes. Keyboard tests cover arrow movement, Escape/focus return and IME submission behavior. | Screenshots are local review artifacts, not committed product assets. |
+| Full-stack browser search journey | Not rerun for Task 9A | That journey dispatches a real external search; the revision does not require a live-provider request. Earlier synthetic API/runtime/PostgreSQL qualification remains recorded above. |
+
+Screenshots are in `.superpowers/sdd/2026-10-19-phase4-execution-and-conversation-workspace/screenshots/`.
+Representative files: `task9a-desktop-collapsed.png`,
+`task9a-desktop-expanded.png`, `task9a-desktop-tool-menu.png`,
+`task9a-desktop-model-menu.png`, `task9a-mobile-dark-expanded.png`,
+`task9a-mobile-dark-tool-menu.png`, and `task9a-mobile-dark-model-menu.png`.
 
 ## Commands
 
@@ -91,7 +129,13 @@ transports for repeatable qualification. For a deployed Compose UI, set
 
 ## Review state
 
-The user should review the recorded PostgreSQL and synthetic full-stack
-evidence before Phase 4B implementation begins. If any required lane skipped,
-ran zero tests, redispatched after cancellation, or failed exact-byte recovery,
-Phase 4A remains open for revision.
+The implemented UI amendment in [spec §8.1](../superpowers/specs/2026-10-19-phase4-execution-and-conversation-workspace-design.md#81-composer-and-tool-result-ux-amendment)
+and [Task 9A](../superpowers/plans/2026-10-19-phase4-execution-and-conversation-workspace.md#task-9a--integrated-composer-and-compact-conversation-tool-results)
+was visually accepted by the user on 2026-10-20. The user directed continuation
+through the remaining plan, so Task 10 is now underway. Task 14 remains the
+planned Phase 4B evidence and acceptance checkpoint.
+
+The previously recorded PostgreSQL and synthetic full-stack evidence remains
+part of the Phase 4A qualification record. If a required lane skipped, ran zero
+tests, redispatched after cancellation, or failed exact-byte recovery, record
+that gap for the final acceptance review.
