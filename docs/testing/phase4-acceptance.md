@@ -132,8 +132,10 @@ transports for repeatable qualification. For a deployed Compose UI, set
 The implemented UI amendment in [spec §8.1](../superpowers/specs/2026-10-19-phase4-execution-and-conversation-workspace-design.md#81-composer-and-tool-result-ux-amendment)
 and [Task 9A](../superpowers/plans/2026-10-19-phase4-execution-and-conversation-workspace.md#task-9a--integrated-composer-and-compact-conversation-tool-results)
 was visually accepted by the user on 2026-10-20. The user directed continuation
-through the remaining plan, so Task 10 is now underway. Task 14 remains the
-planned Phase 4B evidence and acceptance checkpoint.
+through the remaining plan. Task 10's normalized contracts, tool-mode turn
+pinning, migration and durable transcript are implemented; Task 11 is underway.
+Task 14 remains the planned Phase 4B evidence checkpoint. Live provider tests
+remain opt-in and were not run.
 
 The previously recorded PostgreSQL and synthetic full-stack evidence remains
 part of the Phase 4A qualification record. If a required lane skipped, ran zero

@@ -2,7 +2,14 @@ import json
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_serializer,
+    field_validator,
+)
 
 from ..execution.projections import OperationSummary
 from ..providers.configuration import destination_label
@@ -11,6 +18,8 @@ from .models import ProviderAttempt, Run
 
 
 class TurnSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     content: str = Field(..., min_length=1, max_length=10000)
     client_request_id: str = Field(..., description="UUID generated once per browser send, for idempotency")
     # A browser names a profile and nothing else: no endpoint, no model, no SDK
@@ -19,6 +28,15 @@ class TurnSubmitRequest(BaseModel):
     # Omitted means "the installation's default"; an explicit empty list means
     # fallback disabled. The two are not the same request.
     fallback_profile_ids: list[str] | None = None
+    enable_tools: StrictBool = False
+    artifact_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
+
+    @field_validator("artifact_ids")
+    @classmethod
+    def _unique_artifact_ids(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("artifact_ids must be distinct")
+        return value
 
 
 class ModelSummary(BaseModel):

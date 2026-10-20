@@ -11,8 +11,11 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from ..capabilities.catalog import resolve_capability
+from ..artifacts.contracts import ArtifactRef
+from ..artifacts.models import Artifact
+from ..capabilities.catalog import list_capability_manifests, resolve_capability
 from ..capabilities.contracts import (
+    CapabilityRef,
     ExecutionConfig,
     ToolCommandRequest,
     canonical_digest,
@@ -85,6 +88,106 @@ def _resolve_selection(provider_profile_id: str | None, fallback_profile_ids) ->
         ) from refused
 
 
+def _turn_submission_digest(content: str, enable_tools: bool, artifact_ids) -> str:
+    """Hash only client-controlled chat semantics, never current configuration."""
+    return canonical_digest(
+        {
+            "content": content,
+            "enable_tools": enable_tools,
+            "artifact_ids": [str(item) for item in artifact_ids],
+        }
+    )
+
+
+def _owned_artifact_refs(db: Session, conversation: Conversation, artifact_ids) -> tuple[ArtifactRef, ...]:
+    requested = tuple(uuid.UUID(str(item)) for item in artifact_ids)
+    if len(requested) != len(set(requested)):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": "invalid_artifact_selection", "message": "Selected artifacts must be distinct"}},
+        )
+    if not requested:
+        return ()
+    rows = db.query(Artifact).filter(
+        Artifact.id.in_(requested),
+        Artifact.conversation_id == conversation.id,
+        Artifact.project_id == conversation.project_id,
+        Artifact.status == "ready",
+        Artifact.mutability == "immutable",
+    ).all()
+    by_id = {row.id: row for row in rows}
+    if len(by_id) != len(requested):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "artifact_not_found", "message": "One or more selected artifacts are not available in this conversation"}},
+        )
+    return tuple(
+        ArtifactRef(
+            id=row.id,
+            sha256=row.sha256,
+            size_bytes=row.size_bytes,
+            media_type=row.media_type,
+        )
+        for artifact_id in requested
+        for row in (by_id[artifact_id],)
+    )
+
+
+def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[ArtifactRef, ...]) -> ExecutionConfig:
+    if model_config.fallbacks:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": "unsupported_capability", "message": "Tool-enabled chat does not support model fallbacks in this phase"}},
+        )
+    profiles = (model_config.primary,)
+    for profile in profiles:
+        if profile.adapter != "openai" or not profile.capabilities.tool_calls:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": {"code": "unsupported_capability", "message": "Tool-enabled chat requires a qualified OpenAI profile with tool-call support"}},
+            )
+        if profile.capabilities.parallel_tool_calls:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": {"code": "unsupported_capability", "message": "Tool-enabled chat requires sequential tool-call support"}},
+            )
+
+    enabled_ids = settings.enabled_tool_ids
+    refs: list[CapabilityRef] = []
+    binding_refs: list[str] = []
+    for manifest in list_capability_manifests():
+        if manifest.id not in enabled_ids:
+            continue
+        ref = CapabilityRef(
+            id=manifest.id,
+            version=manifest.version,
+            manifest_digest=manifest.manifest_digest,
+        )
+        try:
+            resolve_capability(ref, enabled_ids)
+        except CapabilityError as refused:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": {"code": refused.code, "message": str(refused)}},
+            ) from refused
+        refs.append(ref)
+        if manifest.credential_binding_ref:
+            binding_refs.append(manifest.credential_binding_ref)
+    if not refs:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": "unsupported_capability", "message": "Enable at least one supported search tool before using tool-enabled chat"}},
+        )
+
+    return ExecutionConfig(
+        graph_kind="chat",
+        graph_version=2,
+        allowed_capabilities=tuple(refs),
+        selected_artifacts=artifact_refs,
+        credential_binding_refs=tuple(binding_refs),
+    )
+
+
 def submit_turn(
     db: Session,
     user_id: uuid.UUID,
@@ -93,6 +196,8 @@ def submit_turn(
     client_request_id: str,
     provider_profile_id: str | None = None,
     fallback_profile_ids=None,
+    enable_tools: bool = False,
+    artifact_ids=(),
 ) -> Run:
     """Submit a chat turn as a durable, queued run.
 
@@ -111,6 +216,14 @@ def submit_turn(
             status_code=422,
             detail={"error": {"code": "invalid_client_request_id", "message": "Invalid client_request_id format"}},
         )
+
+    try:
+        submission_digest = _turn_submission_digest(content, enable_tools, artifact_ids)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": "invalid_turn_request", "message": "The submitted chat request is invalid"}},
+        ) from exc
 
     # Check for existing run with same client_request_id (idempotency)
     existing = db.query(Run).filter(Run.client_request_id == client_request_id).first()
@@ -132,6 +245,17 @@ def submit_turn(
                 status_code=409,
                 detail={"error": {"code": "client_request_id_conflict",
                         "message": "client_request_id already used with different content"}},
+            )
+        if existing.submission_digest is not None:
+            if existing.submission_digest != submission_digest:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": {"code": "client_request_id_conflict", "message": "client_request_id already used with a different chat request"}},
+                )
+        elif enable_tools or artifact_ids:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": {"code": "client_request_id_conflict", "message": "client_request_id already used with a different chat request"}},
             )
         # The replay's selection is compared against what the run pinned, never
         # against today's profiles: an exact replay returns the original run.
@@ -157,6 +281,13 @@ def submit_turn(
 
     # Resolve and validate the selection before anything is queued
     config = _resolve_selection(provider_profile_id, fallback_profile_ids)
+    artifact_refs = _owned_artifact_refs(db, conv, artifact_ids)
+    if artifact_refs and not enable_tools:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": "unsupported_capability", "message": "Selected artifacts require tool-enabled chat in this phase"}},
+        )
+    execution = _tool_chat_execution(config, artifact_refs) if enable_tools else None
     selection = json.dumps(
         {
             "profile_id": provider_profile_id,
@@ -175,6 +306,9 @@ def submit_turn(
         fence=0,
         model_selection=selection,
         model_configuration=config.model_dump_json(),
+        graph_version=2 if execution is not None else 1,
+        execution_configuration=execution.model_dump_json() if execution is not None else None,
+        submission_digest=submission_digest,
     )
     db.add(run)
     db.flush()

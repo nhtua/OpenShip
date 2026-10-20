@@ -9,7 +9,14 @@ from ..execution.models import (
     ToolAvailability,
     ToolOperation,
 )
-from ..runs.models import Event, Outbox, ProviderAttempt, Run, RunJob
+from ..runs.models import (
+    Event,
+    Outbox,
+    ProviderAttempt,
+    Run,
+    RunJob,
+    RunTranscriptRecord,
+)
 from ..workspace.models import Project
 
 __all__ = [
@@ -25,6 +32,7 @@ __all__ = [
     "ProviderAttempt",
     "Run",
     "RunJob",
+    "RunTranscriptRecord",
     "ToolAttempt",
     "ToolAvailability",
     "ToolOperation",

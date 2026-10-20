@@ -7,7 +7,7 @@ date: 2026-10-20
 
 # Phase 4 Trusted Tools and Conversation Files Implementation Plan
 
-> **Approval:** The user approved implementation on 2026-10-20. Work is underway. The 4A, 4B and 4C acceptance units remain review gates before moving to the next unit.
+> **Approval:** The user approved implementation on 2026-10-20 and directed continuation through the remaining tasks after visually accepting Task 9A. Work proceeds through Tasks 10–17 without pausing at interim review gates. Live provider requests remain opt-in and require a separate explicit request.
 >
 > **UI revision:** The user reports that Phase 4A functionality works and requested three UX changes in an annotated screenshot. The approved Task 9A/spec §8.1 revision is implemented, fixture-verified and visually accepted on 2026-10-20. The user directed continuation through the remaining plan; Task 10 is now underway.
 >
@@ -196,7 +196,7 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 - [x] Document setting each operator key/enablement, exact-tool invocation, bounded provider failures, persistent storage identity, drain/upgrade/backup/restore and the future Phase 5 Connector transition. No real key values in examples.
 - [x] Wire unit exclusion `not postgres and not provider_live and not full_stack`; add required new PG modules to real-PG CI and reject skips/zero-test qualification. Include frontend typecheck. Do not introduce sandbox CI or live provider calls on ordinary PRs.
 - [x] Run actual app/runtime/PG/filesystem with synthetic Brave/Tavily: manual call saves a snapshot, restart/reconnect reads exact bytes, cancel/recovery has no duplicate upstream request. Run cumulative unit/lint/PG/browser checks; record evidence and 4A accept/revise/stop before Task 10.
-  - Validation: `ruff check .` clean and packaging assertions 4 passed; Compose config valid; PostgreSQL lane 28 passed/0 skipped; synthetic API/runtime/PG/filesystem test 1 passed/0 skipped; browser unit tests 137 passed; typecheck and production build passed; fixture Playwright 49 passed; full-stack Playwright 1 passed against the synthetic API/runtime with real `/api` calls. No live providers were called. Acceptance remains pending user review; Task 10 has not started.
+  - Validation: `ruff check .` clean and packaging assertions 4 passed; Compose config valid; PostgreSQL lane 28 passed/0 skipped; synthetic API/runtime/PG/filesystem test 1 passed/0 skipped; browser unit tests 137 passed; typecheck and production build passed; fixture Playwright 49 passed; full-stack Playwright 1 passed against the synthetic API/runtime with real `/api` calls. No live providers were called. The user reported 4A functionality works, accepted the Task 9A visual revision, and directed continuation through the remaining implementation.
 
 ### Task 9A — Integrated composer and compact conversation tool results
 
@@ -220,10 +220,10 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** Produce normalized `ToolDefinition`, `ToolCall`, role-validated assistant/tool `ChatMessage`, `tool_call_delta`/`tool_call_ready`, `ProviderTurnResult.tool_calls`, `RunTranscriptEntry`, `append_transcript(db,claim,model_turn_ordinal,message)`, `read_transcript(db,run_id)`. Extend turn submission with tool enablement and optional artifacts, not credentials/provider routing.
 
-- [ ] Write failing old text/snapshot round trips, call/result ID checks, complete-vs-partial call validation, unknown tool ID and changed replay payload tests. Search needs no uploaded input. Tool-enabled unsupported model/fallback requests fail before model dispatch.
-- [ ] Run new unit and PG transcript/migration cases before implementation.
-- [ ] Implement revision `phase4b007` after `phase4a006`; add ordered complete transcript and provider model-turn/reservation metadata, preserving historical unknowns. Pin exact enabled tool/config refs; maintain chat v1 and use chat v2 only when tool mode is enabled.
-- [ ] Verify transcript uniqueness/fencing and downgrade protection; no partial bytes/key values or provider objects enter state. Commit subject: `feat: persist normalized tool conversations`.
+- [x] Write failing old text/tool-message round trips, call/result ID checks, complete-vs-partial validation, exact request allowlist, changed replay payload and unsupported model/fallback tests. Search needs no uploaded input; unsupported tool-enabled requests fail before queueing.
+- [x] Run the new unit and migration/concurrency cases before implementation. Contract and admission tests first failed on missing normalized contracts and tool-mode request fields; PostgreSQL transcript tests collect but skip when `TEST_POSTGRES_URL` is absent.
+- [x] Implement revision `phase4b007` after `phase4a006`; persist ordered complete transcript messages, model-turn/reservation metadata and request digests while leaving historical values null. Pin exact currently enabled capability refs and selected ready immutable artifact refs; preserve chat v1 and select chat v2 only for tool-enabled turns.
+- [x] Verify transcript call/result identity, per-turn and per-run ordering, exact allowlist checks, live lease fencing, caller-owned commit, no persistence of partial provider fragments, replay conflicts and downgrade protection. Validation: Task 10 targeted suite 18 passed, 1 PostgreSQL test skipped because `TEST_POSTGRES_URL` is unset; all nine provider modules passed separately (183 tests); changed API Ruff checks passed. A combined API run was stopped at the known local TestClient stall. Commit subject: `feat: persist normalized tool conversations`.
 
 ### Task 11 — OpenAI mapping and tool streaming conformance
 
@@ -326,6 +326,6 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 ## 5. Review and handoff
 
-The user approved the base plan on 2026-10-20. Tasks 1–9 have recorded implementation evidence. The user's walkthrough found the functionality satisfactory and requested a UI/UX revision; Task 9A/spec §8.1 are now implemented, documented and visually accepted. The user directed continuation through the remaining plan. Task 10 is underway; Tasks 11–17 remain unstarted. The active SDD ledger records task evidence and local environment limits.
+The user approved the base plan on 2026-10-20. Tasks 1–9 and the accepted Task 9A revision have recorded implementation evidence. The user directed continuation through all remaining plan tasks. Task 10 is complete and Task 11 is underway; later tasks remain unstarted. Live provider qualification remains opt-in and has not been authorized. The active SDD ledger records task evidence and local environment limits.
 
-Complete the 4A Task 9A revision and present its functional/visual acceptance evidence before starting 4B; complete 4B and present its evidence before starting 4C. User review remains the gate between those acceptance units. No PR, merge, deployment or Phase 4 completion is implied by implementation approval.
+The user has directed implementation to continue through Tasks 10–17. Record technical and live-provider evidence honestly; do not issue live provider requests without explicit opt-in. No PR, merge, deployment or Phase 4 completion is implied by implementation approval.
