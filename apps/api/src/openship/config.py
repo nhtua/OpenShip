@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     model_default_profile_id: str = ""
     model_max_tokens: int = 4000
 
+    # Maintained Phase 4 tools. Credentials are separate fixed environment bindings.
+    tool_enabled_ids: str = ""
+
     # Database
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"
 
@@ -36,5 +39,12 @@ class Settings(BaseSettings):
     event_retention_days: int = 30
     checkpoint_retention_days: int = 30
     log_retention_days: int = 7
+
+    @property
+    def enabled_tool_ids(self) -> frozenset[str]:
+        return frozenset(
+            item.strip() for item in self.tool_enabled_ids.split(",") if item.strip()
+        )
+
 
 settings = Settings()

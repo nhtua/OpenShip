@@ -50,6 +50,7 @@ ignore = ["B008"]
 markers = [
     "postgres: requires a real PostgreSQL database named by TEST_POSTGRES_URL",
     "provider_live: contacts a real provider; opt-in via OPENSHIP_LIVE_PROFILE_ID",
+    "full_stack: starts the real application stack with synthetic external services",
 ]
 
 [dependency-groups]
