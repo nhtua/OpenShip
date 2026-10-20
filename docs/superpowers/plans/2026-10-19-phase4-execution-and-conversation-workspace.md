@@ -128,10 +128,12 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** `search_brave(arguments: SearchArguments,context: ToolInvocationContext,control: InvocationControl) -> SearchObservation` is async and belongs only to the Brave capability. `BoundedSearchHttp` owns fixed-origin requests, TLS/connected-address validation, redirects/proxy denial, streaming byte limits and cancellation; it does not choose a provider. `ToolInvocationContext` carries principal/project/run/capability, pinned non-secret settings and a runtime-only credential resolver; no key enters serialized state.
 
-- [ ] Write failing exact Brave request/mapping tests and cases for missing/rejected key, empty success, malformed/oversize compressed response, hostile/unsafe result URLs, response containing a sentinel key, 429/timeout and cancellation. Assert one upstream request, no result-URL fetch and no Tavily fallback.
-- [ ] Run `uv run pytest tests/tools/test_brave_search.py tests/tools/test_search_transport.py -q` before implementation.
-- [ ] Implement spec §5 using fixed maintained Brave endpoint and operator reference, bounded decompressed data/normalized snapshots/model excerpts, safe provenance/time and fixed errors. Verify the connected peer satisfies destination policy; no unrestricted URL client or SDK hidden retries.
-- [ ] Verify fixture mapping, URL/DNS/proxy/redirect controls and no secret/query-bearing request URL in logs/events/public exceptions. Commit subject: `feat: add the maintained brave_web_search tool`.
+- [x] Write failing exact Brave request/mapping tests and cases for missing/rejected key, empty success, malformed/oversize compressed response, hostile/unsafe result URLs, response containing a sentinel key, 429/timeout and cancellation. Assert one upstream request, no result-URL fetch and no Tavily fallback.
+- [x] Run `uv run pytest tests/tools/test_brave_search.py tests/tools/test_search_transport.py -q` before implementation.
+- [x] Implement spec §5 using fixed maintained Brave endpoint and operator reference, bounded decompressed data/normalized snapshots/model excerpts, safe provenance/time and fixed errors. Verify the connected peer satisfies destination policy; no unrestricted URL client or SDK hidden retries.
+- [x] Verify fixture mapping, URL/DNS/proxy/redirect controls and no secret/query-bearing request URL in logs/events/public exceptions. Commit subject: `feat: add the maintained brave_web_search tool`.
+  - Validation: focused search suite → 20 passed; cumulative Phase 4 regression set → 95 passed, 3 skipped; Ruff, API-wide Ruff pre-commit, Vue typecheck, staged secret scan and offline lock check passed. PostgreSQL lanes were skipped because `TEST_POSTGRES_URL` is unavailable. The API and frontend broad test hooks remain skipped for the previously recorded local harness stalls.
+  - Commit: `ef692f7 feat: add the maintained brave_web_search tool`.
 
 ### Task 5 — Independent Tavily search tool and shared conformance
 
@@ -139,10 +141,11 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** Async `search_tavily(arguments: SearchArguments,context: ToolInvocationContext,control: InvocationControl) -> SearchObservation`, independently registered to `tavily_web_search`. Consume shared bounded DTO/HTTP utilities without adding a SearchProvider registry or routing by a model-supplied provider field.
 
-- [ ] Write failing Tavily request/result tests and the shared contract suite over both functions: empty/partial fields, unsafe URLs, unavailable scores/usage, truncation/provenance, wrong-key isolation and independent enablement. Assert basic/general mode and disabled auto-parameters/answers/raw content/images/favicons.
-- [ ] Run `uv run pytest tests/tools/test_tavily_search.py tests/tools/test_search_conformance.py -q`; expect missing Tavily behavior.
-- [ ] Implement the fixed Tavily search endpoint and runtime-only operator key resolution; same bounds/cancel/errors as Brave. No extract/crawl endpoints, advanced auto-upgrades, Brave fallback or browser key settings.
-- [ ] Verify both tools pass the shared contract and retain exact tool/credential identity. Commit subject: `feat: add the independent tavily_web_search tool`.
+- [x] Write failing Tavily request/result tests and the shared contract suite over both functions: empty/partial fields, unsafe URLs, unavailable scores/usage, truncation/provenance, wrong-key isolation and independent enablement. Assert basic/general mode and disabled auto-parameters/answers/raw content/images/favicons.
+- [x] Run `uv run pytest tests/tools/test_tavily_search.py tests/tools/test_search_conformance.py -q`; expect missing Tavily behavior.
+- [x] Implement the fixed Tavily search endpoint and runtime-only operator key resolution; same bounds/cancel/errors as Brave. No extract/crawl endpoints, advanced auto-upgrades, Brave fallback or browser key settings.
+- [x] Verify both tools pass the shared contract and retain exact tool/credential identity. Commit subject: `feat: add the independent tavily_web_search tool`.
+  - Validation: focused search suite → 34 passed; cumulative Phase 4 regression set → 109 passed, 3 skipped; Ruff and offline lock check passed. PostgreSQL lanes were skipped because `TEST_POSTGRES_URL` is unavailable. The API and frontend broad test hooks remain skipped for the previously recorded local harness stalls.
 
 ### Task 6 — Gateway dispatch, capacity waits and atomic result publication
 

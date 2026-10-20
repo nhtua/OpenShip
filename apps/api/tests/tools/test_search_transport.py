@@ -1,6 +1,7 @@
 import asyncio
 import gzip
 
+import httpcore
 import httpx
 import pytest
 from httpx import AsyncByteStream
@@ -8,6 +9,7 @@ from httpx import AsyncByteStream
 from src.openship.providers.errors import ProviderError
 from src.openship.tools.search.http import (
     BRAVE_SEARCH_ENDPOINT,
+    TAVILY_SEARCH_ENDPOINT,
     BoundedSearchHttp,
     PinnedHttpTransport,
     PinnedNetworkBackend,
@@ -81,6 +83,70 @@ async def test_fixed_origin_sends_one_request_without_environment_proxy(monkeypa
     assert requests[0].headers["x-subscription-token"] == "brave-test-key"
     assert client_options["trust_env"] is False
     assert client_options["follow_redirects"] is False
+
+
+@pytest.mark.asyncio
+async def test_fixed_tavily_post_uses_bearer_json_body_without_query_url():
+    requests = []
+
+    async def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            stream=_BodyStream(b'{"results":[]}'),
+        )
+
+    bounded = BoundedSearchHttp(
+        TAVILY_SEARCH_ENDPOINT,
+        transport_factory=lambda _endpoint: httpx.MockTransport(respond),
+    )
+    result = await bounded.post_json(
+        json_body={"query": "private query", "search_depth": "basic"},
+        headers={
+            "Authorization": "Bearer tavily-sentinel-key",
+            "Content-Type": "application/json",
+        },
+        control=_Control(),
+    )
+
+    assert result == {"results": []}
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert str(requests[0].url) == TAVILY_SEARCH_ENDPOINT
+    assert requests[0].headers["authorization"] == "Bearer tavily-sentinel-key"
+    assert requests[0].headers["content-type"] == "application/json"
+    assert requests[0].read() == b'{"query":"private query","search_depth":"basic"}'
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_allows_only_the_method_bound_to_each_origin():
+    transport = PinnedHttpTransport(TAVILY_SEARCH_ENDPOINT)
+    forwarded = []
+
+    async def capture(request):
+        forwarded.append(request)
+        raise httpcore.ConnectError("transport capture")
+
+    transport._pool.handle_async_request = capture
+    try:
+        get_request = httpx.Request("GET", TAVILY_SEARCH_ENDPOINT)
+        with pytest.raises(httpx.UnsupportedProtocol):
+            await transport.handle_async_request(get_request)
+
+        post_request = httpx.Request(
+            "POST",
+            TAVILY_SEARCH_ENDPOINT,
+            headers={"Authorization": "Bearer sentinel", "Content-Type": "application/json"},
+            json={"query": "query"},
+        )
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(post_request)
+    finally:
+        await transport.aclose()
+
+    assert len(forwarded) == 1
+    assert forwarded[0].method == b"POST"
 
 
 @pytest.mark.asyncio
@@ -202,6 +268,21 @@ async def test_rate_limit_and_timeout_map_to_fixed_errors():
             params={"q": "query"}, headers={}, control=_Control(timeout=0.01)
         )
     assert timed_out.value.code == "provider_timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [402, 432, 433])
+async def test_account_quota_statuses_map_to_a_fixed_error(status_code):
+    async def quota(_request):
+        return httpx.Response(status_code, content=b"account detail and sentinel")
+
+    with pytest.raises(SearchToolError) as caught:
+        await _http(httpx.MockTransport(quota)).get_json(
+            params={"q": "query"}, headers={}, control=_Control()
+        )
+
+    assert caught.value.code == "quota_exhausted"
+    assert "sentinel" not in str(caught.value)
 
 
 class _Chunks(AsyncByteStream):

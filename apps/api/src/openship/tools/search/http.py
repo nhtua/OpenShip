@@ -23,6 +23,10 @@ _ENDPOINT_PATHS = {
     "api.search.brave.com": "/res/v1/web/search",
     "api.tavily.com": "/search",
 }
+_ENDPOINT_METHODS = {
+    "api.search.brave.com": "GET",
+    "api.tavily.com": "POST",
+}
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _CHUNK_BYTES = 64 * 1024
 
@@ -30,6 +34,7 @@ _SAFE_MESSAGES = {
     "missing_credentials": "The selected search tool is missing its operator credential.",
     "authentication_error": "The search service rejected the configured credential.",
     "rate_limited": "The search service is rate limiting this request.",
+    "quota_exhausted": "The search service account has exhausted its configured quota.",
     "provider_timeout": "The search service did not respond within the allowed time.",
     "provider_unavailable": "The search service is temporarily unavailable.",
     "invalid_response": "The search service returned an invalid response.",
@@ -171,6 +176,7 @@ class PinnedHttpTransport(httpx.AsyncBaseTransport):
         host, _path = _endpoint_parts(endpoint)
         self._host = host
         self._endpoint_path = _path
+        self._method = _ENDPOINT_METHODS[host]
         self._pool = httpcore.AsyncConnectionPool(
             ssl_context=ssl.create_default_context(),
             max_connections=1,
@@ -184,11 +190,12 @@ class PinnedHttpTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         host_header = request.headers.get("host", "").lower()
         if (
-            request.method != "GET"
+            request.method != self._method
             or request.url.scheme != "https"
             or request.url.host.lower() != self._host
             or request.url.port not in (None, 443)
             or request.url.path != self._endpoint_path
+            or (self._method == "POST" and request.url.query)
             or host_header not in (self._host, f"{self._host}:443")
             or "proxy-authorization" in request.headers
         ):
@@ -247,6 +254,21 @@ class BoundedSearchHttp:
         self._client_factory = client_factory or httpx.AsyncClient
 
     async def get_json(self, *, params: dict, headers: dict, control) -> dict:
+        return await self._request_json(
+            "GET", params=params, json_body=None, headers=headers, control=control
+        )
+
+    async def post_json(self, *, json_body: dict, headers: dict, control) -> dict:
+        return await self._request_json(
+            "POST", params=None, json_body=json_body, headers=headers, control=control
+        )
+
+    async def _request_json(
+        self, method: str, *, params: dict | None, json_body: dict | None, headers: dict, control
+    ) -> dict:
+        host, _path = _endpoint_parts(self.endpoint)
+        if method != _ENDPOINT_METHODS[host]:
+            raise SearchToolError("provider_unavailable")
         timeout = control.request_timeout_seconds(self.timeout_seconds)
         if timeout <= 0:
             raise SearchToolError("provider_timeout")
@@ -267,18 +289,25 @@ class BoundedSearchHttp:
                 timeout=timeout,
             ) as client:
                 async with asyncio.timeout(timeout):
+                    request_options = {}
+                    if params is not None:
+                        request_options["params"] = params
+                    if json_body is not None:
+                        request_options["json"] = json_body
                     async with client.stream(
-                        "GET",
+                        method,
                         self.endpoint,
-                        params=params,
                         headers=request_headers,
                         follow_redirects=False,
                         timeout=timeout,
+                        **request_options,
                     ) as response:
                         if response.status_code in (401, 403):
                             raise SearchToolError("authentication_error")
                         if response.status_code == 429:
                             raise SearchToolError("rate_limited")
+                        if response.status_code in (402, 432, 433):
+                            raise SearchToolError("quota_exhausted")
                         if response.status_code in (408, 504):
                             raise SearchToolError("provider_timeout")
                         if 300 <= response.status_code < 400:
