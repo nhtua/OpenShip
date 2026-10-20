@@ -34,7 +34,7 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
-  send: [content: string]
+  send: [content: string, options?: { enableTools: boolean }]
   search: [command: Omit<ToolCommandRequest, 'client_request_id'>]
   select: [profileId: string | null, fallbackIds: string[]]
 }>()
@@ -42,8 +42,40 @@ const emit = defineEmits<{
 const content = ref('')
 const maxResults = ref(5)
 const attachedCapability = ref<CapabilityRef | null>(null)
+const automaticToolMode = ref(false)
 const textareaRef = ref<InstanceType<typeof Textarea> | null>(null)
-let pendingDraft: { content: string; capability: CapabilityRef | null; maxResults: number } | null = null
+let pendingDraft: {
+  content: string
+  capability: CapabilityRef | null
+  maxResults: number
+  automaticToolMode: boolean
+} | null = null
+
+const effectiveProfile = computed(() =>
+  props.profiles.find((profile) => profile.profile_id === props.selectedProfileId) ??
+  props.profiles.find((profile) => profile.profile_id === props.defaultProfileId) ??
+  null,
+)
+const automaticToolDisabledReason = computed(() => {
+  if (attachedCapability.value) return 'Remove the attached tool to let the model choose automatically.'
+  if (props.capabilityError) return 'The search tool catalog is unavailable.'
+  if (props.catalogError) return 'The model profile catalog is unavailable.'
+  if (!props.capabilities.some((capability) => capability.enabled && capability.available)) {
+    return props.capabilities.length
+      ? 'Configure at least one available search tool.'
+      : 'No search tools are configured.'
+  }
+  if (
+    !effectiveProfile.value?.available ||
+    effectiveProfile.value.adapter !== 'openai' ||
+    effectiveProfile.value.capabilities.tool_calls !== true ||
+    effectiveProfile.value.capabilities.parallel_tool_calls === true
+  ) return 'Choose a model with sequential tool-call support.'
+  if (props.fallbackIds.length) return 'Turn off model fallbacks to use tools automatically.'
+  if (props.toolSubmissionDisabled) return 'Wait for the current run to finish before using tools.'
+  return null
+})
+const automaticToolDisabled = computed(() => Boolean(automaticToolDisabledReason.value))
 
 const attachedSummary = computed(() => props.capabilities.find(
   (capability) => capability.id === attachedCapability.value?.id,
@@ -58,7 +90,8 @@ const toolUnavailable = computed(() => Boolean(
 ))
 const submitDisabled = computed(() =>
   props.disabled || !content.value.trim() ||
-  (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value)),
+  (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value)) ||
+  (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value),
 )
 
 function forwardSelect(profileId: string | null, fallbackIds: string[]) {
@@ -67,12 +100,18 @@ function forwardSelect(profileId: string | null, fallbackIds: string[]) {
 
 function attachTool(capability: CapabilityRef) {
   attachedCapability.value = capability
+  automaticToolMode.value = false
   maxResults.value = 5
 }
 
 function removeTool() {
   attachedCapability.value = null
   maxResults.value = 5
+}
+
+function toggleAutomaticToolMode() {
+  if (automaticToolDisabled.value) return
+  automaticToolMode.value = !automaticToolMode.value
 }
 
 function grow() {
@@ -97,6 +136,7 @@ async function handleSubmit() {
     content: content.value,
     capability: attachedCapability.value ? { ...attachedCapability.value } : null,
     maxResults: maxResults.value,
+    automaticToolMode: automaticToolMode.value,
   }
   if (attachedCapability.value) {
     emit('search', {
@@ -104,7 +144,8 @@ async function handleSubmit() {
       arguments: { query: text, max_results: maxResults.value },
     })
   } else {
-    emit('send', text)
+    if (automaticToolMode.value) emit('send', text, { enableTools: true })
+    else emit('send', text)
   }
   content.value = ''
   await nextTick()
@@ -118,6 +159,7 @@ watch(
     content.value = pendingDraft.content
     attachedCapability.value = pendingDraft.capability
     maxResults.value = pendingDraft.maxResults
+    automaticToolMode.value = pendingDraft.automaticToolMode
     pendingDraft = null
     void nextTick(grow)
   },
@@ -172,9 +214,26 @@ onMounted(() => { void focusInput() })
         :capabilities="props.capabilities"
         :catalog-error="props.capabilityError"
         :selected-capability-id="attachedCapability?.id ?? null"
+        :automatic-tool-mode="automaticToolMode"
+        :automatic-tool-disabled="automaticToolDisabled"
+        :automatic-tool-disabled-reason="automaticToolDisabledReason"
         :disabled="props.disabled"
         @attach="attachTool"
+        @toggle-automatic="toggleAutomaticToolMode"
       />
+
+      <button
+        v-if="automaticToolMode"
+        type="button"
+        data-testid="automatic-tool-chip"
+        aria-label="Disable automatic tool use"
+        :title="automaticToolDisabledReason || 'The model may use available search tools for this message.'"
+        class="inline-flex h-8 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-3 text-xs text-foreground hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        @click="automaticToolMode = false"
+      >
+        <span>Automatic tools</span>
+        <span aria-hidden="true">×</span>
+      </button>
 
       <div
         v-if="attachedCapability"
@@ -207,6 +266,9 @@ onMounted(() => { void focusInput() })
       </span>
       <span v-else-if="attachedCapability && props.toolSubmissionDisabled" class="text-xs text-muted-foreground">
         Wait for the current run to finish before searching.
+      </span>
+      <span v-else-if="automaticToolMode && automaticToolDisabledReason" class="text-xs text-destructive">
+        {{ automaticToolDisabledReason }}
       </span>
 
       <div class="ml-auto flex min-w-0 items-center gap-2">

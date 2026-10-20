@@ -101,7 +101,7 @@ async function handleSelectConversation(id: string) {
   await loadConversationById(id)
 }
 
-async function handleSend(content: string) {
+async function handleSend(content: string, options?: { enableTools: boolean }) {
   if (busy.value) return
   chat.error = null
 
@@ -118,7 +118,7 @@ async function handleSend(content: string) {
     }
   }
 
-  await chat.sendMessage(content, chat.currentConversation?.id ?? null)
+  await chat.sendMessage(content, chat.currentConversation?.id ?? null, options)
 }
 
 // A run that has reached an end has nothing left to stop, and a run that has

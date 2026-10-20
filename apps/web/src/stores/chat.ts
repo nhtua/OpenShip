@@ -710,6 +710,7 @@ export const useChatStore = defineStore('chat', () => {
   async function sendMessage(
     content: string,
     conversationId: string | null = null,
+    options: { enableTools?: boolean } = {},
   ) {
     error.value = null
     isStreaming.value = true
@@ -725,6 +726,7 @@ export const useChatStore = defineStore('chat', () => {
         client_request_id: requestId,
         provider_profile_id: selectedProfileId.value,
         fallback_profile_ids: [...selectedFallbackIds.value],
+        enable_tools: options.enableTools ?? false,
       }
 
       // Store pending request (local draft)

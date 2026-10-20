@@ -16,6 +16,7 @@ vi.mock('@/services/api', () => ({
   modelProfilesApi: { list: vi.fn() },
   runsApi: {
     submitTurn: vi.fn(),
+    submitTool: vi.fn(),
     cancelRun: vi.fn(),
     getSnapshot: vi.fn(),
     getRun: vi.fn(),
@@ -1137,6 +1138,101 @@ describe('chat store', () => {
     expect(committedByRequestId.size).toBe(1)
     expect(chat.runCards.get('c1')?.run_id).toBe('run-reconciled')
     expect(chat.pendingRequests.has('stable-request')).toBe(false)
+  })
+
+  it('retries automatic tool mode with the exact original profile and no upload requirement', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('stable-tool-request')
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    await chat.loadModelProfiles()
+    chat.selectProfile('primary-fixture', [])
+    mockRunsApi.submitTurn
+      .mockRejectedValueOnce(new Error('response lost after server commit'))
+      .mockResolvedValueOnce({
+        data: {
+          id: 'run-tool-reconciled', conversation_id: 'c1', status: 'queued',
+          created_at: '', attempt: 0,
+        },
+      } as never)
+
+    await chat.sendMessage('Find current search results', 'c1', { enableTools: true })
+    const originalPayload = mockRunsApi.submitTurn.mock.calls[0][1]
+    expect(originalPayload).toMatchObject({
+      content: 'Find current search results',
+      client_request_id: 'stable-tool-request',
+      enable_tools: true,
+      provider_profile_id: 'primary-fixture',
+      fallback_profile_ids: [],
+    })
+    expect(originalPayload).not.toHaveProperty('artifact_ids')
+
+    chat.selectProfile('secondary-fixture', [])
+    serveStream(frame(0, 'run.succeeded', 'run-tool-reconciled'))
+    await chat.retrySubmission('stable-tool-request')
+
+    expect(mockRunsApi.submitTurn.mock.calls[1][1]).toEqual(originalPayload)
+    expect(chat.pendingRequests.has('stable-tool-request')).toBe(false)
+  })
+
+  it('retries a direct tool request with the originally selected capability version and count', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('stable-direct-tool-request')
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    mockRunsApi.submitTool
+      .mockRejectedValueOnce(new Error('response lost after server commit'))
+      .mockResolvedValueOnce({
+        data: {
+          id: 'run-direct-tool-reconciled', conversation_id: 'c1', status: 'queued',
+          created_at: '', attempt: 0, kind: 'tool', graph_version: 1, operations: [],
+        },
+      } as never)
+    const command = {
+      capability: {
+        id: 'tavily_web_search', version: '1.0.0', manifest_digest: 'b'.repeat(64),
+      },
+      arguments: { query: 'terraform modules', max_results: 8 },
+    }
+
+    await chat.submitToolSearch('c1', command)
+    const originalPayload = mockRunsApi.submitTool.mock.calls[0][1]
+    expect(originalPayload).toEqual({ client_request_id: 'stable-direct-tool-request', ...command })
+    chat.searchCapabilities = [
+      { id: 'tavily_web_search', version: '2.0.0', manifest_digest: 'c'.repeat(64), input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true, available: true, unavailable_reason: null },
+    ]
+
+    await chat.retryToolSubmission('stable-direct-tool-request')
+
+    expect(mockRunsApi.submitTool.mock.calls[1][1]).toEqual(originalPayload)
+    expect(chat.pendingToolRequests.has('stable-direct-tool-request')).toBe(false)
+  })
+
+  it('does not let an automatic-tool response replace a newly selected conversation', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('old-conversation-request')
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Old', created_at: '', updated_at: '' }
+    chat.messages = []
+    mockRunsApi.submitTurn.mockResolvedValue({
+      data: { id: 'run-old-conversation', conversation_id: 'c1', status: 'queued', created_at: '', attempt: 0 },
+    } as never)
+    let releaseOldResponse: ((response: { data: unknown }) => void) | undefined
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/conversations/c1/messages') {
+        return await new Promise((resolve) => { releaseOldResponse = resolve })
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    serveStream(frame(0, 'run.succeeded', 'run-old-conversation'))
+
+    await chat.sendMessage('Search this', 'c1', { enableTools: true })
+    expect(mockRunsApi.submitTurn.mock.calls[0][1]).toMatchObject({ enable_tools: true })
+    await vi.waitFor(() => expect(releaseOldResponse).toBeTypeOf('function'))
+
+    await chat.loadConversation('c2')
+    const selectedMessages = [...chat.messages]
+    releaseOldResponse?.({ data: messagesByConversation.c1 })
+    await vi.waitFor(() => expect(chat.currentConversation?.id).toBe('c2'))
+
+    expect(chat.messages).toEqual(selectedMessages)
   })
 
   it('refreshes failed run details when a reloaded running turn reaches a terminal event', async () => {

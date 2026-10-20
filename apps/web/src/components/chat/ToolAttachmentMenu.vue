@@ -7,10 +7,21 @@ interface Props {
   selectedCapabilityId: string | null
   disabled: boolean
   catalogError?: string | null
+  automaticToolMode?: boolean
+  automaticToolDisabled?: boolean
+  automaticToolDisabledReason?: string | null
 }
 
-const props = withDefaults(defineProps<Props>(), { catalogError: null })
-const emit = defineEmits<{ attach: [capability: CapabilityRef] }>()
+const props = withDefaults(defineProps<Props>(), {
+  catalogError: null,
+  automaticToolMode: false,
+  automaticToolDisabled: false,
+  automaticToolDisabledReason: null,
+})
+const emit = defineEmits<{
+  attach: [capability: CapabilityRef]
+  'toggle-automatic': []
+}>()
 
 const open = ref(false)
 const trigger = ref<HTMLButtonElement | null>(null)
@@ -106,7 +117,31 @@ function onKeydown(event: KeyboardEvent) {
       <p v-if="props.catalogError" class="px-2 pb-2 text-xs text-destructive" role="alert">
         {{ props.catalogError }}
       </p>
-      <p v-else-if="!props.capabilities.length" class="px-2 pb-2 text-xs text-muted-foreground">
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        aria-label="Let the model use available tools automatically"
+        :aria-checked="props.automaticToolMode"
+        :disabled="props.disabled || props.automaticToolDisabled"
+        data-testid="automatic-tool-mode"
+        class="flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+        @click="emit('toggle-automatic')"
+      >
+        <span aria-hidden="true" class="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border border-input text-xs">
+          {{ props.automaticToolMode ? '✓' : '' }}
+        </span>
+        <span class="min-w-0">
+          <span class="block font-medium">Let the model use tools automatically</span>
+          <span class="mt-0.5 block text-xs text-muted-foreground">
+            {{ props.automaticToolDisabledReason || 'The model can choose among enabled search tools.' }}
+          </span>
+        </span>
+      </button>
+      <div class="my-1 border-t border-border" />
+      <p class="px-2 pb-2 pt-1 text-xs font-medium text-muted-foreground">
+        Attach one tool to run it directly
+      </p>
+      <p v-if="!props.capabilities.length" class="px-2 pb-2 text-xs text-muted-foreground">
         No search tools are configured.
       </p>
       <button

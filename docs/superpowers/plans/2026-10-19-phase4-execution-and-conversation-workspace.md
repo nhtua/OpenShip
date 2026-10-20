@@ -9,7 +9,7 @@ date: 2026-10-20
 
 > **Approval:** The user approved implementation on 2026-10-20 and directed continuation through the remaining tasks after visually accepting Task 9A. Work proceeds through Tasks 10–17 without pausing at interim review gates. Live provider requests remain opt-in and require a separate explicit request.
 >
-> **UI revision:** The user reports that Phase 4A functionality works and requested three UX changes in an annotated screenshot. The approved Task 9A/spec §8.1 revision is implemented, fixture-verified and visually accepted on 2026-10-20. The user directed continuation through the remaining plan; Tasks 10–12 are complete and Task 13 is underway.
+> **UI revision:** The user reports that Phase 4A functionality works and requested three UX changes in an annotated screenshot. The approved Task 9A/spec §8.1 revision is implemented, fixture-verified and visually accepted on 2026-10-20. The user directed continuation through the remaining plan; Tasks 10–13 are implemented and Task 13's available local checks pass.
 >
 > **For agentic workers:** Use `superpowers:executing-plans` for native execution. Do not delegate unless the user explicitly selects it. Checkboxes track implementation progress.
 
@@ -253,9 +253,9 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** Reuse Task 9A's composer, `[+]` menu, model dropdown and compact conversation entries. Explicit tool chips retain the model-free manual path; chat tool mode enables automatic LLM invocation from the exact allowed catalog capabilities without requiring a forced attachment. It has no search-provider field. A profile change affects an unsent draft only. Submitted request retries preserve original tool mode, selected version IDs and profile/fallback selection. Results show exact executed tool identity and observation/artifact refs.
 
-- [ ] Write failing supported/unsupported model, independent unavailable search tools, no-upload search, exact retry payload, unsafe snippet/link and old-conversation response cases. Exercise attached manual invocation separately from automatic LLM search without an attached chip, using the authorized tool-mode allowlist. Both appear in the same compact timeline. Failed operations must not appear successful because final model text says so.
-- [ ] Run targeted tests, implement in existing components, and verify typecheck/unit/build plus fixture tool-chat/auth/provider/title/cancel/reconnect journeys.
-- [ ] Commit verified task; subject: `feat: expose trusted tool use in the chat composer`.
+- [x] Write failing supported/unsupported model, independent unavailable search tools, no-upload search, exact retry payload, unsafe snippet/link and old-conversation response cases. Exercise attached manual invocation separately from automatic LLM search without an attached chip, using the authorized tool-mode allowlist. Both appear in the same compact timeline. Failed operations must not appear successful because final model text says so.
+- [x] Run targeted tests, implement in existing components, and verify typecheck/unit/build plus fixture tool-chat/auth/provider/title/cancel/reconnect journeys.
+- [x] Commit verified task; subject: `feat: expose trusted tool use in the chat composer`.
 
 ### Task 14 — Independent live qualification and 4B acceptance
 

@@ -82,6 +82,9 @@ export interface TurnSubmitRequest {
   // reproducible. A browser never names an endpoint, adapter, or credential.
   provider_profile_id?: string | null
   fallback_profile_ids?: string[] | null
+  // Automatic tool selection is an opt-in for this submitted turn. The
+  // server resolves and pins the exact enabled capability versions.
+  enable_tools?: boolean
 }
 
 // What an installation offers. Deliberately contains no credential value,

@@ -131,6 +131,21 @@ function toggleSnippets() {
         <span v-if="operation.result?.truncated">More results are available from the search service.</span>
       </div>
 
+      <dl data-testid="operation-provenance" class="mb-3 grid min-w-0 gap-1 rounded-md bg-muted/40 p-2 text-xs">
+        <div class="flex min-w-0 flex-wrap gap-x-2">
+          <dt class="text-muted-foreground">Tool</dt>
+          <dd><code>{{ operation.capability_id }}@{{ operation.capability_version }}</code></dd>
+        </div>
+        <div class="flex min-w-0 flex-wrap gap-x-2">
+          <dt class="text-muted-foreground">Manifest</dt>
+          <dd class="min-w-0 break-all"><code>{{ operation.manifest_digest }}</code></dd>
+        </div>
+        <div class="flex min-w-0 flex-wrap gap-x-2">
+          <dt class="text-muted-foreground">Observation</dt>
+          <dd class="min-w-0 break-all"><code>{{ operation.id }}</code></dd>
+        </div>
+      </dl>
+
       <p v-if="!query" class="mb-3 text-xs text-muted-foreground">
         The search query is not available in this saved history.
       </p>
@@ -176,17 +191,28 @@ function toggleSnippets() {
         >
           {{ fullSnippets ? 'Show shorter snippets' : 'Show full snippets' }}
         </Button>
-        <Button
+        <div
           v-for="artifact in operation.artifacts.filter((item) => item.status === 'ready')"
           :key="artifact.id"
-          type="button"
-          size="sm"
-          variant="outline"
-          :aria-label="`Download ${artifact.name}`"
-          @click="emit('download', artifact.id, artifact.name)"
+          class="flex min-w-0 items-center gap-2"
         >
-          Download {{ artifact.name }}
-        </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            :aria-label="`Download ${artifact.name}`"
+            @click="emit('download', artifact.id, artifact.name)"
+          >
+            Download {{ artifact.name }}
+          </Button>
+          <code
+            data-testid="artifact-reference"
+            :title="artifact.id"
+            class="max-w-36 truncate text-[10px] text-muted-foreground"
+          >
+            {{ artifact.id }}
+          </code>
+        </div>
       </div>
     </div>
   </section>

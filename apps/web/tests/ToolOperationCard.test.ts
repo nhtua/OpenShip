@@ -60,12 +60,15 @@ describe('ToolOperationCard', () => {
 
     await wrapper.get('button[aria-label="Show results for terraform modules"]').trigger('click')
 
+    expect(wrapper.get('[data-testid="operation-provenance"]').text()).toContain('brave_web_search@1.0.0')
+    expect(wrapper.get('[data-testid="operation-provenance"]').text()).toContain('operation-1')
     expect(wrapper.findAll('a[href="https://docs.example.test/modules"]')).toHaveLength(1)
     expect(wrapper.find('a[href="javascript:alert(1)"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('Searched Oct')
 
     await wrapper.get('button[aria-label="Download search-results.json"]').trigger('click')
     expect(wrapper.emitted('download')?.[0]).toEqual(['artifact-1', 'search-results.json'])
+    expect(wrapper.get('[data-testid="artifact-reference"]').text()).toContain('artifact-1')
   })
 
   it('shows safe failure copy, keeps a persisted query when there is no result, and never trusts event payloads', () => {

@@ -132,6 +132,33 @@ describe('ChatView', () => {
     expect(wrapper.find('[data-testid="search-tool-form"]').exists()).toBe(false)
   })
 
+  it('shows the persisted operation failure even when the assistant claims the search succeeded', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    const chat = useChatStore()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Deploy pipeline'), { timeout: wait })
+    chat.currentConversation = { id: 'c1', title: 'Search status', created_at: '', updated_at: '' }
+    chat.messages = [
+      { id: 'user-query', role: 'user', content: 'Search for current guidance', conversation_id: 'c1', created_at: '2026-10-20T12:00:00Z' },
+      { id: 'assistant-claim', role: 'assistant', content: 'The search completed successfully.', conversation_id: 'c1', created_at: '2026-10-20T12:00:02Z' },
+    ]
+    const failedOperation: ToolOperationSummary = {
+      id: 'failed-search', run_id: 'run-auto-search', conversation_id: 'c1',
+      logical_call_id: 'model:0:call:0', capability_id: 'brave_web_search',
+      capability_version: '1.0.0', manifest_digest: 'a'.repeat(64),
+      status: 'failed', error_code: 'provider_timeout',
+      error: { code: 'provider_timeout', message: 'The search service did not respond within the allowed time.' },
+      query: 'current guidance', result: null, artifacts: [], attempts: [],
+      created_at: '2026-10-20T12:00:01Z', updated_at: '2026-10-20T12:00:01Z', finished_at: '2026-10-20T12:00:01Z',
+    }
+    chat.toolOperationsByConversation.set('c1', new Map([[failedOperation.id, failedOperation]]))
+    await nextTick()
+
+    const card = wrapper.get('[data-testid="tool-operation-card"]')
+    expect(card.text()).toContain('Failed')
+    expect(card.text()).toContain('The search service did not respond within the allowed time.')
+    expect(wrapper.get('[data-testid="stream"]').text()).toContain('The search completed successfully.')
+  })
+
   it('creates and selects a conversation immediately on click', async () => {
     const created: Conversation = {
       id: 'c3',
