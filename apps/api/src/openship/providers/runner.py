@@ -16,6 +16,7 @@ request is made. None of this is an exact provider invoice.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 from decimal import Decimal
 
@@ -63,11 +64,15 @@ class _Observed:
 
 
 def _context_bytes(request: ModelRequest) -> int:
-    """The UTF-8 size of the conversation as it would actually be sent."""
-    return sum(
-        len(message.role.encode("utf-8")) + len(message.content.encode("utf-8"))
-        for message in request.messages
+    """The UTF-8 size of the normalized request, including schemas and tool data."""
+    encoded = json.dumps(
+        request.model_dump(mode="json", exclude_none=True),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
     )
+    return len(encoded.encode("utf-8"))
 
 
 def _admit(request: ModelRequest, limits: RunLimits, profile) -> None:
@@ -306,6 +311,8 @@ async def run_model_turn(
     sleeper=None,
     jitter=None,
     authorize_profile=None,
+    budget=None,
+    model_turn_ordinal: int = 0,
 ) -> ProviderTurnResult:
     """Run one bounded model turn through the configuration this run pinned.
 
@@ -348,11 +355,23 @@ async def run_model_turn(
         if authorize_profile is not None:
             authorize_profile(profile)
 
-        attempt_id = recorder.start(
-            profile,
-            reason=_reason(index, made),
-            reserved_cost_usd=reservation[1] if reservation is not None else None,
-        )
+        reason = _reason(index, made)
+        if budget is None:
+            attempt_id = recorder.start(
+                profile,
+                reason=reason,
+                reserved_cost_usd=reservation[1] if reservation is not None else None,
+            )
+        else:
+            admitted = budget.reserve_generation(
+                profile,
+                reason=reason,
+                model_turn_ordinal=model_turn_ordinal,
+                requested_output_tokens=request.max_output_tokens,
+                reserved_tokens=reservation[0] if reservation is not None else None,
+                reserved_cost=reservation[1] if reservation is not None else None,
+            )
+            attempt_id = admitted.attempt_id
         observed = _Observed()
         kind, detail = await _attempt(adapter, request, profile, control, observed)
         made += 1

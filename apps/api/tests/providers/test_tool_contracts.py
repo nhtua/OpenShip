@@ -137,6 +137,30 @@ def test_model_request_rejects_calls_outside_its_exact_tool_allowlist():
         )
 
 
+def test_completed_history_remains_valid_when_a_tool_is_disabled_mid_run():
+    request = ModelRequest(
+        messages=(
+            ChatMessage(role="user", content="Search once."),
+            ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=(call(name="brave_web_search"),),
+            ),
+            ChatMessage(
+                role="tool",
+                name="brave_web_search",
+                tool_call_id="provider-call-1",
+                content='{"status":"succeeded"}',
+            ),
+            ChatMessage(role="user", content="Now explain."),
+        ),
+        tools=(),
+        max_output_tokens=32,
+    )
+
+    assert request.tools == ()
+
+
 def test_canonical_tool_schema_keeps_optional_properties_for_provider_adaptation():
     optional = ToolDefinition(
         name="brave_web_search",

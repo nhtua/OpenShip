@@ -363,13 +363,28 @@ class ModelRequest(BaseModel):
         if len(names) != len(set(names)):
             raise ValueError("tool definition names must be unique")
         allowed = set(names)
-        mentioned = {
-            call.name
+        calls = {
+            call.provider_call_id: call.name
             for message in self.messages
             for call in (message.tool_calls or ())
         }
-        mentioned.update(message.name for message in self.messages if message.role == "tool")
-        unknown = mentioned - allowed
+        results = {}
+        for message in self.messages:
+            if message.role != "tool":
+                continue
+            expected_name = calls.get(message.tool_call_id)
+            if expected_name != message.name or message.tool_call_id in results:
+                raise ValueError("tool results must match one prior assistant tool call")
+            results[message.tool_call_id] = message.name
+
+        # Tool definitions authorize new model calls. Complete historical
+        # call/result pairs remain in context after an operator disables a tool.
+        unknown = {
+            call.name
+            for message in self.messages
+            for call in (message.tool_calls or ())
+            if call.name not in allowed and results.get(call.provider_call_id) != call.name
+        }
         if unknown:
             raise ValueError(
                 "tool names are not present in the request allowlist: "

@@ -82,14 +82,16 @@ class DatabaseAttemptRecorder:
             )
         return run
 
-    def _say(self, session, run: Run, event_type: str, facts: dict) -> None:
+    def _say(
+        self, session, run: Run, event_type: str, facts: dict, *, persist: bool = False
+    ) -> None:
         """Buffer or append the statement of what this recorder just recorded.
 
         The payload is an attempt's metadata only: a profile, an adapter, a
         destination label, an outcome. No prompt, no answer, no credential -
         none of those belong in a record a browser reads.
         """
-        if self._commit_each:
+        if self._commit_each or persist:
             append_event(
                 db=session,
                 conversation_id=run.conversation_id,
@@ -123,9 +125,21 @@ class DatabaseAttemptRecorder:
         self._pending.clear()
         return written
 
-    def start(self, profile: PinnedProviderConfig, reason: str, reserved_cost_usd=None) -> uuid.UUID:
-        """Open an attempt for one bounded request, and return its ID."""
-        session = self._session_of()
+    def start(
+        self,
+        profile: PinnedProviderConfig,
+        reason: str,
+        reserved_cost_usd=None,
+        *,
+        session=None,
+        model_turn_ordinal: int | None = None,
+        reserved_input_tokens: int | None = None,
+        reserved_output_tokens: int | None = None,
+        reserved_total_tokens: int | None = None,
+    ) -> uuid.UUID:
+        """Open an attempt, optionally inside the caller's transaction."""
+        caller_owns_session = session is not None
+        session = session or self._session_of()
         try:
             run = self._run(session)
 
@@ -145,6 +159,10 @@ class DatabaseAttemptRecorder:
                     started_at=_now(),
                     outcome="started",
                     reserved_cost_usd=reserved_cost_usd,
+                    model_turn_ordinal=model_turn_ordinal,
+                    reserved_input_tokens=reserved_input_tokens,
+                    reserved_output_tokens=reserved_output_tokens,
+                    reserved_total_tokens=reserved_total_tokens,
                 )
             )
             # Flush first so the row and its event are committed together in
@@ -164,6 +182,7 @@ class DatabaseAttemptRecorder:
                     "ordinal": ordinal,
                     "reason": reason,
                 },
+                persist=caller_owns_session,
             )
             if reason == "fallback":
                 # Moving to another profile is a decision, not another request, so
@@ -183,12 +202,13 @@ class DatabaseAttemptRecorder:
                         "to_model": profile.model,
                         "destination_label": destination_label(profile.endpoint),
                     },
+                    persist=caller_owns_session,
                 )
-            if self._commit_each:
+            if self._commit_each and not caller_owns_session:
                 session.commit()
             return attempt_id
         finally:
-            if self._commit_each:
+            if self._commit_each and not caller_owns_session:
                 session.close()
 
     def _asked(self, session, ordinal: int) -> tuple | None:

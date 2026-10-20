@@ -18,6 +18,7 @@ from ..capabilities.catalog import resolve_capability
 from ..capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
+    ExecutionConfig,
     canonical_digest,
 )
 from ..chat.models import Conversation
@@ -42,13 +43,14 @@ def _utc(value: datetime) -> datetime:
 
 def require_live_claim(db: Session, claim: Claim, *, lock: bool = True) -> Run:
     """Return the running record only while its worker, fence and lease match."""
-    job_query = db.query(RunJob).filter(RunJob.run_id == claim.run_id)
     run_query = db.query(Run).filter(Run.id == claim.run_id)
+    job_query = db.query(RunJob).filter(RunJob.run_id == claim.run_id)
+    if lock:
+        run_query = run_query.with_for_update()
+    run = run_query.first()
     if lock:
         job_query = job_query.with_for_update()
-        run_query = run_query.with_for_update()
     job = job_query.order_by(RunJob.id).first()
-    run = run_query.first()
     now = datetime.now(UTC)
     if (
         job is None
@@ -95,12 +97,20 @@ def admit_operation(
     if conversation is None:
         raise _refused(409, "lease_lost", "This worker no longer owns the active run")
     run = require_live_claim(db, claim, lock=True)
-    if run.kind != "tool":
+    is_manual_tool = run.kind == "tool" and run.graph_version == 1
+    is_chat_tool = run.kind == "chat" and run.graph_version == 2
+    if not (is_manual_tool or is_chat_tool):
         raise _refused(
             409,
             "unsupported_execution",
-            "This run does not support model-free tool execution",
+            "This run does not support maintained tool execution",
         )
+    try:
+        pinned = ExecutionConfig.model_validate_json(run.execution_configuration or "{}")
+    except (TypeError, ValueError):
+        raise _refused(409, "changed", "The pinned tool execution settings are unavailable") from None
+    if ref not in pinned.allowed_capabilities:
+        raise _refused(403, "unsupported_capability", "This tool is not authorized for this run")
     if (
         conversation is None
         or context.principal_id != conversation.user_id

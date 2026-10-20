@@ -321,10 +321,12 @@ class ToolGateway:
                 )
             except ValidationError as exc:
                 raise ToolPublicationError("changed") from exc
+            is_manual_tool = run.kind == "tool" and run.graph_version == 1
+            is_chat_tool = run.kind == "chat" and run.graph_version == 2
             if (
                 context.execution != pinned
-                or run.kind != "tool"
-                or pinned.graph_kind != "tool"
+                or not (is_manual_tool or is_chat_tool)
+                or pinned.graph_kind != run.kind
                 or context.execution.graph_version != run.graph_version
                 or ref not in pinned.allowed_capabilities
                 or operation.capability_id != ref.id

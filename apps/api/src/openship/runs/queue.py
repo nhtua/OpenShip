@@ -231,7 +231,8 @@ def reconcile_expired(db: Session) -> int:
     Tool intents which have crossed the committed dispatch boundary fail as
     ``execution_interrupted``. Undispatched commands may be claimed again.
     Provider-only chat runs retain their historical ``model_interrupted``
-    behavior. Locks follow conversation → run → job → operation.
+    behavior, while chat-v2 tool dispatches are fenced like manual tools.
+    Locks follow conversation → run → job → operation.
     """
     expired_ids = (
         db.query(RunJob.run_id)
@@ -286,11 +287,8 @@ def reconcile_expired(db: Session) -> int:
             continue
 
         old_fence = job.fence
-        from_tool_dispatch = (
-            has_uncertain_tool_dispatch(db, run.id)
-            if run.kind == "tool"
-            else run.provider_started_at is not None
-        )
+        has_tool_dispatch = has_uncertain_tool_dispatch(db, run.id)
+        from_tool_dispatch = has_tool_dispatch or run.provider_started_at is not None
         if not from_tool_dispatch:
             run.status = "queued"
             run.error_code = None
@@ -301,8 +299,8 @@ def reconcile_expired(db: Session) -> int:
             reclaimed += 1
             continue
 
-        error_code = "execution_interrupted" if run.kind == "tool" else "model_interrupted"
-        if run.kind == "tool":
+        error_code = "execution_interrupted" if has_tool_dispatch or run.kind == "tool" else "model_interrupted"
+        if has_tool_dispatch or run.kind == "tool":
             mark_expired_tool_interrupted(
                 db,
                 run_id=run.id,
@@ -482,7 +480,10 @@ def begin_execution_window(
         conversation is None
         or run is None
         or job is None
-        or run.kind != "tool"
+        or not (
+            run.kind == "tool"
+            or (run.kind == "chat" and run.graph_version == 2)
+        )
         or run.status != "running"
         or run.fence != claim.fence
         or job.fence != claim.fence

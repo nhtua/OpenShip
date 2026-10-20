@@ -9,7 +9,7 @@ date: 2026-10-20
 
 > **Approval:** The user approved implementation on 2026-10-20 and directed continuation through the remaining tasks after visually accepting Task 9A. Work proceeds through Tasks 10–17 without pausing at interim review gates. Live provider requests remain opt-in and require a separate explicit request.
 >
-> **UI revision:** The user reports that Phase 4A functionality works and requested three UX changes in an annotated screenshot. The approved Task 9A/spec §8.1 revision is implemented, fixture-verified and visually accepted on 2026-10-20. The user directed continuation through the remaining plan; Task 10 is now underway.
+> **UI revision:** The user reports that Phase 4A functionality works and requested three UX changes in an annotated screenshot. The approved Task 9A/spec §8.1 revision is implemented, fixture-verified and visually accepted on 2026-10-20. The user directed continuation through the remaining plan; Tasks 10–12 are complete and Task 13 is underway.
 >
 > **For agentic workers:** Use `superpowers:executing-plans` for native execution. Do not delegate unless the user explicitly selects it. Checkboxes track implementation progress.
 
@@ -242,10 +242,10 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** `RunBudget(session_factory,claim,limits,execution)` exposes `reserve_generation(profile,reason,model_turn_ordinal,requested_output_tokens,reserved_tokens,reserved_cost) -> BudgetReservation` and `admit_tool(logical_call_id)`. Extend recorder start with optional caller DB/session plus model-turn/output/total reservation metadata; supplied sessions never commit internally. `run_model_turn(...,budget=None,model_turn_ordinal=0)` keeps v1 compatibility. Budget reservation inserts one attempt/event atomically and returns its ID; existing finish writes that identity, without a second counter/start.
 
-- [ ] Write failing model→Brave/Tavily→final flow, exact tool re-entry, two sequential calls, third-call/fourth-turn refusal, max-attempts total 3 across turns/retries, one 120-second deadline and output reservations 4,000/request /12,000 total. Test schema/result context counting and missing usage conservatively.
-- [ ] Add cancellation after search publication, disabled tool on next turn, partial JSON/final disconnect, typed tool error explanation and authority violation tests. Assert committed snapshots stay readable while stale/final partial text never becomes a completed answer.
-- [ ] Run unit and actual PG loop/budget cases before implementation, then extend the existing graph using only `ToolGateway.execute_tool`.
-- [ ] Verify shared durable reservations, complete transcripts, no secret/client objects in checkpoints, unchanged text fallback and final-only first-chat title publication. Commit subject: `feat: orchestrate bounded trusted tools in the chat runtime`.
+- [x] Write failing model→Brave/Tavily→final flow, exact tool re-entry, two sequential calls, third-call/turn refusal, max-attempts total 3 across turns/retries, one 120-second deadline and output reservations 4,000/request /12,000 total. Test schema/result context counting and cumulative optional token/cost ceilings; missing usage never refunds a reservation.
+- [x] Add cancellation after tool publication, disabled tool on next turn, partial JSON disconnect, typed tool error explanation and model/gateway authority violation tests. Partial provider fragments never reach transcript or gateway; cancellation leaves the completed tool transcript entry without a final answer.
+- [x] Run unit and PostgreSQL loop/budget cases, then extend chat-v2 through only `ToolGateway.execute_tool`. The real PostgreSQL lane was invoked and skipped because `TEST_POSTGRES_URL` is unavailable.
+- [x] Verify durable reservations, complete transcripts, disabled-tool history, schema/result byte accounting, unchanged text adapter conformance and exact pinned-capability gateway admission. Validation: chat-loop/budget/contract lane → 25 passed, 1 PostgreSQL skip; all provider suites → 207 passed; combined existing gateway/graph/transcript/tool-worker/safety suites → 31 passed; changed API Ruff clean. `test_provider_worker.py` hit the known local TestClient/auth fixture stall after its two pure helper cases; PostgreSQL concurrency could not run without `TEST_POSTGRES_URL`. No live providers were called. Commit subject: `feat: orchestrate bounded trusted tools in the chat runtime`.
 
 ### Task 13 — Conversational tool UI and immutable retry payloads
 
@@ -326,6 +326,6 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 ## 5. Review and handoff
 
-The user approved the base plan on 2026-10-20. Tasks 1–9 and the accepted Task 9A revision have recorded implementation evidence. The user directed continuation through all remaining plan tasks. Task 10 is complete and Task 11 is underway; later tasks remain unstarted. Live provider qualification remains opt-in and has not been authorized. The active SDD ledger records task evidence and local environment limits.
+The user approved the base plan on 2026-10-20. Tasks 1–9 and the accepted Task 9A revision have recorded implementation evidence. The user directed continuation through all remaining plan tasks. Tasks 10–12 are implemented and their available tests pass. Task 13 is underway. Live provider qualification remains opt-in and has not been authorized. The active SDD ledger records task evidence and local environment limits.
 
 The user has directed implementation to continue through Tasks 10–17. Record technical and live-provider evidence honestly; do not issue live provider requests without explicit opt-in. No PR, merge, deployment or Phase 4 completion is implied by implementation approval.

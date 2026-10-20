@@ -228,6 +228,10 @@ def test_cancel_fences_run_and_tool_operation_with_one_outbox_transaction(
         old_fence = run.fence
         slot_id = None
         if dispatched:
+            # Slot numbers are installation-global; another test may have
+            # exercised capacity using this shared SQLite fixture first.
+            db.query(ExecutionSlot).delete(synchronize_session=False)
+            db.flush()
             slot_id = uuid.uuid4()
             db.add(
                 ExecutionSlot(

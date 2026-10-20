@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -41,6 +42,7 @@ from ..providers.attempts import DatabaseAttemptRecorder
 from ..providers.control import InvocationControl
 from ..providers.credentials import credential_value
 from ..providers.errors import ProviderError
+from ..providers.runner import authorize_current_profile
 from ..runs.schemas import _model_projection
 from ..runs.service import bind_run_model_config
 from .dispatch import UnsupportedGraphVersion, resolve_graph
@@ -645,8 +647,25 @@ class Worker:
 
             # A run from before profiles records nothing; it gets one snapshot now,
             # under the fence this worker holds, marked as bound at execution.
+            agent_execution = None
             try:
                 snapshot = bind_run_model_config(job, run, fence)
+                if run.kind == "chat" and run.graph_version == 2:
+                    try:
+                        agent_execution = ExecutionConfig.model_validate_json(
+                            run.execution_configuration or ""
+                        )
+                    except Exception as invalid:
+                        raise ProviderError(
+                            "configuration_error",
+                            safe_message="The pinned tool settings cannot be read by this runtime.",
+                            cause=invalid,
+                        ) from invalid
+                    if (
+                        agent_execution.graph_kind != "chat"
+                        or agent_execution.graph_version != 2
+                    ):
+                        raise ProviderError("configuration_error")
             except ProviderError as refused:
                 logger.warning(f"[{self.worker_id}] Run {run_id} cannot be run: {refused.code}")
                 finalized = finalize(
@@ -705,10 +724,30 @@ class Worker:
                 "conversation_id": str(conv.id),
                 "model_configuration": snapshot.model_dump_json(),
             }
+            thread_id = f"{run_id}-{claim.checkpoint_ns}"
+            if agent_execution is not None:
+                state["execution_configuration"] = agent_execution.model_dump_json()
 
             # The control and recorder are injected per invocation: neither is
             # ever serialized into graph state or a checkpoint.
-            deadline = time.monotonic() + snapshot.limits.run_timeout_seconds
+            if agent_execution is not None:
+                window = begin_execution_window(
+                    job,
+                    claim,
+                    deadline_seconds=agent_execution.loop_limits.deadline_seconds,
+                    graph_thread_id=thread_id,
+                )
+                if window is None:
+                    supervision.deny_lease()
+                    return False
+                _started_at, persisted_deadline = window
+                remaining = max(
+                    0.0,
+                    (persisted_deadline - datetime.now(UTC)).total_seconds(),
+                )
+                deadline = time.monotonic() + remaining
+            else:
+                deadline = time.monotonic() + snapshot.limits.run_timeout_seconds
 
             # Attempt admission and its event commit in a short transaction
             # before each provider request. This keeps the conversation lock
@@ -727,10 +766,37 @@ class Worker:
                     recorder,
                 )
 
-            graph = graph_factory(self.checkpointer, invocation_factory=invocation)
+            if agent_execution is not None:
+                from ..runs.budget import RunBudget
 
-            # Construct the thread ID and persist it on the Run record
-            thread_id = f"{run_id}-{claim.checkpoint_ns}"
+                tool_context = self._tool_context(claim, run, conv, agent_execution)
+
+                def agent_invocation(_state):
+                    return SimpleNamespace(
+                        claim=claim,
+                        context=tool_context,
+                        control=InvocationControl(
+                            deadline=deadline,
+                            clock=time.monotonic,
+                            stop=supervision.stop,
+                        ),
+                        recorder=recorder,
+                        budget=RunBudget(
+                            self.Session, claim, snapshot.limits, agent_execution
+                        ),
+                        session_factory=self.Session,
+                        authorize_profile=authorize_current_profile,
+                    )
+
+                graph = graph_factory(
+                    self.checkpointer,
+                    gateway_factory=lambda: ToolGateway(self.Session),
+                    invocation_factory=agent_invocation,
+                )
+            else:
+                graph = graph_factory(self.checkpointer, invocation_factory=invocation)
+
+            # Persist the graph thread on the Run record.
             run.graph_thread_id = thread_id
             job.flush()
 

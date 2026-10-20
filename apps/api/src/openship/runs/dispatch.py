@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 
+from .agent_graph import build_agent_graph
 from .graph import build_chat_graph
 from .tool_graph import build_tool_graph
 
@@ -12,6 +13,7 @@ class UnsupportedGraphVersion(ValueError):
 
 _GRAPH_FACTORIES: dict[tuple[str, int], Callable] = {
     ("chat", 1): build_chat_graph,
+    ("chat", 2): build_agent_graph,
     ("tool", 1): build_tool_graph,
 }
 

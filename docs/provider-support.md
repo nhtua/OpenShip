@@ -148,6 +148,28 @@ two SDK behaviours that would make one attempt into several requests
 generation requests a turn makes is the number the tests count. A provider
 that reports usage only when asked is asked.
 
+## Tool-enabled chat
+
+Chat-v2 uses the qualified OpenAI Chat Completions adapter to expose only the
+exact search capabilities pinned to the run and still enabled by the
+installation. Each completed tool call goes through the same audited
+`ToolGateway` as an explicitly attached search; tool arguments, results and
+provider call IDs are saved as complete transcript entries before the next
+model turn. A disabled tool is omitted from later function definitions while
+its already completed call/result remains valid conversation history.
+
+One durable budget covers all model turns and retries: at most three model
+turns, three generation attempts, two search calls, 120 seconds, 4,000 output
+tokens per request and 12,000 reserved output tokens for the run. Context
+admission counts the UTF-8 JSON size of normalized messages, function schemas
+and tool results. Output reservations are not refunded when the provider omits
+usage. A profile's optional total-token and cost ceilings also apply across
+every turn and retry, using the run's durable reservations. These limits are
+implementation guardrails, not a claim that an exact provider invoice or model
+context ceiling has been measured. Tool-enabled chat has fixture evidence only
+until its dedicated live model/tool qualification is run with explicit
+operator opt-in; the tuple remains `fixture-tested` meanwhile.
+
 ## Credential rotation and revocation
 
 Because a credential is read where a client is built, rotating a value needs
