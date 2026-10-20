@@ -20,6 +20,7 @@ from ..capabilities.contracts import (
     CapabilityRef,
     canonical_digest,
 )
+from ..chat.models import Conversation
 from ..config import settings
 from ..runs.models import Run, RunJob
 from ..runs.queue import Claim
@@ -82,15 +83,31 @@ def admit_operation(
     """Admit or replay one logical operation without committing the caller's transaction."""
     if not logical_call_id or len(logical_call_id) > 128:
         raise _refused(422, "invalid_logical_call_id", "Logical tool call ID is invalid")
+    run_identity = db.query(Run.conversation_id).filter(Run.id == claim.run_id).first()
+    if run_identity is None:
+        raise _refused(409, "lease_lost", "This worker no longer owns the active run")
+    conversation = (
+        db.query(Conversation)
+        .filter(Conversation.id == run_identity.conversation_id)
+        .with_for_update()
+        .first()
+    )
+    if conversation is None:
+        raise _refused(409, "lease_lost", "This worker no longer owns the active run")
     run = require_live_claim(db, claim, lock=True)
-    from ..chat.models import Conversation
-
-    conversation = db.query(Conversation).filter(Conversation.id == run.conversation_id).first()
+    if run.kind != "tool":
+        raise _refused(
+            409,
+            "unsupported_execution",
+            "This run does not support model-free tool execution",
+        )
     if (
         conversation is None
         or context.principal_id != conversation.user_id
         or context.project_id != run.project_id
+        or conversation.project_id != run.project_id
         or context.conversation_id != run.conversation_id
+        or context.action != "execute_tool"
         or context.target_id != str(run.id)
     ):
         raise _refused(404, "operation_not_found", "The requested operation is not available")
@@ -280,6 +297,36 @@ def release_execution_slot(
             lease_until=None,
             updated_at=datetime.now(UTC),
         )
+        .returning(ExecutionSlot.id)
+        .execution_options(synchronize_session=False)
+    )
+    return result.first() is not None
+
+
+def renew_execution_slot(
+    db: Session,
+    claim: Claim,
+    slot_id: uuid.UUID,
+) -> bool:
+    """Extend one active slot only to the current live job lease."""
+    try:
+        require_live_claim(db, claim, lock=False)
+    except HTTPException:
+        return False
+    job = db.query(RunJob).filter(RunJob.run_id == claim.run_id).first()
+    if job is None or job.lease_until is None:
+        return False
+    now = datetime.now(UTC)
+    result = db.execute(
+        update(ExecutionSlot)
+        .where(
+            ExecutionSlot.id == slot_id,
+            ExecutionSlot.run_id == claim.run_id,
+            ExecutionSlot.fence == claim.fence,
+            ExecutionSlot.owner_id == claim.worker_id,
+            ExecutionSlot.lease_until > now,
+        )
+        .values(lease_until=job.lease_until, updated_at=now)
         .returning(ExecutionSlot.id)
         .execution_options(synchronize_session=False)
     )

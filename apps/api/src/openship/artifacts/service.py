@@ -139,6 +139,9 @@ def reserve_artifact(
     display_name: str = "artifact",
     media_type: str = "application/json",
     source: str | None = None,
+    originating_run_id: uuid.UUID | None = None,
+    originating_operation_id: uuid.UUID | None = None,
+    provenance: str | None = None,
 ) -> Artifact:
     """Reserve per-conversation and project quota without committing the caller's transaction."""
     if kind not in (_SEARCH_KIND, _UPLOAD_KIND):
@@ -209,6 +212,8 @@ def reserve_artifact(
         id=artifact_id,
         project_id=project_id,
         conversation_id=conversation_id,
+        originating_run_id=originating_run_id,
+        originating_operation_id=originating_operation_id,
         kind=kind,
         media_type=media_type,
         display_name=display_name,
@@ -220,6 +225,7 @@ def reserve_artifact(
         status="staging",
         mutability="immutable",
         source=source or kind,
+        provenance=provenance,
         request_key=normalized_key,
         reserved_bytes=max_bytes,
     )

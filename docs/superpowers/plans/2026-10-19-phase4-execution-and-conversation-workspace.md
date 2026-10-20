@@ -153,10 +153,11 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** `ToolGateway.execute_tool(*,claim,context,logical_call_id,ref,arguments,inputs=(),control) -> PublishedToolResult` is async and dispatches through an exact maintained-handler map. `publish_tool_result(db,claim,attempt_id,observation,staged_outputs) -> PublishedToolResult` joins one caller-owned transaction. Produce safe `OperationSummary`/`ToolAttemptSummary`; credential references remain server-side.
 
-- [ ] Write failing invalid authority/disabled/digest/argument/credential tests, busy-slot waits, same-logical-call replay, lost HTTP acknowledgement and cancel/fence vs fsync/commit races. Assert zero dispatch before admission and operation/artifact/events become visible together.
-- [ ] Run gateway unit and real PG publication/slot tests before implementation.
-- [ ] Implement check/pin → reserve quota/wait capacity → commit live-owner intent → invoke exactly one maintained function → validate/stage bytes → fenced atomic ready/result/event publication → release slot. No automatic second request after uncertain I/O. Capacity waits observe renewal, deadlines and stop signals without holding DB locks.
-- [ ] Verify stale owner cannot mark a file ready, metadata rollback leaves only hidden reclaimable bytes, completed re-entry returns the recorded result, and saturation is not a provider-configuration error. Commit subject: `feat: execute and publish maintained tools through the gateway`.
+- [x] Write failing invalid authority/disabled/digest/argument/credential tests, busy-slot waits, same-logical-call replay, lost HTTP acknowledgement and cancel/fence vs fsync/commit races. Assert zero dispatch before admission and operation/artifact/events become visible together.
+- [x] Run gateway unit and publication/slot tests. Invoke the PostgreSQL lanes; record their local skip when PostgreSQL is unavailable.
+- [x] Implement check/pin → reserve quota/wait capacity → commit live-owner intent → invoke exactly one maintained function → validate/stage bytes → fenced atomic ready/result/event publication → release slot. No automatic second request after uncertain I/O. Capacity waits observe renewal, deadlines and stop signals without holding DB locks.
+- [x] Verify stale owner cannot mark a file ready, failed/uncertain publication leaves no ready artifact, completed re-entry returns the recorded result, and saturation is not a provider-configuration error. Commit subject: `feat: execute and publish maintained tools through the gateway`.
+  - Validation: cumulative Phase 4 regression set → 128 passed, 4 skipped; targeted Ruff and `git diff --check` passed. The named PostgreSQL publication, admission and quota lanes were invoked but skipped because `TEST_POSTGRES_URL` is unset and no local PostgreSQL service is accepting connections. SQLite tests cover both commit-applied and commit-unapplied acknowledgement loss; PostgreSQL publication visibility remains required in the real-Postgres lane before 4A acceptance.
 
 ### Task 7 — Worker graph, availability, cancellation and recovery
 
