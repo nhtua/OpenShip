@@ -137,6 +137,25 @@ def test_model_request_rejects_calls_outside_its_exact_tool_allowlist():
         )
 
 
+def test_canonical_tool_schema_keeps_optional_properties_for_provider_adaptation():
+    optional = ToolDefinition(
+        name="brave_web_search",
+        description="Search the web with Brave.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer", "default": 5},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    )
+
+    assert optional.parameters["required"] == ["query"]
+    assert "max_results" in optional.parameters["properties"]
+
+
 def test_empty_tool_turn_is_not_a_completed_final_answer():
     result = ProviderTurnResult(
         text="",

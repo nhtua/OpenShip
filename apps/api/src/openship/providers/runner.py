@@ -51,13 +51,15 @@ class _Observed:
 
     def __init__(self):
         self.parts: list[str] = []
+        self.tool_calls = []
+        self.saw_tool_fragments = False
         self.usage: TokenUsage | None = None
         self.actual_model: str | None = None
         self.reason: str | None = None
 
     def produced(self) -> bool:
         """Whether an answer had already begun."""
-        return bool(self.parts)
+        return bool(self.parts or self.tool_calls or self.saw_tool_fragments)
 
 
 def _context_bytes(request: ModelRequest) -> int:
@@ -170,6 +172,10 @@ async def _drain(stream, observed: _Observed) -> None:
         elif event.type == "usage_update":
             # Cumulative snapshots: the last one is the fullest, never a sum.
             observed.usage = event.usage
+        elif event.type == "tool_call_delta":
+            observed.saw_tool_fragments = True
+        elif event.type == "tool_call_ready":
+            observed.tool_calls.append(event.tool_call)
         else:
             observed.reason = event.reason
             observed.actual_model = event.actual_model
@@ -424,10 +430,11 @@ async def run_model_turn(
         text = "".join(observed.parts).strip()
         return ProviderTurnResult(
             text=text,
+            tool_calls=tuple(observed.tool_calls),
             usage=observed.usage,
             actual_model=observed.actual_model,
             selected_profile_id=profile.id,
             attempt_count=made,
             finish_reason=observed.reason or "stop",
-            partial=observed.reason is not None and observed.reason != "stop",
+            partial=observed.reason not in (None, "stop", "tool_calls"),
         )

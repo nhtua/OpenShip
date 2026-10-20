@@ -231,10 +231,10 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** Extend existing `OpenAIAdapter.stream(request,config,control)`. Registered IDs (`brave_web_search`, `tavily_web_search`, later `workspace_list_files`, `workspace_read_file`) pass unchanged into function definitions and normalized `ToolCall.name`. Validate returned names against the exact request allowlist; retain provider call IDs separately. No namespace conversion or alias mapping.
 
-- [ ] Write failing exact-name preservation/duplicate-definition/unknown-name, fragmented names/IDs/Unicode arguments, empty text valid call, duplicate/oversize/multiple calls, missing finish, actual-model mismatch and cancellation/stream-close tests. Tool fragments count as observed output; a transient failure after a fragment produces one generation request and no dispatch/fallback.
-- [ ] Run tool/OpenAI/shared text conformance before implementation.
-- [ ] Implement direct registered function names, strict function schemas (all properties required, nullable optional fields, no extras, normalized defaults) and disabled parallel calls through existing Chat Completions; retain SDK retry/time/error/usage behavior. Other adapters reject advanced messages explicitly while retaining text support.
-- [ ] Verify all text adapters and the first OpenAI tool adapter; no request/result ID or tool name is lost across the round trip. Commit subject: `feat: support registered tools through OpenAI function calling`.
+- [x] Write failing exact-name preservation/duplicate-definition/unknown-name, fragmented names/IDs/Unicode arguments, empty text valid call, duplicate/oversize/multiple calls, missing finish, actual-model mismatch and cancellation/stream-close tests. Tool fragments count as observed output; a transient failure after a fragment produces one generation request and no dispatch/fallback.
+- [x] Run tool/OpenAI/shared text conformance before implementation. The first run failed on the optional canonical schema and the missing stream/runner behavior; after contract adaptation, all shared text cases remained in the verification set.
+- [x] Implement direct registered function names, strict function schemas (all properties required, nullable optional fields, no extras, normalized defaults) and disabled parallel calls through existing Chat Completions; retain SDK retry/time/error/usage behavior. Other adapters reject advanced messages explicitly while retaining text support.
+- [x] Verify all text adapters and the first OpenAI tool adapter; no request/result ID or tool name is lost across the round trip. Validation: all provider suites → 200 passed; changed API Ruff and `git diff --check` passed. No live provider calls were made. Commit subject: `feat: support registered tools through OpenAI function calling`.
 
 ### Task 12 — Shared budgets and bounded model/gateway graph
 

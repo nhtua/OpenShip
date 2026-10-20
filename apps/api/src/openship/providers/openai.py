@@ -8,6 +8,9 @@ request counts, timeouts, and fallback.
 
 from __future__ import annotations
 
+import copy
+import json
+
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -17,18 +20,154 @@ from openai import (
     BadRequestError,
     RateLimitError,
 )
+from pydantic import ValidationError
 
 from src.openship.providers.configuration import resolve_credential
 from src.openship.providers.contracts import (
     ModelRequest,
     ProviderEvent,
     TokenUsage,
+    ToolCall,
+    ToolCallDelta,
     validate_request,
 )
 from src.openship.providers.errors import ProviderError
 from src.openship.providers.registry import register_adapter
 
 _UNAVAILABLE = "The model provider could not be reached."
+_MAX_TOOL_ARGUMENT_BYTES = 64 * 1024
+
+
+def _strict_schema(schema: dict, *, optional: bool = False) -> dict:
+    """Map a canonical JSON schema to Chat Completions strict function schema.
+
+    The maintained capability schema remains the source of truth. Strict mode
+    requires optional fields to appear as nullable fields and every object to
+    list all of its properties as required, so this creates a wire-only copy.
+    """
+    if not isinstance(schema, dict):
+        return copy.deepcopy(schema)
+    result = {}
+    for key, value in schema.items():
+        if key in {"default", "examples", "title"}:
+            continue
+        if key == "properties" and isinstance(value, dict):
+            original_required = set(schema.get("required", ()))
+            result[key] = {
+                name: _strict_schema(child, optional=name not in original_required)
+                for name, child in value.items()
+            }
+        elif key == "required" and isinstance(value, list):
+            # The provider schema requires every declared property. Nullable
+            # types below preserve the canonical distinction between required
+            # and optional inputs.
+            continue
+        elif key == "items" and isinstance(value, dict):
+            result[key] = _strict_schema(value)
+        elif key == "anyOf" and isinstance(value, list):
+            result[key] = [_strict_schema(item) for item in value]
+        elif key in {"$defs", "definitions"} and isinstance(value, dict):
+            result[key] = {name: _strict_schema(child) for name, child in value.items()}
+        else:
+            result[key] = copy.deepcopy(value)
+
+    if result.get("type") == "object":
+        properties = result.get("properties", {})
+        result["required"] = list(properties)
+        result["additionalProperties"] = False
+
+    if optional and not ("anyOf" in result and any(
+        item.get("type") == "null" for item in result["anyOf"] if isinstance(item, dict)
+    )):
+        result = {"anyOf": [result, {"type": "null"}]}
+    return result
+
+
+def _normalize_arguments(schema: dict, arguments: dict) -> dict:
+    """Restore canonical optional defaults after strict-schema nulls arrive."""
+    if schema.get("type") != "object":
+        return arguments
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", ()))
+    if set(arguments) - set(properties):
+        raise ValueError("tool arguments contain undeclared properties")
+    if required - set(arguments):
+        raise ValueError("tool arguments omit required properties")
+
+    normalized = dict(arguments)
+    for name, child_schema in properties.items():
+        if name not in normalized or normalized[name] is None:
+            if name in required:
+                raise ValueError("required tool argument is null")
+            if "default" in child_schema:
+                normalized[name] = copy.deepcopy(child_schema["default"])
+            else:
+                normalized.pop(name, None)
+        elif isinstance(normalized[name], dict) and isinstance(child_schema, dict):
+            normalized[name] = _normalize_arguments(child_schema, normalized[name])
+    return normalized
+
+
+def _wire_messages(request: ModelRequest) -> list[dict]:
+    """Serialize normalized chat and tool turns to Chat Completions messages."""
+    messages = []
+    for message in request.messages:
+        if message.role == "assistant" and message.tool_calls:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content or None,
+                    "tool_calls": [
+                        {
+                            "id": call.provider_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(
+                                    call.arguments,
+                                    ensure_ascii=False,
+                                    allow_nan=False,
+                                    separators=(",", ":"),
+                                ),
+                            },
+                        }
+                        for call in message.tool_calls
+                    ],
+                }
+            )
+        elif message.role == "tool":
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "name": message.name,
+                    "content": message.content,
+                }
+            )
+        else:
+            messages.append({"role": message.role, "content": message.content})
+    return messages
+
+
+def _wire_tools(request: ModelRequest) -> list[dict]:
+    """Serialize the exact registered function IDs and strict wire schemas."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": _strict_schema(tool.parameters),
+                "strict": True,
+            },
+        }
+        for tool in request.tools
+    ]
+
+
+def _invalid_tool_response(cause: BaseException | str) -> ProviderError:
+    """A provider returned a malformed or unauthorized function call."""
+    return ProviderError("invalid_response", cause=RuntimeError("invalid tool call response"))
 
 
 def _usage_from(provider) -> TokenUsage:
@@ -141,12 +280,16 @@ class OpenAIAdapter:
 
         kwargs = {
             "model": config.model,
-            "messages": [{"role": m.role, "content": m.content} for m in request.messages],
+            "messages": _wire_messages(request),
             config.adapter_options.output_limit_parameter: request.max_output_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
             "timeout": control.request_timeout_seconds(config.limits.request_timeout_seconds),
         }
+        if request.tools:
+            kwargs["tools"] = _wire_tools(request)
+            # This profile is qualified for one function call per model turn.
+            kwargs["parallel_tool_calls"] = False
         try:
             stream = await client.chat.completions.create(**kwargs)
         except _SDK_ERRORS as error:
@@ -164,6 +307,7 @@ class OpenAIAdapter:
         finish_reason: str | None = None
         actual_model: str | None = None
         produced_text = False
+        tool_fragments: dict[int, dict[str, str]] = {}
         try:
             async for chunk in stream:
                 control.raise_if_stopped()
@@ -179,19 +323,76 @@ class OpenAIAdapter:
                     if delta and delta.content:
                         produced_text = True
                         yield ProviderEvent(type="text_delta", text=delta.content)
-                    if choice.finish_reason and finish_reason != "refusal":
-                        finish_reason = (
-                            "refusal"
-                            if choice.finish_reason == "content_filter"
-                            else choice.finish_reason
-                        )
+                    for fragment in (getattr(delta, "tool_calls", None) or ()):
+                        index = getattr(fragment, "index", None)
+                        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                            raise _invalid_tool_response("invalid tool call index")
+                        values = tool_fragments.get(index)
+                        if values is None:
+                            if tool_fragments:
+                                raise _invalid_tool_response("parallel tool calls are not qualified")
+                            values = {"id": "", "name": "", "arguments": ""}
+                            tool_fragments[index] = values
+
+                        fragment_type = getattr(fragment, "type", None)
+                        if fragment_type not in (None, "function"):
+                            raise _invalid_tool_response("unsupported tool call type")
+                        function = getattr(fragment, "function", None)
+                        if function is None:
+                            raise _invalid_tool_response("tool call fragment has no function")
+                        pieces = {
+                            "id": getattr(fragment, "id", None),
+                            "name": getattr(function, "name", None),
+                            "arguments": getattr(function, "arguments", None),
+                        }
+                        if any(value is not None and not isinstance(value, str) for value in pieces.values()):
+                            raise _invalid_tool_response("tool call fragment fields must be text")
+                        pieces = {key: value or "" for key, value in pieces.items()}
+                        limits = {"id": 128, "name": 64}
+                        for key, piece in pieces.items():
+                            combined = values[key] + piece
+                            if key in limits and len(combined) > limits[key]:
+                                raise _invalid_tool_response("tool call identifier is too long")
+                            if key == "arguments" and len(combined.encode("utf-8")) > _MAX_TOOL_ARGUMENT_BYTES:
+                                raise _invalid_tool_response("tool arguments exceed the size limit")
+                            values[key] = combined
+
+                        if any(pieces.values()):
+                            yield ProviderEvent(
+                                type="tool_call_delta",
+                                tool_call_delta=ToolCallDelta(
+                                    index=index,
+                                    id_delta=pieces["id"],
+                                    name_delta=pieces["name"],
+                                    arguments_delta=pieces["arguments"],
+                                ),
+                            )
+                    if choice.finish_reason:
+                        if choice.finish_reason not in {
+                            "stop",
+                            "length",
+                            "refusal",
+                            "content_filter",
+                            "tool_calls",
+                        }:
+                            raise ProviderError(
+                                "invalid_response", cause=RuntimeError("unknown finish reason")
+                            )
+                        if finish_reason != "refusal":
+                            finish_reason = (
+                                "refusal"
+                                if choice.finish_reason == "content_filter"
+                                else choice.finish_reason
+                            )
                 if chunk.model:
                     actual_model = chunk.model
 
             control.raise_if_stopped()
             if finish_reason is None:
                 raise ProviderError("invalid_response", cause=RuntimeError("no finish marker"))
-            if not produced_text and finish_reason == "stop":
+            if bool(tool_fragments) != (finish_reason == "tool_calls"):
+                raise _invalid_tool_response("tool call content and finish reason do not match")
+            if not produced_text and not tool_fragments and finish_reason == "stop":
                 raise ProviderError("invalid_response", cause=RuntimeError("empty answer"))
             if (
                 actual_model
@@ -204,6 +405,46 @@ class OpenAIAdapter:
                     actual_model=actual_model,
                 )
                 raise ProviderError("unexpected_model", cause=RuntimeError("served model"))
+
+            if tool_fragments:
+                allowed = {tool.name: tool for tool in request.tools}
+                call_ids = set()
+                ready_calls = []
+                for index, fragments in sorted(tool_fragments.items()):
+                    provider_call_id = fragments["id"]
+                    name = fragments["name"]
+                    if not provider_call_id or not name:
+                        raise _invalid_tool_response("tool call is missing its ID or function name")
+                    if provider_call_id in call_ids:
+                        raise _invalid_tool_response("provider returned duplicate tool call IDs")
+                    call_ids.add(provider_call_id)
+                    definition = allowed.get(name)
+                    if definition is None:
+                        raise _invalid_tool_response("provider returned a function outside the allowlist")
+                    try:
+                        arguments = json.loads(
+                            fragments["arguments"],
+                            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+                        )
+                        if not isinstance(arguments, dict):
+                            raise TypeError("tool arguments must be a JSON object")
+                        arguments = _normalize_arguments(definition.parameters, arguments)
+                        ready_calls.append(
+                            ToolCall(
+                                provider_call_id=provider_call_id,
+                                name=name,
+                                arguments=arguments,
+                            )
+                        )
+                    except (json.JSONDecodeError, TypeError, ValueError) as error:
+                        raise _invalid_tool_response(error) from error
+                    except ValidationError as error:
+                        # Pydantic rejects invalid contract fields with its own
+                        # exception type; keep that provider detail contained.
+                        raise _invalid_tool_response(error) from error
+
+                for call in ready_calls:
+                    yield ProviderEvent(type="tool_call_ready", tool_call=call)
             yield ProviderEvent(
                 type="stream_finished",
                 reason=finish_reason,

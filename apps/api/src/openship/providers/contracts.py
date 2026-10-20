@@ -81,8 +81,10 @@ class ToolDefinition(BaseModel):
         required = self.parameters.get("required", [])
         if not isinstance(properties, dict) or not isinstance(required, list):
             raise TypeError("tool parameters must declare object properties and required fields")
-        if set(required) != set(properties):
-            raise ValueError("tool schemas must require every declared property")
+        if any(not isinstance(name, str) for name in required):
+            raise TypeError("tool schema required fields must be strings")
+        if len(required) != len(set(required)) or not set(required).issubset(properties):
+            raise ValueError("tool schema required fields must be unique declared properties")
         return self
 
 
@@ -493,10 +495,19 @@ def declared_capabilities(profile: PinnedProviderConfig) -> frozenset[str]:
 def validate_request(request: ModelRequest, profile: PinnedProviderConfig) -> None:
     """Refuse capabilities the profile does not qualify, before any dispatch."""
     required = set(request.required_capabilities)
-    if request.tools or any(
+    asks_for_tools = bool(request.tools) or any(
         message.role == "tool" or message.tool_calls for message in request.messages
-    ):
+    )
+    if asks_for_tools:
         required.add("tool_calls")
+        if profile.adapter != "openai":
+            raise ProviderError(
+                "unsupported_capability",
+                safe_message=(
+                    f"profile {profile.id!r} uses adapter {profile.adapter!r}, which has not "
+                    "qualified tool calls; choose an OpenAI Chat Completions profile"
+                ),
+            )
     missing = sorted(required - declared_capabilities(profile))
     if missing:
         raise ProviderError(
