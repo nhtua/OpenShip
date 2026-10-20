@@ -3,10 +3,12 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { useArtifactsStore } from '@/stores/artifacts'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import RunCard from '@/components/chat/RunCard.vue'
+import SearchToolForm from '@/components/chat/SearchToolForm.vue'
 import {
   Alert,
   AlertDescription,
@@ -17,6 +19,7 @@ import {
 const router = useRouter()
 const auth = useAuthStore()
 const chat = useChatStore()
+const artifacts = useArtifactsStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
@@ -24,6 +27,12 @@ const isCreatingConversation = ref(false)
 const isLoadingConversation = ref(false)
 // Driven from the resulting store error, never inferred from an empty list.
 const historyLoadFailed = ref(false)
+
+const hasActiveRun = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  const status = conversationId ? chat.runCards.get(conversationId)?.status : null
+  return status ? ['queued', 'running', 'paused'].includes(status) : false
+})
 
 const busy = computed(
   () =>
@@ -41,6 +50,8 @@ const pendingSubmissionId = computed(() => {
   if (!conversationId) return null
   return [...chat.pendingRequests.entries()].find(
     ([, pending]) => pending.conversation_id === conversationId,
+  )?.[0] ?? [...chat.pendingToolRequests.entries()].find(
+    ([, pending]) => pending.conversation_id === conversationId,
   )?.[0] ?? null
 })
 
@@ -57,6 +68,7 @@ async function loadConversationById(id: string) {
   isLoadingConversation.value = true
   try {
     await chat.loadConversation(id)
+    if (chat.currentConversation?.id === id) await artifacts.loadConversation(id)
   } finally {
     isLoadingConversation.value = false
   }
@@ -132,7 +144,28 @@ function dismissError() {
 
 async function handleRetrySubmission() {
   const requestId = pendingSubmissionId.value
-  if (requestId) await chat.retrySubmission(requestId)
+  if (!requestId) return
+  if (chat.pendingRequests.has(requestId)) await chat.retrySubmission(requestId)
+  else await chat.retryToolSubmission(requestId)
+}
+
+async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: { query: string; max_results: number } }) {
+  if (busy.value || hasActiveRun.value) return
+  if (!chat.currentConversation) {
+    isCreatingConversation.value = true
+    try {
+      const conversation = await chat.createConversation('New Conversation')
+      if (conversation) await loadConversationById(conversation.id)
+    } finally {
+      isCreatingConversation.value = false
+    }
+  }
+  const conversationId = chat.currentConversation?.id
+  if (conversationId) await chat.submitToolSearch(conversationId, command)
+}
+
+function handleDownloadArtifact(artifactId: string, name: string) {
+  void artifacts.download(artifactId, name)
 }
 
 // The composer's selector names a profile; the store decides what the next
@@ -144,6 +177,7 @@ function handleSelectProfile(profileId: string | null, fallbackIds: string[]) {
 async function handleSignOut() {
   auth.logout()
   chat.clearMessages()
+  artifacts.clear()
   chat.conversations = []
   chat.error = null
   historyLoadFailed.value = false
@@ -155,6 +189,7 @@ onMounted(async () => {
   // it is loaded when the page is. A missing catalog is stated by the store
   // rather than guessed at here, and the next turn simply names no profile.
   await chat.loadModelProfiles()
+  await chat.loadCapabilities()
   await loadHistory()
   // Auto-create a conversation if none exist so the user can immediately start chatting
   if (!isLoadingConversations.value && chat.conversations.length === 0 && !historyLoadFailed.value) {
@@ -210,7 +245,10 @@ onMounted(async () => {
            still be stopped - a run that reached an end has nothing left to
            stop, and offering it would be a control that does nothing. -->
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
-        <RunCard :card="chat.runCards.get(chat.currentConversation.id)!" />
+        <RunCard
+          :card="chat.runCards.get(chat.currentConversation.id)!"
+          @download-artifact="handleDownloadArtifact"
+        />
         <div v-if="pendingSubmissionId" class="shrink-0 px-4 pt-2">
           <Button size="sm" @click="handleRetrySubmission">
             Retry submission
@@ -228,6 +266,16 @@ onMounted(async () => {
       </div>
       <!-- The stream/composer components own their data-testid hooks. -->
       <ChatStream :messages="chat.messages" :is-streaming="chat.isStreaming" />
+      <SearchToolForm
+        v-if="chat.currentConversation"
+        :capabilities="chat.searchCapabilities"
+        :catalog-error="chat.capabilityError"
+        :disabled="busy || hasActiveRun"
+        @submit="handleSearch"
+      />
+      <p v-if="artifacts.error" class="shrink-0 px-4 pb-2 text-xs text-red-400" role="alert">
+        {{ artifacts.error }}
+      </p>
       <ChatInput
         :disabled="busy"
         :selection-disabled="chat.isSubmitting"

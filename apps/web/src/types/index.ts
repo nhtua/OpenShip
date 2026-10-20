@@ -43,16 +43,22 @@ export interface Run {
   status: 'created' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'stale'
   created_at: string
   attempt: number
+  kind?: 'chat' | 'tool'
+  graph_version?: number
   // A run read states what it was pinned to and what it asked. Null means
   // "not recorded", never "the default".
   model?: RunModelSummary | null
   usage?: UsageSummary | null
   error?: ErrorSummary | null
   provider_attempts?: ProviderAttemptSummary[]
+  operations?: ToolOperationSummary[]
+  operations_next_cursor?: string | null
 }
 
 export interface RunCard {
   run_id: string
+  kind: 'chat' | 'tool'
+  graph_version: number
   status: string
   started_at: string | null
   ended_at: string | null
@@ -64,6 +70,8 @@ export interface RunCard {
   error_message: string | null
   model: RunModelSummary | null
   attempts: ProviderAttemptSummary[]
+  operations: ToolOperationSummary[]
+  operations_next_cursor: string | null
 }
 
 export interface TurnSubmitRequest {
@@ -160,6 +168,8 @@ export interface Snapshot {
   sequence: number
   events: DurableEvent[]
   runs?: SnapshotRun[]
+  artifacts?: ArtifactSummary[]
+  artifacts_next_cursor?: string | null
 }
 
 export interface SnapshotRun {
@@ -169,8 +179,105 @@ export interface SnapshotRun {
   started_at: string | null
   ended_at: string | null
   error_code: string | null
+  kind?: 'chat' | 'tool'
+  graph_version?: number
   model?: RunModelSummary | null
   usage?: UsageSummary | null
   error?: ErrorSummary | null
   provider_attempts?: ProviderAttemptSummary[]
+  operations?: ToolOperationSummary[]
+  operations_next_cursor?: string | null
+}
+
+export interface CapabilityRef {
+  id: string
+  version: string
+  manifest_digest: string
+}
+
+export interface CapabilitySummary extends CapabilityRef {
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
+  effect: 'read_only_external' | 'read_only_local'
+  enabled: boolean
+  available: boolean
+  unavailable_reason: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
+}
+
+export interface ToolCommandRequest {
+  client_request_id: string
+  capability: CapabilityRef
+  arguments: { query: string; max_results: number }
+}
+
+export interface ArtifactSummary {
+  id: string
+  sha256: string
+  size_bytes: number
+  media_type: string
+  conversation_id: string
+  project_id: string
+  name: string
+  source: string
+  status: 'staging' | 'ready' | 'deleting' | 'deleted' | 'unavailable'
+  created_at: string
+  mutability: 'immutable' | 'mutable'
+}
+
+export interface SearchResultItem {
+  title: string
+  url: string
+  snippet: string
+  rank: number
+}
+
+export interface ToolFailureSummary {
+  code: string
+  message: string
+}
+
+export interface ToolAttemptSummary {
+  id: string
+  operation_id: string
+  ordinal: number
+  fence: number
+  dispatch_started_at: string | null
+  finished_at: string | null
+  outcome: string
+  error_code: string | null
+}
+
+export interface ToolOperationSummary {
+  id: string
+  run_id: string
+  conversation_id: string
+  logical_call_id: string
+  capability_id: string
+  capability_version: string
+  manifest_digest: string
+  status: 'admitted' | 'dispatching' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
+  error_code: string | null
+  error: ToolFailureSummary | null
+  result: {
+    operation_id?: string
+    observed_at?: string
+    query?: string
+    items?: SearchResultItem[]
+    truncated?: boolean
+  } | null
+  artifacts: ArtifactSummary[]
+  attempts: ToolAttemptSummary[]
+  created_at: string | null
+  updated_at: string | null
+  finished_at: string | null
+}
+
+export interface OperationPage {
+  items: ToolOperationSummary[]
+  next_cursor: string | null
+}
+
+export interface ArtifactPage {
+  items: ArtifactSummary[]
+  next_cursor: string | null
 }

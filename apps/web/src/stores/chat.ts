@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import api, { runsApi, modelProfilesApi } from '@/services/api'
+import api, { runsApi, modelProfilesApi, capabilitiesApi } from '@/services/api'
 import type {
+  CapabilitySummary,
   ChatMessage,
   Conversation,
   DurableEvent,
@@ -11,6 +12,7 @@ import type {
   RunCard,
   Snapshot,
   SnapshotRun,
+  ToolCommandRequest,
   TurnSubmitRequest,
 } from '@/types'
 
@@ -38,6 +40,9 @@ export const useChatStore = defineStore('chat', () => {
   const pendingRequests = ref<Map<string, { conversation_id: string; payload: TurnSubmitRequest }>>(
     new Map(),
   )
+  const pendingToolRequests = ref<Map<string, { conversation_id: string; payload: ToolCommandRequest }>>(
+    new Map(),
+  )
   // Applied event IDs (for deduplication)
   const appliedEventIds = ref<Set<string>>(new Set())
   // Cursor per conversation (last committed sequence)
@@ -51,11 +56,14 @@ export const useChatStore = defineStore('chat', () => {
   // A missing catalog is stated where the choice is made, not as a page-wide
   // failure: the installation still answers with its default.
   const profileError = ref<string | null>(null)
+  const searchCapabilities = ref<CapabilitySummary[]>([])
+  const capabilityError = ref<string | null>(null)
   // True only while the submit request itself is in flight. The payload — and
   // with it the provider — is already fixed, so a selection change cannot
   // land in this turn. A run that already exists keeps its own provider
   // regardless of what is selected next.
   const isSubmitting = ref(false)
+  let conversationLoadGeneration = 0
 
   async function getConversations() {
     try {
@@ -104,6 +112,18 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function loadCapabilities(): Promise<void> {
+    capabilityError.value = null
+    try {
+      const res = await capabilitiesApi.list()
+      searchCapabilities.value = res.data
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      capabilityError.value = axiosErr.response?.data?.detail ?? 'Failed to load search tools'
+      searchCapabilities.value = []
+    }
+  }
+
   function selectProfile(profileId: string | null, fallbackIds: string[] = []): void {
     // A submission already in flight has its payload, and therefore its
     // provider, fixed. Changing selection here would be a lie about the turn
@@ -129,10 +149,12 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function loadConversation(conversationId: string) {
+    const loadGeneration = ++conversationLoadGeneration
     try {
       // Load snapshot first to rebuild durable state
       try {
         const snapRes = await runsApi.getSnapshot(conversationId)
+        if (loadGeneration !== conversationLoadGeneration) return
         const snapshot = snapRes.data as unknown as Snapshot
         // Replay retained events for message and title reconstruction.
         for (const event of snapshot.events) {
@@ -164,6 +186,7 @@ export const useChatStore = defineStore('chat', () => {
 
       // Fetch messages (authoritative for message content)
       const res = await api.get(`/conversations/${conversationId}/messages`)
+      if (loadGeneration !== conversationLoadGeneration) return
       const known = conversations.value.find((c) => c.id === conversationId)
       currentConversation.value = {
         id: conversationId,
@@ -195,7 +218,9 @@ export const useChatStore = defineStore('chat', () => {
             api
               .get(`/conversations/${conversationId}/messages`)
               .then((res) => {
-                messages.value = res.data as unknown as ChatMessage[]
+                if (currentConversation.value?.id === conversationId) {
+                  messages.value = res.data as unknown as ChatMessage[]
+                }
               })
               .catch((e) => console.error('Failed to reload messages', e))
           }
@@ -302,6 +327,10 @@ export const useChatStore = defineStore('chat', () => {
               // necessarily asked.
               model: null,
               attempts: [],
+              kind: 'chat',
+              graph_version: 1,
+              operations: [],
+              operations_next_cursor: null,
             }
             runCards.value.set(convId, runCard)
           }
@@ -338,6 +367,38 @@ export const useChatStore = defineStore('chat', () => {
 
       case 'run_cancelled': {
         updateRunStatus(convId, event.run_id || '', 'cancelled', event.created_at)
+        break
+      }
+
+      case 'tool.submitted': {
+        if (event.run_id && !runCards.value.has(convId)) {
+          runCards.value.set(convId, {
+            run_id: event.run_id,
+            kind: 'tool',
+            graph_version: 1,
+            status: 'queued',
+            started_at: null,
+            ended_at: null,
+            usage: null,
+            error_code: null,
+            error_message: null,
+            model: null,
+            attempts: [],
+            operations: [],
+            operations_next_cursor: null,
+          })
+        }
+        break
+      }
+
+      case 'tool.requested':
+      case 'tool.started':
+      case 'tool.completed':
+      case 'tool.failed':
+      case 'tool.cancelled': {
+        // Event payloads announce a transition; only the operation read owns
+        // its public status and result, so events trigger a fresh projection.
+        if (event.run_id) void hydrateRunOperations(convId, event.run_id)
         break
       }
 
@@ -397,12 +458,19 @@ export const useChatStore = defineStore('chat', () => {
       // nothing here guesses a provider, a model, or a count for it.
       card.model = run.model ?? null
       card.attempts = run.provider_attempts ?? []
+      card.kind = run.kind ?? card.kind
+      card.graph_version = run.graph_version ?? card.graph_version
+      if (run.operations) {
+        card.operations = run.operations
+        card.operations_next_cursor = run.operations_next_cursor ?? null
+      }
       card.usage = run.usage ?? null
       const failure: ErrorSummary | null = run.error ?? null
       card.error_code = failure?.code ?? null
       // The safe copy the API settled on, never a provider's own body.
       card.error_message = failure?.message ?? null
       runCards.value.set(convId, card)
+      if (card.kind === 'tool') void hydrateRunOperations(convId, runId)
     } catch (err) {
       console.warn('Failed to hydrate run card from run read', err)
     }
@@ -418,6 +486,8 @@ export const useChatStore = defineStore('chat', () => {
   function runSummaryCard(run: SnapshotRun): RunCard {
     return {
       run_id: run.id,
+      kind: run.kind ?? 'chat',
+      graph_version: run.graph_version ?? 1,
       status: cardStatus(run.status),
       started_at: run.started_at,
       ended_at: run.ended_at,
@@ -426,6 +496,24 @@ export const useChatStore = defineStore('chat', () => {
       error_message: run.error?.message ?? null,
       model: run.model ?? null,
       attempts: run.provider_attempts ?? [],
+      operations: run.operations ?? [],
+      operations_next_cursor: run.operations_next_cursor ?? null,
+    }
+  }
+
+  async function hydrateRunOperations(convId: string, runId: string): Promise<void> {
+    if (!runId) return
+    try {
+      const response = await runsApi.getOperations(runId)
+      const card = runCards.value.get(convId)
+      // A delayed response for a replaced run is historical data, not the
+      // current card's operation state.
+      if (!card || card.run_id !== runId) return
+      card.operations = response.data.items
+      card.operations_next_cursor = response.data.next_cursor
+      runCards.value.set(convId, card)
+    } catch (err) {
+      console.warn('Failed to hydrate tool operations', err)
     }
   }
 
@@ -604,6 +692,10 @@ export const useChatStore = defineStore('chat', () => {
           // the request names a profile, and the server decides what runs.
           model: null,
           attempts: [],
+          kind: 'chat',
+          graph_version: 1,
+          operations: [],
+          operations_next_cursor: null,
         }
         runCards.value.set(conversationId, runCard)
       }
@@ -686,6 +778,75 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function submitToolSearch(
+    conversationId: string,
+    command: Omit<ToolCommandRequest, 'client_request_id'>,
+  ): Promise<void> {
+    const requestId = generateRequestId()
+    const payload: ToolCommandRequest = { client_request_id: requestId, ...command }
+    pendingToolRequests.value.set(requestId, { conversation_id: conversationId, payload })
+    error.value = null
+    isStreaming.value = true
+    try {
+      await submitPendingToolRequest(requestId)
+    } finally {
+      isStreaming.value = false
+    }
+  }
+
+  async function submitPendingToolRequest(requestId: string): Promise<void> {
+    const pending = pendingToolRequests.value.get(requestId)
+    if (!pending?.conversation_id) return
+    const convId = pending.conversation_id
+    isSubmitting.value = true
+    try {
+      const response = await runsApi.submitTool(convId, pending.payload)
+      const run = response.data
+      runCards.value.set(convId, {
+        run_id: run.id,
+        kind: 'tool',
+        graph_version: run.graph_version ?? 1,
+        status: cardStatus(run.status),
+        started_at: null,
+        ended_at: null,
+        usage: null,
+        error_code: run.error?.code ?? null,
+        error_message: run.error?.message ?? null,
+        model: null,
+        attempts: [],
+        operations: run.operations ?? [],
+        operations_next_cursor: run.operations_next_cursor ?? null,
+      })
+      pendingToolRequests.value.delete(requestId)
+      void hydrateRunOperations(convId, run.id)
+      const cursor = cursors.value.get(convId) ?? -1
+      void subscribeToEvents(convId, cursor, (event) => {
+        processDurableEvent(event)
+        const lastCursor = cursors.value.get(convId) ?? -1
+        if (event.sequence > lastCursor) cursors.value.set(convId, event.sequence)
+        if (['run.succeeded', 'run.failed', 'run_cancelled'].includes(event.type)) {
+          void hydrateRunCard(convId, event.run_id ?? run.id)
+        }
+      }).catch((streamError) => console.warn('Tool event stream failed', streamError))
+    } catch (err) {
+      console.error('Failed to submit search command', err)
+      error.value = 'Failed to submit search. Please retry the same command.'
+    } finally {
+      isSubmitting.value = false
+    }
+  }
+
+  async function retryToolSubmission(requestId: string): Promise<void> {
+    if (isSubmitting.value) return
+    error.value = null
+    isStreaming.value = true
+    try {
+      await submitPendingToolRequest(requestId)
+    } finally {
+      isStreaming.value = false
+    }
+  }
+
   async function cancelRun(runId: string): Promise<void> {
     try {
       await runsApi.cancelRun(runId)
@@ -732,6 +893,7 @@ export const useChatStore = defineStore('chat', () => {
     currentConversation.value = null
     runCards.value.clear()
     pendingRequests.value.clear()
+    pendingToolRequests.value.clear()
     cursors.value.clear()
   }
 
@@ -746,16 +908,23 @@ export const useChatStore = defineStore('chat', () => {
     cursors,
     modelProfiles,
     profileError,
+    searchCapabilities,
+    capabilityError,
     selectedProfileId,
     selectedFallbackIds,
     getConversations,
     createConversation,
     loadModelProfiles,
+    loadCapabilities,
     selectProfile,
     loadConversation,
     sendMessage,
     retrySubmission,
+    submitToolSearch,
+    retryToolSubmission,
     pendingRequests,
+    pendingToolRequests,
+    hydrateRunOperations,
     cancelRun,
     subscribeToEvents,
     processDurableEvent,

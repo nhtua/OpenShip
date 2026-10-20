@@ -177,10 +177,11 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** Safe public catalog, `runsApi.submitTool/getOperations`, artifact metadata/download API and additive run/snapshot `kind`, `graph_version`, `operations`, `artifacts`, pagination/continuation fields. Default page 50, max 100. Exact submitted payload is retained for browser retries.
 
-- [ ] Write failing manual tool/query selection, missing key per tool, status/error/download, snapshot after event pruning, duplicate event and delayed old-conversation response tests. Neither model text nor a late event may fabricate operation success.
-- [ ] Run API event and targeted Vitest/fixture Playwright cases before changes.
-- [ ] Implement the form/cards in the existing conversation UI. Display Brave/Tavily identity and observation time, safe links and retained-file download; no combined provider selector/configuration or key-entry settings.
-- [ ] Verify targeted tests, typecheck/build and old auth/title/cancel/reconnect journeys. Label fixture browser evidence accurately. Commit subject: `feat: inspect search operations in conversation`.
+- [x] Write failing manual tool/query selection, missing key per tool, status/error/download, snapshot after event pruning, duplicate event and delayed old-conversation response tests. Neither model text nor a late event may fabricate operation success.
+- [x] Run API event and targeted Vitest/fixture Playwright cases before changes.
+- [x] Implement the form/cards in the existing conversation UI. Display Brave/Tavily identity and observation time, safe links and retained-file download; no combined provider selector/configuration or key-entry settings.
+- [x] Verify targeted tests, typecheck/build and old auth/title/cancel/reconnect journeys. Label fixture browser evidence accurately. Commit subject: `feat: inspect search operations in conversation`.
+  - Validation: API event/output/command/snapshot suite → 18 passed, 1 skipped (real PostgreSQL snapshot lane requires `TEST_POSTGRES_URL`); changed API Ruff clean. Browser suite → 137 passed; Vue typecheck and production build pass. Fixture Playwright tool/auth/provider-portability journeys → 23 passed, and full fixture E2E suite → 49 passed. Browser evidence uses synthetic fixture services. No live provider calls were made.
 
 ### Task 9 — 4A packaging, real-stack proof and operator setup
 

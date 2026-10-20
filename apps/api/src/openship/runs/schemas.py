@@ -4,6 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_serializer
 
+from ..execution.projections import OperationSummary
 from ..providers.configuration import destination_label
 from ..providers.errors import SAFE_MESSAGES
 from .models import ProviderAttempt, Run
@@ -74,10 +75,14 @@ class RunResponse(BaseModel):
     status: str
     created_at: datetime
     attempt: int = 0
+    kind: str = "chat"
+    graph_version: int = 1
     model: ModelSummary | None = None
     usage: UsageSummary | None = None
     error: ErrorSummary | None = None
     provider_attempts: list[AttemptSummary] = Field(default_factory=list)
+    operations: list[OperationSummary] = Field(default_factory=list)
+    operations_next_cursor: str | None = None
 
     @field_serializer('id')
     def serialize_id(self, value: uuid.UUID) -> str:
@@ -183,7 +188,7 @@ def _attempt_projection(attempt: ProviderAttempt) -> AttemptSummary:
     )
 
 
-def project_run_response(run: Run, attempts=()) -> RunResponse:
+def project_run_response(run: Run, attempts=(), operation_page=None) -> RunResponse:
     """The public shape of a run: only what a browser is allowed to see."""
     return RunResponse(
         id=run.id,
@@ -191,8 +196,12 @@ def project_run_response(run: Run, attempts=()) -> RunResponse:
         status=run.status,
         created_at=run.created_at,
         attempt=run.attempt,
+        kind=run.kind or "chat",
+        graph_version=run.graph_version or 1,
         model=_model_projection(run.model_configuration, attempts),
         usage=_usage_projection(run.usage),
         error=_error_projection(run.error_code),
         provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
+        operations=list(operation_page.items) if operation_page else [],
+        operations_next_cursor=operation_page.next_cursor if operation_page else None,
     )

@@ -1,5 +1,15 @@
 import axios from 'axios'
-import type { AuthResponse, Run, Snapshot, TurnSubmitRequest, ModelProfileCatalog } from '@/types'
+import type {
+  ArtifactPage,
+  AuthResponse,
+  CapabilitySummary,
+  OperationPage,
+  Run,
+  Snapshot,
+  ToolCommandRequest,
+  TurnSubmitRequest,
+  ModelProfileCatalog,
+} from '@/types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -56,6 +66,16 @@ export const runsApi = {
 
   getRun: (runId: string): Promise<{ data: Run }> =>
     api.get(`/runs/${runId}`),
+
+  submitTool: (
+    conversationId: string,
+    request: ToolCommandRequest,
+  ): Promise<{ data: Run }> => api.post(`/runs/${conversationId}/tools`, request),
+
+  getOperations: (
+    runId: string,
+    params: { limit?: number; cursor?: string } = {},
+  ): Promise<{ data: OperationPage }> => api.get(`/runs/${runId}/operations`, { params }),
 }
 
 // The installation's own model profiles: what may be selected, and nothing
@@ -63,6 +83,21 @@ export const runsApi = {
 // credential.
 export const modelProfilesApi = {
   list: (): Promise<{ data: ModelProfileCatalog }> => api.get('/model-profiles'),
+}
+
+export const capabilitiesApi = {
+  list: (): Promise<{ data: CapabilitySummary[] }> => api.get('/capabilities'),
+}
+
+export const artifactsApi = {
+  list: (
+    conversationId: string,
+    params: { limit?: number; cursor?: string } = {},
+  ): Promise<{ data: ArtifactPage }> =>
+    api.get(`/conversations/${conversationId}/artifacts`, { params }),
+
+  download: (artifactId: string): Promise<{ data: Blob }> =>
+    api.get(`/artifacts/${artifactId}/content`, { responseType: 'blob' }),
 }
 
 export default api

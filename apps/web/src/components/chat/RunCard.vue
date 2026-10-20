@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Badge } from '@/components/ui'
+import ToolOperationCard from '@/components/chat/ToolOperationCard.vue'
 import type {
   ProviderAttemptSummary,
   RunCard,
@@ -13,6 +14,8 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const emit = defineEmits<{ downloadArtifact: [artifactId: string, name: string] }>()
+const kind = computed(() => props.card.kind ?? 'chat')
 
 const statusLabel = computed(() => {
   switch (props.card.status) {
@@ -111,32 +114,40 @@ const usageText = computed(() => {
 
 <template>
   <div
-    class="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs"
+    class="flex flex-col gap-2 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs"
   >
-    <span class="text-slate-400">Run:</span>
-    <Badge :variant="statusVariant" class="h-5 text-[10px]">
-      {{ statusLabel }}
-    </Badge>
-    <span v-if="card.started_at" class="text-slate-500">
-      Started {{ new Date(card.started_at).toLocaleTimeString() }}
-    </span>
-    <span v-if="card.ended_at" class="text-slate-500">
-      Ended {{ new Date(card.ended_at).toLocaleTimeString() }}
-    </span>
-    <template v-if="finished">
-      <span class="text-slate-400">{{ requestedText }}</span>
-      <span v-if="servingText" class="text-slate-400">{{ servingText }}</span>
-    </template>
-    <span v-if="attemptText" class="text-slate-500">
-      {{ attemptText }}
-    </span>
-    <span v-if="finished" class="text-slate-500">{{ usageText }}</span>
-    <!-- The settled safe copy, never a provider's own body. -->
-    <span v-if="card.error_message" class="text-red-400">
-      ({{ card.error_message }})
-    </span>
-    <span v-else-if="card.error_code" class="text-red-400">
-      ({{ card.error_code }})
-    </span>
+    <div class="flex flex-wrap items-center gap-2 text-xs">
+      <span class="text-slate-400">{{ kind === 'tool' ? 'Search run:' : 'Run:' }}</span>
+      <Badge :variant="statusVariant" class="h-5 text-[10px]">
+        {{ statusLabel }}
+      </Badge>
+      <span v-if="card.started_at" class="text-slate-500">
+        Started {{ new Date(card.started_at).toLocaleTimeString() }}
+      </span>
+      <span v-if="card.ended_at" class="text-slate-500">
+        Ended {{ new Date(card.ended_at).toLocaleTimeString() }}
+      </span>
+      <template v-if="kind === 'chat' && finished">
+        <span class="text-slate-400">{{ requestedText }}</span>
+        <span v-if="servingText" class="text-slate-400">{{ servingText }}</span>
+      </template>
+      <span v-if="attemptText" class="text-slate-500">
+        {{ attemptText }}
+      </span>
+      <span v-if="kind === 'chat' && finished" class="text-slate-500">{{ usageText }}</span>
+      <!-- The settled safe copy, never a provider's own body. -->
+      <span v-if="card.error_message" class="text-red-400">
+        ({{ card.error_message }})
+      </span>
+      <span v-else-if="card.error_code" class="text-red-400">
+        ({{ card.error_code }})
+      </span>
+    </div>
+    <ToolOperationCard
+      v-for="operation in card.operations"
+      :key="operation.id"
+      :operation="operation"
+      @download="(artifactId) => emit('downloadArtifact', artifactId, operation.artifacts.find((item) => item.id === artifactId)?.name ?? 'search-results.json')"
+    />
   </div>
 </template>

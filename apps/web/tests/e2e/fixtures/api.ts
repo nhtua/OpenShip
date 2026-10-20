@@ -243,6 +243,43 @@ export interface E2EProfileCatalog {
   profiles: E2EProfileItem[]
 }
 
+export interface E2ECapability {
+  id: string
+  version: string
+  manifest_digest: string
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
+  effect: 'read_only_external' | 'read_only_local'
+  enabled: boolean
+  available: boolean
+  unavailable_reason: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
+}
+
+export const E2E_SEARCH_CAPABILITIES: E2ECapability[] = [
+  {
+    id: 'brave_web_search',
+    version: '1.0.0',
+    manifest_digest: 'a'.repeat(64),
+    input_schema: {},
+    output_schema: {},
+    effect: 'read_only_external',
+    enabled: true,
+    available: true,
+    unavailable_reason: null,
+  },
+  {
+    id: 'tavily_web_search',
+    version: '1.0.0',
+    manifest_digest: 'b'.repeat(64),
+    input_schema: {},
+    output_schema: {},
+    effect: 'read_only_external',
+    enabled: true,
+    available: true,
+    unavailable_reason: null,
+  },
+]
+
 export interface E2ERunModelSummary {
   profile_id: string
   label: string
@@ -297,10 +334,14 @@ export interface E2ERun {
     | 'stale'
   created_at: string
   attempt: number
+  kind?: 'chat' | 'tool'
+  graph_version?: number
   model: E2ERunModelSummary | null
   usage: E2EUsageSummary | null
   error: E2EErrorSummary | null
   provider_attempts: E2EAttemptSummary[]
+  operations?: Record<string, unknown>[]
+  operations_next_cursor?: string | null
 }
 
 export interface E2EDurableEvent {
@@ -682,8 +723,14 @@ export function durableEvent(
 export interface DurableApiOptions {
   profilesStatus?: number
   profiles?: E2EProfileCatalog
+  capabilitiesStatus?: number
+  capabilities?: E2ECapability[]
   turnsStatus?: number
   submittedRun?: E2ERun
+  toolsStatus?: number
+  submittedToolRun?: E2ERun
+  operations?: Record<string, unknown>[]
+  artifacts?: Record<string, unknown>[]
   /** What each successive run read reports; the last one repeats. */
   runReads?: E2ERun[]
   cancelStatus?: number
@@ -704,14 +751,21 @@ export async function mockDurableApi(
   options: DurableApiOptions = {},
 ): Promise<{
   submitted: { conversation_id: string; payload: Record<string, unknown> }[]
+  submittedTools: { conversation_id: string; payload: Record<string, unknown> }[]
   stream: string[]
   cancelled: string[]
 }> {
   const {
     profilesStatus = 200,
     profiles = E2E_PROFILES,
+    capabilitiesStatus = 200,
+    capabilities = E2E_SEARCH_CAPABILITIES,
     turnsStatus = 202,
     submittedRun = E2E_RUN_QUEUED,
+    toolsStatus = 202,
+    submittedToolRun = { ...E2E_RUN_QUEUED, kind: 'tool', graph_version: 1 },
+    operations = [],
+    artifacts = [],
     runReads = [E2E_RUN_COMPLETED],
     cancelStatus = 200,
     cancelledRun = E2E_RUN_CANCELLED,
@@ -729,6 +783,7 @@ export async function mockDurableApi(
   // the card later shows.
   const capture = {
     submitted: [] as { conversation_id: string; payload: Record<string, unknown> }[],
+    submittedTools: [] as { conversation_id: string; payload: Record<string, unknown> }[],
     stream: [] as string[],
     // Which runs a browser asked to stop. A cancellation a test claims has to
     // be one the browser actually made, of this run.
@@ -762,6 +817,11 @@ export async function mockDurableApi(
       ? json(route, profilesStatus, { detail: 'Model catalog unavailable' })
       : json(route, 200, profiles),
   )
+  await page.route('**/api/capabilities', (route) =>
+    capabilitiesStatus !== 200
+      ? json(route, capabilitiesStatus, { detail: 'Search tools unavailable' })
+      : json(route, 200, capabilities),
+  )
 
   // The run read. Registered before the command routes below, which is what
   // lets those win: Playwright keeps the most recently added handler.
@@ -771,6 +831,24 @@ export async function mockDurableApi(
     readIndex += 1
     json(route, 200, read)
   })
+
+  // These specific durable reads must win over the generic run read above.
+  await page.route('**/api/runs/*/operations', (route) =>
+    json(route, 200, { items: operations, next_cursor: null }),
+  )
+
+  await page.route('**/api/conversations/*/artifacts**', (route) =>
+    json(route, 200, { items: artifacts, next_cursor: null }),
+  )
+
+  await page.route('**/api/artifacts/*/content', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'Content-Disposition': "attachment; filename*=UTF-8''search-results.json" },
+      body: JSON.stringify({ fixture: true }),
+    }),
+  )
 
   await page.route('**/api/conversations/*/messages', (route) => {
     const conversationId = conversationFrom(route.request().url(), '/conversations/')
@@ -842,6 +920,18 @@ export async function mockDurableApi(
       payload: body,
     })
     json(route, 202, submittedRun)
+  })
+
+  await page.route('**/api/runs/*/tools', async (route) => {
+    if (toolsStatus !== 202) {
+      return json(route, toolsStatus, { detail: 'Search could not be submitted' })
+    }
+    const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>
+    capture.submittedTools.push({
+      conversation_id: conversationFrom(route.request().url(), '/runs/'),
+      payload: body,
+    })
+    json(route, 202, submittedToolRun)
   })
 
   await page.route('**/api/runs/*/cancel', (route) => {
