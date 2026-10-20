@@ -58,15 +58,37 @@ describe('ChatInput', () => {
         submissionError: null,
       },
     })
-    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
-    const automaticMode = wrapper.get('[data-testid="automatic-tool-mode"]')
-    expect(automaticMode.attributes('disabled')).toBeUndefined()
-    await automaticMode.trigger('click')
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').text()).toContain('Automatic tools')
     await wrapper.get('textarea').setValue('nearest star system')
     await wrapper.get('form').trigger('submit')
 
     expect(wrapper.find('[data-testid="attached-tool"]').exists()).toBe(false)
     expect(wrapper.emitted('send')?.[0]).toEqual(['nearest star system', { enableTools: true }])
+    expect(wrapper.emitted('search')).toBeFalsy()
+  })
+
+  it('hides the active-run warning but still blocks tool submission', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities,
+        submissionError: null,
+        toolSubmissionDisabled: false,
+      },
+    })
+
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
+    await wrapper.setProps({ toolSubmissionDisabled: true })
+    await wrapper.get('textarea').setValue('search while another run is active')
+
+    expect(wrapper.find('span.text-destructive').exists()).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('send')).toBeFalsy()
     expect(wrapper.emitted('search')).toBeFalsy()
   })
 
@@ -143,11 +165,7 @@ describe('ChatInput', () => {
         submissionError: null,
       },
     })
-    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
-    const choices = wrapper.findAll('[data-testid="tool-choice"]')
-    expect((choices[0].element as HTMLButtonElement).disabled).toBe(true)
-    expect((choices[1].element as HTMLButtonElement).disabled).toBe(false)
-    await wrapper.get('[data-testid="automatic-tool-mode"]').trigger('click')
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').text()).toContain('Automatic tools')
     await wrapper.get('textarea').setValue('search without attaching either service')
     await wrapper.get('form').trigger('submit')
 
@@ -155,6 +173,27 @@ describe('ChatInput', () => {
     expect(wrapper.emitted('send')?.[0]).toEqual([
       'search without attaching either service', { enableTools: true },
     ])
+  })
+
+  it('lets the user turn off default automatic tool use for subsequent messages', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [{ ...capabilities[0], id: 'brave_web_search' }],
+        submissionError: null,
+      },
+    })
+    await wrapper.get('[data-testid="automatic-tool-chip"]').trigger('click')
+    await wrapper.get('textarea').setValue('hello without search')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('send')?.[0]).toEqual(['hello without search'])
+    expect(wrapper.find('[data-testid="automatic-tool-chip"]').exists()).toBe(false)
   })
 
   it('keeps automatic mode with the unsent draft and blocks it if the selected model changes', async () => {
@@ -170,8 +209,6 @@ describe('ChatInput', () => {
         submissionError: null,
       },
     })
-    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
-    await wrapper.get('[data-testid="automatic-tool-mode"]').trigger('click')
     await wrapper.get('textarea').setValue('draft for a capable model')
     await wrapper.setProps({ selectedProfileId: 'secondary-fixture' })
 
@@ -194,8 +231,6 @@ describe('ChatInput', () => {
         submissionError: null,
       },
     })
-    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
-    await wrapper.get('[data-testid="automatic-tool-mode"]').trigger('click')
     await wrapper.get('textarea').setValue('retry this with tools enabled')
     await wrapper.get('form').trigger('submit')
     await wrapper.setProps({ submissionError: 'Failed to submit message. Please try again.' })

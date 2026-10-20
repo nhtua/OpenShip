@@ -101,27 +101,80 @@ test('lists, reads, downloads and handles pinned deletion for exact conversation
   await page.goto('/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).click()
 
-  const toggle = page.getByTestId('conversation-files-toggle')
-  await expect(toggle).toContainText('Conversation files')
-  await toggle.click()
+  await page.getByTestId('conversation-files-trigger').click()
   await expect(page.locator('[data-testid="conversation-file"]')).toHaveCount(1)
   await page.getByRole('button', { name: 'Load more files' }).click()
   await expect(page.locator('[data-testid="conversation-file"]')).toHaveCount(2)
   await expect(page.locator('[data-artifact-id="snapshot-1"]')).toContainText('same-name.txt')
   await expect(page.locator('[data-artifact-id="snapshot-2"]')).toContainText('same-name.txt')
+  await expect(page.locator('[data-artifact-id="snapshot-1"]')).not.toContainText('snapshot-1')
 
-  await page.getByRole('button', { name: 'Read same-name.txt version snapshot-1' }).click()
+  await page.getByRole('button', { name: 'Preview same-name.txt' }).first().click()
   const preview = page.getByTestId('selected-file-content')
   await expect(preview).toContainText('<script>saved text</script>')
   await expect(preview.locator('script')).toHaveCount(0)
   expect(fileReads).toEqual(['snapshot-1'])
 
   const download = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'Download same-name.txt version snapshot-1' }).click()
+  await page.getByRole('button', { name: 'Download same-name.txt' }).first().click()
   expect((await download).suggestedFilename()).toBe('same-name.txt')
 
-  await page.getByRole('button', { name: 'Delete same-name.txt version snapshot-1' }).click()
+  await page.getByRole('button', { name: 'Delete same-name.txt' }).first().click()
   await expect(page.getByRole('alert').last()).toContainText('active operation')
   await expect(page.locator('[data-artifact-id="snapshot-1"]')).toBeVisible()
   await expect(page.getByTestId('conversation-files')).not.toContainText('/home/')
+})
+
+test('keeps preview pagination controls visible in a narrow drawer with a long file list', async ({ page }) => {
+  await clearApiRoutes(page)
+  await mockApi(page)
+  const longName = 'search-results-with-a-long-filename-that-wraps-on-small-screens.json'
+  const files = Array.from({ length: 12 }, (_, index) => ({
+    ...file(`small-screen-${index + 1}`),
+    ...(index === 0 ? { name: longName } : {}),
+  }))
+  await page.route('**/api/conversations/c1/workspace*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ workspace, files: { items: files, next_cursor: null } }),
+    })
+  })
+  await page.route('**/api/conversations/c1/workspace/files/*', async (route) => {
+    const artifactId = new URL(route.request().url()).pathname.split('/').at(-1)!
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        workspace_id: 'workspace-c1',
+        artifact_id: artifactId,
+        version_id: artifactId,
+        sha256: artifactId.padEnd(64, 'a').slice(0, 64),
+        media_type: 'text/plain',
+        size_bytes: 4096,
+        offset: 0,
+        content: 'long file content\n'.repeat(100),
+        next_offset: 2048,
+      }),
+    })
+  })
+  await setAuthToken(page)
+  await page.goto('/')
+  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.setViewportSize({ width: 375, height: 667 })
+  await page.getByTestId('conversation-files-trigger').click()
+  const firstFileRow = page.locator('[data-artifact-id="small-screen-1"]')
+  const fileName = firstFileRow.locator('span').first()
+  await expect(fileName).toHaveText(longName)
+  const fileNameBox = await fileName.boundingBox()
+  expect(fileNameBox).not.toBeNull()
+  expect(fileNameBox!.height).toBeGreaterThan(20)
+  await expect(firstFileRow).not.toContainText('small-screen-1')
+  await page.getByRole('button', { name: `Preview ${longName}`, exact: true }).click()
+
+  const readMore = page.getByTestId('read-more-file')
+  await expect(readMore).toBeVisible()
+  const box = await readMore.boundingBox()
+  expect(box).not.toBeNull()
+  expect(box!.y + box!.height).toBeLessThanOrEqual(page.viewportSize()!.height)
 })

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import ToolAttachmentMenu from '@/components/chat/ToolAttachmentMenu.vue'
 import type { CapabilitySummary } from '@/types'
 
@@ -61,6 +62,28 @@ describe('ToolAttachmentMenu', () => {
     expect(wrapper.find('[data-testid="tool-menu"]').exists()).toBe(false)
     expect(document.activeElement).toBe(trigger.element)
     wrapper.unmount()
+  })
+
+  it('closes when the user clicks outside the tool menu', async () => {
+    const wrapper = mount(ToolAttachmentMenu, {
+      props: { capabilities, selectedCapabilityId: null, disabled: false },
+      attachTo: document.body,
+    })
+    const outside = document.createElement('button')
+    document.body.append(outside)
+
+    try {
+      await wrapper.get('[aria-label="Add tool"]').trigger('click')
+      expect(wrapper.find('[data-testid="tool-menu"]').exists()).toBe(true)
+
+      outside.click()
+      await nextTick()
+
+      expect(wrapper.find('[data-testid="tool-menu"]').exists()).toBe(false)
+    } finally {
+      outside.remove()
+      wrapper.unmount()
+    }
   })
 
   it('moves between enabled tool choices with arrow keys', async () => {

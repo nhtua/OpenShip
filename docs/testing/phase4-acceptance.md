@@ -30,6 +30,17 @@ available to tool-enabled chat when explicitly enabled.
 
 ## Phase 4B qualification status
 
+The 2026-10-20 final-answer follow-up addresses a reported run that exhausted
+its two-call allowance about seven seconds into its configured 30-minute
+deadline: both searches succeeded, then the model requested a third search.
+Durable admission now disables further tool calls on the final available
+request. Regression coverage includes Brave→Tavily→answer, zero tool allowance,
+one remaining turn/attempt/output reservation, retries, and rejected excess
+calls. A separate live OpenAI check using two hardcoded synthetic tool-result
+pairs completed a final answer with `tool_choice: "none"`, one generation
+request, and zero search dispatches. This is provider-control evidence, not a
+replay of the user's conversation or a provider-backed browser qualification.
+
 The first tool-capable tuple is OpenAI Chat Completions with GPT-6 Luna. Its
 profile must explicitly declare `tool_calls: true`, keep parallel calls off,
 and set `tool_call_reasoning_effort: "none"`; the adapter includes that
@@ -133,7 +144,7 @@ Representative files: `task9a-desktop-collapsed.png`,
 | Fixture browser suite | 52 passed after adding a shared empty-workspace API fixture | Deterministic fixture responses. |
 | Web unit tests, Vue typecheck, and production build | 171 unit tests passed; typecheck and build passed | — |
 | API lint | Ruff passed across `apps/api` | — |
-| Full network-free API suite | Attempted after correcting the query-projection expectation; the single `tests/test_auth_login.py::test_login_existing_user` TestClient request hung in this local harness, including when run alone. The pre-commit `api-tests` hook was skipped after reproducing the same stall. | The timed stack shows the request waiting while the Starlette ASGI portal is idle. Focused changed API suites pass; this broad lane is not claimed green. All other commit hooks passed. |
+| Full network-free API suite | 577 passed, 40 deselected on Python 3.13.7 in 161.88 seconds | Uses the temporary SQLite database from `tests/conftest.py`; it requires no PostgreSQL service or provider credentials. The earlier TestClient hang reproduced only inside the restricted local execution sandbox, where cross-thread asyncio loop wakeups are blocked; the same login test and full lane completed outside it. The GitHub Actions unit job now has a 15-minute limit and emits a stack dump after 60 seconds if a future stall occurs. |
 | Provider-backed full-stack browser suite | Not run with configured model/search services | Only the conversation-files full-stack browser spec was run. Tool-chat and search browser cases need the synthetic provider stack used by the API full-stack lane. |
 | Sandbox installation/image qualification | Not applicable | Phase 6 owns sandbox driver, image, isolation, and executable-file qualification. |
 
@@ -146,7 +157,7 @@ conversation now returns an empty page; it is not reported as unavailable.
 From `apps/api`, run the network-free API lane with:
 
 ```bash
-uv run pytest -q -m "not postgres and not provider_live and not full_stack"
+uv run pytest -q -o faulthandler_timeout=60 -m "not postgres and not provider_live and not full_stack"
 ```
 
 Run PostgreSQL integration and synthetic full-stack qualification against a
@@ -185,8 +196,9 @@ and [Task 9A](../superpowers/plans/2026-10-19-phase4-execution-and-conversation-
 was visually accepted by the user on 2026-10-20. Tasks 1–17 are implemented;
 the focused API, PostgreSQL, synthetic real-stack, fixture browser, real-API
 workspace browser, web unit/typecheck/build, and lint evidence is recorded
-above. The broad API suite limitation and provider-backed browser gap are also
-recorded. Phase 4A/B/C acceptance remains pending the user's review.
+above. The service-free API suite now passes; the provider-backed full-stack
+browser gap remains recorded. Phase 4A/B/C acceptance remains pending the user's
+review.
 
 The previously recorded PostgreSQL and synthetic full-stack evidence remains
 part of the Phase 4A qualification record. If a required lane skipped, ran zero

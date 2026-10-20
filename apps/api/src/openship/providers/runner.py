@@ -356,6 +356,7 @@ async def run_model_turn(
             authorize_profile(profile)
 
         reason = _reason(index, made)
+        attempt_request = request
         if budget is None:
             attempt_id = recorder.start(
                 profile,
@@ -372,8 +373,10 @@ async def run_model_turn(
                 reserved_cost=reservation[1] if reservation is not None else None,
             )
             attempt_id = admitted.attempt_id
+            if not admitted.tool_calls_allowed:
+                attempt_request = request.model_copy(update={"tool_choice": "none"})
         observed = _Observed()
-        kind, detail = await _attempt(adapter, request, profile, control, observed)
+        kind, detail = await _attempt(adapter, attempt_request, profile, control, observed)
         made += 1
 
         if kind == "interrupted":

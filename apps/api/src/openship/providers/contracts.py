@@ -168,9 +168,9 @@ class RunLimits(BaseModel):
 
     max_output_tokens: int = Field(default=4000, gt=0)
     max_attempts: int = Field(default=3, ge=1)
-    run_timeout_seconds: float = Field(default=120.0, gt=0)
+    run_timeout_seconds: float = Field(default=1800.0, gt=0)
     request_timeout_seconds: float = Field(default=45.0, gt=0)
-    max_context_bytes: int = Field(default=65536, gt=0)
+    max_context_bytes: int = Field(default=2 * 1024 * 1024, gt=0)
     max_total_tokens: int | None = Field(default=None, gt=0)
     max_cost_usd: Decimal | None = Field(default=None, ge=0)
 
@@ -359,6 +359,7 @@ class ModelRequest(BaseModel):
     messages: tuple[ChatMessage, ...] = Field(min_length=1)
     max_output_tokens: int = Field(gt=0)
     tools: tuple[ToolDefinition, ...] = ()
+    tool_choice: Literal["auto", "none"] = "auto"
     required_capabilities: frozenset[str] = frozenset({"streaming"})
 
     @model_validator(mode="after")
@@ -452,6 +453,11 @@ def pin_profile(profile, *, defaults: RunLimits | None = None) -> PinnedProvider
     persisted snapshot round-trips unchanged.
     """
     data = dict(profile) if isinstance(profile, dict) else profile.model_dump()
+    if not isinstance(profile, dict) and profile.limits is not None:
+        # Preserve which overrides the operator actually supplied. Expanding
+        # model defaults here would silently cap an installation's larger
+        # timeout/context even when the profile only limits another field.
+        data["limits"] = profile.limits.model_dump(exclude_unset=True)
     data.pop("profile_revision", None)
     try:
         declared = ProviderProfile(**data)
@@ -486,7 +492,11 @@ def _merge_limits(*candidates: RunLimits | None) -> RunLimits:
         return RunLimits()
 
     def field_min(name: str) -> object:
-        values = [getattr(limits, name) for limits in present]
+        values = [
+            getattr(limits, name)
+            for index, limits in enumerate(present)
+            if index == 0 or name in limits.model_fields_set
+        ]
         numeric = [value for value in values if value is not None]
         if not numeric:
             return None

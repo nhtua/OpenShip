@@ -113,9 +113,9 @@ def test_shared_budget_defaults_exist_before_any_adapter_runs():
 
     assert limits.max_output_tokens == 4000
     assert limits.max_attempts == 3
-    assert limits.run_timeout_seconds == 120.0
+    assert limits.run_timeout_seconds == 1800.0
     assert limits.request_timeout_seconds == 45.0
-    assert limits.max_context_bytes == 65536
+    assert limits.max_context_bytes == 2 * 1024 * 1024
     assert limits.max_total_tokens is None
     assert limits.max_cost_usd is None
 

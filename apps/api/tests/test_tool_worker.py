@@ -327,6 +327,7 @@ def test_persisted_tool_deadline_is_reused_after_a_pre_dispatch_reclaim():
 def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
     monkeypatch, tmp_path
 ):
+    from src.openship.chat.routes import get_conversation_messages
     from src.openship.execution.gateway import MAINTAINED_TOOL_HANDLERS
     from src.openship.runs import dispatch as dispatch_module
     from src.openship.runs import worker as worker_module
@@ -416,10 +417,12 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
         chat_claim = claim_next(db, worker_id="first-chat-worker", lease_seconds=30)
         assert chat_claim is not None and chat_claim.run_id == chat_run.id
         prompt_was_first = []
+        system_prompts = []
 
         class FakeChatGraph:
             def invoke(self, state, config):
                 prompt_was_first.append("## Title:" in state["messages"][0]["content"])
+                system_prompts.append(state["messages"][0]["content"])
                 return {
                     "assistant_response": "Review the plan.\n\n## Title: After manual search",
                     "usage": None,
@@ -433,11 +436,22 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
         assert worker.process_job(chat_claim)
         db.expire_all()
         assert prompt_was_first == [True]
+        assert "choose one provider" in system_prompts[0]
+        assert "do not repeat the same search" in system_prompts[0]
         assert db.get(Conversation, conversation.id).title == "After manual search"
         assert db.query(Message).filter(
             Message.run_id == chat_run.id,
             Message.role == "assistant",
         ).one().content == "Review the plan."
+        history = asyncio.run(get_conversation_messages(conversation.id, db, user))
+        assert [
+            (message["role"], message["run_id"])
+            for message in history
+            if message["run_id"] == str(chat_run.id)
+        ] == [
+            ("user", str(chat_run.id)),
+            ("assistant", str(chat_run.id)),
+        ]
     finally:
         worker.engine.dispose()
         db.close()

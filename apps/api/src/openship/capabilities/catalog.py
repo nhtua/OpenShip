@@ -26,11 +26,15 @@ _SEARCH_SOURCE_FILES = {
         "tools/search/contracts.py",
         "tools/search/http.py",
         "tools/search/brave.py",
+        "tools/search/naming.py",
+        "execution/publication.py",
     ),
     "tavily_web_search": (
         "tools/search/contracts.py",
         "tools/search/http.py",
         "tools/search/tavily.py",
+        "tools/search/naming.py",
+        "execution/publication.py",
     ),
 }
 
@@ -65,7 +69,7 @@ def _implementation_digest(capability_id: str) -> str:
 def _search_manifest(capability_id: str, binding: str) -> CapabilityManifest:
     arguments_schema = SearchArguments.model_json_schema()
     item_schema = SearchItem.model_json_schema()
-    outputs = (OutputPolicy(name="search-results.json", mutability="immutable"),)
+    outputs = (OutputPolicy(name="{query_slug}.json", mutability="immutable"),)
     fields = {
         "schema_version": 1,
         "id": capability_id,

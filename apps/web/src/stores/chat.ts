@@ -325,6 +325,7 @@ export const useChatStore = defineStore('chat', () => {
           if (tempMsg) {
             // Replace temp ID with server-derived ID
             tempMsg.id = `user-${event.id}`
+            tempMsg.run_id = event.run_id
             // Use server's created_at if available
             if (event.created_at) {
               tempMsg.created_at = event.created_at
@@ -337,6 +338,7 @@ export const useChatStore = defineStore('chat', () => {
             if (!existing && content) {
               const userMsg: ChatMessage = {
                 id: `user-${event.id}`,
+                run_id: event.run_id,
                 role: 'user',
                 content,
                 conversation_id: convId,
@@ -355,6 +357,7 @@ export const useChatStore = defineStore('chat', () => {
           if (!existing) {
             const userMsg: ChatMessage = {
               id: `user-${event.id}`,
+              run_id: event.run_id,
               role: 'user',
               content,
               conversation_id: convId,
@@ -682,7 +685,13 @@ export const useChatStore = defineStore('chat', () => {
             sequence,
             type: eventType || data.type || '',
             payload: data.payload || data,
-            created_at: new Date().toISOString(),
+            // The durable event's timestamp comes from the server clock and
+            // must stay aligned with persisted messages. Using the browser
+            // clock can temporarily sort a new turn before older history.
+            created_at:
+              typeof data.created_at === 'string' && data.created_at
+                ? data.created_at
+                : new Date().toISOString(),
           })
 
           if (sequence > lastSeenSequence) {

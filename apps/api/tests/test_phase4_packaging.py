@@ -74,3 +74,30 @@ def test_examples_keep_search_optional_and_secret_values_empty():
         assert values["TOOL_ENABLED_IDS"] == ""
         assert values["BRAVE_SEARCH_API_KEY"] == ""
         assert values["TAVILY_API_KEY"] == ""
+
+
+def test_runtime_budget_settings_reach_both_processes():
+    compose = (REPO_ROOT / "docker-compose.yml").read_text()
+    expected = {
+        "WORKFLOW_RUN_TIMEOUT_SECONDS": "1800",
+        "MODEL_CONTEXT_TOKENS": "128000",
+        "MODEL_MAX_CONTEXT_BYTES": "2097152",
+    }
+    for service in ("api", "worker"):
+        block = _service_block(compose, service)
+        for name, default in expected.items():
+            assert f"{name}: ${{{name}:-{default}}}" in block
+
+    from dotenv import dotenv_values
+
+    from src.openship.config import Settings
+    from src.openship.providers.registry import load_profiles
+
+    for path in (REPO_ROOT / ".env.example", REPO_ROOT / "apps/api/.env.example"):
+        values = dotenv_values(path)
+        for name, default in expected.items():
+            assert values[name] == default
+        installed = Settings(_env_file=path)
+        pinned = load_profiles(installed).pin_selection(None)
+        assert pinned.limits.run_timeout_seconds == 1800
+        assert pinned.primary.capabilities.context_tokens == 128000

@@ -121,6 +121,22 @@ describe('conversation file store', () => {
     expect(mockWorkspace.readFile).toHaveBeenNthCalledWith(2, 'c1', 'file-1', { offset: 6, max_bytes: 16 * 1024 })
   })
 
+  it('closes a file preview when its selected file is selected again', async () => {
+    mockWorkspace.get.mockResolvedValueOnce({ data: page('c1', ['file-1']) } as never)
+    mockWorkspace.readFile.mockResolvedValueOnce({ data: read('file-1', 'preview content') } as never)
+    const store = useArtifactsStore()
+    await store.loadConversation('c1')
+
+    await store.selectFile('c1', 'file-1')
+    expect(store.selectedByConversation.get('c1')).toBe('file-1')
+    expect(store.contentByArtifact.get('file-1')?.content).toBe('preview content')
+
+    await store.selectFile('c1', 'file-1')
+
+    expect(store.selectedByConversation.get('c1')).toBeNull()
+    expect(mockWorkspace.readFile).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps a pinned artifact listed and reports a safe delete refusal', async () => {
     mockWorkspace.get.mockResolvedValueOnce({ data: page('c1', ['file-1']) } as never)
     mockArtifacts.delete.mockRejectedValueOnce({

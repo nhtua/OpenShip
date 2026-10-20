@@ -54,6 +54,28 @@ function findByText(
   return wrapper.findAll('button').find((b) => b.text().includes(text))
 }
 
+function searchOperation(id: string, runId: string, createdAt: string): ToolOperationSummary {
+  return {
+    id,
+    run_id: runId,
+    conversation_id: 'c1',
+    logical_call_id: id,
+    capability_id: 'brave_web_search',
+    capability_version: '1.0.0',
+    manifest_digest: 'a'.repeat(64),
+    status: 'succeeded',
+    error_code: null,
+    error: null,
+    query: id,
+    result: { query: id, items: [] },
+    artifacts: [],
+    attempts: [],
+    created_at: createdAt,
+    updated_at: createdAt,
+    finished_at: createdAt,
+  }
+}
+
 describe('ChatView', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
@@ -160,6 +182,43 @@ describe('ChatView', () => {
     expect(wrapper.find('[data-testid="search-tool-form"]').exists()).toBe(false)
   })
 
+  it('orders search operations by the user and assistant messages for their run', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    const chat = useChatStore()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Deploy pipeline'), { timeout: wait })
+    chat.currentConversation = { id: 'c1', title: 'Search timeline', created_at: '', updated_at: '' }
+    chat.messages = [
+      { id: 'user-run-1', role: 'user', run_id: 'run-1', content: 'First search', conversation_id: 'c1', created_at: '2026-10-20T12:00:00Z' },
+      { id: 'assistant-run-1', role: 'assistant', run_id: 'run-1', content: 'First answer', conversation_id: 'c1', created_at: '2026-10-20T12:00:10Z' },
+      { id: 'user-run-2', role: 'user', run_id: 'run-2', content: 'Second search', conversation_id: 'c1', created_at: '2026-10-20T12:01:00Z' },
+      { id: 'assistant-run-2', role: 'assistant', run_id: 'run-2', content: 'Second answer', conversation_id: 'c1', created_at: '2026-10-20T12:01:10Z' },
+    ]
+    const first = searchOperation('search-run-1', 'run-1', '2026-10-20T11:00:00Z')
+    const second = searchOperation('search-run-2', 'run-2', '2026-10-20T11:00:01Z')
+    chat.toolOperationsByConversation.set('c1', new Map([[first.id, first], [second.id, second]]))
+    await nextTick()
+
+    const content = wrapper.get('[data-testid="stream"]').text()
+    expect(content.indexOf('First search')).toBeLessThan(content.indexOf('Brave Search'))
+    expect(content.indexOf('Brave Search')).toBeLessThan(content.indexOf('First answer'))
+    expect(content.indexOf('First answer')).toBeLessThan(content.indexOf('Second search'))
+    expect(content.indexOf('Second search')).toBeLessThan(content.lastIndexOf('Brave Search'))
+    expect(content.lastIndexOf('Brave Search')).toBeLessThan(content.indexOf('Second answer'))
+  })
+
+  it('opens conversation files from the header in a right-side panel', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Deploy pipeline'), { timeout: wait })
+    await findByText(wrapper, 'Deploy pipeline')!.trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="conversation-files-trigger"]').exists()).toBe(true), { timeout: wait })
+    await wrapper.get('[data-testid="conversation-files-trigger"]').trigger('click')
+
+    const panel = document.body.querySelector('[data-testid="conversation-files-panel"]')
+    expect(panel).toBeTruthy()
+    expect(panel?.textContent).toContain('No saved files')
+    expect(wrapper.find('[data-testid="conversation-files-toggle"]').exists()).toBe(false)
+  })
+
   it('loads and reads retained conversation files by exact snapshot ID', async () => {
     const savedFile = {
       id: 'snapshot-1', sha256: 'a'.repeat(64), size_bytes: 18,
@@ -190,10 +249,15 @@ describe('ChatView', () => {
     await findByText(wrapper, 'Deploy pipeline')!.trigger('click')
     await vi.waitFor(() => expect(mockWorkspaceApi.get).toHaveBeenCalledWith('c1', { limit: 50, cursor: undefined }), { timeout: wait })
 
-    await wrapper.get('[data-testid="conversation-files-toggle"]').trigger('click')
-    await wrapper.get('[aria-label="Read search-results.json version snapshot-1"]').trigger('click')
-    await vi.waitFor(() => expect(wrapper.text()).toContain('<script>kept as text</script>'), { timeout: wait })
-    expect(wrapper.find('[data-testid="selected-file-content"] script').exists()).toBe(false)
+    await wrapper.get('[data-testid="conversation-files-trigger"]').trigger('click')
+    const readFile = document.body.querySelector<HTMLButtonElement>(
+      '[aria-label="Preview search-results.json"]',
+    )
+    expect(readFile).toBeTruthy()
+    readFile!.click()
+    await nextTick()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('<script>kept as text</script>'), { timeout: wait })
+    expect(document.body.querySelector('[data-testid="selected-file-content"] script')).toBeNull()
     expect(mockWorkspaceApi.readFile).toHaveBeenCalledWith('c1', 'snapshot-1', { max_bytes: 16 * 1024 })
     expect(wrapper.text()).not.toContain('/home/')
   })
@@ -425,12 +489,26 @@ describe('ChatView', () => {
     // running, and a control that could not be pressed would be a lie.
     await vi.waitFor(
       () => {
-        expect(findByText(wrapper, 'Cancel run')).toBeTruthy()
+        expect(wrapper.find('[aria-label="Cancel run"]').exists()).toBe(true)
       },
       { timeout: wait },
     )
-    const cancel = findByText(wrapper, 'Cancel run')!
+    const cancel = wrapper.get('[aria-label="Cancel run"]')
     expect((cancel.element as HTMLButtonElement).disabled).toBe(false)
+    expect(cancel.element.closest('[data-testid="run-card"]')).toBeTruthy()
+    chat.pendingRequests.set('pending-retry', {
+      conversation_id: 'c1',
+      payload: {
+        content: 'please retry',
+        client_request_id: 'pending-retry',
+        provider_profile_id: null,
+        fallback_profile_ids: [],
+        enable_tools: false,
+      },
+    })
+    await nextTick()
+    const retry = wrapper.get('[aria-label="Retry submission"]')
+    expect(retry.element.closest('[data-testid="run-card"]')).toBeTruthy()
 
     mockRunsApi.cancelRun.mockResolvedValue({ data: { id: 'run-1' } })
     // The read is what the card becomes: the store waits for it rather than
@@ -452,10 +530,60 @@ describe('ChatView', () => {
     // disappears with it rather than offering an action that does nothing.
     await vi.waitFor(
       () => {
-        expect(findByText(wrapper, 'Cancel run')).toBeFalsy()
+        expect(wrapper.find('[aria-label="Cancel run"]').exists()).toBe(false)
       },
       { timeout: wait },
     )
+  })
+
+  it('keeps retry available for an uncertain manual search submission', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    const chat = useChatStore()
+    await vi.waitFor(
+      () => {
+        expect(wrapper.text()).toContain('Deploy pipeline')
+      },
+      { timeout: wait },
+    )
+
+    chat.currentConversation = {
+      id: 'c1',
+      title: 'Deploy pipeline',
+      created_at: '',
+      updated_at: '',
+    } as Conversation
+    chat.runCards = new Map([
+      ['c1', {
+        run_id: 'tool-run-1',
+        kind: 'tool',
+        graph_version: 1,
+        status: 'succeeded',
+        started_at: null,
+        ended_at: null,
+        usage: null,
+        error_code: null,
+        error_message: null,
+        model: null,
+        attempts: [],
+        operations: [],
+        operations_next_cursor: null,
+      }],
+    ])
+    chat.pendingToolRequests.set('retry-search-1', {
+      conversation_id: 'c1',
+      payload: {
+        client_request_id: 'retry-search-1',
+        capability: { id: 'brave_web_search', version: '1.0.0', manifest_digest: 'digest' },
+        arguments: { query: 'nearest star', max_results: 5 },
+      },
+    })
+
+    await nextTick()
+    const retryAction = vi.spyOn(chat, 'retryToolSubmission').mockResolvedValue()
+    const retry = wrapper.get('[aria-label="Retry submission"]')
+    expect(retry.element.closest('[data-testid="run-card"]')).toBeTruthy()
+    await retry.trigger('click')
+    expect(retryAction).toHaveBeenCalledWith('retry-search-1')
   })
 
   it('keeps the empty chat state when there are no messages', async () => {

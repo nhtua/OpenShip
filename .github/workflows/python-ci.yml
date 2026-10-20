@@ -57,6 +57,7 @@ jobs:
   # fixture. Synthetic full-stack cases have their own isolated job.
   api-unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -68,7 +69,7 @@ jobs:
         with:
           enable-cache: true
       - run: cd apps/api && uv sync --extra dev
-      - run: cd apps/api && uv run pytest -q -m "not postgres and not provider_live and not full_stack"
+      - run: cd apps/api && uv run pytest -q -o faulthandler_timeout=60 -m "not postgres and not provider_live and not full_stack"
 
   # The durable pipeline's promises are only proved where the real locks,
   # JSON serialization, and saver writes exist. The service only has to

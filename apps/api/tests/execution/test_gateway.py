@@ -268,9 +268,17 @@ async def test_gateway_runs_workspace_list_and_read_without_credentials_or_new_a
     db.close()
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_filename"),
+    [
+        ("Café: stars & galaxies!", "cafe_stars_galaxies.json"),
+        ("🌙", "search-results.json"),
+        ("é" * 300, "e" * 250 + ".json"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_gateway_dispatches_once_and_publishes_artifact_result_event_atomically(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, query, expected_filename
 ):
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
@@ -296,7 +304,7 @@ async def test_gateway_dispatches_once_and_publishes_artifact_result_event_atomi
         context=context,
         logical_call_id="manual:0",
         ref=ref,
-        arguments={"query": "gateway test", "max_results": 2},
+        arguments={"query": query, "max_results": 2},
         control=InvocationControl(),
     )
 
@@ -318,11 +326,11 @@ async def test_gateway_dispatches_once_and_publishes_artifact_result_event_atomi
     assert artifact.originating_run_id == run.id
     assert artifact.originating_operation_id == operation.id
     assert artifact.source == "tool"
-    assert artifact.display_name == "search-results.json"
+    assert artifact.display_name == expected_filename
     with store.open_verified(artifact) as content:
         snapshot = content.read()
     assert hashlib.sha256(snapshot).hexdigest() == artifact.sha256
-    assert json.loads(snapshot)["query"] == "gateway test"
+    assert json.loads(snapshot)["query"] == query
     assert [event.type for event in db.query(Event).filter(Event.run_id == run.id).order_by(Event.sequence)] == [
         "tool.requested",
         "tool.started",
@@ -331,7 +339,7 @@ async def test_gateway_dispatches_once_and_publishes_artifact_result_event_atomi
     ]
     assert db.query(Outbox).filter(Outbox.conversation_id == conversation.id).count() == 4
     for event in db.query(Event).filter(Event.run_id == run.id):
-        assert "gateway test" not in event.payload
+        assert query not in event.payload
         assert "test-key" not in event.payload
     db.close()
 

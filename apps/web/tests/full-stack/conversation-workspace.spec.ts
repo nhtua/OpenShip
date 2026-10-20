@@ -38,19 +38,19 @@ test('shows exact saved conversation files through the real API and filesystem s
   await page.addInitScript((value: string) => localStorage.setItem('access_token', value), token)
   await page.goto('/')
   await page.getByRole('button', { name: 'Open conversation Persistent files' }).click()
-  await page.getByTestId('conversation-files-toggle').click()
+  await page.getByTestId('conversation-files-trigger').click()
   const row = page.locator(`[data-artifact-id="${artifact.id}"]`)
   await expect(row).toContainText('persistent result.txt')
-  await page.getByRole('button', { name: `Read persistent result.txt version ${artifact.id}` }).click()
+  await page.getByRole('button', { name: 'Preview persistent result.txt' }).click()
   await expect(page.getByTestId('selected-file-content')).toContainText(content)
   await expect(page.getByTestId('selected-file-content')).toContainText(artifact.sha256)
 
   const download = page.waitForEvent('download')
-  await page.getByRole('button', { name: `Download persistent result.txt version ${artifact.id}` }).click()
+  await page.getByRole('button', { name: 'Download persistent result.txt' }).click()
   expect((await download).suggestedFilename()).toBe('persistent result.txt')
 
   page.on('dialog', (dialog) => dialog.accept())
-  await page.getByRole('button', { name: `Delete persistent result.txt version ${artifact.id}` }).click()
+  await page.getByRole('button', { name: 'Delete persistent result.txt' }).click()
   await expect(row).toContainText('Deleted')
 
   const otherConversation = await request.post('/api/conversations', {
@@ -61,7 +61,7 @@ test('shows exact saved conversation files through the real API and filesystem s
   const otherId = (await otherConversation.json()).id as string
   await page.reload()
   await page.getByRole('button', { name: 'Open conversation Separate files' }).click()
-  await page.getByTestId('conversation-files-toggle').click()
+  await page.getByTestId('conversation-files-trigger').click()
   await expect(page.getByText('No saved files in this conversation.')).toBeVisible()
   await expect(page.locator(`[data-artifact-id="${artifact.id}"]`)).toHaveCount(0)
   expect(otherId).not.toBe(conversationId)

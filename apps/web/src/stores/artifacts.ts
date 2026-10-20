@@ -83,6 +83,12 @@ export const useArtifactsStore = defineStore('artifacts', () => {
   async function selectFile(conversationId: string, artifactId: string): Promise<void> {
     const artifact = byConversation.value.get(conversationId)?.find((item) => item.id === artifactId)
     if (!artifact || artifact.conversation_id !== conversationId || artifact.status !== 'ready') return
+    if (selectedByConversation.value.get(conversationId) === artifactId) {
+      selectedByConversation.value.set(conversationId, null)
+      readGeneration += 1
+      readingArtifactId.value = null
+      return
+    }
     selectedByConversation.value.set(conversationId, artifactId)
     if (contentByArtifact.value.has(artifactId)) return
 

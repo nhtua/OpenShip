@@ -101,7 +101,7 @@ class ExecutionLimits(FrozenModel):
 
 
 class LoopLimits(FrozenModel):
-    deadline_seconds: int = Field(default=120, ge=1)
+    deadline_seconds: int = Field(default=1800, ge=1, le=3600)
     max_tool_calls: int = Field(default=2, ge=0)
     max_model_turns: int = Field(default=3, ge=1)
     max_generation_attempts: int = Field(default=3, ge=1)

@@ -56,6 +56,9 @@ the runtime worker. See the [artifact storage runbook](../../docs/operations/art
 | `ARTIFACT_PROJECT_QUOTA_BYTES` | `1073741824` | Maximum artifact bytes per project |
 | `ARTIFACT_PROJECT_QUOTA_COUNT` | `1000` | Maximum retained artifacts per project |
 | `MODEL_MAX_TOKENS` | `4000` | Default output token limit when a profile does not declare one |
+| `WORKFLOW_RUN_TIMEOUT_SECONDS` | `1800` | Overall execution deadline in seconds, including model requests, retries and tools; supported range 1–3600 |
+| `MODEL_CONTEXT_TOKENS` | `128000` | Default declared context window; explicit smaller provider declarations still apply |
+| `MODEL_MAX_CONTEXT_BYTES` | `2097152` | Independent UTF-8 request-size guard, including messages, tool schemas and results |
 | `DATABASE_URL` | `postgresql://postgres:change_me@localhost:5432/openship` | Database connection string |
 | `JWT_SECRET` | `dev-secret-change-in-production` | JWT signing secret |
 | `JWT_EXPIRY_HOURS` | `24` | JWT token expiry |
@@ -68,6 +71,43 @@ the runtime worker. See the [artifact storage runbook](../../docs/operations/art
 | `EVENT_RETENTION_DAYS` | `30` | Days to retain events for completed runs |
 | `CHECKPOINT_RETENTION_DAYS` | `30` | Days to retain checkpoints for completed runs |
 | `LOG_RETENTION_DAYS` | `7` | Days to retain operational logs |
+
+Set the common budgets directly in `apps/api/.env` for local development, or
+the root `.env` for Docker Compose:
+
+```dotenv
+WORKFLOW_RUN_TIMEOUT_SECONDS=1800
+MODEL_CONTEXT_TOKENS=128000
+MODEL_MAX_CONTEXT_BYTES=2097152
+```
+
+Restart both the API and worker after changing settings. New runs pin the new
+values; queued or executing runs retain their submitted configuration. A
+profile's explicit `limits.run_timeout_seconds` or `limits.max_context_bytes`
+can impose a smaller ceiling. Individual model requests still use a 45-second
+network timeout and tool operations keep their own timeout. Tool-enabled chat
+still permits two tool calls and three model generation attempts per run.
+When the remaining allowance only fits an answer, the next model request
+disables further calls and uses the collected results. Retries consume the
+same allowance. A provider that requests another tool despite that restriction
+fails with `tool_limit_exceeded`, rather than a misleading time/token error.
+
+The example profile omits `capabilities.context_tokens` so the simple
+`MODEL_CONTEXT_TOKENS` setting supplies it. Existing profiles with a smaller
+explicit value (for example, `8192`) keep that value: remove it once to inherit
+the environment setting. The examples use a single-quoted multiline JSON value
+so other profile options are easier to edit.
+
+Context tokens and request bytes are different units. The current OpenAI
+adapter enforces the byte guard locally and leaves actual token-window
+validation to the provider; `MODEL_CONTEXT_TOKENS` is a declaration, not a
+qualified local tokenizer. The 2-MiB guard accommodates larger requests without
+claiming an exact byte-to-token conversion. No history is silently truncated.
+
+Prompt caching uses OpenAI's enabled defaults for supported models. Cache
+hits depend on matching reusable prefixes; caching does not increase the
+context window. The adapter records provider-reported cached input tokens and
+does not force model-specific retention options. See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
 
 ## Health and Readiness
 

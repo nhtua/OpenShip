@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
@@ -9,11 +9,17 @@ import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import RunCard from '@/components/chat/RunCard.vue'
 import ConversationFiles from '@/components/chat/ConversationFiles.vue'
+import Icon from '@/components/common/Icon.vue'
 import {
   Alert,
   AlertDescription,
   AlertTitle,
   Button,
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
 } from '@/components/ui'
 
 const router = useRouter()
@@ -26,6 +32,7 @@ const isLoadingConversations = ref(false)
 const isCreatingConversation = ref(false)
 const isLoadingConversation = ref(false)
 const isToolSubmitting = ref(false)
+const conversationFilesOpen = ref(false)
 // Driven from the resulting store error, never inferred from an empty list.
 const historyLoadFailed = ref(false)
 
@@ -57,6 +64,9 @@ const conversationFiles = computed(() => {
   const conversationId = chat.currentConversation?.id
   return conversationId ? artifacts.byConversation.get(conversationId) ?? [] : []
 })
+const conversationFileCount = computed(() =>
+  conversationWorkspace.value?.quota.committed_count ?? conversationFiles.value.length,
+)
 const conversationWorkspace = computed(() => {
   const conversationId = chat.currentConversation?.id
   return conversationId ? artifacts.workspaceByConversation.get(conversationId) ?? null : null
@@ -68,6 +78,10 @@ const selectedArtifactId = computed(() => {
 const selectedFileRead = computed(() =>
   selectedArtifactId.value ? artifacts.contentByArtifact.get(selectedArtifactId.value) ?? null : null,
 )
+
+watch(() => chat.currentConversation?.id, () => {
+  conversationFilesOpen.value = false
+})
 
 const pendingSubmissionId = computed(() => {
   const conversationId = chat.currentConversation?.id
@@ -211,6 +225,10 @@ function handleDeleteFile(conversationId: string, artifactId: string) {
   void artifacts.deleteArtifact(conversationId, artifactId)
 }
 
+function toggleConversationFiles() {
+  conversationFilesOpen.value = !conversationFilesOpen.value
+}
+
 function handleCancelOperation(runId: string) {
   if (activeRunId.value === runId) void chat.cancelRun(runId)
 }
@@ -228,6 +246,7 @@ async function handleSignOut() {
   chat.conversations = []
   chat.error = null
   historyLoadFailed.value = false
+  conversationFilesOpen.value = false
   await router.replace({ name: 'login' })
 }
 
@@ -260,10 +279,14 @@ onMounted(async () => {
     :username="auth.user?.username ?? null"
     :conversations="chat.conversations"
     :current-conversation-id="chat.currentConversation?.id ?? null"
+    :show-conversation-files="Boolean(chat.currentConversation)"
+    :conversation-files-open="conversationFilesOpen"
+    :conversation-file-count="conversationFileCount"
     :busy="busy"
     @create-conversation="handleCreateConversation"
     @select-conversation="handleSelectConversation"
     @sign-out="handleSignOut"
+    @toggle-conversation-files="toggleConversationFiles"
   >
     <!-- Error banner lives outside the stream's scrolling content so a
          failure never disappears below the history. -->
@@ -292,24 +315,29 @@ onMounted(async () => {
            still be stopped - a run that reached an end has nothing left to
            stop, and offering it would be a control that does nothing. -->
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
-        <RunCard
-          v-if="chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool'"
-          :card="chat.runCards.get(chat.currentConversation.id)!"
-        />
-        <div v-if="pendingSubmissionId" class="shrink-0 px-4 pt-2">
-          <Button size="sm" @click="handleRetrySubmission">
-            Retry submission
-          </Button>
-        </div>
-        <div v-if="activeRunId && chat.runCards.get(chat.currentConversation.id)?.kind !== 'tool'" class="shrink-0 px-4 pt-2">
+        <RunCard :card="chat.runCards.get(chat.currentConversation.id)!">
           <Button
-            size="sm"
-            variant="destructive"
+            v-if="pendingSubmissionId"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Retry submission"
+            title="Retry submission"
+            @click="handleRetrySubmission"
+          >
+            <Icon name="refresh" />
+          </Button>
+          <Button
+            v-if="activeRunId && chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool'"
+            size="icon-sm"
+            variant="ghost"
+            class="text-destructive hover:text-destructive"
+            aria-label="Cancel run"
+            title="Cancel run"
             @click="handleCancelRun"
           >
-            Cancel run
+            <Icon name="times" />
           </Button>
-        </div>
+        </RunCard>
       </div>
       <!-- The stream/composer components own their data-testid hooks. -->
       <ChatStream
@@ -319,29 +347,6 @@ onMounted(async () => {
         @download="handleDownloadArtifact"
         @cancel="handleCancelOperation"
       />
-      <ConversationFiles
-        v-if="chat.currentConversation"
-        :conversation-id="chat.currentConversation.id"
-        :workspace="conversationWorkspace"
-        :files="conversationFiles"
-        :loading="artifacts.loadingConversation === chat.currentConversation.id"
-        :loading-more="artifacts.loadingMoreConversation === chat.currentConversation.id"
-        :error="artifacts.error"
-        :next-cursor="artifacts.nextCursor.get(chat.currentConversation.id) ?? null"
-        :selected-artifact-id="selectedArtifactId"
-        :selected-content="selectedFileRead?.content ?? null"
-        :selected-next-offset="selectedFileRead?.next_offset ?? null"
-        :reading-artifact-id="artifacts.readingArtifactId"
-        :deleting-artifact-id="artifacts.deletingArtifactId"
-        @load-more="artifacts.loadMore"
-        @select-file="handleSelectFile"
-        @read-more="handleReadMoreFile"
-        @download-file="handleDownloadArtifact"
-        @delete-file="handleDeleteFile"
-      />
-      <p v-if="artifacts.error" class="shrink-0 px-4 pb-2 text-xs text-red-400" role="alert">
-        {{ artifacts.error }}
-      </p>
       <ChatInput
         :disabled="busy"
         :selection-disabled="chat.isSubmitting"
@@ -358,5 +363,43 @@ onMounted(async () => {
         @select="handleSelectProfile"
       />
     </div>
+
+    <Sheet
+      :open="conversationFilesOpen"
+      @update:open="conversationFilesOpen = $event"
+    >
+      <SheetContent
+        id="conversation-files-panel"
+        data-testid="conversation-files-panel"
+        class="w-[min(28rem,92vw)] gap-0 p-0 sm:max-w-md"
+      >
+        <SheetHeader class="shrink-0 border-b border-border px-5 py-4 pr-14 text-left">
+          <SheetTitle>Conversation files</SheetTitle>
+          <SheetDescription>
+            Files saved during this conversation.
+          </SheetDescription>
+        </SheetHeader>
+        <ConversationFiles
+          v-if="chat.currentConversation"
+          :conversation-id="chat.currentConversation.id"
+          :workspace="conversationWorkspace"
+          :files="conversationFiles"
+          :loading="artifacts.loadingConversation === chat.currentConversation.id"
+          :loading-more="artifacts.loadingMoreConversation === chat.currentConversation.id"
+          :error="artifacts.error"
+          :next-cursor="artifacts.nextCursor.get(chat.currentConversation.id) ?? null"
+          :selected-artifact-id="selectedArtifactId"
+          :selected-content="selectedFileRead?.content ?? null"
+          :selected-next-offset="selectedFileRead?.next_offset ?? null"
+          :reading-artifact-id="artifacts.readingArtifactId"
+          :deleting-artifact-id="artifacts.deletingArtifactId"
+          @load-more="artifacts.loadMore"
+          @select-file="handleSelectFile"
+          @read-more="handleReadMoreFile"
+          @download-file="handleDownloadArtifact"
+          @delete-file="handleDeleteFile"
+        />
+      </SheetContent>
+    </Sheet>
   </AppLayout>
 </template>

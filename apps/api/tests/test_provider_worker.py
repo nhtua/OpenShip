@@ -800,8 +800,10 @@ def test_worker_attempt_admission_survives_process_exit(client, authorized_clien
 
     monkeypatch.setattr(
         worker_module,
-        "build_chat_graph",
-        lambda _saver, invocation_factory: ProcessExitGraph(invocation_factory),
+        "resolve_graph",
+        lambda _kind, _version: (
+            lambda _saver, invocation_factory: ProcessExitGraph(invocation_factory)
+        ),
     )
     monkeypatch.setattr(Worker, "_supervise", lambda *_args: None)
 

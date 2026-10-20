@@ -351,7 +351,10 @@ def test_tool_admission_counts_transcript_ids_across_sequential_turns():
 
     with pytest.raises(ProviderError) as refused:
         budget.admit_tool("model:1:call:0")
-    assert refused.value.code == "budget_exceeded"
+    assert refused.value.code == "tool_limit_exceeded"
+    from src.openship.runs.worker import _run_outcome
+
+    assert _run_outcome(refused.value.code) == "failed"
 
 
 def test_context_admission_counts_function_schemas_and_tool_results(monkeypatch):

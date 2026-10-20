@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, Mock } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useChatStore } from '@/stores/chat'
 import api, { modelProfilesApi, runsApi } from '@/services/api'
+import { buildConversationTimeline } from '@/lib/chatTimeline'
 import {
   apiError,
   fixtureConversations,
@@ -215,6 +216,74 @@ describe('chat store', () => {
       expect.stringContaining('/events/stream?after_sequence='),
       expect.anything(),
     )
+  })
+
+  it('uses persisted event time to keep a live turn and its tools after existing history', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-20T12:00:00Z'))
+
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    chat.messages = [
+      {
+        id: 'old-user', role: 'user', content: 'Previous question', conversation_id: 'c1',
+        created_at: '2026-10-20T13:00:00Z',
+      },
+      {
+        id: 'old-assistant', role: 'assistant', content: 'Previous answer', conversation_id: 'c1',
+        created_at: '2026-10-20T13:00:05Z',
+      },
+    ]
+
+    const submitted = {
+      id: 'evt-live-submit', conversation_id: 'c1', run_id: 'run-live', sequence: 1,
+      type: 'turn_submitted', payload: { content: 'Current question' },
+      created_at: '2026-10-20T13:00:10Z',
+    }
+    const terminal = {
+      id: 'evt-live-done', conversation_id: 'c1', run_id: 'run-live', sequence: 2,
+      type: 'run.succeeded', payload: {}, created_at: '2026-10-20T13:00:20Z',
+    }
+    const encoder = new TextEncoder()
+    const mockStream = new ReadableStream({
+      start(controller) {
+        for (const event of [submitted, terminal]) {
+          controller.enqueue(encoder.encode(
+            `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+          ))
+        }
+        controller.close()
+      },
+    })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: mockStream,
+    } as Response)
+
+    const operation = {
+      id: 'search-live', run_id: 'run-live', conversation_id: 'c1',
+      logical_call_id: 'call-live', capability_id: 'brave_web_search',
+      capability_version: '1.0.0', manifest_digest: 'a'.repeat(64),
+      status: 'succeeded' as const, error_code: null, error: null, result: { items: [] },
+      artifacts: [], attempts: [], created_at: '2026-10-20T12:00:01Z',
+      updated_at: '2026-10-20T12:00:02Z', finished_at: '2026-10-20T12:00:02Z',
+    }
+    chat.toolOperationsByConversation.set('c1', new Map([[operation.id, operation]]))
+
+    try {
+      await chat.subscribeToEvents('c1', 0, (event) => chat.processDurableEvent(event))
+
+      const operations = [...chat.toolOperationsByConversation.get('c1')!.values()]
+      expect(buildConversationTimeline(chat.messages, operations).map((entry) => entry.id)).toEqual([
+        'old-user',
+        'old-assistant',
+        'user-evt-live-submit',
+        'search-live',
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('deduplicates events by event ID', async () => {
@@ -515,7 +584,7 @@ describe('chat store', () => {
       start(controller) {
         resolveStream = () => {
           // Server confirms with turn_submitted event including client_request_id
-          const event = `data: {"id":"evt-confirm-1","sequence":0,"type":"turn_submitted","payload":{"client_request_id":"${mockUuid}"}}\n\n`
+          const event = `data: {"id":"evt-confirm-1","sequence":0,"run_id":"run-confirm-1","type":"turn_submitted","payload":{"client_request_id":"${mockUuid}"}}\n\n`
           controller.enqueue(encoder.encode(event))
           controller.close()
         }
@@ -540,6 +609,7 @@ describe('chat store', () => {
 
     // Temp ID should be replaced with server-derived ID
     expect(chat.messages[0].id).toBe('user-evt-confirm-1')
+    expect(chat.messages[0].run_id).toBe('run-confirm-1')
   })
 
   it('handles SSE out-of-order events without duplication', async () => {

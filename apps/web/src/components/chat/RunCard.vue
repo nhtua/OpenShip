@@ -112,34 +112,40 @@ const usageText = computed(() => {
 
 <template>
   <div
+    data-testid="run-card"
     class="flex flex-col gap-2 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs"
   >
-    <div class="flex flex-wrap items-center gap-2 text-xs">
-      <span class="text-slate-400">{{ kind === 'tool' ? 'Search run:' : 'Run:' }}</span>
-      <Badge :variant="statusVariant" class="h-5 text-[10px]">
-        {{ statusLabel }}
-      </Badge>
-      <span v-if="card.started_at" class="text-slate-500">
-        Started {{ new Date(card.started_at).toLocaleTimeString() }}
-      </span>
-      <span v-if="card.ended_at" class="text-slate-500">
-        Ended {{ new Date(card.ended_at).toLocaleTimeString() }}
-      </span>
-      <template v-if="kind === 'chat' && finished">
-        <span class="text-slate-400">{{ requestedText }}</span>
-        <span v-if="servingText" class="text-slate-400">{{ servingText }}</span>
-      </template>
-      <span v-if="attemptText" class="text-slate-500">
-        {{ attemptText }}
-      </span>
-      <span v-if="kind === 'chat' && finished" class="text-slate-500">{{ usageText }}</span>
-      <!-- The settled safe copy, never a provider's own body. -->
-      <span v-if="card.error_message" class="text-red-400">
-        ({{ card.error_message }})
-      </span>
-      <span v-else-if="card.error_code" class="text-red-400">
-        ({{ card.error_code }})
-      </span>
+    <div class="flex min-w-0 items-center gap-2 text-xs">
+      <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        <span class="text-slate-400">{{ kind === 'tool' ? 'Search run:' : 'Run:' }}</span>
+        <Badge :variant="statusVariant" class="h-5 text-[10px]">
+          {{ statusLabel }}
+        </Badge>
+        <span v-if="card.started_at" class="text-slate-500">
+          Started {{ new Date(card.started_at).toLocaleTimeString() }}
+        </span>
+        <span v-if="card.ended_at" class="text-slate-500">
+          Ended {{ new Date(card.ended_at).toLocaleTimeString() }}
+        </span>
+        <template v-if="kind === 'chat' && finished">
+          <span class="text-slate-400">{{ requestedText }}</span>
+          <span v-if="servingText" class="text-slate-400">{{ servingText }}</span>
+        </template>
+        <span v-if="attemptText" class="text-slate-500">
+          {{ attemptText }}
+        </span>
+        <span v-if="kind === 'chat' && finished" class="text-slate-500">{{ usageText }}</span>
+        <!-- The settled safe copy, never a provider's own body. -->
+        <span v-if="card.error_message" class="text-red-400">
+          ({{ card.error_message }})
+        </span>
+        <span v-else-if="card.error_code" class="text-red-400">
+          ({{ card.error_code }})
+        </span>
+      </div>
+      <div class="flex shrink-0 items-center gap-1">
+        <slot />
+      </div>
     </div>
   </div>
 </template>

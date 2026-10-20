@@ -288,6 +288,7 @@ class OpenAIAdapter:
         }
         if request.tools:
             kwargs["tools"] = _wire_tools(request)
+            kwargs["tool_choice"] = request.tool_choice
             # This profile is qualified for one function call per model turn.
             kwargs["parallel_tool_calls"] = False
             if config.adapter_options.tool_call_reasoning_effort is not None:
@@ -411,6 +412,8 @@ class OpenAIAdapter:
                 raise ProviderError("unexpected_model", cause=RuntimeError("served model"))
 
             if tool_fragments:
+                if request.tool_choice == "none":
+                    raise ProviderError("tool_limit_exceeded")
                 allowed = {tool.name: tool for tool in request.tools}
                 call_ids = set()
                 ready_calls = []

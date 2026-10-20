@@ -27,6 +27,8 @@ export interface ChatMessage {
   content: string
   conversation_id: string | null
   created_at: string
+  /** Durable run that created the message; absent on older conversation history. */
+  run_id?: string | null
 }
 
 export interface Conversation {

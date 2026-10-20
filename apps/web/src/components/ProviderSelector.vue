@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ModelProfileItem } from '@/types'
 
 interface Props {
@@ -99,6 +99,16 @@ function onKeydown(event: KeyboardEvent) {
         : (current <= 0 ? choices.length - 1 : current - 1)
   choices[next].focus()
 }
+
+function onDocumentClick(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Node)) return
+  if (menu.value?.contains(target) || trigger.value?.contains(target)) return
+  close()
+}
+
+onMounted(() => document.addEventListener('click', onDocumentClick))
+onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
 </script>
 
 <template>

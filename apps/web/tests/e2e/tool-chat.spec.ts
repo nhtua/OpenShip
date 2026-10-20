@@ -58,8 +58,7 @@ test('automatically invokes the authorized search tools from the composer withou
   await setAuthToken(page)
   await page.goto('/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).click()
-  await page.getByRole('button', { name: 'Add tool' }).click()
-  await page.getByTestId('automatic-tool-mode').click()
+  await expect(page.getByTestId('automatic-tool-chip')).toBeVisible()
 
   await page.getByLabel('Message').fill('What is the nearest star system?')
   await page.getByRole('button', { name: 'Send', exact: true }).click()

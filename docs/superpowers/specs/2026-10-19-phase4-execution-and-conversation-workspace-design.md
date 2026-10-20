@@ -195,9 +195,13 @@ Apply existing first-chat title handling only to the final answer, not intermedi
 
 ### Shared budgets
 
-One persisted execution deadline, default 120 seconds; at most 2 tool calls and 3 model turns by default. Existing pinned `RunLimits.max_attempts` (default 3) limits total generation requests across the entire run, including retries; no per-node reset. Output allowance remains 4,000/request by default, with 12,000 total conservatively reserved output tokens in `LoopLimits`. Configure larger loop limits explicitly if later workflows need more steps; nothing bypasses a stricter profile.
+One persisted execution deadline, default 1,800 seconds (30 minutes), configurable with `WORKFLOW_RUN_TIMEOUT_SECONDS` (1–3,600 seconds); at most 2 tool calls and 3 model turns by default. Admission pins the smaller of the installation deadline and an explicit profile timeout. Existing pinned `RunLimits.max_attempts` (default 3) limits total generation requests across the entire run, including retries; no per-node reset. Output allowance remains 4,000/request by default, with 12,000 total conservatively reserved output tokens in `LoopLimits`. Configure larger loop limits explicitly if later workflows need more steps; nothing bypasses a stricter profile.
+
+The 2026-10-20 configuration follow-up adds `MODEL_CONTEXT_TOKENS=128000` as the default context declaration for profiles that omit `capabilities.context_tokens`; smaller explicit declarations remain effective. `MODEL_MAX_CONTEXT_BYTES=2097152` independently controls the normalized request byte guard. The current OpenAI adapter has no qualified local token counter, so the context declaration is not a measured token ceiling; the provider validates its actual token window. Supported OpenAI models retain their automatic prompt-caching defaults, and cached usage remains provider-reported. See [provider configuration](../../provider-support.md#limits) for precedence and restart behavior.
 
 `RunBudget` reserves request/token/cost allowance under the run lock and inserts the corresponding `ProviderAttempt`/event in that same transaction. Return its attempt ID; do not call recorder start twice. Add model-turn ordinal and nullable reserved output/total-token metadata; historical unknown reservations remain null. Finish writes usage/outcome for that same attempt. Missing usage stays unknown and cannot refund an uncertain reservation. Include complete tool schemas/results in qualified token/cost counting; refuse an unsupported ceiling/profile combination.
+
+The reservation also returns whether tools remain usable while preserving a subsequent final-answer request. Check tool calls, model turns, generation attempts (including retries) and reserved output. If another tool cannot be followed by an answer, send `tool_choice: "none"` for that attempt while retaining the definitions, completed tool results and profile reasoning option. Refuse any tool call returned despite that restriction before dispatch with `tool_limit_exceeded`; it is a failed run, not a timed-out run. The independent tool-admission cap remains in force.
 
 Text or any tool-call fragment suppresses automatic generation retry/fallback after partial output. Tool-enabled runs initially require no model fallback profiles; text-only explicit fallback retains Phase 3 behavior. No completed tool request, search call or interrupted run is automatically replayed. Budget exhaustion stops further dispatch visibly rather than silently extending the run.
 
@@ -280,7 +284,7 @@ Stop admissions/drain or cancel runs before coordinated PostgreSQL+artifact-root
 | HTTP response | ≤2 MiB decompressed; ≤64 KiB normalized snapshot; ≤16 KiB model result |
 | File transfers | Upload ≤8 MiB/30 seconds; read ≤16 KiB; pages default 50/max 100 |
 | Persistent quota | 128 MiB/100 artifacts per conversation; 1 GiB/1,000 per project; at most 2 incomplete uploads/conversation |
-| Model loop | 120-second deadline; 2 calls; 3 turns; pinned generation max-attempts total, default 3; 4,000/request and 12,000 total reserved output tokens |
+| Model loop | 1,800-second default deadline, configurable with `WORKFLOW_RUN_TIMEOUT_SECONDS`; 2 calls; 3 turns; pinned generation max-attempts total, default 3; 4,000/request and 12,000 total reserved output tokens |
 | Capacity | `TOOL_CONCURRENCY=1`, shared/fenced across workers; bounded cancellable waiting; no new scheduler |
 | Retention | Published snapshots indefinite within quota; optional age expiry; staging/reservations expire after 10 minutes |
 

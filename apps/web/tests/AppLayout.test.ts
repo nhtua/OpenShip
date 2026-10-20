@@ -63,6 +63,22 @@ describe('AppLayout', () => {
     expect(wrapper.text()).toContain('No conversations yet')
   })
 
+  it('shows a compact conversation-files control in the top navigation', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      conversations,
+      currentConversationId: 'c1',
+      showConversationFiles: true,
+      conversationFilesOpen: false,
+      conversationFileCount: 3,
+    })
+
+    const trigger = wrapper.get('[data-testid="conversation-files-trigger"]')
+    expect(trigger.attributes('aria-label')).toContain('Open conversation files')
+    expect(trigger.text()).toContain('3')
+    await trigger.trigger('click')
+    expect(wrapper.emitted('toggleConversationFiles')).toHaveLength(1)
+  })
+
   it('has no fake workspace/session text or enabled no-op controls', async () => {
     const { wrapper } = await mountWithRouter(AppLayout, '/', {
       conversations,

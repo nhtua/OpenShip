@@ -17,6 +17,7 @@ from ..capabilities.catalog import list_capability_manifests, resolve_capability
 from ..capabilities.contracts import (
     CapabilityRef,
     ExecutionConfig,
+    LoopLimits,
     ToolCommandRequest,
     canonical_digest,
 )
@@ -185,6 +186,10 @@ def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[Arti
         allowed_capabilities=tuple(refs),
         selected_artifacts=artifact_refs,
         credential_binding_refs=tuple(binding_refs),
+        loop_limits=LoopLimits(deadline_seconds=min(
+            settings.workflow_run_timeout_seconds,
+            int(model_config.limits.run_timeout_seconds),
+        )),
     )
 
 
@@ -465,6 +470,7 @@ def submit_tool_run(
     execution = ExecutionConfig(
         graph_kind="tool",
         graph_version=1,
+        loop_limits=LoopLimits(deadline_seconds=settings.workflow_run_timeout_seconds),
         allowed_capabilities=(command.capability,),
         credential_binding_refs=(manifest.credential_binding_ref,)
         if manifest.credential_binding_ref

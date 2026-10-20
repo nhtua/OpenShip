@@ -16,7 +16,6 @@ test('lets the selected model choose an enabled search tool in chat', async ({ p
   await page.getByRole('button', { name: 'Add tool' }).click()
   const automaticTools = page.getByTestId('automatic-tool-mode')
   await expect(automaticTools).toBeEnabled()
-  await automaticTools.click()
   await expect(automaticTools).toHaveAttribute('aria-checked', 'true')
   await expect(page.getByTestId('attached-tool')).toHaveCount(0)
 

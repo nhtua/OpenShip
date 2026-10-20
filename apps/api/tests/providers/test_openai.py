@@ -6,6 +6,7 @@ without a credential.
 """
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,28 @@ from .conftest import (
 )
 
 FIXTURE_KEY = "FIXTURE_KEY"  # rayloc:ignore
+
+
+@pytest.mark.asyncio
+async def test_automatic_prompt_caching_preserves_prefix_and_reports_cache_usage():
+    usage_chunk = sdk_chunk(choices=False, usage=(3000, 20, 3020))
+    usage_chunk.usage.prompt_tokens_details = SimpleNamespace(cached_tokens=2048)
+    case = adapter_case(chunks=[
+        sdk_chunk(content="hi", finish_reason="stop"), usage_chunk,
+    ])
+    request = conversation(("system", "Stable instructions."), ("user", "hi"))
+    events, failure = await drain(case.adapter, request, case.profile, control())
+    assert failure is None
+    assert case.transport.seen_kwargs["messages"] == [
+        {"role": "system", "content": "Stable instructions."},
+        {"role": "user", "content": "hi"},
+    ]
+    # Use OpenAI's automatic caching defaults rather than send model-specific
+    # retention parameters that an endpoint may not support.
+    assert "prompt_cache_options" not in case.transport.seen_kwargs
+    assert "prompt_cache_retention" not in case.transport.seen_kwargs
+    usage = next(event.usage for event in events if event.type == "usage_update")
+    assert usage.cached_input_tokens == 2048
 
 
 @pytest.mark.asyncio
@@ -105,6 +128,21 @@ async def test_tool_reasoning_effort_is_explicit_and_only_sent_with_tools():
     assert tool_case.transport.seen_kwargs["reasoning_effort"] == "none"
     assert tool_case.transport.seen_kwargs["parallel_tool_calls"] is False
     assert "reasoning_effort" not in text_case.transport.seen_kwargs
+
+    final_case = adapter_case(
+        chunks=[sdk_chunk(content="Final answer.", finish_reason="stop", model="gpt-6-luna")],
+        profile_kwargs=profile_kwargs,
+    )
+    _events, failure = await drain(
+        final_case.adapter,
+        tool_request.model_copy(update={"tool_choice": "none"}),
+        final_case.profile,
+        control(),
+    )
+    assert failure is None
+    assert final_case.transport.seen_kwargs["tool_choice"] == "none"
+    assert final_case.transport.seen_kwargs["tools"] == tool_case.transport.seen_kwargs["tools"]
+    assert final_case.transport.seen_kwargs["reasoning_effort"] == "none"
 
 
 @pytest.mark.asyncio

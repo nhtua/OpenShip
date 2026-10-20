@@ -62,6 +62,10 @@ SAFE_MESSAGES: Mapping[str, str] = {
         "The model turn reached its time or token budget. "
         "Narrow the request, or raise the installation's model budget."
     ),
+    "tool_limit_exceeded": (
+        "The model requested another tool after this run's tool allowance ended. "
+        "Start another turn to continue the search."
+    ),
     "model_interrupted": (
         "The model stopped before completing the answer. Try again."
     ),

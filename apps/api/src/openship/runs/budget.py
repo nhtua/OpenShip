@@ -22,6 +22,7 @@ class BudgetReservation:
     """The attempt identity admitted by the same transaction as its budget."""
 
     attempt_id: UUID
+    tool_calls_allowed: bool
 
 
 def _utc(value: datetime) -> datetime:
@@ -173,7 +174,19 @@ class RunBudget:
                 reserved_total_tokens=reserved_tokens,
             )
             db.commit()
-            return BudgetReservation(attempt_id=attempt_id)
+            # A tool result needs another model request to become an answer.
+            # Decide from durable reservations, including earlier retries,
+            # before sending this attempt to the provider.
+            tool_calls_allowed = (
+                model_turn_ordinal < loop.max_tool_calls
+                and model_turn_ordinal + 1 < loop.max_model_turns
+                and len(attempts) + 1 < attempt_limit
+                and output_reserved + requested_output_tokens * 2
+                <= loop.max_total_output_tokens
+            )
+            return BudgetReservation(
+                attempt_id=attempt_id, tool_calls_allowed=tool_calls_allowed,
+            )
         except Exception:
             db.rollback()
             raise
@@ -208,6 +221,6 @@ class RunBudget:
                     safe_message="The model tool call was not saved in the run transcript.",
                 )
             if len(call_ids) > self._execution.loop_limits.max_tool_calls:
-                raise ProviderError("budget_exceeded")
+                raise ProviderError("tool_limit_exceeded")
         finally:
             db.close()

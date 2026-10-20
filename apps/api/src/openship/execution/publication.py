@@ -33,6 +33,7 @@ from src.openship.tools.search.contracts import (
     SearchObservation,
     SearchToolResult,
 )
+from src.openship.tools.search.naming import search_artifact_filename
 from src.openship.workspace.models import ConversationWorkspace
 from src.openship.workspace.schemas import WorkspaceListResult, WorkspaceReadResult
 
@@ -138,13 +139,20 @@ def _observation_bytes(observation: SearchObservation) -> bytes:
         raise ToolPublicationError("invalid_tool_output") from exc
 
 
+def _search_arguments(operation: ToolOperation) -> SearchArguments:
+    try:
+        return SearchArguments.model_validate_json(operation.arguments_json)
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ToolPublicationError("invalid_tool_output") from exc
+
+
 def validate_search_observation(operation: ToolOperation, observation) -> SearchObservation:
     """Enforce the exact pinned capability/query contract at the dispatch boundary."""
     try:
         normalized = SearchObservation.model_validate(observation)
-        arguments = SearchArguments.model_validate(json.loads(operation.arguments_json))
-    except (ValidationError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (ValidationError, TypeError, ValueError) as exc:
         raise ToolPublicationError("invalid_tool_output") from exc
+    arguments = _search_arguments(operation)
     if (
         normalized.tool.id != operation.capability_id
         or normalized.tool.version != operation.capability_version
@@ -315,6 +323,7 @@ def mark_tool_dispatching(
     )
     artifact = None
     if reserve_output:
+        arguments = _search_arguments(operation)
         artifact = reserve_artifact(
             db,
             conversation_id=operation.conversation_id,
@@ -326,7 +335,7 @@ def mark_tool_dispatching(
             ),
             kind="search_result",
             request_key=str(operation.id),
-            display_name="search-results.json",
+            display_name=search_artifact_filename(arguments.query),
             media_type="application/json",
             source="tool",
             originating_run_id=operation.run_id,
@@ -536,7 +545,7 @@ def publish_tool_result(
         or artifact.conversation_id != operation.conversation_id
         or artifact.project_id != operation.project_id
         or artifact.media_type != "application/json"
-        or artifact.display_name != "search-results.json"
+        or artifact.display_name != search_artifact_filename(normalized.query)
     ):
         raise ToolPublicationError("artifact_publication_failed")
     ready = mark_artifact_ready(db, artifact.id, staged.observed)

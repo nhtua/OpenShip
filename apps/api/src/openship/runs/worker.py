@@ -710,7 +710,13 @@ class Worker:
             messages = []
 
             # Add system prompt with title generation instruction for first message
-            system_content = "You are OpenShip, an AI DevOps co-pilot. Help users with infrastructure, deployment, and operations tasks. Be concise and practical."
+            system_content = (
+                "You are OpenShip, an AI DevOps co-pilot. Help users with infrastructure, deployment, "
+                "and operations tasks. Be concise and practical. When equivalent search tools from "
+                "different providers are available, choose one provider and use its results; do not "
+                "repeat the same search through another provider unless the user asks to compare "
+                "providers or the chosen provider fails."
+            )
             if is_first:
                 system_content += "\n\nAfter your response, include a short 50-character summary on a new line prefixed with '## Title: '. This will be used as the conversation title. Do not include any other content after the title."
             messages.append({"role": "system", "content": system_content})

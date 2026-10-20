@@ -271,7 +271,7 @@ def test_chat_v2_runs_two_sequential_tool_calls_and_publishes_only_final_text(mo
         monkeypatch,
         [
             {"chunks": [_tool_turn("provider-call-1", "first query")]},
-            {"chunks": [_tool_turn("provider-call-2", "second query")]},
+            {"chunks": [_tool_turn("provider-call-2", "second query", name="tavily_web_search")]},
             {"chunks": [sdk_chunk(content="Here are the findings.", finish_reason="stop")]},
         ],
     )
@@ -305,6 +305,10 @@ def test_chat_v2_runs_two_sequential_tool_calls_and_publishes_only_final_text(mo
     assert result["assistant_response"] == "Here are the findings."
     assert result["finish_reason"] == "stop"
     assert model_transport.requests == 3
+    assert [request.get("tool_choice", "auto") for request in model_transport.seen] == [
+        "auto", "auto", "none",
+    ]
+    assert model_transport.seen[2]["tools"] == model_transport.seen[1]["tools"]
     assert [call["logical_call_id"] for call in gateway.calls] == [
         "model:0:call:0",
         "model:1:call:0",
@@ -384,7 +388,8 @@ def test_chat_v2_can_choose_a_workspace_read_tool_without_search_credentials(mon
     }
 
 
-def test_chat_v2_uses_a_persisted_execution_deadline():
+@pytest.mark.parametrize("deadline_seconds", [120, 1800])
+def test_chat_v2_uses_a_persisted_execution_deadline(deadline_seconds):
     execution = _execution()
     run_id, user_id, _project_id, _conversation_id, lease_until = _running_chat_tool_run(execution)
     claim = Claim(run_id, 1, lease_until, "loop-worker", user_id)
@@ -393,13 +398,13 @@ def test_chat_v2_uses_a_persisted_execution_deadline():
         window = begin_execution_window(
             db,
             claim,
-            deadline_seconds=120,
+            deadline_seconds=deadline_seconds,
             graph_thread_id=f"{run_id}-attempt-1",
         )
         run = db.get(Run, run_id)
 
     assert window is not None
-    assert window[1] - window[0] == timedelta(seconds=120)
+    assert window[1] - window[0] == timedelta(seconds=deadline_seconds)
     assert run.execution_started_at is not None
     assert run.graph_thread_id == f"{run_id}-attempt-1"
 
@@ -417,7 +422,7 @@ def test_third_tool_call_is_refused_before_gateway_dispatch(monkeypatch):
     with pytest.raises(Exception) as refused:
         graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
 
-    assert getattr(refused.value, "code", None) == "budget_exceeded"
+    assert getattr(refused.value, "code", None) == "tool_limit_exceeded"
     assert transport.requests == 3
     assert len(gateway.calls) == 2
     with TestSessionLocal() as db:
@@ -428,10 +433,10 @@ def test_third_tool_call_is_refused_before_gateway_dispatch(monkeypatch):
             .order_by(RunTranscriptRecord.ordinal)
             .all()
         ]
-    assert roles == ["assistant", "tool", "assistant", "tool", "assistant"]
+    assert roles == ["assistant", "tool", "assistant", "tool"]
 
 
-def test_model_turn_cap_refuses_reentry_after_three_tool_rounds(monkeypatch):
+def test_last_model_turn_is_reserved_for_answer_even_with_more_tool_allowance(monkeypatch):
     execution = _execution(loop_limits=LoopLimits(max_tool_calls=3, max_model_turns=3))
     graph, state, transport, gateway, run_id = _agent_case(
         monkeypatch,
@@ -446,9 +451,49 @@ def test_model_turn_cap_refuses_reentry_after_three_tool_rounds(monkeypatch):
     with pytest.raises(Exception) as refused:
         graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
 
-    assert getattr(refused.value, "code", None) == "budget_exceeded"
+    assert getattr(refused.value, "code", None) == "tool_limit_exceeded"
     assert transport.requests == 3
-    assert len(gateway.calls) == 3
+    assert transport.seen[-1]["tool_choice"] == "none"
+    assert len(gateway.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        LoopLimits(max_tool_calls=0),
+        LoopLimits(max_model_turns=1),
+        LoopLimits(max_generation_attempts=1),
+        LoopLimits(max_total_output_tokens=4000),
+    ],
+)
+def test_single_remaining_request_is_used_for_an_answer(monkeypatch, limits):
+    graph, state, transport, gateway, run_id = _agent_case(
+        monkeypatch,
+        [{"chunks": [sdk_chunk(content="Here is what I can establish.", finish_reason="stop")]}],
+        execution=_execution(loop_limits=limits),
+    )
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+    assert result["assistant_response"] == "Here is what I can establish."
+    assert transport.seen[0]["tool_choice"] == "none"
+    assert not gateway.calls
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_retries_reserve_the_last_generation_attempt_for_an_answer(monkeypatch, failures):
+    behaviors = [
+        {"raises": error_fixture("openai", "unreachable")} for _ in range(failures)
+    ]
+    if failures == 1:
+        behaviors.append({"chunks": [_tool_turn("call-1", "first")]})
+    behaviors.append({"chunks": [sdk_chunk(content="Here are the findings.", finish_reason="stop")]})
+    graph, state, transport, gateway, run_id = _agent_case(monkeypatch, behaviors)
+    # Retry policy is real, but backoff does not need wall-clock delay here.
+    monkeypatch.setattr("src.openship.providers.runner._delay", lambda *_args: 0)
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+    assert result["assistant_response"] == "Here are the findings."
+    assert transport.requests == 3
+    assert transport.seen[-1]["tool_choice"] == "none"
+    assert len(gateway.calls) == (1 if failures == 1 else 0)
 
 
 def test_cancellation_after_published_tool_keeps_transcript_without_final_answer(monkeypatch):

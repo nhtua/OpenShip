@@ -2,7 +2,7 @@
 type: reference
 summary: Which provider tuples OpenShip can claim to serve, at which state, and the evidence each state rests on.
 status: proposed
-date: 2026-10-13
+date: 2026-10-20
 ---
 
 # Provider Support
@@ -66,7 +66,6 @@ accepted. The supplied OpenAI example uses `gpt-6-luna`; it names no real key.
     "capabilities": {
       "streaming": true,
       "usage_reporting": true,
-      "context_tokens": 32768,
       "max_output_tokens": 4096,
       "tool_calls": true,
       "parallel_tool_calls": false
@@ -101,6 +100,9 @@ Chat Completions function calls require this setting ([model documentation](http
 | `MODEL_PROFILES_JSON` | at startup, once per process, when the registry is built | no |
 | `MODEL_DEFAULT_PROFILE_ID` | the profile that answers when the browser chooses nothing | no |
 | `MODEL_MAX_TOKENS` | the output ceiling a turn asks for, when a profile declares none | no |
+| `WORKFLOW_RUN_TIMEOUT_SECONDS` | installation run deadline in seconds (default 1800; range 1–3600), pinned at submission for chat and model-free tools | no |
+| `MODEL_CONTEXT_TOKENS` | default declared context window (128000); explicit provider declarations can only reduce it | no |
+| `MODEL_MAX_CONTEXT_BYTES` | normalized request byte guard (default 2097152), pinned with model limits | no |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and any name a profile's `credential_ref` gives | only where a client is constructed | **yes** |
 | `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY` | only inside the selected search handler | **yes** |
 | `TEST_POSTGRES_URL` | the durable-pipeline test lane | throwaway |
@@ -150,8 +152,8 @@ the catalog rather than guessed at.
 ## Limits
 
 One shared budget spans the initial call, every retry, and any fallback:
-`max_attempts` (default 3), `run_timeout_seconds` (120),
-`request_timeout_seconds` (45), `max_context_bytes` (64 KiB), and optional
+`max_attempts` (default 3), `run_timeout_seconds` (1800),
+`request_timeout_seconds` (45), `max_context_bytes` (2 MiB), and optional
 `max_total_tokens` / `max_cost_usd` ceilings. No SDK retries on its own —
 `max_retries=0` on the OpenAI and Anthropic clients, one attempt in the
 Gemini client's transport options — and the Gemini adapter also disables the
@@ -159,6 +161,33 @@ two SDK behaviours that would make one attempt into several requests
 (`automatic_function_calling`, `automatic_continuation`). So the number of
 generation requests a turn makes is the number the tests count. A provider
 that reports usage only when asked is asked.
+
+Set `WORKFLOW_RUN_TIMEOUT_SECONDS` to adjust the overall deadline without
+editing profile JSON. For tool-enabled chat, admission pins the smaller of
+this setting and the selected profile's timeout into its execution snapshot;
+model-free tool runs pin the installation setting directly. Tool network
+timeouts remain separate. Restart both API and worker to apply changes to new
+runs; existing run snapshots and persisted deadlines are preserved.
+
+`MODEL_CONTEXT_TOKENS=128000` supplies `capabilities.context_tokens` when it is
+omitted. Explicit provider declarations are capped by the installation value,
+never inflated. Remove an older explicit `8192` declaration to inherit the
+new default. Profile JSON may be formatted across multiple lines inside a
+single-quoted `.env` value, as shown in both `.env.example` files.
+
+The context declaration is not an exact local token counter. The OpenAI
+adapter still has no qualified counter; local admission uses
+`MODEL_MAX_CONTEXT_BYTES` over UTF-8 messages, function schemas and tool
+results, and the provider validates its actual token window. These are
+independent ceilings, without a claimed bytes-per-token conversion or silent
+history truncation. Explicit profile byte limits may reduce the installation
+guard.
+
+Supported OpenAI models enable prompt caching by default. The adapter retains
+that behavior, sends unchanged message prefixes, and preserves reported
+`cached_input_tokens`; it does not force retention options across models.
+Prefix reuse is required for a hit, and cached input still occupies context.
+See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
 
 ## Tool-enabled chat
 
@@ -171,7 +200,7 @@ model turn. A disabled tool is omitted from later function definitions while
 its already completed call/result remains valid conversation history.
 
 One durable budget covers all model turns and retries: at most three model
-turns, three generation attempts, two search calls, 120 seconds, 4,000 output
+turns, three generation attempts, two tool calls, 1800 seconds by default, 4,000 output
 tokens per request and 12,000 reserved output tokens for the run. Context
 admission counts the UTF-8 JSON size of normalized messages, function schemas
 and tool results. Output reservations are not refunded when the provider omits
@@ -187,6 +216,17 @@ workspace-restore lanes passed against the local PostgreSQL 15 service on
 2026-10-20; those prove durable pipeline behavior, not a provider-backed browser
 journey. The profile remains `live-qualified`, not `accepted`. The original
 live qualification recorded its UTC date but no exact wall-clock timestamp.
+
+Before each generation attempt, durable budget admission checks whether another
+tool could still be followed by a final answer. It accounts for the remaining
+tool calls, model turns, attempts (including retries), and output reservations.
+When no such allowance remains, the OpenAI adapter sends `tool_choice: "none"`
+with the same tool definitions and completed results, so the model can answer
+from what it has collected. It retains the profile's tool reasoning setting.
+This uses the documented [Chat Completions tool-choice control](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+An unexpected tool request on that final attempt is rejected before gateway
+dispatch with `tool_limit_exceeded`, and is recorded as a failure rather than
+a timeout. The independent tool-admission call-count guard remains enforced.
 
 ## Credential rotation and revocation
 

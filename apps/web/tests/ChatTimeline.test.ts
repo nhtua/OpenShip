@@ -6,6 +6,15 @@ function message(id: string, created_at: string): ChatMessage {
   return { id, role: 'user', content: id, conversation_id: 'c1', created_at }
 }
 
+function runMessage(
+  id: string,
+  role: ChatMessage['role'],
+  run_id: string,
+  created_at: string,
+): ChatMessage {
+  return { id, role, content: id, conversation_id: 'c1', run_id, created_at }
+}
+
 function operation(id: string, created_at: string): ToolOperationSummary {
   return {
     id,
@@ -55,6 +64,42 @@ describe('buildConversationTimeline', () => {
       'message-b',
       'search-a',
       'search-undated',
+    ])
+  })
+
+  it('keeps each run’s tools between its user message and answer when operation times are unreliable', () => {
+    const timeline = buildConversationTimeline(
+      [
+        runMessage('user-first', 'user', 'run-first', '2026-10-20T12:00:00Z'),
+        runMessage('assistant-first', 'assistant', 'run-first', '2026-10-20T12:00:10Z'),
+        runMessage('user-second', 'user', 'run-second', '2026-10-20T12:01:00Z'),
+        runMessage('assistant-second', 'assistant', 'run-second', '2026-10-20T12:01:10Z'),
+      ],
+      [
+        { ...operation('search-second', '2026-10-20T11:00:00Z'), run_id: 'run-second' },
+        { ...operation('search-first', '2026-10-20T11:00:01Z'), run_id: 'run-first' },
+      ],
+    )
+
+    expect(timeline.map((entry) => `${entry.kind}:${entry.id}`)).toEqual([
+      'message:user-first',
+      'tool:search-first',
+      'message:assistant-first',
+      'message:user-second',
+      'tool:search-second',
+      'message:assistant-second',
+    ])
+  })
+
+  it('places tool operations after a run’s user message while its answer is still pending', () => {
+    const timeline = buildConversationTimeline(
+      [runMessage('user-live', 'user', 'run-live', '2026-10-20T12:00:00Z')],
+      [{ ...operation('search-live', ''), run_id: 'run-live' }],
+    )
+
+    expect(timeline.map((entry) => `${entry.kind}:${entry.id}`)).toEqual([
+      'message:user-live',
+      'tool:search-live',
     ])
   })
 })

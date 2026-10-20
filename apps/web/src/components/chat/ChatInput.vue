@@ -43,7 +43,9 @@ const content = ref('')
 const maxResults = ref(5)
 const attachedCapability = ref<CapabilityRef | null>(null)
 const automaticToolMode = ref(false)
+const automaticToolModeTouched = ref(false)
 const textareaRef = ref<InstanceType<typeof Textarea> | null>(null)
+const activeRunToolDisabledReason = 'Wait for the current run to finish before using tools.'
 let pendingDraft: {
   content: string
   capability: CapabilityRef | null
@@ -72,10 +74,21 @@ const automaticToolDisabledReason = computed(() => {
     effectiveProfile.value.capabilities.parallel_tool_calls === true
   ) return 'Choose a model with sequential tool-call support.'
   if (props.fallbackIds.length) return 'Turn off model fallbacks to use tools automatically.'
-  if (props.toolSubmissionDisabled) return 'Wait for the current run to finish before using tools.'
+  if (props.toolSubmissionDisabled) return activeRunToolDisabledReason
   return null
 })
+const automaticToolWarning = computed(() =>
+  automaticToolDisabledReason.value === activeRunToolDisabledReason
+    ? null
+    : automaticToolDisabledReason.value,
+)
 const automaticToolDisabled = computed(() => Boolean(automaticToolDisabledReason.value))
+
+// Start with automatic tools enabled when this installation has a compatible
+// model and search capability. Keep the choice stable after the user changes it.
+watch(automaticToolDisabled, (disabled) => {
+  if (!disabled && !automaticToolModeTouched.value) automaticToolMode.value = true
+}, { immediate: true })
 
 const attachedSummary = computed(() => props.capabilities.find(
   (capability) => capability.id === attachedCapability.value?.id,
@@ -111,7 +124,13 @@ function removeTool() {
 
 function toggleAutomaticToolMode() {
   if (automaticToolDisabled.value) return
+  automaticToolModeTouched.value = true
   automaticToolMode.value = !automaticToolMode.value
+}
+
+function disableAutomaticToolMode() {
+  automaticToolModeTouched.value = true
+  automaticToolMode.value = false
 }
 
 function grow() {
@@ -229,7 +248,7 @@ onMounted(() => { void focusInput() })
         aria-label="Disable automatic tool use"
         :title="automaticToolDisabledReason || 'The model may use available search tools for this message.'"
         class="inline-flex h-8 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-3 text-xs text-foreground hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        @click="automaticToolMode = false"
+        @click="disableAutomaticToolMode"
       >
         <span>Automatic tools</span>
         <span aria-hidden="true">×</span>
@@ -267,8 +286,8 @@ onMounted(() => { void focusInput() })
       <span v-else-if="attachedCapability && props.toolSubmissionDisabled" class="text-xs text-muted-foreground">
         Wait for the current run to finish before searching.
       </span>
-      <span v-else-if="automaticToolMode && automaticToolDisabledReason" class="text-xs text-destructive">
-        {{ automaticToolDisabledReason }}
+      <span v-else-if="automaticToolMode && automaticToolWarning" class="text-xs text-destructive">
+        {{ automaticToolWarning }}
       </span>
 
       <div class="ml-auto flex min-w-0 items-center gap-2">

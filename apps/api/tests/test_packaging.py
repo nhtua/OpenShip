@@ -42,8 +42,18 @@ SMOKE = HERE.parent / "live" / "test_provider_smoke.py"
 #: question with two answers rather than one.
 SHARED_SERVICES = ("api", "worker")
 
-#: A credential binding is named by what it is, never by a value.
-CREDENTIAL_SUFFIXES = ("_KEY", "_SECRET", "_TOKEN")
+#: Search runs execute in the worker, so these bindings intentionally do not
+#: need to be present in the API container.
+WORKER_ONLY_CREDENTIALS = {"BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY"}
+
+#: Provider credentials are optional bindings, never values embedded in the
+#: packaging. Installation secrets such as JWT_SECRET have a separate policy.
+PROVIDER_CREDENTIALS = {
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    *WORKER_ONLY_CREDENTIALS,
+}
 
 #: ``${NAME}`` or ``${NAME:-default}`` - and nothing else. The ``:?`` form is
 #: deliberately not accepted: a required credential would make the packaging
@@ -78,33 +88,34 @@ def test_the_packaging_names_the_services_that_share_a_profile():
 
 
 def test_the_two_services_are_configured_with_the_same_thing():
-    """A profile means one thing to both of them, and so does the database.
+    """A profile means the same thing to both services; search keys stay worker-only.
 
-    The comparison is of the whole environment each service is given rather
-    than of a list this test maintains: a setting one of them has and the
-    other does not is the same kind of mistake as a profile that differs, and
-    it should be found rather than remembered here.
+    Search is executed by the worker, so its provider keys are the only
+    intentional environment difference. Other mismatches can make the API
+    queue a run under settings the worker does not use.
     """
     services = _services()
     api, worker = (services[name]["environment"] for name in SHARED_SERVICES)
-    assert api == worker, (
+    api_shared = {key: value for key, value in api.items() if key not in WORKER_ONLY_CREDENTIALS}
+    worker_shared = {key: value for key, value in worker.items() if key not in WORKER_ONLY_CREDENTIALS}
+    assert api_shared == worker_shared, (
         "the API and the worker are configured differently: a run one queues "
         "is not executed under the profile the other offered"
     )
+    assert WORKER_ONLY_CREDENTIALS <= worker.keys()
+    assert WORKER_ONLY_CREDENTIALS.isdisjoint(api)
 
 
-def test_credentials_are_named_never_carried():
-    """A credential reaches a service as a name the environment fills.
+def test_provider_credentials_are_named_never_carried():
+    """Provider secrets stay optional named bindings rather than packaged values.
 
-    The shape is the claim: the packaging may interpolate a binding and may
-    leave it empty, but it may not carry a value and it may not make one
-    required - an installation without a key still starts, and says which
-    profiles it cannot serve.
+    This deliberately excludes required installation secrets such as the JWT
+    signing key, which have their own startup requirements.
     """
     for name in SHARED_SERVICES:
-        for key, value in _services()[name]["environment"].items():
-            if not any(key.endswith(suffix) for suffix in CREDENTIAL_SUFFIXES):
-                continue
+        environment = _services()[name]["environment"]
+        for key in PROVIDER_CREDENTIALS & environment.keys():
+            value = environment[key]
             match = INTERPOLATION.match(str(value))
             assert match, (
                 f"{name}'s {key} carries a value rather than naming a binding"
@@ -171,8 +182,8 @@ def test_qualification_is_opted_into_by_the_name_the_packaging_documents():
     )
 
     markers = tomllib.load(PYPROJECT.open("rb"))["tool"]["pytest"]["ini_options"]["markers"]
-    assert any(opted_into in marker for marker in markers), (
-        f"the lane for {opted_into} is not registered, so opting in does not select it"
+    assert any(marker.split(":", 1)[0] == "provider_live" for marker in markers), (
+        "the provider_live lane is not registered, so pytest cannot select it"
     )
 
 

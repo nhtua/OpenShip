@@ -57,32 +57,49 @@ function props(overrides: Record<string, unknown> = {}) {
 }
 
 describe('ConversationFiles', () => {
-  it('keeps the files panel compact until opened and distinguishes duplicate names by exact ID', async () => {
-    const wrapper = mount(ConversationFiles, { props: props() })
-    expect(wrapper.get('[data-testid="conversation-files-toggle"]').text()).toContain('Conversation files')
-    expect(wrapper.find('[data-testid="conversation-file-list"]').exists()).toBe(false)
-
-    await wrapper.get('[data-testid="conversation-files-toggle"]').trigger('click')
+  it('wraps full filenames and keeps internal artifact IDs out of the list', async () => {
+    const longName = 'search-results-with-a-long-filename.json'
+    const wrapper = mount(ConversationFiles, {
+      props: props({ files: [artifact('artifact-id-one', longName), artifact('artifact-id-two', longName)] }),
+    })
+    expect(wrapper.get('[data-testid="conversation-file-list"]').exists()).toBe(true)
     const rows = wrapper.findAll('[data-testid="conversation-file"]')
     expect(rows).toHaveLength(2)
-    expect(rows[0].text()).toContain('same.txt')
-    expect(rows[1].text()).toContain('same.txt')
-    expect(rows[0].text()).toContain('artifact-1')
-    expect(rows[1].text()).toContain('artifact-2')
+    expect(rows[0].text()).toContain(longName)
+    expect(rows[1].text()).toContain(longName)
+    expect(rows[0].text()).not.toContain('artifact-id-one')
+    expect(rows[1].text()).not.toContain('artifact-id-two')
+    expect(rows[0].find('span').classes()).toContain('break-words')
     expect(wrapper.text()).toContain('512 B of 1 KB used')
   })
 
   it('selects, downloads, and requests deletion by exact artifact ID', async () => {
     const wrapper = mount(ConversationFiles, { props: props() })
-    await wrapper.get('[data-testid="conversation-files-toggle"]').trigger('click')
+    const preview = wrapper.get('[aria-label="Preview same.txt"]')
+    const download = wrapper.get('[aria-label="Download same.txt"]')
+    const remove = wrapper.get('[aria-label="Delete same.txt"]')
+    expect(preview.text()).toBe('')
+    expect(preview.get('i').classes()).toContain('pi-eye')
+    expect(download.text()).toBe('')
+    expect(download.get('i').classes()).toContain('pi-download')
+    expect(remove.text()).toBe('')
+    expect(remove.get('i').classes()).toContain('pi-trash')
 
-    await wrapper.get('[aria-label="Read same.txt version artifact-1"]').trigger('click')
-    await wrapper.get('[aria-label="Download same.txt version artifact-1"]').trigger('click')
-    await wrapper.get('[aria-label="Delete same.txt version artifact-1"]').trigger('click')
+    await preview.trigger('click')
+    await download.trigger('click')
+    await remove.trigger('click')
 
     expect(wrapper.emitted('select-file')?.[0]).toEqual(['conversation-1', 'artifact-1'])
     expect(wrapper.emitted('download-file')?.[0]).toEqual(['artifact-1', 'same.txt'])
     expect(wrapper.emitted('delete-file')?.[0]).toEqual(['conversation-1', 'artifact-1'])
+  })
+
+  it('keeps the close-preview button enabled while the selected file is loading', () => {
+    const wrapper = mount(ConversationFiles, {
+      props: props({ selectedArtifactId: 'artifact-1', readingArtifactId: 'artifact-1' }),
+    })
+    const closePreview = wrapper.get('[aria-label="Close preview same.txt"]')
+    expect(closePreview.attributes('disabled')).toBeUndefined()
   })
 
   it('renders selected content as text, and shows pagination and pinned-delete failures', async () => {
@@ -95,7 +112,6 @@ describe('ConversationFiles', () => {
         error: 'This file is in use by an active operation and cannot be deleted.',
       }),
     })
-    await wrapper.get('[data-testid="conversation-files-toggle"]').trigger('click')
     expect(wrapper.find('[data-testid="selected-file-content"] img').exists()).toBe(false)
     expect(wrapper.get('[data-testid="selected-file-content"]').text()).toContain(hostile)
     expect(wrapper.get('[role="alert"]').text()).toContain('active operation')
@@ -103,18 +119,43 @@ describe('ConversationFiles', () => {
     expect(wrapper.emitted('load-more')?.[0]).toEqual(['conversation-1'])
   })
 
+  it('pretty-prints valid JSON and leaves incomplete JSON readable as text', async () => {
+    const jsonArtifact = { ...artifact('json-artifact', 'search-results.json'), media_type: 'application/json' }
+    const rawJson = '{"query":"nearest star","items":[{"rank":1,"title":"Alpha Centauri"}]}'
+    const valid = mount(ConversationFiles, {
+      props: props({
+        files: [jsonArtifact],
+        selectedArtifactId: jsonArtifact.id,
+        selectedContent: rawJson,
+      }),
+    })
+    expect(valid.get('[data-testid="selected-file-content"] pre').text()).toBe(
+      JSON.stringify(JSON.parse(rawJson), null, 2),
+    )
+    expect(valid.get('[data-testid="selected-file-content"]').text()).not.toContain(`Version ${jsonArtifact.id}`)
+
+    const partialJson = '{"query":"nearest star","items":['
+    const partial = mount(ConversationFiles, {
+      props: props({
+        files: [jsonArtifact],
+        selectedArtifactId: jsonArtifact.id,
+        selectedContent: partialJson,
+        selectedNextOffset: 1024,
+      }),
+    })
+    expect(partial.get('[data-testid="selected-file-content"] pre').text()).toBe(partialJson)
+  })
+
   it('distinguishes empty history from unavailable storage', async () => {
     const empty = mount(ConversationFiles, {
       props: props({ files: [], workspace: { ...workspace, quota: { ...workspace.quota, committed_count: 0 } } }),
     })
-    await empty.get('[data-testid="conversation-files-toggle"]').trigger('click')
     expect(empty.text()).toContain('No saved files in this conversation.')
     expect(empty.text()).not.toContain('storage is unavailable')
 
     const unavailable = mount(ConversationFiles, {
       props: props({ files: [], workspace: { ...workspace, status: 'unavailable' } }),
     })
-    await unavailable.get('[data-testid="conversation-files-toggle"]').trigger('click')
     expect(unavailable.text()).toContain('Workspace storage is unavailable.')
     expect(unavailable.text()).not.toContain('No saved files')
   })

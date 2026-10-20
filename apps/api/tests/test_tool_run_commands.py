@@ -13,6 +13,7 @@ from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
+    ExecutionConfig,
     ToolCommandRequest,
 )
 from src.openship.chat.models import Conversation, Message
@@ -72,6 +73,7 @@ def _command(client_request_id=None, *, capability=None, arguments=None):
 
 def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
+    monkeypatch.setattr(settings, "workflow_run_timeout_seconds", 900)
     db = SessionLocal()
     try:
         user, _project, conversation = _principals(db)[0]
@@ -84,6 +86,9 @@ def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
         assert run.graph_version == 1
         assert run.model_configuration is None
         assert run.execution_configuration
+        assert ExecutionConfig.model_validate_json(
+            run.execution_configuration
+        ).loop_limits.deadline_seconds == 900
         assert '"query":"terraform modules"' in run.tool_command_json
         assert db.query(Message).filter(Message.run_id == run.id).count() == 0
         assert db.query(RunJob).filter(RunJob.run_id == run.id).count() == 1
@@ -181,6 +186,7 @@ def test_legacy_chat_run_defaults_remain_readable():
 
 
 def _running_tool_run(db, user, project, conversation, *, fence=1, worker_id="worker-a"):
+    command = _command()
     run = Run(
         conversation_id=conversation.id,
         project_id=project.id,
@@ -189,6 +195,11 @@ def _running_tool_run(db, user, project, conversation, *, fence=1, worker_id="wo
         kind="tool",
         graph_version=1,
         fence=fence,
+        execution_configuration=ExecutionConfig(
+            graph_kind="tool",
+            graph_version=1,
+            allowed_capabilities=(command.capability,),
+        ).model_dump_json(),
     )
     db.add(run)
     db.flush()

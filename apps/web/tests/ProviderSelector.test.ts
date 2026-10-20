@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import ProviderSelector from '@/components/ProviderSelector.vue'
 import { modelProfileCatalog } from './helpers/chatFixtures'
 
@@ -84,6 +85,33 @@ describe('ProviderSelector', () => {
     expect(wrapper.find('[role="menu"]').exists()).toBe(false)
     expect(document.activeElement).toBe(trigger.element)
     wrapper.unmount()
+  })
+
+  it('closes when the user clicks outside the model menu', async () => {
+    const wrapper = mount(ProviderSelector, {
+      attachTo: document.body,
+      props: {
+        profiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+      },
+    })
+    const outside = document.createElement('button')
+    document.body.append(outside)
+
+    try {
+      await wrapper.get('[data-testid="model-trigger"]').trigger('click')
+      expect(wrapper.find('[role="menu"]').exists()).toBe(true)
+
+      outside.click()
+      await nextTick()
+
+      expect(wrapper.find('[role="menu"]').exists()).toBe(false)
+    } finally {
+      outside.remove()
+      wrapper.unmount()
+    }
   })
 
   it('moves between enabled model choices with arrow keys', async () => {

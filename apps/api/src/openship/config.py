@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     model_profiles_json: str = ""
     model_default_profile_id: str = ""
     model_max_tokens: int = 4000
+    # Installation ceilings, pinned when a run is submitted. Per-request and
+    # per-tool network timeouts remain separate from this overall deadline.
+    workflow_run_timeout_seconds: int = Field(default=1800, ge=1, le=3600)
+    model_context_tokens: int = Field(default=128000, ge=1)
+    model_max_context_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
 
     # Maintained Phase 4 tools. Credentials are separate fixed environment bindings.
     tool_enabled_ids: str = ""
