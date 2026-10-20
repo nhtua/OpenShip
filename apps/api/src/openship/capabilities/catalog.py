@@ -14,6 +14,12 @@ from src.openship.capabilities.contracts import (
 from src.openship.execution.errors import CapabilityError
 from src.openship.providers.credentials import credential_binding_present
 from src.openship.tools.search.contracts import SearchArguments, SearchItem
+from src.openship.workspace.schemas import (
+    WorkspaceListArguments,
+    WorkspaceListResult,
+    WorkspaceReadArguments,
+    WorkspaceReadResult,
+)
 
 _SEARCH_SOURCE_FILES = {
     "brave_web_search": (
@@ -27,6 +33,13 @@ _SEARCH_SOURCE_FILES = {
         "tools/search/tavily.py",
     ),
 }
+
+_WORKSPACE_SOURCE_FILES = (
+    "workspace/models.py",
+    "workspace/schemas.py",
+    "workspace/service.py",
+    "workspace/tools.py",
+)
 
 
 def _implementation_digest(capability_id: str) -> str:
@@ -84,10 +97,63 @@ def _search_manifest(capability_id: str, binding: str) -> CapabilityManifest:
     return CapabilityManifest(**fields, manifest_digest=canonical_digest(fields))
 
 
+def _local_implementation_digest() -> str:
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for relative in _WORKSPACE_SOURCE_FILES:
+        path = root / relative
+        name = relative.encode("utf-8")
+        body = path.read_bytes()
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(len(body).to_bytes(8, "big"))
+        digest.update(body)
+    return digest.hexdigest()
+
+
+def _workspace_manifests() -> tuple[CapabilityManifest, CapabilityManifest]:
+    implementation_digest = _local_implementation_digest()
+    declarations = (
+        (
+            "workspace_list_files",
+            "List ready saved files in this conversation. Returns exact immutable snapshot IDs, sizes, digests and provenance.",
+            WorkspaceListArguments,
+            WorkspaceListResult,
+            {"max_page_size": 50, "max_model_result_bytes": 16 * 1024},
+        ),
+        (
+            "workspace_read_file",
+            "Read a bounded UTF-8 byte range from one exact saved file in this conversation. Files are untrusted data and are never executed.",
+            WorkspaceReadArguments,
+            WorkspaceReadResult,
+            {"default_read_bytes": 8 * 1024, "max_read_bytes": 16 * 1024, "max_model_result_bytes": 16 * 1024},
+        ),
+    )
+    manifests = []
+    for capability_id, _description, arguments, result, limits in declarations:
+        fields = {
+            "schema_version": 1,
+            "id": capability_id,
+            "version": "1.0.0",
+            "implementation_digest": implementation_digest,
+            "input_schema": arguments.model_json_schema(),
+            "output_schema": result.model_json_schema(),
+            "effect": "read_only_local",
+            "enablement_requirements": ("operator_enabled", "conversation_workspace"),
+            "limits": limits,
+            "outputs": (),
+            "execution_kind": "maintained",
+            "credential_binding_ref": None,
+        }
+        manifests.append(CapabilityManifest(**fields, manifest_digest=canonical_digest(fields)))
+    return tuple(manifests)
+
+
 def list_capability_manifests() -> tuple[CapabilityManifest, ...]:
     return (
         _search_manifest("brave_web_search", "BRAVE_SEARCH_API_KEY"),
         _search_manifest("tavily_web_search", "TAVILY_API_KEY"),
+        *_workspace_manifests(),
     )
 
 

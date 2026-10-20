@@ -4,7 +4,7 @@ import { mountWithRouter } from './helpers/mountWithRouter'
 import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
-import api, { runsApi } from '@/services/api'
+import api, { runsApi, workspaceApi } from '@/services/api'
 import type { Conversation, RunCard as RunCardType, ToolOperationSummary } from '@/types'
 import {
   apiError,
@@ -24,10 +24,26 @@ vi.mock('@/services/api', () => ({
     getSnapshot: vi.fn(),
     getRun: vi.fn(),
   },
+  artifactsApi: { list: vi.fn(), download: vi.fn(), delete: vi.fn() },
+  workspaceApi: {
+    get: vi.fn().mockResolvedValue({
+      data: {
+        workspace: {
+          id: 'workspace-c1', conversation_id: 'c1', project_id: 'project-1',
+          schema_version: 1, relative_root: 'projects/p/conversations/c1',
+          storage_id: 'storage-1', status: 'available', created_at: '',
+          quota: { committed_bytes: 0, committed_count: 0, reserved_bytes: 0, reserved_count: 0, max_bytes: 1000, max_count: 10 },
+        },
+        files: { items: [], next_cursor: null },
+      },
+    }),
+    readFile: vi.fn(),
+  },
 }))
 
 const mockApi = vi.mocked(api)
 const mockRunsApi = vi.mocked(runsApi)
+const mockWorkspaceApi = vi.mocked(workspaceApi)
 
 const wait = 3000
 
@@ -47,6 +63,18 @@ describe('ChatView', () => {
       (async (url: string) => healthyChatApiGet(url)) as never,
     )
     mockApi.post.mockResolvedValue({ data: null })
+    mockWorkspaceApi.get.mockReset().mockResolvedValue({
+      data: {
+        workspace: {
+          id: 'workspace-c1', conversation_id: 'c1', project_id: 'project-1',
+          schema_version: 1, relative_root: 'projects/p/conversations/c1',
+          storage_id: 'storage-1', status: 'available', created_at: '',
+          quota: { committed_bytes: 0, committed_count: 0, reserved_bytes: 0, reserved_count: 0, max_bytes: 1000, max_count: 10 },
+        },
+        files: { items: [], next_cursor: null },
+      },
+    } as never)
+    mockWorkspaceApi.readFile.mockReset()
   })
 
   it('renders conversation history with the active selection', async () => {
@@ -130,6 +158,44 @@ describe('ChatView', () => {
     expect(stream.findAll('[data-testid="tool-operation-card"]')).toHaveLength(1)
     expect(stream.find('a[href="https://docs.example.test/modules"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="search-tool-form"]').exists()).toBe(false)
+  })
+
+  it('loads and reads retained conversation files by exact snapshot ID', async () => {
+    const savedFile = {
+      id: 'snapshot-1', sha256: 'a'.repeat(64), size_bytes: 18,
+      media_type: 'text/plain', conversation_id: 'c1', project_id: 'project-1',
+      name: 'search-results.json', source: 'brave_web_search', status: 'ready',
+      created_at: '2026-10-20T12:00:00Z', mutability: 'immutable',
+    }
+    mockWorkspaceApi.get.mockResolvedValue({
+      data: {
+        workspace: {
+          id: 'workspace-c1', conversation_id: 'c1', project_id: 'project-1',
+          schema_version: 1, relative_root: 'projects/p/conversations/c1',
+          storage_id: 'storage-1', status: 'available', created_at: '',
+          quota: { committed_bytes: 18, committed_count: 1, reserved_bytes: 0, reserved_count: 0, max_bytes: 1000, max_count: 10 },
+        },
+        files: { items: [savedFile], next_cursor: null },
+      },
+    } as never)
+    mockWorkspaceApi.readFile.mockResolvedValue({
+      data: {
+        workspace_id: 'workspace-c1', artifact_id: 'snapshot-1', version_id: 'snapshot-1',
+        sha256: 'a'.repeat(64), media_type: 'text/plain', size_bytes: 18,
+        offset: 0, content: '<script>kept as text</script>', next_offset: null,
+      },
+    } as never)
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Deploy pipeline'), { timeout: wait })
+    await findByText(wrapper, 'Deploy pipeline')!.trigger('click')
+    await vi.waitFor(() => expect(mockWorkspaceApi.get).toHaveBeenCalledWith('c1', { limit: 50, cursor: undefined }), { timeout: wait })
+
+    await wrapper.get('[data-testid="conversation-files-toggle"]').trigger('click')
+    await wrapper.get('[aria-label="Read search-results.json version snapshot-1"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('<script>kept as text</script>'), { timeout: wait })
+    expect(wrapper.find('[data-testid="selected-file-content"] script').exists()).toBe(false)
+    expect(mockWorkspaceApi.readFile).toHaveBeenCalledWith('c1', 'snapshot-1', { max_bytes: 16 * 1024 })
+    expect(wrapper.text()).not.toContain('/home/')
   })
 
   it('shows the persisted operation failure even when the assistant claims the search succeeded', async () => {

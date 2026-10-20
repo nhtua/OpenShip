@@ -22,7 +22,7 @@ This document redesigns the previous resource-focused architecture using [the pr
 | Create workflows from freeform descriptions | A two-phase workflow builder: freeform input is standardized into a formal specification for user review, then cached as JSON for fast deterministic execution. |
 | Integrate workflows into chat and show progress and input/output | Conversations reference durable runs; structured events drive workflow cards, diagrams, step inspectors, and input forms. |
 | Modular community extensions and semantic discovery | A local capability registry indexes tools, skills, and workflows, with access filtering and progressive loading. |
-| Secure isolation and ephemeral generated code from day one | A separate sandbox manager, enforced execution profiles, scoped credentials, network controls, and server-side authorization. |
+| Secure isolation and ephemeral generated code from day one | Establish gateway authorization with the first trusted built-in tool. Before user-provided or generated code runs, add a separate sandbox manager, enforced profiles, scoped credentials, network controls, and server-side authorization. |
 | Event-driven workflow automation | An event ingestion layer with trigger routing connects cloud monitoring, webhooks, message brokers, chat platforms, and email to workflow execution. |
 
 Engineers remain in control. The agent acts naturally within previously granted authority; operations outside that authority require a concrete review or additional configuration. A model recommendation, retrieved skill, or workflow definition never grants permission by itself.
@@ -41,7 +41,7 @@ The design preserves projects, document-driven infrastructure workflows, resourc
 | Sessions and resource mappings persist in Git | The database persists live runtime state and mappings. Git versions selected requirements, workflow definitions, desired resource specifications, and generated code. |
 | Agent permissions equal the engineer's permissions | The engineer delegates a subset of their authority, scoped to project, environment, connector, action, and duration. |
 | Imported workflows may proceed after a warning | Imports remain inspectable, but execution must satisfy schema, authorization, dependency, and sandbox requirements. A warning cannot bypass a hard security boundary. |
-| Every sandbox receives Vault secrets and a shared volume | Sandboxes receive selected artifacts and capabilities. Generated code starts without secrets; workspaces are isolated per run and published artifacts persist separately. |
+| Every sandbox receives Vault secrets and a shared volume | Sandboxes receive only selected inputs and capabilities. Generated code starts without secrets; per-conversation files persist as immutable artifacts, while executable sandboxes use isolated per-run working directories and publish selected outputs. |
 | Registry lives in the repository | Community source remains reviewed and release-versioned in the repository. Each installation maintains a local runtime index with separate private and imported namespaces. |
 
 These revisions are explicit proposals; the ideas document remains the historical source of product intent.
@@ -96,6 +96,13 @@ flowchart TB
 ```
 
 The control plane owns identity, conversations, scheduling, policy, and durable state. The execution plane runs executable extensions, local MCP servers, CLI tools, and generated code. A worker receives a bounded execution request, not database credentials or unrestricted control-plane access. Maintained typed connectors may execute in the trusted gateway; their network requests and credential use are still scoped and audited. Remote MCP servers are an external trust boundary, not protected by the local sandbox.
+
+Maintained built-in tools such as search may execute inside the supervised
+runtime worker through the gateway. That trusted execution tier does not run
+model-generated code or imported executables. Phase 6 must provide and qualify
+the sandbox driver, worker protocol, image build, resource controls and cleanup
+before those untrusted execution kinds are enabled. Installation documentation
+and reproducible image ownership belong to that phase.
 
 The event ingestion layer provides the connection between external signals and workflow execution, enabling OpenShip to "work" against defined events and report to DevOps engineers. This offloads routine monitoring and response tasks, reducing toil for the engineering team.
 
@@ -220,6 +227,13 @@ Each trigger specifies its type, configuration parameters, optional input mappin
 | Resource object / binding | Desired abstract resource and mappings to concrete provider resources, with observation history. |
 
 Conversation IDs, run IDs, workflow-definition IDs, and LangGraph thread IDs are distinct. Persist their relationships explicitly. Each workflow run receives a stable graph thread identity; checkpoints are not overloaded as the entire application data model.
+
+An artifact ID denotes an immutable captured byte sequence and its digest. A
+conversation workspace associates durable snapshots with one conversation; it
+does not imply a mutable file head. Phase 6 adds logical file IDs, expected-base
+edits, version capture, and an explicit mutability policy for each step output.
+No edit rewrites an artifact version already referenced by a run, review, or
+operation.
 
 Every execution has a project context. If a home-page request has none, resolve or create a personal project before invoking tools. Resolve phrases such as "that deployment" from scoped resource and artifact references; ambiguous targets require clarification.
 

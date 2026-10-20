@@ -176,7 +176,7 @@ def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[Arti
     if not refs:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "unsupported_capability", "message": "Enable at least one supported search tool before using tool-enabled chat"}},
+            detail={"error": {"code": "unsupported_capability", "message": "Enable at least one maintained tool before using tool-enabled chat"}},
         )
 
     return ExecutionConfig(

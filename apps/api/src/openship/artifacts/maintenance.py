@@ -24,6 +24,11 @@ from src.openship.artifacts.service import (
 from src.openship.config import settings
 from src.openship.events.service import append_event
 from src.openship.runs.models import Outbox
+from src.openship.workspace.maintenance import (
+    plan_workspace_purge,
+    purge_workspace,
+    verify_restored_artifacts,
+)
 
 
 @dataclass(frozen=True)
@@ -237,6 +242,10 @@ def main(argv: list[str] | None = None) -> int:
     retention = subparsers.add_parser("retention", help="recover stale artifact transfers and deletions")
     retention.add_argument("--dry-run", action="store_true")
     retention.add_argument("--older-than-seconds", type=int)
+    purge = subparsers.add_parser("purge", help="explicitly purge one conversation workspace")
+    purge.add_argument("workspace_id")
+    purge.add_argument("--dry-run", action="store_true")
+    subparsers.add_parser("verify-restored", help="reconcile artifact metadata after a coordinated restore")
     args = parser.parse_args(argv)
 
     try:
@@ -246,6 +255,15 @@ def main(argv: list[str] | None = None) -> int:
             result = {"initialized": True, "storage_id": str(store.storage_id)}
         elif args.command == "verify":
             result = _run_database_command(verify_artifacts, store)
+        elif args.command == "verify-restored":
+            result = _run_database_command(verify_restored_artifacts, store)
+        elif args.command == "purge":
+            def purge_action(db, configured):
+                plan = plan_workspace_purge(db, args.workspace_id)
+                report = purge_workspace(db, configured, plan, dry_run=args.dry_run)
+                return {"plan": asdict(plan), "report": asdict(report)}
+
+            result = _run_database_command(purge_action, store)
         else:
             result = _run_database_command(
                 lambda db, configured: reconcile_artifacts(
@@ -257,7 +275,19 @@ def main(argv: list[str] | None = None) -> int:
                 store,
             )
         print(json.dumps(result, indent=2, sort_keys=True))
-        return 0 if not result.get("failed", 0) and not result.get("unavailable", 0) else 2
+        report = result.get("report", result)
+        return 0 if (
+            not report.get("failed", 0)
+            and not report.get("unavailable", 0)
+            and not report.get("workspaces_unavailable", 0)
+        ) else 2
+    except HTTPException as exc:
+        error = (exc.detail or {}).get("error", {}) if isinstance(exc.detail, dict) else {}
+        print(
+            f"artifact maintenance refused: {error.get('code', 'operation_failed')}",
+            file=sys.stderr,
+        )
+        return 2
     except (ArtifactStorageError, ValueError) as exc:
         print(f"artifact maintenance failed: {exc}", file=sys.stderr)
         return 2

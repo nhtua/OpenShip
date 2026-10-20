@@ -311,6 +311,14 @@ def begin_artifact_delete(db: Session, user_id: uuid.UUID, artifact_id: uuid.UUI
         return artifact
     if artifact.status not in ("ready", "unavailable"):
         raise _error(409, "artifact_unavailable", "Artifact cannot be deleted while it is being published")
+    require_artifact_not_pinned(db, artifact)
+    artifact.status = "deleting"
+    db.flush()
+    return artifact
+
+
+def require_artifact_not_pinned(db: Session, artifact: Artifact) -> None:
+    """Refuse deletion when a live run or operation pins this exact snapshot."""
     artifact_text_id = str(artifact.id)
     runs = db.query(Run).filter(
         Run.conversation_id == artifact.conversation_id,
@@ -336,9 +344,6 @@ def begin_artifact_delete(db: Session, user_id: uuid.UUID, artifact_id: uuid.UUI
             continue
         if any(item.get("id") == artifact_text_id for item in refs if isinstance(item, dict)):
             raise _error(409, "artifact_is_pinned", "Artifact is selected by an active run")
-    artifact.status = "deleting"
-    db.flush()
-    return artifact
 
 
 def finish_artifact_delete(db: Session, artifact_id: uuid.UUID) -> Artifact:

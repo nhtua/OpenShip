@@ -111,12 +111,18 @@ uv run python -m src.openship.artifacts.maintenance init
 uv run python -m src.openship.artifacts.maintenance verify
 uv run python -m src.openship.artifacts.maintenance retention --dry-run
 uv run python -m src.openship.artifacts.maintenance retention
+uv run python -m src.openship.artifacts.maintenance purge <workspace-id> --dry-run
+uv run python -m src.openship.artifacts.maintenance verify-restored
 ```
 
 The `init` command creates a marker only in an empty root. Keep the marker,
 database, and artifact volume together in backups and restores. See the
 [artifact storage runbook](../../docs/operations/artifact-storage.md) for
-drain, upgrade, recovery, and future Phase 5 Connector guidance.
+drain, upgrade, recovery, and future Phase 5 Connector guidance. The chat
+client shows files owned by the current conversation and reads or deletes a
+selected immutable version by exact artifact ID. `verify-restored` checks the
+configured storage identity and file digests after a coordinated database and
+filesystem restore; it does not recreate missing storage or replay a search.
 
 ### Lease Reconciliation
 

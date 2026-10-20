@@ -8,8 +8,10 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from src.openship.artifacts.contracts import ArtifactRef
 from src.openship.artifacts.filesystem import LocalArtifactStore
 from src.openship.artifacts.models import Artifact
+from src.openship.artifacts.service import begin_artifact_delete
 from src.openship.auth.models import User
 from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import (
@@ -29,6 +31,7 @@ from src.openship.execution.admission import (
 )
 from src.openship.execution.gateway import ToolGateway
 from src.openship.execution.models import ExecutionSlot, ToolAttempt, ToolOperation
+from src.openship.execution.projections import project_operation
 from src.openship.providers.control import InvocationControl
 from src.openship.runs.models import Outbox, Run, RunJob
 from src.openship.runs.queue import Claim
@@ -59,19 +62,33 @@ def _running_tool(db, *, tool_id="brave_web_search", worker_id="gateway-worker")
     conversation = Conversation(user_id=user.id, project_id=project.id, title="Gateway test")
     db.add(conversation)
     db.flush()
+    local = manifest.effect == "read_only_local"
+    refs = (ref,)
+    if local:
+        refs = tuple(
+            CapabilityRef(
+                id=item.id,
+                version=item.version,
+                manifest_digest=item.manifest_digest,
+            )
+            for item in list_capability_manifests()
+            if item.id in {"workspace_list_files", "workspace_read_file"}
+        )
     execution = ExecutionConfig(
-        graph_kind="tool",
-        graph_version=1,
-        allowed_capabilities=(ref,),
-        credential_binding_refs=(manifest.credential_binding_ref,),
+        graph_kind="chat" if local else "tool",
+        graph_version=2 if local else 1,
+        allowed_capabilities=refs,
+        credential_binding_refs=(manifest.credential_binding_ref,)
+        if manifest.credential_binding_ref
+        else (),
     )
     run = Run(
         conversation_id=conversation.id,
         project_id=project.id,
         client_request_id=str(uuid.uuid4()),
         status="running",
-        kind="tool",
-        graph_version=1,
+        kind=execution.graph_kind,
+        graph_version=execution.graph_version,
         fence=1,
         execution_configuration=execution.model_dump_json(),
     )
@@ -104,6 +121,7 @@ def _running_tool(db, *, tool_id="brave_web_search", worker_id="gateway-worker")
         credential_resolver=lambda name: (
             f"{tool_id}-test-key" if name == manifest.credential_binding_ref else None
         ),
+        session_factory=SessionLocal,
     )
     return user, project, conversation, run, claim, ref, context
 
@@ -127,6 +145,127 @@ def _observation(ref, query="gateway test"):
         truncated=False,
         provider_metadata={},
     )
+
+
+def _write_workspace_artifact(db, store, project, conversation, content: bytes):
+    artifact_id = uuid.uuid4()
+    expected = ArtifactRef(
+        id=artifact_id,
+        sha256=hashlib.sha256(content).hexdigest(),
+        size_bytes=len(content),
+        media_type="text/plain",
+    )
+    staged = store.stage(
+        artifact_id,
+        (content,),
+        expected,
+        project_id=project.id,
+        conversation_id=conversation.id,
+    )
+    key = f"projects/{project.id}/conversations/{conversation.id}/artifacts/{artifact_id}/content"
+    store.publish_file(staged, key)
+    artifact = Artifact(
+        id=artifact_id,
+        project_id=project.id,
+        conversation_id=conversation.id,
+        kind="upload",
+        media_type="text/plain",
+        display_name="saved.txt",
+        size_bytes=len(content),
+        sha256=expected.sha256,
+        relative_storage_key=key,
+        status="ready",
+        mutability="immutable",
+        source="upload",
+    )
+    db.add(artifact)
+    db.commit()
+    return artifact
+
+
+@pytest.mark.asyncio
+async def test_gateway_runs_workspace_list_and_read_without_credentials_or_new_artifact(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        settings,
+        "tool_enabled_ids",
+        "workspace_list_files,workspace_read_file",
+    )
+    db = SessionLocal()
+    _user, project, conversation, run, claim, list_ref, context = _running_tool(
+        db, tool_id="workspace_list_files"
+    )
+    store = LocalArtifactStore(tmp_path / "workspace-store", uuid.uuid4())
+    store.initialize()
+    context.artifact_store = store
+    context.credential_resolver = lambda _name: pytest.fail(
+        "local workspace tools must not resolve provider credentials"
+    )
+    artifact = _write_workspace_artifact(
+        db, store, project, conversation, "A🌙B".encode()
+    )
+
+    listed = await ToolGateway(SessionLocal).execute_tool(
+        claim=claim,
+        context=context,
+        logical_call_id="model:0:list",
+        ref=list_ref,
+        arguments={"limit": 5},
+        control=InvocationControl(),
+    )
+
+    assert listed.status == "succeeded"
+    assert [item["id"] for item in listed.result["items"]] == [str(artifact.id)]
+    assert listed.artifacts == ()
+    list_operation = db.query(ToolOperation).filter_by(run_id=run.id).one()
+    assert list_operation.credential_binding_ref is None
+    assert list_operation.output_artifact_ids == "[]"
+    assert db.query(ToolAttempt).filter_by(operation_id=list_operation.id).one().outcome == "succeeded"
+    assert project_operation(db, list_operation).result == listed.result
+
+    read_manifest = next(
+        item for item in list_capability_manifests() if item.id == "workspace_read_file"
+    )
+    read_ref = CapabilityRef(
+        id=read_manifest.id,
+        version=read_manifest.version,
+        manifest_digest=read_manifest.manifest_digest,
+    )
+    read_arguments = {
+        "artifact_id": str(artifact.id),
+        "offset": 1,
+        "max_bytes": 4,
+    }
+    admit_operation(
+        db,
+        claim,
+        context.authorization,
+        "model:1:read",
+        read_ref,
+        read_arguments,
+        (),
+    )
+    db.commit()
+    with pytest.raises(HTTPException) as pinned:
+        begin_artifact_delete(db, context.authorization.principal_id, artifact.id)
+    assert pinned.value.detail["error"]["code"] == "artifact_is_pinned"
+    db.rollback()
+    read = await ToolGateway(SessionLocal).execute_tool(
+        claim=claim,
+        context=context,
+        logical_call_id="model:1:read",
+        ref=read_ref,
+        arguments=read_arguments,
+        control=InvocationControl(),
+    )
+
+    assert read.status == "succeeded"
+    assert read.result["content"] == "🌙"
+    assert read.result["version_id"] == str(artifact.id)
+    assert db.query(Artifact).filter_by(conversation_id=conversation.id).count() == 1
+    assert db.query(ToolOperation).filter_by(run_id=run.id).count() == 2
+    db.close()
 
 
 @pytest.mark.asyncio

@@ -300,6 +300,7 @@ class Worker:
             execution=execution,
             credential_resolver=credential_value,
             artifact_store=store,
+            session_factory=self.Session,
         )
 
     def _finalize_tool_run(

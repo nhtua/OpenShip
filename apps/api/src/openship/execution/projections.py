@@ -14,6 +14,7 @@ from src.openship.artifacts.contracts import ArtifactSummary
 from src.openship.artifacts.models import Artifact
 from src.openship.capabilities.contracts import ToolFailure
 from src.openship.tools.search.contracts import SearchArguments, SearchToolResult
+from src.openship.workspace.schemas import WorkspaceListResult, WorkspaceReadResult
 
 from .models import ToolAttempt
 
@@ -116,7 +117,16 @@ def project_operation(db: Session, operation) -> OperationSummary:
     error_code = operation.error_code
     if operation.status == "succeeded":
         try:
-            result = SearchToolResult.model_validate_json(operation.result_json).model_dump(mode="json")
+            result_models = {
+                "brave_web_search": SearchToolResult,
+                "tavily_web_search": SearchToolResult,
+                "workspace_list_files": WorkspaceListResult,
+                "workspace_read_file": WorkspaceReadResult,
+            }
+            result_model = result_models.get(operation.capability_id)
+            if result_model is None:
+                raise ValueError("operation capability has no public result contract")
+            result = result_model.model_validate_json(operation.result_json).model_dump(mode="json")
         except (TypeError, ValueError):
             from src.openship.execution.publication import _ERROR_MESSAGES
 

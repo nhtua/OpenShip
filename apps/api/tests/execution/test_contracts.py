@@ -21,7 +21,12 @@ from src.openship.tools.search.contracts import SearchArguments, SearchItem
 def test_tool_ids_and_bindings_are_independent():
     manifests = {item.id: item for item in list_capability_manifests()}
 
-    assert set(manifests) == {"brave_web_search", "tavily_web_search"}
+    assert set(manifests) == {
+        "brave_web_search",
+        "tavily_web_search",
+        "workspace_list_files",
+        "workspace_read_file",
+    }
     assert (
         manifests["brave_web_search"].credential_binding_ref == "BRAVE_SEARCH_API_KEY"
     )
@@ -29,6 +34,12 @@ def test_tool_ids_and_bindings_are_independent():
     assert manifests["brave_web_search"].id != manifests["tavily_web_search"].id
     assert "provider" not in manifests["brave_web_search"].input_schema["properties"]
     assert "provider" not in manifests["tavily_web_search"].input_schema["properties"]
+    for capability_id in ("workspace_list_files", "workspace_read_file"):
+        manifest = manifests[capability_id]
+        assert manifest.effect == "read_only_local"
+        assert manifest.credential_binding_ref is None
+        assert manifest.outputs == ()
+        assert "path" not in manifest.input_schema["properties"]
 
 
 def test_manifest_digest_covers_implementation_schema_and_limits():

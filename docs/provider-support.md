@@ -182,11 +182,11 @@ context ceiling has been measured. The `gpt-6-luna` OpenAI Chat Completions
 tuple passed one opt-in tool-call qualification with exactly one selected
 Brave capability. This is transport and contract evidence, not model-quality
 or ranking evidence. The direct live handler checks do not create durable
-operation IDs; the PostgreSQL synthetic chat lane remains unverified in this
-environment because `TEST_POSTGRES_URL` is not configured. The profile remains
-`live-qualified`, not `accepted`. Pytest did not emit JUnit properties on the
-first qualification run, so only the UTC date is available; exact wall-clock
-time is not recorded.
+operation IDs. Separately, the synthetic PostgreSQL chat, manual-search, and
+workspace-restore lanes passed against the local PostgreSQL 15 service on
+2026-10-20; those prove durable pipeline behavior, not a provider-backed browser
+journey. The profile remains `live-qualified`, not `accepted`. The original
+live qualification recorded its UTC date but no exact wall-clock timestamp.
 
 ## Credential rotation and revocation
 

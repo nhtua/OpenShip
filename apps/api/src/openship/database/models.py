@@ -17,13 +17,14 @@ from ..runs.models import (
     RunJob,
     RunTranscriptRecord,
 )
-from ..workspace.models import Project
+from ..workspace.models import ConversationWorkspace, Project
 
 __all__ = [
     "Artifact",
     "ArtifactQuota",
     "Base",
     "Conversation",
+    "ConversationWorkspace",
     "Event",
     "ExecutionSlot",
     "Message",

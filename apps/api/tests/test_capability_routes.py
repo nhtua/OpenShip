@@ -48,9 +48,18 @@ def test_catalog_auth_and_secret_redaction(monkeypatch):
     summary = get_capabilities(user, db)
     body = "".join(item.model_dump_json() for item in summary)
 
-    assert {item.id for item in summary} == {"brave_web_search", "tavily_web_search"}
+    by_id = {item.id: item for item in summary}
+    assert set(by_id) == {
+        "brave_web_search",
+        "tavily_web_search",
+        "workspace_list_files",
+        "workspace_read_file",
+    }
     assert all(not item.available for item in summary)
-    assert all(item.unavailable_reason == "runtime_unavailable" for item in summary)
+    assert by_id["brave_web_search"].unavailable_reason == "runtime_unavailable"
+    assert by_id["tavily_web_search"].unavailable_reason == "runtime_unavailable"
+    assert by_id["workspace_list_files"].unavailable_reason == "disabled"
+    assert by_id["workspace_read_file"].unavailable_reason == "disabled"
     assert sentinel not in body
     assert "credential_binding_ref" not in body
     assert "BRAVE_SEARCH_API_KEY" not in body
@@ -70,3 +79,5 @@ def test_catalog_only_checks_presence_not_key_values(monkeypatch):
     assert catalog["brave_web_search"].unavailable_reason is None
     assert catalog["tavily_web_search"].available is False
     assert catalog["tavily_web_search"].unavailable_reason == "disabled"
+    assert catalog["workspace_list_files"].unavailable_reason == "disabled"
+    assert catalog["workspace_read_file"].unavailable_reason == "disabled"

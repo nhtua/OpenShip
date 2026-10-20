@@ -100,7 +100,7 @@ def test_model_facing_excerpt_drops_lowest_ranked_tail_to_fit_limit():
     assert len(result.model_dump_json().encode("utf-8")) <= 16 * 1024
 
 
-def test_public_operation_and_attempt_summaries_omit_arguments_and_credentials():
+def test_public_operation_exposes_only_bounded_search_query_and_omits_credentials():
     ref = _ref()
     operation = SimpleNamespace(
         id=uuid.uuid4(),
@@ -135,7 +135,8 @@ def test_public_operation_and_attempt_summaries_omit_arguments_and_credentials()
     operation_json = operation_summary(operation).model_dump_json()
     attempt_json = tool_attempt_summary(attempt).model_dump_json()
 
-    assert "private test query" not in operation_json
+    assert '"query":"private test query"' in operation_json
+    assert "max_results" not in operation_json
     assert "BRAVE_SEARCH_API_KEY" not in operation_json
     assert "request_digest" not in attempt_json
     assert "response_digest" not in attempt_json

@@ -286,3 +286,39 @@ export interface ArtifactPage {
   items: ArtifactSummary[]
   next_cursor: string | null
 }
+
+export interface ConversationWorkspaceSummary {
+  id: string
+  conversation_id: string
+  project_id: string
+  schema_version: 1
+  relative_root: string
+  storage_id: string
+  status: 'available' | 'unavailable' | 'deleted'
+  created_at: string
+  quota: {
+    committed_bytes: number
+    committed_count: number
+    reserved_bytes: number
+    reserved_count: number
+    max_bytes: number
+    max_count: number
+  }
+}
+
+export interface ConversationWorkspacePage {
+  workspace: ConversationWorkspaceSummary
+  files: ArtifactPage
+}
+
+export interface WorkspaceFileRead {
+  workspace_id: string
+  artifact_id: string
+  version_id: string
+  sha256: string
+  media_type: string
+  size_bytes: number
+  offset: number
+  content: string
+  next_offset: number | null
+}

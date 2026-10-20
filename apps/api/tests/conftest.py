@@ -47,6 +47,8 @@ def setup_db(request):
         or "test_phase4_execution_migration" in test_path
         or "test_tool_admission_postgres" in test_path
         or "test_tool_transcript_migration" in test_path
+        or "test_workspace_migration_postgres" in test_path
+        or "test_workspace_retention_postgres" in test_path
         or "test_tool_transcript_postgres" in test_path
         or "test_agent_tool_loop_postgres" in test_path
     ):

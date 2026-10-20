@@ -8,6 +8,7 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import RunCard from '@/components/chat/RunCard.vue'
+import ConversationFiles from '@/components/chat/ConversationFiles.vue'
 import {
   Alert,
   AlertDescription,
@@ -51,6 +52,22 @@ const conversationOperations = computed(() => {
     ? [...(chat.toolOperationsByConversation.get(conversationId)?.values() ?? [])]
     : []
 })
+
+const conversationFiles = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  return conversationId ? artifacts.byConversation.get(conversationId) ?? [] : []
+})
+const conversationWorkspace = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  return conversationId ? artifacts.workspaceByConversation.get(conversationId) ?? null : null
+})
+const selectedArtifactId = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  return conversationId ? artifacts.selectedByConversation.get(conversationId) ?? null : null
+})
+const selectedFileRead = computed(() =>
+  selectedArtifactId.value ? artifacts.contentByArtifact.get(selectedArtifactId.value) ?? null : null,
+)
 
 const pendingSubmissionId = computed(() => {
   const conversationId = chat.currentConversation?.id
@@ -180,6 +197,20 @@ function handleDownloadArtifact(artifactId: string, name: string) {
   void artifacts.download(artifactId, name)
 }
 
+function handleSelectFile(conversationId: string, artifactId: string) {
+  void artifacts.selectFile(conversationId, artifactId)
+}
+
+function handleReadMoreFile(conversationId: string, artifactId: string) {
+  void artifacts.readMore(conversationId, artifactId)
+}
+
+function handleDeleteFile(conversationId: string, artifactId: string) {
+  const file = artifacts.byConversation.get(conversationId)?.find((item) => item.id === artifactId)
+  if (!file || !window.confirm(`Delete saved file “${file.name}”?`)) return
+  void artifacts.deleteArtifact(conversationId, artifactId)
+}
+
 function handleCancelOperation(runId: string) {
   if (activeRunId.value === runId) void chat.cancelRun(runId)
 }
@@ -287,6 +318,26 @@ onMounted(async () => {
         :is-streaming="chat.isStreaming"
         @download="handleDownloadArtifact"
         @cancel="handleCancelOperation"
+      />
+      <ConversationFiles
+        v-if="chat.currentConversation"
+        :conversation-id="chat.currentConversation.id"
+        :workspace="conversationWorkspace"
+        :files="conversationFiles"
+        :loading="artifacts.loadingConversation === chat.currentConversation.id"
+        :loading-more="artifacts.loadingMoreConversation === chat.currentConversation.id"
+        :error="artifacts.error"
+        :next-cursor="artifacts.nextCursor.get(chat.currentConversation.id) ?? null"
+        :selected-artifact-id="selectedArtifactId"
+        :selected-content="selectedFileRead?.content ?? null"
+        :selected-next-offset="selectedFileRead?.next_offset ?? null"
+        :reading-artifact-id="artifacts.readingArtifactId"
+        :deleting-artifact-id="artifacts.deletingArtifactId"
+        @load-more="artifacts.loadMore"
+        @select-file="handleSelectFile"
+        @read-more="handleReadMoreFile"
+        @download-file="handleDownloadArtifact"
+        @delete-file="handleDeleteFile"
       />
       <p v-if="artifacts.error" class="shrink-0 px-4 pb-2 text-xs text-red-400" role="alert">
         {{ artifacts.error }}

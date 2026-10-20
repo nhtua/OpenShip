@@ -64,12 +64,16 @@ def _read_model_calls(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def _submit_chat_turn(client: httpx.Client, conversation_id: str) -> str:
+def _submit_chat_turn(
+    client: httpx.Client,
+    conversation_id: str,
+    content: str = "Search for the synthetic automatic chat fixture.",
+) -> str:
     response = client.post(
         f"/api/runs/{conversation_id}/turns",
         json={
             "client_request_id": str(uuid.uuid4()),
-            "content": "Search for the synthetic automatic chat fixture.",
+            "content": content,
             "provider_profile_id": "synthetic-tool-model",
             "fallback_profile_ids": [],
             "enable_tools": True,
@@ -118,12 +122,13 @@ def test_automatic_chat_tool_is_persisted_once_across_service_restart(tmp_path):
         "DATABASE_URL": database_url,
         "JWT_SECRET": "phase4-chat-test-signing-key",
         "JWT_EXPIRY_HOURS": "24",
-        "TOOL_ENABLED_IDS": "brave_web_search,tavily_web_search",
+        "TOOL_ENABLED_IDS": "brave_web_search,tavily_web_search,workspace_list_files,workspace_read_file",
         "BRAVE_SEARCH_API_KEY": "synthetic-brave-test-key",
         "TAVILY_API_KEY": "synthetic-tavily-test-key",
         "OPENAI_API_KEY": "synthetic-model-test-key",
         "MODEL_PROFILES_JSON": _profile_configuration(),
         "MODEL_DEFAULT_PROFILE_ID": "synthetic-tool-model",
+        "MODEL_MAX_TOKENS": "512",
         "ARTIFACT_ROOT": str(artifact_root),
         "ARTIFACT_STORAGE_ID": storage_id,
         "SYNTHETIC_SEARCH_CALL_LOG": str(search_log),
@@ -213,8 +218,10 @@ def test_automatic_chat_tool_is_persisted_once_across_service_restart(tmp_path):
         transcript = [json.loads(row.message_json) for row in rows]
         assert [row.ordinal for row in rows] == [0, 1, 2]
         assert [message["role"] for message in transcript] == ["assistant", "tool", "assistant"]
-        assert transcript[0]["tool_calls"][0]["function"]["name"] == "brave_web_search"
+        assert transcript[0]["tool_calls"][0]["name"] == "brave_web_search"
+        assert transcript[0]["tool_calls"][0]["provider_call_id"] == "synthetic-model-call-0"
         assert transcript[1]["name"] == "brave_web_search"
+        assert transcript[1]["tool_call_id"] == "synthetic-model-call-0"
         assert transcript[2]["content"] == "The synthetic search returned one result."
 
         _stop(worker_process)
@@ -232,8 +239,139 @@ def test_automatic_chat_tool_is_persisted_once_across_service_restart(tmp_path):
             restored = restarted.get(f"/api/artifacts/{artifact_id}/content")
             assert restored.status_code == 200
             assert restored.content == original_bytes
+
+            workspace = restarted.get(f"/api/conversations/{conversation_id}/workspace")
+            assert workspace.status_code == 200
+            assert workspace.json()["workspace"]["status"] == "available"
+            assert any(item["id"] == artifact_id for item in workspace.json()["files"]["items"])
+
+            continuation_id = _submit_chat_turn(
+                restarted,
+                conversation_id,
+                "Please find and read the saved artifact.",
+            )
+            continuation = _wait_run(
+                restarted,
+                continuation_id,
+                terminal={"completed", "failed", "cancelled"},
+            )
+            assert continuation["status"] == "completed", json.dumps(
+                {
+                    "status": continuation.get("status"),
+                    "error": continuation.get("error"),
+                    "operations": [
+                        {
+                            "capability_id": item.get("capability_id"),
+                            "status": item.get("status"),
+                            "error_code": item.get("error_code"),
+                            "error": item.get("error"),
+                        }
+                        for item in continuation.get("operations", [])
+                    ],
+                },
+                sort_keys=True,
+            )
+            local_operations = continuation["operations"]
+            assert [item["capability_id"] for item in local_operations] == [
+                "workspace_list_files",
+                "workspace_read_file",
+            ]
+            assert all(item["status"] == "succeeded" and item["artifacts"] == [] for item in local_operations)
+            read_operation = local_operations[1]
+            assert read_operation["result"]["artifact_id"] == artifact_id
+
+            operation_engine = create_engine(database_url)
+            try:
+                with operation_engine.connect() as connection:
+                    read_inputs_json = connection.execute(
+                        text("SELECT input_artifact_refs FROM tool_operations WHERE id=:id"),
+                        {"id": read_operation["id"]},
+                    ).scalar_one()
+            finally:
+                operation_engine.dispose()
+            read_inputs = json.loads(read_inputs_json)
+            assert read_inputs[0]["id"] == artifact_id
+            assert read_inputs[0]["sha256"] == artifact["sha256"]
+
+            messages = restarted.get(f"/api/conversations/{conversation_id}/messages")
+            assert messages.status_code == 200
+            assert artifact_id in messages.text
+            assert artifact["sha256"] in messages.text
+
+            other_conversation = restarted.post(
+                "/api/conversations", json={"title": "No ambient files"}
+            )
+            assert other_conversation.status_code == 201
+            other_id = other_conversation.json()["id"]
+            isolated_run_id = _submit_chat_turn(
+                restarted,
+                other_id,
+                "Please find and read the saved artifact.",
+            )
+            isolated_run = _wait_run(
+                restarted,
+                isolated_run_id,
+                terminal={"completed", "failed", "cancelled"},
+            )
+            diagnostic_engine = create_engine(database_url)
+            try:
+                with diagnostic_engine.connect() as connection:
+                    workspace_diagnostics = connection.execute(
+                        text(
+                            "SELECT c.id = r.conversation_id AS same_conversation, "
+                            "c.project_id = r.project_id AS same_project, "
+                            "c.user_id = o.principal_id AS same_owner, "
+                            "w.status AS workspace_status, "
+                            "w.storage_id = CAST(:storage_id AS uuid) AS same_storage, "
+                            "w.project_id = c.project_id AS same_workspace_project "
+                            "FROM runs r JOIN conversations c ON c.id = r.conversation_id "
+                            "JOIN tool_operations o ON o.run_id = r.id "
+                            "LEFT JOIN conversation_workspaces w ON w.conversation_id = c.id "
+                            "WHERE r.id = :run_id"
+                        ),
+                        {"run_id": isolated_run_id, "storage_id": storage_id},
+                    ).mappings().one()
+            finally:
+                diagnostic_engine.dispose()
+            assert isolated_run["status"] == "completed", json.dumps(
+                {
+                    "error": isolated_run.get("error"),
+                    "workspace_diagnostics": dict(workspace_diagnostics),
+                    "provider_attempts": [
+                        {
+                            "outcome": item.get("outcome"),
+                            "error_code": item.get("error_code"),
+                        }
+                        for item in isolated_run.get("provider_attempts", [])
+                    ],
+                    "operations": [
+                        {
+                            "capability_id": item.get("capability_id"),
+                            "status": item.get("status"),
+                            "error_code": item.get("error_code"),
+                        }
+                        for item in isolated_run.get("operations", [])
+                    ],
+                },
+                sort_keys=True,
+            )
+            assert [item["capability_id"] for item in isolated_run["operations"]] == [
+                "workspace_list_files"
+            ]
+            assert isolated_run["operations"][0]["result"]["items"] == []
+            assert len(_read_calls(search_log)) == 1
         assert len(_read_calls(search_log)) == 1
-        assert len(_read_model_calls(model_log)) == 2
+        model_calls = _read_model_calls(model_log)
+        assert len(model_calls) == 7
+        assert [call["selected_tool"] for call in model_calls] == [
+            "brave_web_search",
+            None,
+            "workspace_list_files",
+            "workspace_read_file",
+            None,
+            "workspace_list_files",
+            None,
+        ]
     finally:
         _stop(worker_process)
         _stop(api_process)

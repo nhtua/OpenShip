@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import type { CapabilityRef, CapabilitySummary } from '@/types'
 
 interface Props {
@@ -26,6 +26,10 @@ const emit = defineEmits<{
 const open = ref(false)
 const trigger = ref<HTMLButtonElement | null>(null)
 const menu = ref<HTMLElement | null>(null)
+const directCapabilities = computed(() => props.capabilities.filter((capability) =>
+  capability.effect === 'read_only_external' &&
+  ['brave_web_search', 'tavily_web_search'].includes(capability.id),
+))
 
 function label(id: string): string {
   if (id === 'brave_web_search') return 'Brave Search'
@@ -133,7 +137,7 @@ function onKeydown(event: KeyboardEvent) {
         <span class="min-w-0">
           <span class="block font-medium">Let the model use tools automatically</span>
           <span class="mt-0.5 block text-xs text-muted-foreground">
-            {{ props.automaticToolDisabledReason || 'The model can choose among enabled search tools.' }}
+            {{ props.automaticToolDisabledReason || 'The model can choose among enabled tools in this conversation.' }}
           </span>
         </span>
       </button>
@@ -141,11 +145,11 @@ function onKeydown(event: KeyboardEvent) {
       <p class="px-2 pb-2 pt-1 text-xs font-medium text-muted-foreground">
         Attach one tool to run it directly
       </p>
-      <p v-if="!props.capabilities.length" class="px-2 pb-2 text-xs text-muted-foreground">
-        No search tools are configured.
+      <p v-if="!directCapabilities.length" class="px-2 pb-2 text-xs text-muted-foreground">
+        No directly attachable search tools are configured.
       </p>
       <button
-        v-for="capability in props.capabilities"
+        v-for="capability in directCapabilities"
         :key="capability.id"
         type="button"
         role="menuitem"

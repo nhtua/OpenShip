@@ -11,6 +11,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from src.openship.artifacts.filesystem import ArtifactStorageError
+from src.openship.artifacts.maintenance import configured_store
 from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.execution.models import ToolAvailability
 from src.openship.providers.credentials import credential_binding_present
@@ -44,7 +46,14 @@ def observe_tool_availability(
         if manifest.id not in enabled_ids:
             available, reason = False, "disabled"
         elif manifest.credential_binding_ref is None:
-            available, reason = True, None
+            if manifest.effect == "read_only_local":
+                try:
+                    configured_store().verify()
+                    available, reason = True, None
+                except ArtifactStorageError:
+                    available, reason = False, "runtime_unavailable"
+            else:
+                available, reason = True, None
         else:
             try:
                 available = bool(credential_check(manifest.credential_binding_ref))

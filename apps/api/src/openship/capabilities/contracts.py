@@ -150,15 +150,27 @@ class ToolCommandRequest(FrozenModel):
 class ToolInvocationContext:
     """Runtime-only authority and resolvers; never place this in graph state."""
 
-    __slots__ = ("artifact_store", "authorization", "credential_resolver", "execution")
+    __slots__ = (
+        "artifact_store",
+        "authorization",
+        "credential_resolver",
+        "execution",
+        "session_factory",
+    )
 
     def __init__(
-        self, authorization, execution, credential_resolver, artifact_store=None
+        self,
+        authorization,
+        execution,
+        credential_resolver,
+        artifact_store=None,
+        session_factory=None,
     ):
         self.authorization = authorization
         self.execution = execution
         self.credential_resolver = credential_resolver
         self.artifact_store = artifact_store
+        self.session_factory = session_factory
 
 
 class ToolFailure(FrozenModel):

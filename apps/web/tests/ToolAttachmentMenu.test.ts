@@ -86,4 +86,31 @@ describe('ToolAttachmentMenu', () => {
     expect(document.activeElement).toBe(automaticToggle.element)
     wrapper.unmount()
   })
+
+  it('keeps local workspace tools automatic-only while leaving them available to chat', async () => {
+    const workspace: CapabilitySummary = {
+      id: 'workspace_list_files',
+      version: '1.0.0',
+      manifest_digest: 'c'.repeat(64),
+      input_schema: {},
+      output_schema: {},
+      effect: 'read_only_local',
+      enabled: true,
+      available: true,
+      unavailable_reason: null,
+    }
+    const wrapper = mount(ToolAttachmentMenu, {
+      props: {
+        capabilities: [...capabilities, workspace],
+        selectedCapabilityId: null,
+        disabled: false,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="tool-choice"]')).toHaveLength(2)
+    expect(wrapper.get('[data-testid="automatic-tool-mode"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('workspace_list_files')
+    wrapper.unmount()
+  })
 })

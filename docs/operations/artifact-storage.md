@@ -57,14 +57,21 @@ identity as the API and worker:
 docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance verify
 docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance retention --dry-run
 docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance retention
+docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance purge <workspace-uuid> --dry-run
 ```
 
 `verify` reads every ready artifact and checks its size and digest. The
 `retention` command recovers expired staging transfers and interrupted deletes;
 it does not delete old, ready user artifacts by age. Missing or damaged bytes
 are reported and the metadata is marked unavailable when reconciliation runs.
-Conversation and project quotas are controlled by the `ARTIFACT_*_QUOTA_*`
-settings in `.env`.
+There is no age-based purge by default. `purge <workspace-uuid> --dry-run`
+prints the exact workspace, artifact IDs, expected states and SHA-256 digests
+that an explicit purge would remove. Review this output, then rerun without
+`--dry-run` to purge that workspace. Active run/operation input pins refuse the
+purge. The command marks deletion intent in PostgreSQL before unlinking bytes;
+an interrupted unlink remains a tombstone and `retention` can finish it. IDs
+and digests remain in PostgreSQL after deletion. `ARTIFACT_*_QUOTA_*` settings
+control conversation and project quotas.
 
 ## Drain, upgrade, and back up
 
@@ -116,12 +123,18 @@ docker run --rm \
 cat backups/openship.sql | docker compose exec -T postgres psql -U openship -d openship
 docker compose up -d
 docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance verify
+docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance verify-restored
 ```
 
 If the database and file archive do not match, verification reports missing or
-incorrect bytes rather than silently changing an artifact. Preserve the
-`.storage-id` marker in the archive. For an isolated recovery, restore both
-the database and the named volume as a pair before starting OpenShip.
+incorrect bytes, marks affected workspaces and artifacts unavailable, and
+preserves their IDs, digests, and quota counters. `verify-restored` checks the
+existing marker and bytes; it never initializes a replacement root, rebinds a
+conversation to another `ARTIFACT_STORAGE_ID`, or repeats a dispatched search.
+Verified unavailable files return to ready without changing quota counters.
+Preserve the `.storage-id` marker in the archive. For an isolated recovery,
+restore both the database and the named volume as a pair before starting
+OpenShip, then run `verify-restored` before enabling work.
 
 ## Later credential management
 
@@ -130,3 +143,11 @@ keeps them in the runtime process. Phase 5 Connector work may add a managed
 credential lifecycle. It must preserve the same provider-specific tool IDs and
 runtime-only secret handling; Phase 4A does not store search keys in PostgreSQL
 or browser settings.
+
+Phase 4 files are immutable artifact snapshots, each identified by its artifact
+ID and digest. Phase 6 owns logical file identities/current heads, expected-base
+edits, immutable version capture, and the per-step choice between mutable files
+and immutable outputs. Repeated edits create new captured versions; they do not
+rewrite an artifact already referenced by a run. Phase 6 also owns sandbox
+driver installation/qualification and reproducible sandbox image builds; none
+of those are prerequisites for Phase 4 trusted search or local workspace reads.

@@ -1,14 +1,17 @@
 import axios from 'axios'
 import type {
   ArtifactPage,
+  ArtifactSummary,
   AuthResponse,
   CapabilitySummary,
+  ConversationWorkspacePage,
   OperationPage,
   Run,
   Snapshot,
   ToolCommandRequest,
   TurnSubmitRequest,
   ModelProfileCatalog,
+  WorkspaceFileRead,
 } from '@/types'
 
 const api = axios.create({
@@ -98,6 +101,24 @@ export const artifactsApi = {
 
   download: (artifactId: string): Promise<{ data: Blob }> =>
     api.get(`/artifacts/${artifactId}/content`, { responseType: 'blob' }),
+
+  delete: (artifactId: string): Promise<{ data: ArtifactSummary }> =>
+    api.delete(`/artifacts/${artifactId}`),
+}
+
+export const workspaceApi = {
+  get: (
+    conversationId: string,
+    params: { limit?: number; cursor?: string } = {},
+  ): Promise<{ data: ConversationWorkspacePage }> =>
+    api.get(`/conversations/${conversationId}/workspace`, { params }),
+
+  readFile: (
+    conversationId: string,
+    artifactId: string,
+    params: { offset?: number; max_bytes?: number } = {},
+  ): Promise<{ data: WorkspaceFileRead }> =>
+    api.get(`/conversations/${conversationId}/workspace/files/${artifactId}`, { params }),
 }
 
 export default api

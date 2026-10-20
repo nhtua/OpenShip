@@ -33,6 +33,8 @@ from src.openship.tools.search.contracts import (
     SearchObservation,
     SearchToolResult,
 )
+from src.openship.workspace.models import ConversationWorkspace
+from src.openship.workspace.schemas import WorkspaceListResult, WorkspaceReadResult
 
 from .admission import release_execution_slot, require_live_claim
 from .models import ExecutionSlot, ToolAttempt, ToolOperation
@@ -54,6 +56,12 @@ _ERROR_MESSAGES = {
     "artifact_publication_failed": "The search result could not be retained safely.",
     "artifact_quota_exceeded": "Conversation artifact storage quota is full.",
     "invalid_tool_output": "The maintained tool returned an invalid result.",
+    "workspace_unavailable": "The conversation workspace is unavailable.",
+    "artifact_not_found": "The requested file is not available in this conversation.",
+    "invalid_cursor": "The workspace file cursor is invalid.",
+    "invalid_offset": "The requested byte offset is invalid.",
+    "invalid_utf8_boundary": "The requested byte offset is not on a UTF-8 boundary.",
+    "artifact_unavailable": "The saved file could not be verified in storage.",
     "lease_lost": "The active run was interrupted before the result could be published.",
     "execution_interrupted": "The tool execution was interrupted and will not be repeated automatically.",
 }
@@ -274,7 +282,9 @@ def mark_tool_dispatching(
     operation_id: uuid.UUID,
     slot_id: uuid.UUID,
     max_output_bytes: int,
-) -> tuple[ToolOperation, ToolAttempt, Artifact]:
+    *,
+    reserve_output: bool = True,
+) -> tuple[ToolOperation, ToolAttempt, Artifact | None]:
     """Reserve immutable output and commit one physical dispatch intent."""
     locator = db.query(ToolOperation).filter(ToolOperation.id == operation_id).first()
     if locator is None or locator.run_id != claim.run_id:
@@ -303,24 +313,26 @@ def mark_tool_dispatching(
         sort_keys=True,
         separators=(",", ":"),
     )
-    artifact = reserve_artifact(
-        db,
-        conversation_id=operation.conversation_id,
-        project_id=operation.project_id,
-        max_bytes=min(
-            max(1, max_output_bytes),
-            settings.artifact_search_reservation_bytes,
-            64 * 1024,
-        ),
-        kind="search_result",
-        request_key=str(operation.id),
-        display_name="search-results.json",
-        media_type="application/json",
-        source="tool",
-        originating_run_id=operation.run_id,
-        originating_operation_id=operation.id,
-        provenance=provenance,
-    )
+    artifact = None
+    if reserve_output:
+        artifact = reserve_artifact(
+            db,
+            conversation_id=operation.conversation_id,
+            project_id=operation.project_id,
+            max_bytes=min(
+                max(1, max_output_bytes),
+                settings.artifact_search_reservation_bytes,
+                64 * 1024,
+            ),
+            kind="search_result",
+            request_key=str(operation.id),
+            display_name="search-results.json",
+            media_type="application/json",
+            source="tool",
+            originating_run_id=operation.run_id,
+            originating_operation_id=operation.id,
+            provenance=provenance,
+        )
     attempt = ToolAttempt(
         operation_id=operation.id,
         ordinal=1,
@@ -587,6 +599,119 @@ def publish_tool_result(
         status="succeeded",
         result=result_data,
         artifacts=(artifact_ref,),
+    )
+
+
+def publish_local_tool_result(
+    db: Session,
+    claim: Claim,
+    attempt_id: uuid.UUID,
+    result,
+) -> PublishedToolResult:
+    """Persist one bounded local read result without reserving an output artifact."""
+    conversation, operation, attempt = _attempt_and_operation(db, claim, attempt_id)
+    if operation.status != "running" or attempt.outcome != "started":
+        raise ToolPublicationError("lease_lost")
+    try:
+        if operation.capability_id == "workspace_list_files":
+            normalized = WorkspaceListResult.model_validate(result)
+            expected_workspace = (
+                db.query(ConversationWorkspace)
+                .filter(ConversationWorkspace.conversation_id == operation.conversation_id)
+                .first()
+            )
+            if (
+                expected_workspace is None
+                or normalized.workspace_id != expected_workspace.id
+                or any(
+                    db.query(Artifact.id)
+                    .filter(
+                        Artifact.id == item.id,
+                        Artifact.conversation_id == operation.conversation_id,
+                        Artifact.project_id == operation.project_id,
+                        Artifact.status == "ready",
+                        Artifact.sha256 == item.sha256,
+                        Artifact.size_bytes == item.size_bytes,
+                    )
+                    .first()
+                    is None
+                    for item in normalized.items
+                )
+            ):
+                raise ValueError("workspace list result changed its pinned scope")
+        elif operation.capability_id == "workspace_read_file":
+            normalized = WorkspaceReadResult.model_validate(result)
+            expected_workspace = (
+                db.query(ConversationWorkspace)
+                .filter(ConversationWorkspace.conversation_id == operation.conversation_id)
+                .first()
+            )
+            artifact = (
+                db.query(Artifact)
+                .filter(
+                    Artifact.id == normalized.artifact_id,
+                    Artifact.conversation_id == operation.conversation_id,
+                    Artifact.project_id == operation.project_id,
+                    Artifact.status == "ready",
+                )
+                .first()
+            )
+            if (
+                expected_workspace is None
+                or normalized.workspace_id != expected_workspace.id
+                or normalized.version_id != normalized.artifact_id
+                or artifact is None
+                or normalized.sha256 != artifact.sha256
+                or normalized.size_bytes != artifact.size_bytes
+                or len(normalized.content.encode("utf-8")) > 16 * 1024
+            ):
+                raise ValueError("workspace read result changed its pinned scope")
+        else:
+            raise ValueError("local result capability is unsupported")
+        result_data = normalized.model_dump(mode="json")
+        result_bytes = canonical_json(result_data)
+        if len(result_bytes) > 16 * 1024:
+            raise ToolPublicationError("output_limit_exceeded")
+    except ToolPublicationError:
+        raise
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ToolPublicationError("invalid_tool_output") from exc
+
+    slot_id = _slot_id_for_operation(db, operation.id, claim)
+    now = _utc_now()
+    operation.status = "succeeded"
+    operation.error_code = None
+    operation.result_json = result_bytes.decode("utf-8")
+    operation.result_digest = hashlib.sha256(result_bytes).hexdigest()
+    operation.output_artifact_ids = "[]"
+    operation.finished_at = now
+    operation.updated_at = now
+    attempt.outcome = "succeeded"
+    attempt.error_code = None
+    attempt.response_digest = operation.result_digest
+    attempt.finished_at = now
+    if not release_execution_slot(db, claim, slot_id):
+        raise ToolPublicationError("lease_lost")
+    _event(
+        db,
+        conversation,
+        operation.run_id,
+        "tool.completed",
+        {
+            "schema_version": 1,
+            "operation_id": str(operation.id),
+            "attempt_id": str(attempt.id),
+            "capability_id": operation.capability_id,
+            "status": "succeeded",
+            "artifact_ids": [],
+            "result_digest": operation.result_digest,
+        },
+    )
+    db.flush()
+    return PublishedToolResult(
+        operation_id=operation.id,
+        status="succeeded",
+        result=result_data,
     )
 
 

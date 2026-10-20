@@ -205,7 +205,15 @@ class _StoppableControl(InvocationControl):
         super().__init__(deadline=time.monotonic() + 60, stop=lambda: self.stopped)
 
 
-def _agent_case(monkeypatch, behaviors, *, execution=None, gateway=None, control=None):
+def _agent_case(
+    monkeypatch,
+    behaviors,
+    *,
+    execution=None,
+    gateway=None,
+    control=None,
+    enabled_tools="brave_web_search,tavily_web_search",
+):
     execution = execution or _execution()
     run_id, user_id, project_id, conversation_id, lease_until = _running_chat_tool_run(execution)
     profile = _tool_profile()
@@ -213,7 +221,7 @@ def _agent_case(monkeypatch, behaviors, *, execution=None, gateway=None, control
     monkeypatch.setattr(settings, "model_profiles_json", json.dumps([raw_profile]))
     monkeypatch.setattr(settings, "model_default_profile_id", profile.id)
     monkeypatch.setenv(profile.credential_ref, "synthetic-model-credential")
-    monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search,tavily_web_search")
+    monkeypatch.setattr(settings, "tool_enabled_ids", enabled_tools)
     model_transport = serve_requests(monkeypatch, behaviors)
     selected_gateway = gateway or _CountingGateway()
     invocation = _invocation(
@@ -326,6 +334,54 @@ def test_chat_v2_runs_two_sequential_tool_calls_and_publishes_only_final_text(mo
 
 def test_chat_v2_graph_is_registered_before_worker_dispatch():
     assert callable(resolve_graph("chat", 2))
+
+
+def test_chat_v2_can_choose_a_workspace_read_tool_without_search_credentials(monkeypatch):
+    arguments = {"limit": 10}
+    local_turn = sdk_tool_chunk(
+        fragments=[
+            {
+                "index": 0,
+                "id": "workspace-call-1",
+                "name": "workspace_list_files",
+                "arguments": json.dumps(arguments),
+            }
+        ],
+        finish_reason="tool_calls",
+        model=FIXTURE_MODEL,
+    )
+    gateway = _CountingGateway(
+        result=PublishedToolResult(
+            operation_id=uuid.uuid4(),
+            status="succeeded",
+            result={"workspace_id": str(uuid.uuid4()), "items": [], "next_cursor": None},
+        )
+    )
+    graph, state, transport, gateway, run_id = _agent_case(
+        monkeypatch,
+        [
+            {"chunks": [local_turn]},
+            {"chunks": [sdk_chunk(content="There are no saved files yet.", finish_reason="stop")]},
+        ],
+        gateway=gateway,
+        enabled_tools="workspace_list_files,workspace_read_file",
+    )
+
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+
+    assert result["assistant_response"] == "There are no saved files yet."
+    assert transport.requests == 2
+    assert {tool["function"]["name"] for tool in transport.seen[0]["tools"]} == {
+        "workspace_list_files",
+        "workspace_read_file",
+    }
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0]["ref"].id == "workspace_list_files"
+    assert gateway.calls[0]["arguments"] == {"limit": 10, "cursor": None}
+    assert {tool["function"]["name"] for tool in transport.seen[1]["tools"]} == {
+        "workspace_list_files",
+        "workspace_read_file",
+    }
 
 
 def test_chat_v2_uses_a_persisted_execution_deadline():

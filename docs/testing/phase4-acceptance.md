@@ -1,26 +1,32 @@
 ---
 type: testing
-summary: Acceptance boundary and qualification evidence for Phase 4A trusted manual search and immutable filesystem artifacts.
+summary: Acceptance boundary and qualification evidence for Phase 4 trusted tools, model-directed calls, and persistent conversation files.
 status: review
 date: 2026-10-20
 ---
 
-# Phase 4A Acceptance
+# Phase 4 Acceptance
 
-**Decision: Task 9A visually accepted; continue implementation.** The user
-reports Phase 4A functionality works but requested compact search entries in
-the conversation, tool attachment through `[+]` below the input, and a small
-model dropdown defaulting to `gpt-6-luna`. Spec §8.1 and plan Task 9A record the
-approved design. Task 9A is implemented and fixture-verified; the user accepted
-the visual result and directed continuation on 2026-10-20. This report is user
-walkthrough feedback, not qualification of every live provider/model tuple. The earlier
-technical evidence below remains historical evidence for Tasks 1–9.
+**Implementation status: Tasks 1–17 are complete and ready for review.** The
+user visually accepted Task 9A on 2026-10-20 and directed implementation through
+Phase 4C. Phase 4A/B/C acceptance remains a separate user decision. The evidence
+below distinguishes user walkthrough feedback from local unit, PostgreSQL,
+filesystem, browser, synthetic full-stack, and live-provider checks.
 
-Phase 4A is limited to explicit, model-free Brave
-and Tavily search runs, safe operation snapshots, and immutable filesystem
-artifacts. Phase 4B adds model-directed tool calls through the same gateway.
-Phase 4C associates immutable artifacts with conversations and exposes bounded
-list/read tools. Mutable files and sandbox execution remain in Phase 6.
+Phase 4A adds explicit, model-free Brave and Tavily search runs, safe operation
+snapshots, and immutable filesystem artifacts. Phase 4B adds model-directed
+tool calls through the same gateway. Phase 4C associates immutable artifacts
+with conversations and exposes bounded list/read tools, recovery, purge, and a
+files panel. Mutable logical files and sandbox execution remain in Phase 6.
+
+Tasks 15–17 add the lazy `ConversationWorkspace` association,
+`/api/conversations/{id}/workspace`, bounded model-callable
+`workspace_list_files` and `workspace_read_file`, explicit purge/restore
+maintenance, and the in-chat files panel. Local tools use the durable operation
+gateway and exact conversation-scoped artifact IDs; they require no search
+credential, create no output artifact, and pin reads against concurrent
+deletion. They remain excluded from the manual search attachment menu and are
+available to tool-enabled chat when explicitly enabled.
 
 ## Phase 4B qualification status
 
@@ -39,12 +45,13 @@ result-ranking or answer-quality claim is made. Exact tool manifest and
 implementation digests are recorded in `docs/provider-support.md`. The direct
 handler smoke creates no durable operation ID.
 
-Offline provider/guard tests and the fixture browser tool-chat test pass. The
-synthetic PostgreSQL chat-v2 full-stack test is implemented but skipped here
-because `TEST_POSTGRES_URL` is unavailable. The actual-browser full-stack spec
-also requires the running application services and was not run. Phase 4B
-acceptance remains pending; implementation is continuing at the user's
-direction.
+Offline provider/guard tests, the fixture browser tool-chat test, and the
+synthetic PostgreSQL chat-v2 test pass. The latter verifies a real API, worker,
+database, filesystem, persisted transcript, process restart, exact saved-file
+list/read, and no redispatched search. The real-API browser test also passes for
+conversation-file upload/read/download/delete and conversation isolation.
+Provider-backed full-stack browser cases were not run against a configured
+model/search service. Phase 4B acceptance remains a user decision.
 
 Phase 4A is ready for acceptance only when the checks below have evidence from
 the CI qualification lanes or an equivalent disposable environment. A local
@@ -115,6 +122,25 @@ Representative files: `task9a-desktop-collapsed.png`,
 `task9a-desktop-model-menu.png`, `task9a-mobile-dark-expanded.png`,
 `task9a-mobile-dark-tool-menu.png`, and `task9a-mobile-dark-model-menu.png`.
 
+## Phase 4C implementation evidence
+
+| Check | Evidence | Limit |
+| --- | --- | --- |
+| Workspace/tools/maintenance API tests | 20 passed across output projection, workspace tools/routes, association, and purge/restore unit cases | SQLite-backed unit/API behavior; PostgreSQL is recorded separately. The purged-workspace read route returns a bounded unavailable response. |
+| PostgreSQL migration, association concurrency, and purge | 3 passed against the existing local PostgreSQL 15 service | Disposable, uniquely named databases; no live search calls. |
+| Synthetic API/runtime/PostgreSQL/filesystem lane | 3 passed: manual search restart/cancel, model-directed tool transcript plus restart/file continuation/isolation, and database/filesystem restore with no search replay | Model and search boundaries are deterministic synthetic services. |
+| Conversation-files real-API browser journey | 1 passed against a temporary API, PostgreSQL database, and artifact root | Validates upload/read/download/delete and conversation isolation; does not exercise live search or model providers. |
+| Fixture browser suite | 52 passed after adding a shared empty-workspace API fixture | Deterministic fixture responses. |
+| Web unit tests, Vue typecheck, and production build | 171 unit tests passed; typecheck and build passed | — |
+| API lint | Ruff passed across `apps/api` | — |
+| Full network-free API suite | Attempted after correcting the query-projection expectation; the single `tests/test_auth_login.py::test_login_existing_user` TestClient request hung in this local harness, including when run alone | The timed stack shows the request waiting while the Starlette ASGI portal is idle. Focused changed API suites pass; this broad lane is not claimed green. |
+| Provider-backed full-stack browser suite | Not run with configured model/search services | Only the conversation-files full-stack browser spec was run. Tool-chat and search browser cases need the synthetic provider stack used by the API full-stack lane. |
+| Sandbox installation/image qualification | Not applicable | Phase 6 owns sandbox driver, image, isolation, and executable-file qualification. |
+
+The empty-workspace case found and fixed during real-stack testing is covered by
+`test_workspace_list_returns_an_empty_page_for_a_new_conversation`. An empty
+conversation now returns an empty page; it is not reported as unavailable.
+
 ## Commands
 
 From `apps/api`, run the network-free API lane with:
@@ -156,11 +182,11 @@ transports for repeatable qualification. For a deployed Compose UI, set
 
 The implemented UI amendment in [spec §8.1](../superpowers/specs/2026-10-19-phase4-execution-and-conversation-workspace-design.md#81-composer-and-tool-result-ux-amendment)
 and [Task 9A](../superpowers/plans/2026-10-19-phase4-execution-and-conversation-workspace.md#task-9a--integrated-composer-and-compact-conversation-tool-results)
-was visually accepted by the user on 2026-10-20. The user directed continuation
-through the remaining plan. Task 10's normalized contracts, tool-mode turn
-pinning, migration and durable transcript are implemented; Task 11 is underway.
-Task 14 remains the planned Phase 4B evidence checkpoint. Live provider tests
-remain opt-in and were not run.
+was visually accepted by the user on 2026-10-20. Tasks 1–17 are implemented;
+the focused API, PostgreSQL, synthetic real-stack, fixture browser, real-API
+workspace browser, web unit/typecheck/build, and lint evidence is recorded
+above. The broad API suite limitation and provider-backed browser gap are also
+recorded. Phase 4A/B/C acceptance remains pending the user's review.
 
 The previously recorded PostgreSQL and synthetic full-stack evidence remains
 part of the Phase 4A qualification record. If a required lane skipped, ran zero

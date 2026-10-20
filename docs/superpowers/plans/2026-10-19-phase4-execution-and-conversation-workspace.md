@@ -1,7 +1,7 @@
 ---
 type: plan
 summary: Approved Phase 4 tasks for separate Brave/Tavily tools with operator-configured keys, the shared gateway/model loop, and basic persistent conversation files; implementation is underway.
-status: in_progress
+status: review
 date: 2026-10-20
 ---
 
@@ -263,20 +263,20 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** `OPENSHIP_LIVE_SEARCH_TOOL_ID` selects exactly one installed Brave/Tavily capability; `OPENSHIP_LIVE_TOOL_PROFILE_ID` selects one declared OpenAI model tuple. Missing opt-in skips ordinary discovery; an explicitly requested qualification run with absent prerequisites fails rather than pretending success. Network-free guard tests do not need secrets.
 
-- [x] Add fixture and guard tests; add the real-stack synthetic model/search worker and chat-v2 test for one exact tool call and transcript. The new PostgreSQL test is present but skipped because `TEST_POSTGRES_URL` is unavailable; the existing PostgreSQL/manual-search acceptance lane still covers both providers, restart, cancellation and no redispatch.
+- [x] Add fixture and guard tests; add the real-stack synthetic model/search worker and chat-v2 test for one exact tool call and transcript. The complete synthetic PostgreSQL lane passed manual search/restart/cancel, model-directed tool/restart and coordinated workspace restore (3 passed).
 - [x] The user authorized bounded interaction tests with local credentials. Brave and Tavily each passed one fixed-query, one-result live search; GPT-6 Luna completed a tool-call/final-answer smoke using one Brave call, two model requests, one destination and no fallback. Tests assert no stable ranking and print no credentials.
-- [ ] Record qualified tuples, capability revisions/digests, result timestamps and remaining gaps. The manifest/implementation digests and UTC date are recorded in provider-support; exact wall-clock test time and a durable operation ID are not available from the direct live-handler smoke. Keep other model adapters text-only until qualified; run cumulative unit/PG/browser gates. User acceptance remains pending while implementation continues at the user's direction.
+- [x] Record qualified tuples, capability revisions/digests, UTC qualification date and remaining evidence gaps in provider-support. The direct live-handler smoke has no durable operation ID or exact wall-clock timestamp; the synthetic PostgreSQL chat lane now verifies durable execution separately. Keep other model adapters text-only until qualified. User acceptance remains pending.
 
 ### Task 15 — Persistent association and bounded workspace tools
 
-**Files:** Extend workspace models/routes, create `workspace/{service,schemas,tools}.py`, migration 008; extend catalog/database models. Tests: `tests/test_conversation_workspace.py`, `tests/test_workspace_tools.py`, `tests/integration/test_workspace_association_postgres.py`, `tests/integration/test_workspace_migration_postgres.py`.
+**Files:** Extend workspace models/routes, create `workspace/{service,schemas,tools}.py`, migration 008; extend catalog/database models. Tests: `tests/test_conversation_workspace.py`, `tests/test_workspace_tools.py`, and the combined guarded PostgreSQL/migration lane `tests/integration/test_workspace_migration_postgres.py`.
 
 **Interfaces:** `ensure_workspace(db,user_id,conversation_id,store) -> WorkspaceSummary`; `list_workspace_files(arguments,context,control) -> WorkspaceListResult`; `read_workspace_file(arguments,context,control) -> WorkspaceReadResult`, with exact current-conversation artifact/version scope. Produce `ConversationWorkspace` and spec §9 bounded DTOs; integrate `workspace_list_files`/`workspace_read_file` through the same gateway and direct OpenAI function names.
 
-- [ ] Write failing stable association across title/model/restart, concurrent ensure, unchanged 4A/4B IDs/digests/paths, lazy old-conversation association, missing/replaced root, cross-conversation ID/path and UTF-8 offset/page/read-bound tests.
-- [ ] Run unit and named PG modules before implementation; migrate fixture artifacts from pre-4C without file copying.
-- [ ] Implement `phase4c008` after `phase4b007`, no filesystem I/O in Alembic. Keep file keys server-controlled, exact version refs and bounded context. No mutable-file heads, patching/history UI or shared writable directories.
-- [ ] Verify agent list/read uses no external search, counts against tool budgets and cannot exceed authority or bytes. Commit subject: `feat: associate and read persistent conversation files`.
+- [x] Added stable association/title-change, lazy binding, unchanged artifact metadata, missing storage, ownership, API pagination, exact conversation scope, UTF-8 byte offsets and strict byte/page bounds tests. The PostgreSQL concurrent-ensure test passed against the local PostgreSQL 15 service.
+- [x] Focused unit/API tests passed. The SQLite migration lane confirmed additive lazy association and downgrade protection; the PostgreSQL migration/concurrency lane passed both tests against the local PostgreSQL 15 service.
+- [x] Implemented `phase4c008` after `phase4b007`, with no filesystem access in Alembic; file keys stay server-controlled and only exact immutable snapshot IDs cross tool/API boundaries. No mutable-file heads or edits were added.
+- [x] Verified automatic agent selection, local list/read through the durable gateway without search credentials, zero output artifacts, exact file-read pinning against active deletion, and bounded result projection. Search capabilities remain the only manually attachable tools in the existing composer. Tasks 15–17 are committed together as one cross-layer Phase 4C unit so the migration, tools, maintenance and browser UI remain independently buildable and pass the always-on frontend hooks together.
 
 ### Task 16 — Retention, purge, restore and future versioning handoff
 
@@ -284,10 +284,10 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** `plan_workspace_purge(db,workspace_id) -> PurgePlan`, `purge_workspace(db,store,plan) -> PurgeReport`, `verify_restored_artifacts(db,store) -> RestoreReport`. Use existing quota/tombstone protocol, exact IDs/digests and expected state; dry-run is non-mutating and active pins refuse deletion.
 
-- [ ] Write failing purge isolation/dry-run/active-input cases, unlink/commit interruption, quota reconciliation, missing/changed file on restore and no resumed dispatched search. Retain ID/digest tombstones; default age retention remains disabled.
-- [ ] Implement and verify actual DB/filesystem backup/restore into fresh storage with a synthetic real stack; saved files retain bytes/association, missing files become unavailable and no search is issued to reconstruct them.
-- [ ] Document Phase 5 binding migration and Phase 6 logical file heads/expected-base edits/version capture, explicit per-output mutability and sandbox install/image/qualification ownership. Do not implement those future tables/services or require their gates for Phase 4.
-- [ ] Commit verified task; subject: `feat: retain and recover conversation snapshots`.
+- [x] Add and pass purge dry-run, active-input pin, quota/tombstone, interrupted unlink/reconciliation, and changed/missing/wrong-storage restore tests. Age-based purge remains disabled by default.
+- [x] Verify coordinated PostgreSQL/filesystem restore into a cloned database and fresh root; exact bytes and association are preserved, missing files become unavailable, and the synthetic search call count does not increase.
+- [x] Document Phase 5 binding migration and Phase 6 logical file heads/expected-base edits/version capture, explicit per-output mutability and sandbox install/image/qualification ownership. No future tables/services or gates were added to Phase 4.
+- [x] Include purge, restore and retention with Tasks 15–17 in the shared verified Phase 4C commit.
 
 ### Task 17 — Files panel, restart continuation and final review
 
@@ -295,10 +295,10 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** `workspaceApi.get(conversationId)` and existing artifact/list/read/select/download/delete commands. Current-conversation async state remains scoped; list/read selection carries exact IDs, never host paths or a mutable latest-file lookup.
 
-- [ ] Write failing retained file hydration/selection, pagination/quota, same-name distinct snapshots, active-input delete refusal, storage failure vs empty history, safe links/filenames and delayed previous-conversation response cases; implement panel after targeted failures.
-- [ ] Run real-stack search → saved artifact → service restart → reopen → agent list/read the same saved ID/digest with zero new search requests. Verify a different conversation cannot gain ambient access.
-- [ ] Run final cumulative API/lint/PG/filesystem/browser/full-stack and earlier auth/title/provider/cancel/reconnect checks. Repeat live qualification only for changed integration behavior with operator approval; record missing evidence honestly. No sandbox test/install gate belongs to Phase 4.
-- [ ] Complete R01–R18 evidence mapping, present 4C accept/revise/stop and prepare changes for review. Phase completion and any PR/deployment remain explicit user decisions.
+- [x] Implement the compact files panel and cover exact-version hydration/read/download/delete, quota and pagination, duplicate names, pinned-delete refusal, empty versus unavailable storage, bounded text display and stale conversation responses in component/store/fixture tests.
+- [x] Pass synthetic real-stack search → saved artifact → service restart → reopen → agent list/read of the same saved ID/digest with no additional search. Verify a second conversation sees an empty workspace and cannot read the first conversation's file.
+- [x] Run focused and cumulative available API, lint, PostgreSQL, filesystem, unit browser, fixture browser and real-stack browser checks. Record the existing broad API TestClient stall and the unrun provider-backed full-stack browser cases. No sandbox test/install gate belongs to Phase 4.
+- [x] Complete R01–R19 evidence mapping in the acceptance record and prepare Phase 4C for user accept/revise/stop. Phase completion and any PR/deployment remain explicit user decisions.
 
 ## 4. Planned requirement coverage
 
@@ -326,6 +326,6 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 ## 5. Review and handoff
 
-The user approved the base plan on 2026-10-20. Tasks 1–9 and the accepted Task 9A revision have recorded implementation evidence. The user directed continuation through all remaining plan tasks. Tasks 10–13 are implemented and their available tests pass. The user explicitly authorized bounded live interaction tests using local credentials on 2026-10-20; the opt-in Brave, Tavily and GPT-6 Luna tool-call qualifications passed. PostgreSQL full-stack evidence and human acceptance remain separately recorded as pending. The active SDD ledger records task evidence and local environment limits.
+The user approved the base plan on 2026-10-20. Tasks 1–9 and the accepted Task 9A revision have recorded implementation evidence. The user directed continuation through all remaining plan tasks. Tasks 10–15 are implemented and their available tests pass. The user explicitly authorized bounded live interaction tests using local credentials on 2026-10-20; the opt-in Brave, Tavily and GPT-6 Luna tool-call qualifications passed. PostgreSQL full-stack evidence and human acceptance remain separately recorded as pending. The active SDD ledger records task evidence and local environment limits.
 
-The user has directed implementation to continue through Tasks 10–17. The bounded live calls above were explicitly authorized; further live calls must be necessary to a changed integration and must not print credentials. No PR, merge, deployment or Phase 4 completion is implied by implementation approval.
+The user directed implementation through Tasks 10–17. The final review pass found and fixed an unhandled deleted-workspace read state; its regression test was observed failing before the route fix and passing afterward. The focused workspace/output suite passes 20 cases, and the cumulative browser unit/typecheck/build, fixture browser, PostgreSQL, synthetic full-stack, and real-API workspace browser evidence is recorded above. The broad API TestClient stall and provider-backed browser gap remain explicit. No PR, merge, deployment or Phase 4 acceptance is implied by implementation approval.

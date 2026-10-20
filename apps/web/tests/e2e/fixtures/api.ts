@@ -170,6 +170,34 @@ export async function mockApi(
       : json(route, 200, conversations),
   )
 
+  // ChatView loads the persistent-files panel for the selected conversation.
+  // Keep that request successful in unrelated fixture journeys so a files
+  // service stub does not masquerade as a chat/provider error.
+  await page.route(/\/api\/conversations\/[^/]+\/workspace\?/, (route) => {
+    const conversationId = new URL(route.request().url()).pathname.split('/').at(-2) ?? 'c1'
+    return json(route, 200, {
+      workspace: {
+        id: `workspace-${conversationId}`,
+        conversation_id: conversationId,
+        project_id: 'project-e2e',
+        schema_version: 1,
+        relative_root: `projects/project-e2e/conversations/${conversationId}`,
+        storage_id: 'storage-e2e',
+        status: 'available',
+        created_at: '2026-01-01T00:00:00Z',
+        quota: {
+          committed_bytes: 0,
+          committed_count: 0,
+          reserved_bytes: 0,
+          reserved_count: 0,
+          max_bytes: 104857600,
+          max_count: 1000,
+        },
+      },
+      files: { items: [], next_cursor: null },
+    })
+  })
+
   await page.route('**/api/conversations', (route) => {
     if (route.request().method() !== 'POST') {
       return json(route, 405, { detail: 'Method not allowed' })

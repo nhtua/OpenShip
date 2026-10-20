@@ -30,6 +30,8 @@ def test_each_search_tool_availability_depends_only_on_its_own_binding(monkeypat
     actual = {item.capability_id: (item.available, item.reason) for item in observations}
     assert actual["brave_web_search"] == (True, None)
     assert actual["tavily_web_search"] == (False, "missing_credentials")
+    assert actual["workspace_list_files"] == (False, "disabled")
+    assert actual["workspace_read_file"] == (False, "disabled")
     assert all(test_value not in repr(item) for item in observations)
 
 
@@ -51,17 +53,21 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
     db.commit()
 
     rows = db.query(ToolAvailability).all()
-    assert len(rows) == 2
+    assert len(rows) == 4
     assert all(row.worker_id == "availability-worker" for row in rows)
     assert all(not hasattr(row, "credential_binding_ref") for row in rows)
     fresh = read_tool_availability(db, now=now)
     assert fresh == {
         "brave_web_search": (True, None),
         "tavily_web_search": (False, "missing_credentials"),
+        "workspace_list_files": (False, "disabled"),
+        "workspace_read_file": (False, "disabled"),
     }
     expired = read_tool_availability(db, now=now + timedelta(seconds=31))
     assert expired == {
         "brave_web_search": (False, "runtime_unavailable"),
         "tavily_web_search": (False, "runtime_unavailable"),
+        "workspace_list_files": (False, "runtime_unavailable"),
+        "workspace_read_file": (False, "runtime_unavailable"),
     }
     db.close()

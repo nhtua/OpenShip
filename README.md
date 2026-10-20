@@ -14,13 +14,13 @@ The [ideas collection](docs/ideas.md) preserves proposals and historical context
 
 **Roadmap Phases 1–3 are delivered:** authenticated project chat, a durable PostgreSQL-backed runtime with reconnectable events and cancellation, and explicit model-provider profiles. See the [provider support matrix](docs/provider-support.md) for qualified provider/model combinations.
 
-**Phase 4A implementation is in acceptance review.** It adds model-free Brave and Tavily search runs, immutable filesystem artifacts, and operation snapshots. The acceptance record identifies which real-PostgreSQL and synthetic full-stack checks have run. Phase 4B model-directed tool calls and Phase 4C per-conversation workspaces remain future work; sandboxed execution stays in Phase 6. Connectors, reusable workflows, approvals, and broader deployment qualification remain later roadmap phases.
+**Phase 4 implementation is in acceptance review.** It adds independent Brave and Tavily search tools, model-directed OpenAI tool calls, and persistent conversation workspaces for immutable filesystem artifacts. The acceptance record identifies which PostgreSQL and synthetic full-stack checks have run and which still need a configured test database. Tools use the existing runtime worker; sandbox execution and mutable logical files stay in Phase 6. Connectors, reusable workflows, approvals, and broader deployment qualification remain later roadmap phases.
 
 ## How It Works
 
 1. The **web client** provides the conversational workspace and sends authenticated HTTP commands to the API.
 2. The **API server** validates commands, enforces project access, and persists conversations and durable run commands in PostgreSQL.
-3. The **runtime worker** claims queued runs, invokes the pinned model profile or an explicitly submitted maintained tool, and persists results using the shared LangGraph runtime and durable state.
+3. The **runtime worker** claims queued runs, invokes the pinned model profile or an admitted maintained tool, and persists operation and artifact results using the shared LangGraph runtime and durable state.
 4. The client receives progress through **Server-Sent Events** and reconstructs state after reconnecting.
 
 The target architecture extends these same contracts for workflow revisions, capability discovery, policy checks, artifacts, and a separate sandbox execution worker. The current chat runtime worker is not that future sandbox worker. Ordinary chat does not require a saved workflow template.
@@ -80,9 +80,13 @@ Chat uses explicitly declared model profiles and durable run commands. Configure
 `MODEL_PROFILES_JSON` and `MODEL_DEFAULT_PROFILE_ID` in `.env`; credentials are
 read from the bindings each profile names. See [provider setup](docs/provider-support.md).
 The worker generates the conversation title from the first model response.
-For manual search, set `TOOL_ENABLED_IDS` to `brave_web_search`,
+For search, set `TOOL_ENABLED_IDS` to `brave_web_search`,
 `tavily_web_search`, or both, and configure only the selected tools' keys in the
-worker environment. The browser never accepts provider credentials.
+worker environment. Search can be attached explicitly from the chat composer or
+invoked by an enabled model profile. The Conversation files panel lists exact
+saved artifact versions for reading, download, and deletion. The browser never
+accepts provider credentials; see the [artifact storage runbook](docs/operations/artifact-storage.md)
+for workspace retention and recovery.
 
 ### Web Client (Vue.js)
 

@@ -26,6 +26,7 @@ from ..config import settings
 from ..runs.models import Run, RunJob
 from ..runs.queue import Claim
 from ..tools.search.contracts import SearchArguments
+from ..workspace.schemas import WorkspaceListArguments, WorkspaceReadArguments
 from .errors import CapabilityError
 from .models import ExecutionSlot, ToolOperation
 
@@ -122,7 +123,34 @@ def admit_operation(
     ):
         raise _refused(404, "operation_not_found", "The requested operation is not available")
 
-    input_refs = _input_refs(inputs)
+    effective_inputs = list(inputs)
+    if ref.id == "workspace_read_file":
+        try:
+            read_arguments = WorkspaceReadArguments.model_validate(arguments)
+        except ValueError:
+            read_arguments = None
+        if read_arguments is not None and not any(
+            item.id == read_arguments.artifact_id for item in effective_inputs
+        ):
+            target = (
+                db.query(Artifact)
+                .filter(
+                    Artifact.id == read_arguments.artifact_id,
+                    Artifact.conversation_id == run.conversation_id,
+                    Artifact.project_id == run.project_id,
+                )
+                .first()
+            )
+            if target is not None:
+                effective_inputs.append(
+                    ArtifactRef(
+                        id=target.id,
+                        sha256=target.sha256,
+                        size_bytes=target.size_bytes,
+                        media_type=target.media_type,
+                    )
+                )
+    input_refs = _input_refs(tuple(effective_inputs))
     try:
         raw_digest = canonical_digest(
             {
@@ -150,16 +178,22 @@ def admit_operation(
 
     try:
         manifest = resolve_capability(ref, settings.enabled_tool_ids)
-        normalized = SearchArguments.model_validate(arguments).model_dump(mode="json")
+        argument_models = {
+            "brave_web_search": SearchArguments,
+            "tavily_web_search": SearchArguments,
+            "workspace_list_files": WorkspaceListArguments,
+            "workspace_read_file": WorkspaceReadArguments,
+        }
+        argument_model = argument_models.get(manifest.id)
+        if argument_model is None:
+            raise _refused(422, "unsupported_tool", "This tool is not supported by this execution version")
+        normalized = argument_model.model_validate(arguments).model_dump(mode="json")
     except CapabilityError as refused:
         raise _refused(422, refused.code, str(refused)) from refused
     except ValueError as invalid:
         raise _refused(422, "invalid_tool_arguments", "Tool arguments are invalid") from invalid
 
-    if manifest.id not in ("brave_web_search", "tavily_web_search"):
-        raise _refused(422, "unsupported_tool", "This tool is not supported by this execution version")
-
-    for item in inputs:
+    for item in effective_inputs:
         artifact = db.query(Artifact).filter(Artifact.id == item.id).first()
         if (
             artifact is None

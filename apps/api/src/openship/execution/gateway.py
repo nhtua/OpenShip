@@ -32,6 +32,11 @@ from src.openship.tools.search.brave import search_brave
 from src.openship.tools.search.contracts import SearchArguments
 from src.openship.tools.search.http import SearchToolError
 from src.openship.tools.search.tavily import search_tavily
+from src.openship.workspace.tools import (
+    WorkspaceToolError,
+    list_workspace_files,
+    read_workspace_file,
+)
 
 from .admission import (
     acquire_execution_slot,
@@ -46,6 +51,7 @@ from .publication import (
     mark_tool_failed,
     mark_tool_running,
     project_published_result,
+    publish_local_tool_result,
     publish_tool_result,
     validate_search_observation,
 )
@@ -53,6 +59,8 @@ from .publication import (
 MAINTAINED_TOOL_HANDLERS = {
     "brave_web_search": search_brave,
     "tavily_web_search": search_tavily,
+    "workspace_list_files": list_workspace_files,
+    "workspace_read_file": read_workspace_file,
 }
 logger = logging.getLogger(__name__)
 
@@ -73,6 +81,12 @@ _PRE_DISPATCH_MESSAGES = {
     "artifact_quota_exceeded": "Conversation artifact storage quota is full.",
     "artifact_publication_failed": "The search result could not be retained safely.",
     "invalid_tool_output": "The maintained tool returned an invalid result.",
+    "workspace_unavailable": "The conversation workspace is unavailable.",
+    "artifact_not_found": "The requested file is not available in this conversation.",
+    "invalid_cursor": "The workspace file cursor is invalid.",
+    "invalid_offset": "The requested byte offset is invalid.",
+    "invalid_utf8_boundary": "The requested byte offset is not on a UTF-8 boundary.",
+    "artifact_unavailable": "The saved file could not be verified in storage.",
     "execution_interrupted": "The tool execution was interrupted and will not be repeated automatically.",
 }
 
@@ -144,25 +158,35 @@ class ToolGateway:
         store = context.artifact_store
         if store is None:
             return self._finish_before_dispatch(
-                claim, operation_id, "artifact_storage_unavailable"
+                claim,
+                operation_id,
+                "workspace_unavailable"
+                if manifest.effect == "read_only_local"
+                else "artifact_storage_unavailable",
             )
         try:
             store.verify()
         except ArtifactStorageError:
             return self._finish_before_dispatch(
-                claim, operation_id, "artifact_storage_unavailable"
+                claim,
+                operation_id,
+                "workspace_unavailable"
+                if manifest.effect == "read_only_local"
+                else "artifact_storage_unavailable",
             )
 
         binding = manifest.credential_binding_ref
-        try:
-            credential = context.credential_resolver(binding) if binding else None
-        except Exception:  # noqa: BLE001 - resolver failures may contain secret details.
-            credential = None
-        if not _valid_credential(credential):
-            return self._finish_before_dispatch(
-                claim, operation_id, "missing_credentials"
-            )
-        if binding not in pinned_config.credential_binding_refs:
+        credential = None
+        if binding:
+            try:
+                credential = context.credential_resolver(binding)
+            except Exception:  # noqa: BLE001 - resolver failures may contain secret details.
+                credential = None
+            if not _valid_credential(credential):
+                return self._finish_before_dispatch(
+                    claim, operation_id, "missing_credentials"
+                )
+        if binding and binding not in pinned_config.credential_binding_refs:
             return self._finish_before_dispatch(
                 claim, operation_id, "changed"
             )
@@ -176,6 +200,7 @@ class ToolGateway:
                 settings.artifact_search_reservation_bytes,
                 64 * 1024,
             ),
+            reserve_output=bool(manifest.outputs),
         )
         if isinstance(attempt_id, PublishedToolResult):
             return attempt_id
@@ -199,12 +224,51 @@ class ToolGateway:
             execution=pinned_config,
             credential_resolver=lambda requested: credential if requested == binding else None,
             artifact_store=store,
+            session_factory=self._session_factory,
         )
         slot_lost = asyncio.Event()
         dispatch_control = _CombinedControl(control, slot_lost)
         renewal = asyncio.create_task(
             self._renew_slot(claim, slot_id, slot_lost, control)
         )
+        if manifest.effect == "read_only_local":
+            local_result = None
+            local_failure = None
+            try:
+                local_result = await handler(arguments, runtime_context, dispatch_control)
+                dispatch_control.raise_if_stopped()
+                local_data = local_result.model_dump(mode="json")
+                if len(canonical_json(local_data)) > int(
+                    manifest.limits.get("max_model_result_bytes", 16 * 1024)
+                ):
+                    raise ToolPublicationError("output_limit_exceeded")
+            except WorkspaceToolError as failure:
+                local_failure = failure.code
+            except ProviderError as failure:
+                local_failure = (
+                    "cancelled" if failure.code == "cancelled" else "execution_interrupted"
+                )
+            except ToolPublicationError as failure:
+                local_failure = failure.code
+            except Exception:  # noqa: BLE001 - local tool details never cross the gateway.
+                local_failure = "workspace_unavailable"
+            finally:
+                renewal.cancel()
+                try:
+                    await renewal
+                except asyncio.CancelledError:
+                    pass
+            if local_failure is not None:
+                return await self._fail_active(
+                    claim, operation_id, attempt_id, local_failure
+                )
+            return self._publish_local(
+                claim=claim,
+                operation_id=operation_id,
+                attempt_id=attempt_id,
+                result=local_result,
+            )
+
         dispatch_failure = None
         observation = None
         try:
@@ -347,7 +411,7 @@ class ToolGateway:
             return pinned, manifest, handler
 
     async def _acquire_and_mark(
-        self, *, claim, operation_id, control, max_output_bytes
+        self, *, claim, operation_id, control, max_output_bytes, reserve_output=True
     ):
         while True:
             try:
@@ -395,10 +459,15 @@ class ToolGateway:
                     db.rollback()
                 else:
                     operation, attempt, artifact = mark_tool_dispatching(
-                        db, claim, operation_id, slot.id, max_output_bytes
+                        db,
+                        claim,
+                        operation_id,
+                        slot.id,
+                        max_output_bytes,
+                        reserve_output=reserve_output,
                     )
                     attempt_id = attempt.id
-                    artifact_id = artifact.id
+                    artifact_id = artifact.id if artifact is not None else None
                     slot_id = slot.id
                     db.commit()
                     return operation_id, attempt_id, artifact_id, slot_id
@@ -554,6 +623,27 @@ class ToolGateway:
             self._cleanup_uncommitted(staged, store, context)
             return self._interrupted(operation_id, "execution_interrupted")
         except Exception:  # noqa: BLE001 - preserve bytes until commit state is known.
+            db.rollback()
+            return self._read_after_uncertain_commit(operation_id)
+        finally:
+            db.close()
+
+    def _publish_local(self, *, claim, operation_id, attempt_id, result):
+        db = self._session_factory()
+        try:
+            published = publish_local_tool_result(db, claim, attempt_id, result)
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001 - resolve the durable state before returning.
+                db.rollback()
+                return self._read_after_uncertain_commit(operation_id)
+            return published
+        except ToolPublicationError as failure:
+            db.rollback()
+            if failure.code == "lease_lost":
+                return self._interrupted(operation_id, failure.code)
+            return self._finish_failure(claim, operation_id, attempt_id, failure.code)
+        except Exception:  # noqa: BLE001 - no local implementation detail is public.
             db.rollback()
             return self._read_after_uncertain_commit(operation_id)
         finally:
