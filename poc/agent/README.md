@@ -2,6 +2,8 @@
 
 Proof of concept for an AI-powered DevOps workflow agent that compiles natural language workflow descriptions into executable LangGraph workflows with human-in-the-loop interaction.
 
+This CLI remains an experiment. For the current server/worker/client application, see the [root README](../../README.md). Run commands below from `poc/agent` after `uv sync --extra dev`.
+
 ## Architecture
 
 The agent consists of two LangGraph workflows:
@@ -31,9 +33,9 @@ The agent consists of two LangGraph workflows:
 Standardize a workflow description and cache it:
 
 ```bash
-openship build <workflow.md>
+uv run python -m src.cli build <workflow.md>
 # Or with streaming LLM reasoning:
-openship build <workflow.md> --show-thinking
+uv run python -m src.cli build <workflow.md> --show-thinking
 ```
 
 The builder will:
@@ -48,7 +50,7 @@ The builder will:
 Execute a previously built and cached workflow:
 
 ```bash
-openship execute <workflow.md>
+uv run python -m src.cli execute <workflow.md>
 ```
 
 The executor will:
@@ -133,4 +135,3 @@ See `examples/` for sample workflow files:
 - **Human-in-the-loop**: Interactive approval at key decision points
 - **Tamper detection**: SHA-256 checksums verify workflow integrity
 - **Tool safety**: Shell command quoting prevents injection attacks
-# Test

@@ -19,8 +19,8 @@ jobs:
       - uses: astral-sh/setup-uv@v2
         with:
           enable-cache: true
-      - run: cd apps/agent && uv sync --extra dev
-      - run: cd apps/agent && uv run pytest tests/ -v
+      - run: cd poc/agent && uv sync --extra dev
+      - run: cd poc/agent && uv run pytest tests/ -v
 
   lint:
     runs-on: ubuntu-latest
@@ -32,7 +32,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv tool install ruff
-      - run: cd apps/agent && ruff check .
+      - run: cd poc/agent && ruff check .
 
   # The API's own lint gate. It is a gate rather than a suggestion: the rule
   # set is ruff's defaults, and the one rule turned off (B008, which flags

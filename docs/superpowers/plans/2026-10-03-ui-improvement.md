@@ -135,7 +135,7 @@ The existing ChatView tests also attempt real requests and log `ECONNREFUSED`; a
 
 - [x] Read recent changes and trace the CSS entry point through Vite to generated CSS.
 - [x] Reproduce missing generated utilities with a fresh build.
-- [x] Compare against a working CSS entry point in `mockup/src/index.css` and the upstream template.
+- [x] Compare against a working CSS entry point in `poc/mockup/src/index.css` and the upstream template.
 - [x] Test the import hypothesis using a single-variable in-memory build.
 - [x] Trace view/store interfaces and run the existing frontend tests.
 - [x] Specify an ordered repair and verification plan without implementing it.

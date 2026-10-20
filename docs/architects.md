@@ -11,7 +11,7 @@ OpenShip is a self-hosted DevOps co-pilot accessed through a browser. An enginee
 
 The proposed architecture is a **modular application with a separate execution worker**. Python and LangGraph provide the agent and workflow runtime; a TypeScript web application provides the conversational workspace. Persistent state, capability discovery, authorization, and sandboxing belong to the harness rather than to the model.
 
-This document redesigns the previous resource-focused architecture using [the project ideas](./ideas.md), the [agent PoC](../apps/agent/src/cli.py), and the six current requirements. Those requirements define the requested scope. Technology choices and changes to earlier ideas below are proposals for review, not implementation commitments. The existing PoC remains an experiment; this document describes the target service.
+This document redesigns the previous resource-focused architecture using [the project ideas](./ideas.md), the [agent PoC](../poc/agent/src/cli.py), and the six current requirements. Those requirements define the requested scope. Technology choices and changes to earlier ideas below are proposals for review, not implementation commitments. The existing PoC remains an experiment; this document describes the target service.
 
 ## 1. Requirements and Design Principles
 
@@ -504,7 +504,7 @@ Drift detection compares desired revisions against observations. Options are rep
 | --- | --- | --- |
 | Backend | Python, FastAPI, Pydantic | Fits the PoC and gives explicit request/state contracts; extensions remain out of process. |
 | Orchestration | LangGraph with PostgreSQL persistence | Extends current graphs; OpenShip still supplies scheduling, reconciliation, and isolation. |
-| Web UI | Vue 3, TypeScript, Vite | Builds on [existing mockups](../mockup/README.md); reusable components render schema-driven workflows. |
+| Web UI | Vue 3, TypeScript, Vite | Builds on [existing mockups](../poc/mockup/README.md); reusable components render schema-driven workflows. |
 | Data / initial queue | PostgreSQL | One required state service simplifies hosting; contention/recovery need integration tests. |
 | Discovery | pgvector, lexical search, local embeddings | Avoids a separate vector service; indexes remain disposable and access-filtered. |
 | Browser progress | SSE and HTTP commands | Reconnectable progress; add another transport if interactive sessions require it. |
@@ -530,11 +530,11 @@ An engineer asks: "Create a workflow that checks our staging deployment, collect
 
 ## 17. Evolution from the PoC
 
-The [CLI](../apps/agent/src/cli.py) establishes freeform/Markdown input, plan review, cached plan data, compilation, and execution. The [Agent class](../apps/agent/src/agent.py) and [compiler](../apps/agent/src/compiler.py) demonstrate graph construction and interrupts. Retain these concepts while replacing process-local assumptions.
+The [CLI](../poc/agent/src/cli.py) establishes freeform/Markdown input, plan review, cached plan data, compilation, and execution. The [Agent class](../poc/agent/src/agent.py) and [compiler](../poc/agent/src/compiler.py) demonstrate graph construction and interrupts. Retain these concepts while replacing process-local assumptions.
 
 | PoC element | Target service evolution |
 | --- | --- |
-| `build` / `execute` commands | API operations for reviewing revisions/starting runs; CLI becomes another client. |
+| `build` / `execute` commands | API operations for reviewing revisions/starting runs, accessed through the browser client. The PoC CLI remains an experiment. |
 | Terminal `input()` and printing in `Agent` | Structured requests/events and validated resume commands from clients. |
 | `InMemorySaver` and per-call IDs | Persistent checkpointer and stable run/thread identities. |
 | Sequential compiler/string substitution | Typed graph representation, restricted bindings, maintained node factories, branches/waits. |

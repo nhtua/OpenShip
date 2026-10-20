@@ -2,9 +2,12 @@
 
 Vue 3 mockups demonstrating the OpenShip agentic DevOps platform UI. Uses Vite, Vue Router, Tailwind CSS v4, and Lucide icons.
 
+These are prototype screens, not the application client. See the [root README](../../README.md) for the current app.
+
 ## How to Run
 
 ```bash
+cd poc/mockup
 pnpm install
 pnpm dev
 ```
