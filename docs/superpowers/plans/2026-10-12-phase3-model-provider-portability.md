@@ -30,7 +30,7 @@
 - “Unsupported capabilities are explained before invocation.” Phase 3 supports text conversations. Tool calls, structured output, attachments, and parallel tool calls remain unavailable through the harness until their own contracts and tests are delivered.
 - “As tools and workflows arrive, their scenarios are added to this suite.” Declare those future fields now, but do not claim they work based on provider marketing or SDK availability.
 - “Not yet: Compatibility claims for arbitrary endpoints merely because they advertise an OpenAI-compatible API.” Qualify a concrete endpoint implementation/version, profile, model, and API surface.
-- Use the existing Python 3.11 minimum and PostgreSQL 15 Compose target. Keep the PoC under `apps/agent/` separate; do not expose its subprocess executor or rewrite its LLM client in Phase 3.
+- Use the existing Python 3.11 minimum and PostgreSQL 15 Compose target. Keep the PoC under `poc/agent/` separate; do not expose its subprocess executor or rewrite its LLM client in Phase 3.
 - Keep existing HTTP paths, database status values, and event names unless a change is explicitly called out below. This phase does not introduce tools, workflows, cloud operations, a credential-management UI, or a new token-delta transport.
 
 ## Review Focus

@@ -84,4 +84,6 @@ Use any available tools to complete tasks efficiently.
 
 - `docs/` — All documents. Scan the first 6 lines (metadata: type, summary,
   date, status) for quick search; deep-search only when needed.
-- `mockup/` — HTML files for quick UI/UX prototyping.
+- `poc/` — Historical agent CLI and Vue UI/UX prototypes.
+- `apps/api/` — API server and durable runtime worker.
+- `apps/web/` — Browser client.

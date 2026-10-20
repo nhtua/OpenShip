@@ -1,103 +1,50 @@
 # OpenShip
 
-An agentic DevOps workflow platform where everything is a workflow. OpenShip orchestrates multi-step automation tasks through AI-driven agents — from infrastructure provisioning and debugging to CI/CD and custom business processes. Describe what you need, collaborate with the agent through conversation, and watch it plan, execute, and report — with you in control at every step.
-
-## Philosophy
-
-OpenShip is built on a simple principle: **AI as co-pilot, not replacement**. You articulate the requirements, the agent handles the heavy lifting of design, validation, and execution. You retain control at critical decision points through human-in-the-loop approval cards.
-
-Built by DevOps and platform engineers for software engineers — practical automation tools from people who understand the daily challenges.
-
-**Self-hosted by design.** You own your data, you control the environment, you choose the AI model provider. No vendor lock-in, no data sent to third-party services unless you explicitly configure it.
-
-## How It Works
-
-In OpenShip, every automation task is expressed as a workflow — a sequence of steps executed by AI agents using tools and connectors. The system uses two LangGraph workflows that work together:
-
-### Builder Workflow
-
-The builder turns natural language descriptions into executable plans:
-
-1. **Describe** — Provide a workflow description in markdown (freeform or structured)
-2. **Plan** — The builder uses an LLM to generate a structured execution plan with tool selection
-3. **Validate** — Review the plan through human-in-the-loop approval (approve, reject with feedback, regenerate)
-4. **Compile** — The approved plan is compiled to a LangGraph state machine and cached
-
-### Executor Workflow
-
-The executor runs compiled workflows with human-in-the-loop at runtime:
-
-1. **Load** — Load a cached compiled workflow by input file hash with integrity verification
-2. **Execute** — Run the workflow steps, invoking tools (shell commands, executables, etc.)
-3. **Interact** — Pause at runtime for human input when needed (e.g., asking questions)
-4. **Report** — Return structured results for each step
-
-### Integrity & Drift Detection
-
-Compiled workflows are cached as JSON with filename-embedded signatures:
-- **Lookup:** By input file hash (SHA-256 of workflow content)
-- **Verification:** Signature binds input file and cached JSON together
-- **Drift detection:** If either changes, the signature won't match
-
-This architecture implements the "everything is a workflow" principle — the agent lifecycle itself (plan → approve → compile → execute) is modeled as LangGraph workflows, not just the user-defined tasks.
+OpenShip is a self-hosted DevOps co-pilot accessed through a browser. Describe an outcome in conversation, follow durable runs and their results, and retain control over authorized work. Reusable workflows, tools, connectors, and isolated execution extend the same conversational harness as development progresses.
 
 ## Where to Start
 
-**Read the ideas first.** Understand the project's philosophy, design principles, and roadmap by reading [`docs/ideas.md`](docs/ideas.md). This document captures the core vision, workflow patterns, and architectural decisions.
+- Read the [delivery roadmap](docs/roadmap.md) for delivered milestones and proposed next steps.
+- Read the [harness architecture](docs/architects.md) for the current design direction and component boundaries.
+- Run the API server, runtime worker, and web client below. Both backend processes share `apps/api`; the browser client lives in `apps/web`.
 
-**Try the Agent.** Run our workflow agent:
+The [ideas collection](docs/ideas.md) preserves proposals and historical context. Entries marked **Stale** are superseded; use the architecture and roadmap to resolve conflicts.
+
+## Current Status
+
+**Roadmap Phases 1–3 are delivered:** authenticated project chat, a durable PostgreSQL-backed runtime with reconnectable events and cancellation, and explicit model-provider profiles. See the [provider support matrix](docs/provider-support.md) for qualified provider/model combinations.
+
+**Phases 4–21 remain proposals.** Tools and the execution gateway, artifacts, connectors, reusable workflows, approvals, sandboxed code, event triggers, and broader deployment qualification are incremental future work. The roadmap proposes Phase 4A next; these capabilities are not all available in the current application.
+
+## How It Works
+
+1. The **web client** provides the conversational workspace and sends authenticated HTTP commands to the API.
+2. The **API server** validates commands, enforces project access, and persists conversations and durable run commands in PostgreSQL.
+3. The **runtime worker** claims queued runs, invokes the pinned model profile, and persists results using the shared LangGraph runtime and durable state.
+4. The client receives progress through **Server-Sent Events** and reconstructs state after reconnecting.
+
+The target architecture extends these same contracts for workflow revisions, capability discovery, policy checks, artifacts, and a separate sandbox execution worker. The current chat runtime worker is not that future sandbox worker. Ordinary chat does not require a saved workflow template.
+
+OpenShip follows the **co-pilot** principle: engineers delegate scoped authority and retain control at critical decisions. Self-hosting keeps application state in your infrastructure; configured model providers and external integrations receive the context sent to them.
+
+## Quick Start with Docker Compose
+
+From the repository root:
 
 ```bash
-cd apps/agent
-uv sync  # Install dependencies
-
-# Build: Generate plan, approve, compile, and cache
-uv run python -m src.cli build examples/my-workflow.md
-
-# Execute: Load cached compiled workflow and run
-uv run python -m src.cli execute examples/my-workflow.md
+cp apps/api/.env.example .env
+# Configure MODEL_PROFILES_JSON, MODEL_DEFAULT_PROFILE_ID, and credential bindings.
+docker compose up --build
 ```
 
-See [`apps/agent/examples/`](apps/agent/examples/) for workflow examples.
-
-**Explore the mockups.** See the intended user experience through our interactive mockups:
-
-```bash
-cd mockup
-pnpm install
-pnpm dev
-```
-
-Open `http://localhost:5173` to see the chat-first interface, agent workspace, and workflow builder designs. These are static demonstrations — no functionality yet.
-
-## Open Source Roadmap
-
-OpenShip is developed in transparent phases:
-
-### 🔴 Current Phase: Addressing Problems & Brainstorming Solutions
-
-We're actively defining the problem space and exploring solution approaches. This phase includes:
-
-- Collecting and validating ideas from real DevOps pain points
-- Designing the agent architecture and workflow orchestration
-- Building UI/UX mockups to demonstrate concepts
-- Selecting the technology stack and building core components
-
-**What's available now:** Draft HTML mockups in the [`mockup/`](mockup/) directory that demonstrate the intended UI/UX and interaction patterns. These are static demonstrations — no functionality yet.
-
-### Upcoming Phases (Planned)
-
-- **Phase 2:** Core agent implementation with basic workflow execution
-- **Phase 3:** Built-in workflow templates and tool registry
-- **Phase 4:** Expanded tool/connector ecosystem and production deployment
-- **Phase 5:** Community workflow sharing and ecosystem growth
+Compose starts PostgreSQL, migrations, the API server, runtime worker, and web client. Open [http://localhost:8080](http://localhost:8080). See [provider setup](docs/provider-support.md) before sending a chat message. Docker with Compose is required for this route; the tools below are for running processes directly.
 
 ## Local Development
 
 ### Prerequisites
 
 - Python 3.11+ with [uv](https://docs.astral.sh/uv/) package manager
-- Node.js 18+ with [pnpm](https://pnpm.io/installation)
+- Node.js 22.12+ with [pnpm](https://pnpm.io/installation)
 - PostgreSQL 15+ running locally
 
 ### Database Setup
@@ -108,12 +55,12 @@ Create the OpenShip database:
 createdb -U postgres openship
 ```
 
-### Backend (FastAPI)
+### API Server and Runtime Worker (FastAPI / LangGraph)
 
 ```bash
 cd apps/api
-uv sync
-cp .env.example .env  # Configure MODEL_PROFILES_JSON, its default, and credential bindings
+uv sync --extra dev
+cp .env.example .env  # Configure DATABASE_URL, model profiles, and credential bindings
 uv run alembic upgrade head
 uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -131,7 +78,7 @@ Chat uses explicitly declared model profiles and durable run commands. Configure
 read from the bindings each profile names. See [provider setup](docs/provider-support.md).
 The worker generates the conversation title from the first model response.
 
-### Frontend (Vue.js)
+### Web Client (Vue.js)
 
 ```bash
 cd apps/web
@@ -141,26 +88,17 @@ pnpm dev
 
 Frontend available at [http://localhost:5173](http://localhost:5173) (proxies API to :8000).
 
-### Docker Compose
-
-Alternative: run the full stack in containers:
-
-```bash
-cp apps/api/.env.example .env  # Configure profiles and credential bindings
-docker compose up --build
-```
-
-This starts PostgreSQL, migrations, API, worker, and frontend services. Access at [http://localhost:8080](http://localhost:8080).
-
 ### Running Tests
 
 ```bash
 # Backend
-cd apps/api && uv run pytest tests/ -v
+cd apps/api && uv run pytest tests/ -v -m "not postgres and not provider_live"
 
 # Frontend
 cd apps/web && pnpm exec vitest run
 ```
+
+PostgreSQL integration tests require `TEST_POSTGRES_URL`; live-provider tests are opt-in. See [provider support](docs/provider-support.md) for qualification and live-test setup.
 
 ## Contributing
 
@@ -196,22 +134,23 @@ pre-commit run --all-files
 
 ## Repository Layout
 
-```
+```text
 openship/
-├── poc/
-│   ├── mockup/             # UI/UX prototypes (static HTML)
-│   └── PLACEHOLDER         # Keeps poc/ from being auto-removed
 ├── apps/
-│   ├── web/                # Frontend app (Vue.js) — planned
-│   ├── api/                # API service (FastAPI) — planned
-│   └── agent/              # Agent service (graduated from PoC)
-├── packages/
-│   ├── shared/             # Shared Python modules — planned
-│   └── ui/                 # Shared frontend components — planned
-├── docs/                   # Documentation, ideas, and design specs
-├── .pre-commit-config.yaml # Pre-commit hooks for lint and tests
+│   ├── api/                # API server and durable runtime worker
+│   └── web/                # Vue / TypeScript browser client
+├── poc/
+│   ├── agent/              # Experimental workflow CLI
+│   └── mockup/             # Vue UI/UX demonstrations
+├── docs/                   # Architecture, roadmap, ideas, and design records
+├── docker-compose.yml      # PostgreSQL, migrations, API, worker, and web
+├── .pre-commit-config.yaml
 └── README.md
 ```
+
+## Historical Prototypes
+
+The [agent CLI](poc/agent/README.md) and [UI mockups](poc/mockup/README.md) are proof-of-concept experiments. They were never graduated into the application. Their examples demonstrate earlier approaches, not the supported server/worker/client entry point. See [poc/README.md](poc/README.md) for how to explore them.
 
 ## License
 

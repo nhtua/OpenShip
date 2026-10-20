@@ -9,9 +9,17 @@ date: 2026-09-20
 
 Recorded ideas, features, and improvements for OpenShip.
 
+## Status and Current Direction
+
+The [architecture](./architects.md) and [roadmap](./roadmap.md) define the current development direction: a browser client, API server, and durable runtime worker. Phases 1–3 are delivered; later capabilities remain proposals. The CLI and UI experiments live under [`poc/`](../poc/README.md).
+
+This collection preserves historical intent. Unless explicitly recorded as an accepted decision, an idea is a **Proposal**, not an implementation commitment or a claim of availability. **Stale** annotations identify superseded claims; the remaining parts of a section may still be useful proposals. Follow each annotation's architecture reference for the replacement.
+
 ---
 
 ## Prime Principle: Co-Pilot, Not Replacement
+
+> **Status: Stale — document-first entry.** Conversation is the entry point; requirements documents are inputs and artifacts. The co-pilot principle remains current. See [architecture §2](./architects.md).
 
 OpenShip is designed as a **co-pilot and enhanced automation tool** for DevOps and platform engineers — **not as a replacement** for them.
 
@@ -61,6 +69,8 @@ This is just one example workflow template. Other templates include investigatio
 
 ## Interface & Data Flow: Document-Driven, Visual Workflow (Infrastructure Template)
 
+> **Status: Stale — primary document interface.** Browser conversation is primary, including infrastructure workflows; documents and diagrams remain first-class artifacts. See [architecture §11](./architects.md).
+
 The infrastructure automation workflow template uses a document-driven approach as its primary interface, with chat/conversation as a secondary, complementary feature:
 
 **Entry Point — Markdown Document:**
@@ -94,6 +104,8 @@ Other workflow templates may use different interfaces. For example, an investiga
 ---
 
 ## Platform-Agnostic, API-Driven Automation
+
+> **Status: Stale — equivalent engineer permissions.** Delegate only a scoped subset of authority through the gateway; model or workflow instructions cannot grant permissions. See [architecture §13](./architects.md).
 
 OpenShip workflows interact with external platforms and services through a connector layer:
 
@@ -188,6 +200,8 @@ This distinction avoids ambiguity between OpenShip's orchestration process and t
 
 ## Workflow Templates as First-Class Objects
 
+> **Status: Stale — Git-persisted execution sessions.** PostgreSQL stores live conversations, runs, checkpoints, and resource mappings. Git versions selected definitions and artifacts. See [architecture §10](./architects.md).
+
 OpenShip supports multiple workflow templates, each modeling a distinct DevOps problem pattern as a state machine. The document-driven build flow (requirements → design → plan → execute) is one template; other templates handle different problem types.
 
 **Workflow Templates:**
@@ -239,6 +253,8 @@ OpenShip supports multiple workflow templates, each modeling a distinct DevOps p
 ---
 
 ## Workflow Types & Sharing Model
+
+> **Status: Stale — repository-only runtime registry.** Each installation has a local capability index with private/imported namespaces; community source remains reviewed and release-versioned. See [architecture §8](./architects.md).
 
 OpenShip workflows fall into two categories with distinct provenance, UI treatment, and lifecycle.
 
@@ -432,6 +448,8 @@ OpenShip provides optional, highly integrated Slack connectivity for teams that 
 
 ## Feature Hierarchy (High-Level to Detailed)
 
+> **Status: Stale — conversation nested under workflow execution.** Projects contain conversations and runs with distinct identities. A conversation can reference multiple runs; ordinary chat needs no saved workflow. See [architecture §6](./architects.md).
+
 The main features of OpenShip, ordered from high-level to detailed:
 
 1. **Project** — Logical container for workflow executions and referenced resources.
@@ -444,10 +462,11 @@ The main features of OpenShip, ordered from high-level to detailed:
 This hierarchy reflects the workflow-centric architecture where projects organize workflow activity, workflows perform the automation, and tools/connectors enable interaction with external systems.
 
 
-
 ---
 
 ## Core Architecture: Everything is a Workflow
+
+> **Status: Stale — chat only as workflow configuration.** Ordinary chat is a product entry point using the shared durable runtime; reusable workflows are named, versioned graphs. See [architecture §7](./architects.md).
 
 All OpenShip operations — built-in features, custom automations, and user-defined tasks — are expressed as workflows executed at runtime. There is no distinction between "the product" and "user workflows"; everything follows the same execution model.
 
@@ -467,6 +486,8 @@ All OpenShip operations — built-in features, custom automations, and user-defi
 ---
 
 ## Workflow Building as an Agentic Process
+
+> **Status: Stale — all capabilities in model context.** The registry knows the inventory; each invocation receives only relevant, authorized capability descriptions and schemas. See [architecture §8](./architects.md).
 
 Building a new workflow is itself an agentic task where users collaborate with the agent to discover, select, and compose available tools and connectors into a multi-step workflow.
 
@@ -520,6 +541,8 @@ OpenShip implements a connector layer that abstracts connectivity to various pla
 
 ### Workflow and Tool Registry
 
+> **Status: Stale — warning-only imports and repository-only registry.** Imports must satisfy schema, dependency, authorization, and sandbox requirements. Warnings cannot bypass hard checks; installations maintain a local runtime index. See [architecture §8](./architects.md).
+
 OpenShip maintains a registry of verified workflows, tools, and skills that the agent can discover and use.
 
 **Registry Properties:**
@@ -553,6 +576,8 @@ OpenShip maintains a registry of verified workflows, tools, and skills that the 
 
 ## Workflow Compilation: Markdown to LangGraph
 
+> **Status: Stale — direct prose compilation and implicit recompilation.** Freeform input is standardized into a reviewed, typed specification revision. Compilation uses pinned dependencies and compatibility-aware caching; active revisions stay immutable. See [architecture §9](./architects.md).
+
 When a workflow is created or updated, the agent parses the markdown definition and compiles it into an executable LangGraph. This compiled graph is cached for reuse across executions.
 
 **Compilation Process:**
@@ -578,6 +603,8 @@ When a workflow is created or updated, the agent parses the markdown definition 
 - Explicit recompilation requested by user.
 
 ## Sandbox Building
+
+> **Status: Stale — shared workspaces, automatic secrets, and runtime installation.** Use isolated per-run workspaces, selected artifact transfer, prebuilt profiles, and scoped credentials. Generated code starts without secrets or network access; artifacts persist separately from Git. See [architecture §12](./architects.md).
 
 Each workflow execution runs in an isolated sandbox built from a base image with common DevOps tools pre-installed.
 
@@ -605,6 +632,8 @@ Each workflow execution runs in an isolated sandbox built from a base image with
 - **Consistency:** Same tools and versions across all executions.
 
 ## Workflow Execution Model
+
+> **Status: Stale — unqualified execution-model defaults.** Use PostgreSQL for the durable runtime and versioned definitions for workflows. Detailed stale execution claims below do not define the current service. See [architecture §10](./architects.md).
 
 Workflows execute with durable state persistence, supporting pauses of any duration — from seconds to days.
 
@@ -679,11 +708,17 @@ OpenShip supports event-driven execution where workflows are automatically trigg
 - This flexibility enables workflows to be triggered from diverse sources while maintaining input validation.
 
 **State Persistence:**
+
+> **Status: Stale.** Checkpoint records and application state are separate, related records in PostgreSQL; do not assume every checkpoint contains the entire conversation. See [architecture](./architects.md), §§9–13.
+
 - Workflow execution state is checkpointed at each step, enabling crash recovery and resume.
 - The checkpoint includes the full conversation history, not just structured state (inputs/outputs/decisions). This preserves context and reasoning across pauses.
 - When a workflow resumes, the agent has access to the complete prior conversation, ensuring continuity.
 
 **Human-in-the-Loop Pausing:**
+
+> **Status: Stale.** Cancellation is available during execution; scope/input changes are serialized commands applied at safe boundaries, not only replies at pause points. See [architecture](./architects.md), §§9–13.
+
 - **Explicit pause points:** Workflow creators specify critical decision points where the workflow must pause for human input or approval.
 - **Agent-initiated pauses:** The agent can dynamically pause execution when uncertainty is high, when unexpected results occur, or when additional context is needed.
 - Pauses can last any duration — seconds, minutes, hours, or days.
@@ -735,11 +770,17 @@ OpenShip supports event-driven execution where workflows are automatically trigg
 - This enables early termination when further steps are unnecessary or when a blocking issue is detected.
 
 **Input Validation:**
+
+> **Status: Stale.** Validate typed inputs and outputs at backend boundaries; model judgment is not the enforcement mechanism. See [architecture](./architects.md), §§9–13.
+
 - **Workflow inputs (on trigger):** Validated against a defined schema to ensure required parameters are provided and correctly formatted.
 - **Step/tool inputs/outputs:** Validated by the agent based on context, since steps are flexibly defined in natural language.
 - This balances structure (schema validation for entry points) with flexibility (agent-based validation for conversational steps).
 
 **Direct Execution:**
+
+> **Status: Stale.** Workflow review and concrete mutation approval are separate gates. Required authorization and sandbox checks cannot be replaced by inspecting prose. See [architecture](./architects.md), §§9–13.
+
 - Workflows execute directly without a dry-run or preview mode.
 - Users can inspect the workflow definition before starting it, but there is no separate test execution.
 - This keeps the execution model simple and straightforward.
@@ -756,6 +797,9 @@ OpenShip supports event-driven execution where workflows are automatically trigg
 - Enables building complex automations from simpler, specialized components.
 
 **Dynamic Step Sequencing and Agent Reasoning:**
+
+> **Status: Stale.** Reviewed graphs define sequencing. Dynamic tool selection occurs inside bounded agent nodes and cannot freely rewrite approved steps. See [architecture](./architects.md), §§9–13.
+
 - Workflow definitions specify available steps and tools, but the agent dynamically determines the execution order at runtime.
 - The agent adapts sequencing based on context, intermediate results, and errors — not rigidly following a predefined DAG.
 - This enables flexible, context-aware execution where the agent can skip, repeat, or reorder steps as needed.
@@ -763,12 +807,18 @@ OpenShip supports event-driven execution where workflows are automatically trigg
 - **Agent Reasoning:** The agent must continuously assess the execution context and reason about the next appropriate action. This requires the LLM to understand the workflow goals, current state, available options, and potential consequences of each action.
 
 **State Persistence:**
+
+> **Status: Stale.** Checkpoint records and application state are separate, related records in PostgreSQL; do not assume every checkpoint contains the entire conversation. See [architecture](./architects.md), §§9–13.
+
 - Workflow execution state is persisted in a database (SQLite for local, Postgres for multi-user deployments).
 - This enables durable checkpoints that survive process restarts and system reboots.
 - Conversation history and structured state are stored together for complete context on resume.
 - When a workflow is paused, the full execution state is persisted, including step context, tool state, and conversation history, so the agent can resume seamlessly.
 
 **Workflow Timeout and Resource Management:**
+
+> **Status: Stale.** Enforce explicit run budgets and recovery semantics; neither a universal four-hour timeout nor exact-step replay is a current guarantee. See [architecture](./architects.md), §§9–13.
+
 - Workflows have a global timeout (default 4 hours) for the entire execution, not per-step timeouts.
 - After timeout, the execution process exits, but the checkpoint persists in storage.
 - User can manually resume the workflow at the exact paused step by reopening the chat/session.
@@ -886,7 +936,7 @@ Share the ticket URL and summary with the engineer...
 **Type:** Architecture
 **Summary:** OpenShip as a runtime environment where LLMs discover and select tools to complete tasks, operating within the existing human-in-the-loop workflow model.
 **Date:** 2026-09-30
-**Status:** Active
+**Status:** Proposal
 
 OpenShip should be visualized not as a single agent, but as an environment where LLMs discover, propose, and execute tools to complete tasks. This shifts the paradigm from "building an agent" to "building a runtime for agentic execution," while preserving human control at critical decision points.
 
