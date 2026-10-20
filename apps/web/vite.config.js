@@ -15,6 +15,8 @@ export default defineConfig({
   },
   server: {
     // In E2E tests, don't proxy /api — Playwright route mocking handles it
-    proxy: isE2E ? undefined : { '/api': 'http://localhost:8000' },
+    proxy: isE2E
+      ? undefined
+      : { '/api': process.env.VITE_API_PROXY_TARGET || 'http://localhost:8000' },
   },
 })

@@ -194,16 +194,22 @@ def _tool_run(db, *, status="running", expired=True, dispatched=False):
             outcome="started",
         )
         db.add(attempt)
-        db.add(
-            ExecutionSlot(
-                slot_number=0,
-                operation_id=operation.id,
-                run_id=run.id,
-                fence=7,
-                owner_id=job.owner_id,
-                lease_until=job.lease_until,
-            )
+        slot = (
+            db.query(ExecutionSlot)
+            .filter(ExecutionSlot.slot_number == 0)
+            .with_for_update()
+            .first()
         )
+        if slot is None:
+            slot = ExecutionSlot(slot_number=0)
+            db.add(slot)
+        elif slot.owner_id is not None:
+            raise AssertionError("previous recovery case left its execution slot active")
+        slot.operation_id = operation.id
+        slot.run_id = run.id
+        slot.fence = 7
+        slot.owner_id = job.owner_id
+        slot.lease_until = job.lease_until
     db.flush()
     return user, project, conversation, run, job, operation, attempt, ref
 

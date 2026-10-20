@@ -14,13 +14,13 @@ The [ideas collection](docs/ideas.md) preserves proposals and historical context
 
 **Roadmap Phases 1–3 are delivered:** authenticated project chat, a durable PostgreSQL-backed runtime with reconnectable events and cancellation, and explicit model-provider profiles. See the [provider support matrix](docs/provider-support.md) for qualified provider/model combinations.
 
-**Phases 4–21 remain proposals.** Tools and the execution gateway, artifacts, connectors, reusable workflows, approvals, sandboxed code, event triggers, and broader deployment qualification are incremental future work. The roadmap proposes Phase 4A next; these capabilities are not all available in the current application.
+**Phase 4A implementation is in acceptance review.** It adds model-free Brave and Tavily search runs, immutable filesystem artifacts, and operation snapshots. The acceptance record identifies which real-PostgreSQL and synthetic full-stack checks have run. Phase 4B model-directed tool calls and Phase 4C per-conversation workspaces remain future work; sandboxed execution stays in Phase 6. Connectors, reusable workflows, approvals, and broader deployment qualification remain later roadmap phases.
 
 ## How It Works
 
 1. The **web client** provides the conversational workspace and sends authenticated HTTP commands to the API.
 2. The **API server** validates commands, enforces project access, and persists conversations and durable run commands in PostgreSQL.
-3. The **runtime worker** claims queued runs, invokes the pinned model profile, and persists results using the shared LangGraph runtime and durable state.
+3. The **runtime worker** claims queued runs, invokes the pinned model profile or an explicitly submitted maintained tool, and persists results using the shared LangGraph runtime and durable state.
 4. The client receives progress through **Server-Sent Events** and reconstructs state after reconnecting.
 
 The target architecture extends these same contracts for workflow revisions, capability discovery, policy checks, artifacts, and a separate sandbox execution worker. The current chat runtime worker is not that future sandbox worker. Ordinary chat does not require a saved workflow template.
@@ -32,12 +32,14 @@ OpenShip follows the **co-pilot** principle: engineers delegate scoped authority
 From the repository root:
 
 ```bash
-cp apps/api/.env.example .env
-# Configure MODEL_PROFILES_JSON, MODEL_DEFAULT_PROFILE_ID, and credential bindings.
+cp .env.example .env
+# Set a strong JWT_SECRET and a unique stable ARTIFACT_STORAGE_ID.
+# Add search keys and exact tool IDs only if you want to enable search.
+docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance init
 docker compose up --build
 ```
 
-Compose starts PostgreSQL, migrations, the API server, runtime worker, and web client. Open [http://localhost:8080](http://localhost:8080). See [provider setup](docs/provider-support.md) before sending a chat message. Docker with Compose is required for this route; the tools below are for running processes directly.
+Compose starts PostgreSQL, migrations, the API server, runtime worker, and web client. The API and worker share the persistent `artifactdata` volume; ports bind to loopback by default. Search keys are passed only to the worker. Open [http://localhost:8080](http://localhost:8080). See [provider setup](docs/provider-support.md) before sending a chat message and the [artifact storage runbook](docs/operations/artifact-storage.md) for backup and restore. Docker with Compose is required for this route; the tools below are for running processes directly.
 
 ## Local Development
 
@@ -62,6 +64,7 @@ cd apps/api
 uv sync --extra dev
 cp .env.example .env  # Configure DATABASE_URL, model profiles, and credential bindings
 uv run alembic upgrade head
+uv run python -m src.openship.artifacts.maintenance init
 uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -77,6 +80,9 @@ Chat uses explicitly declared model profiles and durable run commands. Configure
 `MODEL_PROFILES_JSON` and `MODEL_DEFAULT_PROFILE_ID` in `.env`; credentials are
 read from the bindings each profile names. See [provider setup](docs/provider-support.md).
 The worker generates the conversation title from the first model response.
+For manual search, set `TOOL_ENABLED_IDS` to `brave_web_search`,
+`tavily_web_search`, or both, and configure only the selected tools' keys in the
+worker environment. The browser never accepts provider credentials.
 
 ### Web Client (Vue.js)
 
@@ -92,13 +98,13 @@ Frontend available at [http://localhost:5173](http://localhost:5173) (proxies AP
 
 ```bash
 # Backend
-cd apps/api && uv run pytest tests/ -v -m "not postgres and not provider_live"
+cd apps/api && uv run pytest tests/ -v -m "not postgres and not provider_live and not full_stack"
 
 # Frontend
 cd apps/web && pnpm exec vitest run
 ```
 
-PostgreSQL integration tests require `TEST_POSTGRES_URL`; live-provider tests are opt-in. See [provider support](docs/provider-support.md) for qualification and live-test setup.
+PostgreSQL integration tests require `TEST_POSTGRES_URL`; full-stack tests use synthetic search transports and require the same disposable database; live-provider tests are opt-in. See [Phase 4 acceptance](docs/testing/phase4-acceptance.md) and [provider support](docs/provider-support.md) for qualification details.
 
 ## Contributing
 

@@ -10,6 +10,7 @@ uv sync
 cp .env.example .env
 # Configure PostgreSQL, JWT_SECRET, model profiles, and credential bindings in .env.
 uv run alembic upgrade head
+uv run python -m src.openship.artifacts.maintenance init
 uv run uvicorn src.openship.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -32,6 +33,12 @@ capabilities, and local provider examples.
 Chat uses durable run submission and the worker for every provider. There is no
 implicit OpenAI profile or Phase 1 chat endpoint.
 
+Search is optional and remains two independent tools. Set `TOOL_ENABLED_IDS` to
+`brave_web_search`, `tavily_web_search`, or both, and configure only the matching
+worker credentials. A missing Brave key does not disable Tavily, and neither key
+is entered or stored by the browser. Docker Compose passes search keys only to
+the runtime worker. See the [artifact storage runbook](../../docs/operations/artifact-storage.md).
+
 ## Configuration Options
 
 | Variable | Default | Description |
@@ -39,6 +46,15 @@ implicit OpenAI profile or Phase 1 chat endpoint.
 | `MODEL_PROFILES_JSON` | (required) | Explicit model profiles, endpoints, capabilities, and credential references |
 | `MODEL_DEFAULT_PROFILE_ID` | (required) | ID of a declared profile to use by default |
 | `OPENAI_API_KEY` | (unset) | Credential binding used by the example OpenAI profile |
+| `TOOL_ENABLED_IDS` | (empty) | Exact maintained tool IDs enabled for the runtime worker |
+| `BRAVE_SEARCH_API_KEY` | (unset) | Operator credential for `brave_web_search` |
+| `TAVILY_API_KEY` | (unset) | Operator credential for `tavily_web_search` |
+| `ARTIFACT_ROOT` | `var/artifacts` | Shared persistent POSIX directory for immutable artifact bytes |
+| `ARTIFACT_STORAGE_ID` | (required for artifacts) | Stable UUID identifying the mounted artifact store |
+| `ARTIFACT_CONVERSATION_QUOTA_BYTES` | `134217728` | Maximum artifact bytes per conversation |
+| `ARTIFACT_CONVERSATION_QUOTA_COUNT` | `100` | Maximum retained artifacts per conversation |
+| `ARTIFACT_PROJECT_QUOTA_BYTES` | `1073741824` | Maximum artifact bytes per project |
+| `ARTIFACT_PROJECT_QUOTA_COUNT` | `1000` | Maximum retained artifacts per project |
 | `MODEL_MAX_TOKENS` | `4000` | Default output token limit when a profile does not declare one |
 | `DATABASE_URL` | `postgresql://postgres:change_me@localhost:5432/openship` | Database connection string |
 | `JWT_SECRET` | `dev-secret-change-in-production` | JWT signing secret |
@@ -83,6 +99,24 @@ EVENT_RETENTION_DAYS=14 CHECKPOINT_RETENTION_DAYS=14 uv run python -m src.opensh
 - Active, queued, and running runs are never pruned
 - Messages and run summaries are preserved until an explicit delete policy is implemented
 - Log retention is handled by the deployment log driver (7 days by default)
+
+### Artifact Storage
+
+The API and runtime worker must share the same persistent artifact directory and
+`ARTIFACT_STORAGE_ID`. Initialize the root explicitly, verify retained bytes, or
+recover stale staging/deleting operations with:
+
+```bash
+uv run python -m src.openship.artifacts.maintenance init
+uv run python -m src.openship.artifacts.maintenance verify
+uv run python -m src.openship.artifacts.maintenance retention --dry-run
+uv run python -m src.openship.artifacts.maintenance retention
+```
+
+The `init` command creates a marker only in an empty root. Keep the marker,
+database, and artifact volume together in backups and restores. See the
+[artifact storage runbook](../../docs/operations/artifact-storage.md) for
+drain, upgrade, recovery, and future Phase 5 Connector guidance.
 
 ### Lease Reconciliation
 

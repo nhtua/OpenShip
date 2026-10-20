@@ -18,7 +18,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U openship"]
       interval: 10s
@@ -28,12 +28,21 @@ services:
   api:
     build: ./apps/api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     environment:
       DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the root .env file}
+      JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
       EVENT_RETENTION_DAYS: 30
       CHECKPOINT_RETENTION_DAYS: 30
       LOG_RETENTION_DAYS: 7
+      ARTIFACT_ROOT: /var/lib/openship/artifacts
+      ARTIFACT_STORAGE_ID: ${ARTIFACT_STORAGE_ID:?Set a stable ARTIFACT_STORAGE_ID in the root .env file}
+      ARTIFACT_CONVERSATION_QUOTA_BYTES: ${ARTIFACT_CONVERSATION_QUOTA_BYTES:-134217728}
+      ARTIFACT_CONVERSATION_QUOTA_COUNT: ${ARTIFACT_CONVERSATION_QUOTA_COUNT:-100}
+      ARTIFACT_PROJECT_QUOTA_BYTES: ${ARTIFACT_PROJECT_QUOTA_BYTES:-1073741824}
+      ARTIFACT_PROJECT_QUOTA_COUNT: ${ARTIFACT_PROJECT_QUOTA_COUNT:-1000}
+      TOOL_ENABLED_IDS: ${TOOL_ENABLED_IDS:-}
       # Profile configuration is non-secret and shared: the worker executes a
       # run the API queued, so a profile that means different things to the
       # two of them would make "which model answered" a question with two
@@ -44,6 +53,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      - artifactdata:/var/lib/openship/artifacts
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,9 +77,18 @@ services:
     command: ["uv", "run", "python", "-m", "src.openship.runs.worker", "--log-level", "INFO"]
     environment:
       DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the root .env file}
+      JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
       EVENT_RETENTION_DAYS: 30
       CHECKPOINT_RETENTION_DAYS: 30
       LOG_RETENTION_DAYS: 7
+      ARTIFACT_ROOT: /var/lib/openship/artifacts
+      ARTIFACT_STORAGE_ID: ${ARTIFACT_STORAGE_ID:?Set a stable ARTIFACT_STORAGE_ID in the root .env file}
+      ARTIFACT_CONVERSATION_QUOTA_BYTES: ${ARTIFACT_CONVERSATION_QUOTA_BYTES:-134217728}
+      ARTIFACT_CONVERSATION_QUOTA_COUNT: ${ARTIFACT_CONVERSATION_QUOTA_COUNT:-100}
+      ARTIFACT_PROJECT_QUOTA_BYTES: ${ARTIFACT_PROJECT_QUOTA_BYTES:-1073741824}
+      ARTIFACT_PROJECT_QUOTA_COUNT: ${ARTIFACT_PROJECT_QUOTA_COUNT:-1000}
+      TOOL_ENABLED_IDS: ${TOOL_ENABLED_IDS:-}
       # Identical to the api service above, on the same variables: the worker
       # executes what the API queued, so the profile a run names has to mean
       # the same thing to both.
@@ -78,6 +98,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+    volumes:
+      - artifactdata:/var/lib/openship/artifacts
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,10 +117,11 @@ services:
   web:
     build: ./apps/web
     ports:
-      - "8080:80"
+      - "127.0.0.1:${WEB_PORT:-8080}:80"
     depends_on:
       api:
         condition: service_healthy
 
 volumes:
   pgdata:
+  artifactdata:

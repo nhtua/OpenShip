@@ -173,7 +173,7 @@ def test_concurrent_commands_serialize_one_active_run_and_one_event_set(pg_sessi
 
     db = pg_sessions()
     try:
-        run_ids = [row[0] for row in outcomes if row[0] == "accepted"]
+        run_ids = [row[1] for row in outcomes if row[0] == "accepted"]
         assert db.query(Run).filter(Run.conversation_id == conversation_id, Run.kind == "tool").count() == 1
         assert db.query(RunJob).filter(RunJob.run_id.in_(run_ids)).count() == 1
         assert db.query(Event).filter(Event.conversation_id == conversation_id, Event.type == "tool.submitted").count() == 1

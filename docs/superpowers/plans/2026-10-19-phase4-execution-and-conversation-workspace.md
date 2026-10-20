@@ -189,10 +189,11 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** Existing services plus persistent artifact volume; runtime-only operator search-key bindings and shared safe enablement/settings. Create documented artifact-storage initialize/verify/retention CLI entry points. Full-stack tests use synthetic search services/transports and actual app/API/runtime/PG/files without intercepting app commands.
 
-- [ ] Add packaging assertions for shared persistent files, runtime-only search key forwarding, loopback ports, no Docker socket/manager/runsc/image setup, and plain chat/manual search with unrelated credentials absent.
-- [ ] Document setting each operator key/enablement, exact-tool invocation, bounded provider failures, persistent storage identity, drain/upgrade/backup/restore and the future Phase 5 Connector transition. No real key values in examples.
-- [ ] Wire unit exclusion `not postgres and not provider_live and not full_stack`; add required new PG modules to real-PG CI and reject skips/zero-test qualification. Include frontend typecheck. Do not introduce sandbox CI or live provider calls on ordinary PRs.
-- [ ] Run actual app/runtime/PG/filesystem with synthetic Brave/Tavily: manual call saves a snapshot, restart/reconnect reads exact bytes, cancel/recovery has no duplicate upstream request. Run cumulative unit/lint/PG/browser checks; record evidence and 4A accept/revise/stop before Task 10.
+- [x] Add packaging assertions for shared persistent files, runtime-only search key forwarding, loopback ports, no Docker socket/manager/runsc/image setup, and plain chat/manual search with unrelated credentials absent.
+- [x] Document setting each operator key/enablement, exact-tool invocation, bounded provider failures, persistent storage identity, drain/upgrade/backup/restore and the future Phase 5 Connector transition. No real key values in examples.
+- [x] Wire unit exclusion `not postgres and not provider_live and not full_stack`; add required new PG modules to real-PG CI and reject skips/zero-test qualification. Include frontend typecheck. Do not introduce sandbox CI or live provider calls on ordinary PRs.
+- [x] Run actual app/runtime/PG/filesystem with synthetic Brave/Tavily: manual call saves a snapshot, restart/reconnect reads exact bytes, cancel/recovery has no duplicate upstream request. Run cumulative unit/lint/PG/browser checks; record evidence and 4A accept/revise/stop before Task 10.
+  - Validation: `ruff check .` clean and packaging assertions 4 passed; Compose config valid; PostgreSQL lane 28 passed/0 skipped; synthetic API/runtime/PG/filesystem test 1 passed/0 skipped; browser unit tests 137 passed; typecheck and production build passed; fixture Playwright 49 passed; full-stack Playwright 1 passed against the synthetic API/runtime with real `/api` calls. No live providers were called. Acceptance remains pending user review; Task 10 has not started.
 
 ### Task 10 — Complete tool-message contracts and durable transcript
 

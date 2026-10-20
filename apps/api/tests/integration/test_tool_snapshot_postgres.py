@@ -211,7 +211,10 @@ def test_pruned_tool_events_rebuild_operation_and_artifact_projection(pg_session
             payload="{}",
         )
         conversation.next_event_sequence = 1
-        db.add_all([artifact, operation, attempt, event])
+        db.add(operation)
+        db.flush()
+        db.add(artifact)
+        db.add_all([attempt, event])
         db.commit()
         db.delete(event)
         db.commit()

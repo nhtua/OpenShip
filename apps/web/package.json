@@ -9,6 +9,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:full-stack": "playwright test -c playwright.full-stack.config.ts",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
