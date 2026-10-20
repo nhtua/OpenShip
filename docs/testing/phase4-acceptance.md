@@ -133,7 +133,7 @@ Representative files: `task9a-desktop-collapsed.png`,
 | Fixture browser suite | 52 passed after adding a shared empty-workspace API fixture | Deterministic fixture responses. |
 | Web unit tests, Vue typecheck, and production build | 171 unit tests passed; typecheck and build passed | — |
 | API lint | Ruff passed across `apps/api` | — |
-| Full network-free API suite | Attempted after correcting the query-projection expectation; the single `tests/test_auth_login.py::test_login_existing_user` TestClient request hung in this local harness, including when run alone | The timed stack shows the request waiting while the Starlette ASGI portal is idle. Focused changed API suites pass; this broad lane is not claimed green. |
+| Full network-free API suite | Attempted after correcting the query-projection expectation; the single `tests/test_auth_login.py::test_login_existing_user` TestClient request hung in this local harness, including when run alone. The pre-commit `api-tests` hook was skipped after reproducing the same stall. | The timed stack shows the request waiting while the Starlette ASGI portal is idle. Focused changed API suites pass; this broad lane is not claimed green. All other commit hooks passed. |
 | Provider-backed full-stack browser suite | Not run with configured model/search services | Only the conversation-files full-stack browser spec was run. Tool-chat and search browser cases need the synthetic provider stack used by the API full-stack lane. |
 | Sandbox installation/image qualification | Not applicable | Phase 6 owns sandbox driver, image, isolation, and executable-file qualification. |
 
