@@ -54,12 +54,21 @@ class Run(Base):
     # guessed for it.
     model_selection = Column(Text, nullable=True)
     model_configuration = Column(Text, nullable=True)
+    kind = Column(String(20), nullable=False, server_default="chat")
+    graph_version = Column(Integer, nullable=False, server_default="1")
+    execution_configuration = Column(Text, nullable=True)
+    execution_started_at = Column(DateTime(timezone=True), nullable=True)
+    execution_deadline_at = Column(DateTime(timezone=True), nullable=True)
+    command_digest = Column(String(64), nullable=True)
+    tool_command_json = Column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
             "status IN ('created', 'queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out', 'stale')",
             name="ck_runs_status",
         ),
+        CheckConstraint("kind IN ('chat', 'tool')", name="ck_runs_kind"),
+        CheckConstraint("graph_version >= 1", name="ck_runs_graph_version"),
         Index("ix_runs_conversation_id", "conversation_id"),
         Index("ix_runs_project_id", "project_id"),
         Index("ix_runs_status", "status"),

@@ -44,6 +44,8 @@ def setup_db(request):
         or "test_run_commands_pg" in test_path
         or "test_retention_pg" in test_path
         or "test_provider_pinning" in test_path
+        or "test_phase4_execution_migration" in test_path
+        or "test_tool_admission_postgres" in test_path
     ):
         yield
         return

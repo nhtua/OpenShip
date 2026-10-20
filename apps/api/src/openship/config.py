@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
 
     # Maintained Phase 4 tools. Credentials are separate fixed environment bindings.
     tool_enabled_ids: str = ""
+    tool_concurrency: int = Field(default=1, ge=1, le=128)
 
     # Database
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"

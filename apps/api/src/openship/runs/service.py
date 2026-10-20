@@ -11,12 +11,20 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from ..capabilities.catalog import resolve_capability
+from ..capabilities.contracts import (
+    ExecutionConfig,
+    ToolCommandRequest,
+    canonical_digest,
+)
 from ..chat.models import Conversation, Message
 from ..config import settings
+from ..execution.errors import CapabilityError
 from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
 from ..runs.models import Event, Outbox, Run, RunJob
+from ..tools.search.contracts import SearchArguments
 from .queue import fenced_update_run
 
 
@@ -33,7 +41,7 @@ def require_owned_conversation(db: Session, user_id: uuid.UUID, conversation_id:
     conv = db.query(Conversation).filter(
         Conversation.id == conv_id,
         Conversation.user_id == user_id,
-    ).first()
+    ).with_for_update().first()
     if not conv:
         raise HTTPException(
             status_code=404,
@@ -190,7 +198,9 @@ def submit_turn(
 
     # Create initial event (turn_submitted)
     seq = conv.next_event_sequence
+    event_id = uuid.uuid4()
     event = Event(
+        id=event_id,
         project_id=conv.project_id,
         conversation_id=conv.id,
         run_id=run.id,
@@ -212,6 +222,183 @@ def submit_turn(
 
     db.commit()
     db.refresh(run)
+    return run
+
+
+def _tool_command_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"error": {"code": code, "message": message}},
+    )
+
+
+def _tool_command_digest(command: ToolCommandRequest) -> str:
+    return canonical_digest(
+        {
+            "capability": command.capability.model_dump(mode="json"),
+            "arguments": command.arguments,
+        }
+    )
+
+
+def submit_tool_run(
+    db: Session,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    command: ToolCommandRequest,
+) -> Run:
+    """Admit one model-free tool run without committing the caller's transaction."""
+    request_id = str(command.client_request_id)
+    try:
+        command_digest = _tool_command_digest(command)
+    except (TypeError, ValueError) as exc:
+        raise _tool_command_error(422, "invalid_tool_arguments", "Tool arguments are invalid") from exc
+    try:
+        conversation_uuid = uuid.UUID(str(conversation_id))
+    except (TypeError, ValueError) as exc:
+        raise _tool_command_error(422, "invalid_conversation_id", "Invalid conversation ID format") from exc
+
+    # Request identifiers are globally unique. Check ownership before exposing
+    # whether the key exists, then compare the complete command snapshot.
+    existing = db.query(Run).filter(Run.client_request_id == request_id).first()
+    if existing is not None:
+        existing_conversation = db.query(Conversation).filter(
+            Conversation.id == existing.conversation_id
+        ).first()
+        if existing_conversation is None or existing_conversation.user_id != user_id:
+            raise _tool_command_error(404, "conversation_not_found", "Conversation not found")
+        if existing.conversation_id != conversation_uuid:
+            raise _tool_command_error(
+                409,
+                "client_request_id_conflict",
+                "client_request_id already used for a different conversation",
+            )
+        if existing.kind != "tool" or existing.command_digest != command_digest:
+            raise _tool_command_error(
+                409,
+                "client_request_id_conflict",
+                "client_request_id already used with a different tool command",
+            )
+        return existing
+
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_uuid,
+        Conversation.user_id == user_id,
+    ).with_for_update().first()
+    if conversation is None:
+        raise _tool_command_error(404, "conversation_not_found", "Conversation not found")
+
+    # Recheck after locking the conversation. On PostgreSQL this serializes
+    # chat/tool admission for the same conversation across both command paths.
+    existing = db.query(Run).filter(Run.client_request_id == request_id).first()
+    if existing is not None:
+        if existing.conversation_id != conversation.id:
+            raise _tool_command_error(
+                409,
+                "client_request_id_conflict",
+                "client_request_id already used for a different conversation",
+            )
+        if existing.kind != "tool" or existing.command_digest != command_digest:
+            raise _tool_command_error(
+                409,
+                "client_request_id_conflict",
+                "client_request_id already used with a different tool command",
+            )
+        return existing
+
+    active = db.query(Run).filter(
+        Run.conversation_id == conversation.id,
+        Run.status.in_(("created", "queued", "running")),
+    ).first()
+    if active is not None:
+        raise _tool_command_error(
+            409,
+            "run_already_active",
+            "Another run is already active on this conversation",
+        )
+
+    try:
+        manifest = resolve_capability(command.capability, settings.enabled_tool_ids)
+        normalized_arguments = SearchArguments.model_validate(command.arguments)
+    except CapabilityError as refused:
+        raise _tool_command_error(422, refused.code, str(refused)) from refused
+    except ValueError as invalid:
+        raise _tool_command_error(422, "invalid_tool_arguments", "Tool arguments are invalid") from invalid
+
+    if manifest.id not in ("brave_web_search", "tavily_web_search"):
+        raise _tool_command_error(422, "unsupported_tool", "This tool command is not supported")
+
+    execution = ExecutionConfig(
+        graph_kind="tool",
+        graph_version=1,
+        allowed_capabilities=(command.capability,),
+        credential_binding_refs=(manifest.credential_binding_ref,)
+        if manifest.credential_binding_ref
+        else (),
+    )
+    run = Run(
+        conversation_id=conversation.id,
+        project_id=conversation.project_id,
+        client_request_id=request_id,
+        command_digest=command_digest,
+        tool_command_json=json.dumps(
+            {
+                "capability": command.capability.model_dump(mode="json"),
+                "arguments": normalized_arguments.model_dump(mode="json"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        kind="tool",
+        graph_version=1,
+        execution_configuration=execution.model_dump_json(),
+        status="queued",
+        attempt=0,
+        fence=0,
+        model_selection=None,
+        model_configuration=None,
+    )
+    db.add(run)
+    db.flush()
+
+    db.add(RunJob(run_id=run.id, fence=0))
+    sequence = conversation.next_event_sequence
+    payload = json.dumps(
+        {
+            "schema_version": 1,
+            "run_id": str(run.id),
+            "client_request_id": request_id,
+            "capability": command.capability.model_dump(mode="json"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    event_id = uuid.uuid4()
+    event = Event(
+        id=event_id,
+        project_id=conversation.project_id,
+        conversation_id=conversation.id,
+        run_id=run.id,
+        sequence=sequence,
+        type="tool.submitted",
+        payload=payload,
+        actor_id=user_id,
+    )
+    db.add(event)
+    conversation.next_event_sequence = sequence + 1
+    db.add(
+        Outbox(
+            conversation_id=conversation.id,
+            event_id=event_id,
+            type="tool.submitted",
+            payload=json.dumps(
+                {"run_id": str(run.id), "client_request_id": request_id},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    )
+    db.flush()
     return run
 
 

@@ -27,7 +27,8 @@ from ..providers.control import InvocationControl
 from ..providers.errors import ProviderError
 from ..runs.schemas import _model_projection
 from ..runs.service import bind_run_model_config
-from .graph import ModelResult, build_chat_graph
+from .dispatch import UnsupportedGraphVersion, resolve_graph
+from .graph import ModelResult
 from .models import ProviderAttempt, Run, RunJob
 from .queue import claim_next, finalize, mark_provider_started, reconcile_expired, renew
 
@@ -280,6 +281,37 @@ class Worker:
                 logger.warning(f"Conversation {run.conversation_id} not found")
                 return False
 
+            try:
+                graph_factory = resolve_graph(run.kind, run.graph_version)
+            except UnsupportedGraphVersion:
+                safe_message = "This run uses a graph version this runtime does not support."
+                finalized = finalize(
+                    db=job,
+                    run_id=run_id,
+                    fence=fence,
+                    result={
+                        "status": "failed",
+                        "error_code": "unsupported_graph_version",
+                        "output": safe_message,
+                    },
+                    commit=False,
+                )
+                if finalized:
+                    append_event(
+                        db=job,
+                        conversation_id=conv.id,
+                        run_id=run_id,
+                        event_type="run.failed",
+                        payload={
+                            "error_code": "unsupported_graph_version",
+                            "error": safe_message,
+                            "model": None,
+                        },
+                        actor_id=None,
+                    )
+                    job.commit()
+                return bool(finalized)
+
             user_msg = job.query(Message).filter(
                 Message.run_id == run_id,
                 Message.role == "user",
@@ -372,7 +404,7 @@ class Worker:
                     recorder,
                 )
 
-            graph = build_chat_graph(self.checkpointer, invocation_factory=invocation)
+            graph = graph_factory(self.checkpointer, invocation_factory=invocation)
 
             # Construct the thread ID and persist it on the Run record
             thread_id = f"{run_id}-{claim.checkpoint_ns}"

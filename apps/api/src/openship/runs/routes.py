@@ -6,10 +6,12 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..auth.models import User
 from ..auth.routes import require_jwt
+from ..capabilities.contracts import ToolCommandRequest
 from ..database.session import get_db
 from .models import ProviderAttempt
 from .schemas import (
@@ -17,7 +19,7 @@ from .schemas import (
     TurnSubmitRequest,
     project_run_response,
 )
-from .service import get_run, request_cancel, submit_turn
+from .service import get_run, request_cancel, submit_tool_run, submit_turn
 
 logger = logging.getLogger("runs.routes")
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -79,6 +81,47 @@ async def submit_chat_turn(
             status_code=500,
             detail={"error": {"code": "submit_failed", "message": str(e)}},
         )
+
+
+@router.post("/{conversation_id}/tools", status_code=202, response_model=RunResponse)
+async def submit_tool_command(
+    conversation_id: str,
+    req: ToolCommandRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """Queue a model-free maintained tool command."""
+    try:
+        run = submit_tool_run(
+            db=db,
+            user_id=user.id,
+            conversation_id=conversation_id,
+            command=req,
+        )
+        db.commit()
+        db.refresh(run)
+        return project_run_response(run)
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError as conflict:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": "run_admission_conflict",
+                    "message": "Another run or command with this request ID was admitted concurrently",
+                }
+            },
+        ) from conflict
+    except Exception as exc:
+        db.rollback()
+        logger.exception("submit_tool_command failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"code": "submit_tool_failed", "message": "Tool command could not be submitted"}},
+        ) from exc
 
 
 @router.post("/{run_id}/cancel", status_code=200, response_model=RunResponse)

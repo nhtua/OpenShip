@@ -10,6 +10,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    field_validator,
     model_validator,
 )
 
@@ -132,6 +133,18 @@ class ToolCommandRequest(FrozenModel):
     client_request_id: UUID
     capability: CapabilityRef
     arguments: dict[str, Any]
+
+    @field_validator("client_request_id", mode="before")
+    @classmethod
+    def _parse_request_id(cls, value: Any) -> UUID:
+        if isinstance(value, UUID):
+            return value
+        if isinstance(value, str):
+            try:
+                return UUID(value)
+            except ValueError as exc:
+                raise ValueError("client_request_id must be a UUID") from exc
+        return value
 
 
 class ToolInvocationContext:
