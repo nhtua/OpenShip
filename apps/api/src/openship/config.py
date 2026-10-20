@@ -1,3 +1,6 @@
+from pathlib import Path
+from uuid import UUID
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,6 +16,19 @@ class Settings(BaseSettings):
     # Maintained Phase 4 tools. Credentials are separate fixed environment bindings.
     tool_enabled_ids: str = ""
     tool_concurrency: int = Field(default=1, ge=1, le=128)
+
+    # Shared persistent local artifact storage. Initialization is an explicit
+    # operator action; API requests never create or replace an empty root.
+    artifact_root: Path = Path("var/artifacts")
+    artifact_storage_id: UUID | None = None
+    artifact_conversation_quota_bytes: int = Field(default=128 * 1024 * 1024, ge=1)
+    artifact_conversation_quota_count: int = Field(default=100, ge=1)
+    artifact_project_quota_bytes: int = Field(default=1024 * 1024 * 1024, ge=1)
+    artifact_project_quota_count: int = Field(default=1000, ge=1)
+    artifact_search_reservation_bytes: int = Field(default=64 * 1024, ge=1, le=64 * 1024)
+    artifact_upload_max_bytes: int = Field(default=8 * 1024 * 1024, ge=1, le=8 * 1024 * 1024)
+    artifact_incomplete_uploads_per_conversation: int = Field(default=2, ge=1, le=2)
+    artifact_staging_retention_seconds: int = Field(default=600, ge=60)
 
     # Database
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"

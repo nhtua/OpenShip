@@ -7,6 +7,7 @@ import json
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .artifacts.routes import router as artifacts_router
 from .auth.routes import router as auth_router
 from .capabilities.routes import router as capabilities_router
 from .chat.routes import router as chat_router
@@ -36,6 +37,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 
 app.include_router(auth_router)
+app.include_router(artifacts_router)
 app.include_router(capabilities_router)
 app.include_router(chat_router)
 app.include_router(runs_router)

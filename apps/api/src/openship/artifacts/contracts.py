@@ -25,6 +25,7 @@ class ArtifactSummary(ArtifactRef):
     project_id: UUID
     name: str = Field(min_length=1, max_length=255)
     source: str = Field(min_length=1, max_length=32)
+    status: Literal["staging", "ready", "deleting", "deleted", "unavailable"]
     created_at: datetime
     mutability: Literal["immutable", "mutable"] = "immutable"
 
