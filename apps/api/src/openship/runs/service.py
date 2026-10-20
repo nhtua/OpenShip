@@ -508,9 +508,24 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
             detail={"error": {"code": "invalid_run_id", "message": "Invalid run ID format"}},
         )
 
-    # Lock the run before checking its state. Finalization also updates this
-    # row, so exactly one of completion and cancellation can win the terminal
-    # transition. Refresh because the identity map may predate the lock wait.
+    identity = db.query(Run.conversation_id).filter(Run.id == rid).first()
+    if identity is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "run_not_found", "message": "Run not found"}},
+        )
+    conv = db.query(Conversation).filter(
+        Conversation.id == identity.conversation_id,
+        Conversation.user_id == user_id,
+    ).with_for_update().first()
+    if not conv:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "run_not_found", "message": "Run not found"}},
+        )
+
+    # Cancellation and tool admission/publication share conversation → run →
+    # job lock order. Refresh the run after waiting for the conversation lock.
     run = (
         db.query(Run)
         .filter(Run.id == rid)
@@ -518,18 +533,7 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
         .populate_existing()
         .first()
     )
-    if not run:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": {"code": "run_not_found", "message": "Run not found"}},
-        )
-
-    # Verify ownership through conversation
-    conv = db.query(Conversation).filter(
-        Conversation.id == run.conversation_id,
-        Conversation.user_id == user_id,
-    ).first()
-    if not conv:
+    if run is None or run.conversation_id != conv.id:
         raise HTTPException(
             status_code=404,
             detail={"error": {"code": "run_not_found", "message": "Run not found"}},
@@ -539,30 +543,54 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
     if run.status in ["cancelled", "completed", "failed", "timed_out"]:
         return run
 
-    # A cancellation takes ownership away. The run's fence and its job's move
-    # together, because the job's fence is what a worker renews against while
-    # a turn is running: moving only the run's would leave a worker mid-request
-    # still holding a lease it can renew, and the provider read would keep
-    # consuming until the run deadline ended. The invariant the queue keeps
-    # (claim_next sets both to the same value) is kept here too.
+    # A cancellation moves both fences and clears the lease. The supervisor
+    # sees the terminal run promptly and any late gateway publication fails
+    # its live-claim check.
+    prior_fence = run.fence
     run.status = "cancelled"
     run.ended_at = datetime.now(UTC)
     run.fence += 1
-    job = db.query(RunJob).filter(RunJob.run_id == rid).first()
+    job = (
+        db.query(RunJob)
+        .filter(RunJob.run_id == rid)
+        .with_for_update()
+        .first()
+    )
     if job is not None:
         job.fence = run.fence
+        job.owner_id = None
+        job.lease_until = None
 
-    # Create cancel event
-    seq = conv.next_event_sequence
-    event = Event(
+    from ..events.service import append_event
+    from ..execution.recovery import cancel_tool_operations
+
+    cancel_tool_operations(
+        db,
+        run_id=run.id,
+        conversation_id=conv.id,
+        prior_fence=prior_fence,
+    )
+    event = append_event(
+        db,
         conversation_id=conv.id,
         run_id=run.id,
-        sequence=seq,
-        type="run_cancelled",
-        payload=json.dumps({"status": "cancelled"}),
+        event_type="run_cancelled",
+        payload={"status": "cancelled"},
+        actor_id=user_id,
     )
-    db.add(event)
-    conv.next_event_sequence = seq + 1
+    db.flush()
+    db.add(
+        Outbox(
+            conversation_id=conv.id,
+            event_id=event.id,
+            type=event.type,
+            payload=json.dumps(
+                {"event_id": str(event.id), "type": event.type},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    )
 
     db.commit()
     db.refresh(run)

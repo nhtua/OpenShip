@@ -316,6 +316,36 @@ async def test_cancellation_during_response_closes_stream():
     assert stream.closed
 
 
+@pytest.mark.asyncio
+async def test_cancellation_while_waiting_for_response_headers_closes_request():
+    stop = [False]
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def respond(_request):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    task = asyncio.create_task(
+        _http(httpx.MockTransport(respond)).get_json(
+            params={"q": "query"},
+            headers={},
+            control=_Control(stop=lambda: stop[0]),
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=0.5)
+    stop[0] = True
+
+    with pytest.raises(SearchToolError) as caught:
+        await asyncio.wait_for(task, timeout=0.5)
+
+    assert caught.value.code == "cancelled"
+    assert cancelled.is_set()
+
+
 class _RecordingBackend:
     def __init__(self):
         self.hosts = []

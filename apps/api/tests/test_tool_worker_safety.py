@@ -1,4 +1,4 @@
-"""Queued but unimplemented run graphs must fail without model dispatch."""
+"""Unsupported queued graph versions fail without model dispatch."""
 
 import uuid
 
@@ -15,7 +15,7 @@ from src.openship.runs.worker import Worker
 from src.openship.workspace.models import Project
 
 
-def test_unregistered_tool_graph_fails_without_model_or_synthetic_chat(monkeypatch):
+def test_unsupported_tool_graph_fails_without_model_or_synthetic_chat(monkeypatch):
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:
@@ -41,6 +41,7 @@ def test_unregistered_tool_graph_fails_without_model_or_synthetic_chat(monkeypat
             arguments={"query": "no model should run", "max_results": 1},
         )
         run = submit_tool_run(db, user.id, conversation.id, command)
+        run.graph_version = 99
         db.commit()
         db.query(RunJob).filter(RunJob.run_id != run.id).delete(synchronize_session=False)
         db.commit()

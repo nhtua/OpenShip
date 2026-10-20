@@ -254,14 +254,38 @@ class BoundedSearchHttp:
         self._client_factory = client_factory or httpx.AsyncClient
 
     async def get_json(self, *, params: dict, headers: dict, control) -> dict:
-        return await self._request_json(
-            "GET", params=params, json_body=None, headers=headers, control=control
+        return await self._with_stop(
+            self._request_json(
+                "GET", params=params, json_body=None, headers=headers, control=control
+            ),
+            control,
         )
 
     async def post_json(self, *, json_body: dict, headers: dict, control) -> dict:
-        return await self._request_json(
-            "POST", params=None, json_body=json_body, headers=headers, control=control
+        return await self._with_stop(
+            self._request_json(
+                "POST", params=None, json_body=json_body, headers=headers, control=control
+            ),
+            control,
         )
+
+    async def _with_stop(self, request, control):
+        """Cancel the active HTTP task when run supervision moves its fence."""
+        task = asyncio.create_task(request)
+        try:
+            while not task.done():
+                try:
+                    control.raise_if_stopped()
+                except ProviderError:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    raise SearchToolError("cancelled") from None
+                await asyncio.wait((task,), timeout=0.05)
+            return await task
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
 
     async def _request_json(
         self, method: str, *, params: dict | None, json_body: dict | None, headers: dict, control

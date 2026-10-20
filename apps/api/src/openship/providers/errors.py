@@ -65,6 +65,9 @@ SAFE_MESSAGES: Mapping[str, str] = {
     "model_interrupted": (
         "The model stopped before completing the answer. Try again."
     ),
+    "execution_interrupted": (
+        "The tool execution was interrupted and will not be repeated automatically."
+    ),
     "cancelled": "The run was cancelled.",
     "lease_lost": (
         "This worker no longer owns the run, so its result was not published. "

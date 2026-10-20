@@ -94,7 +94,7 @@ def list_capability_manifests() -> tuple[CapabilityManifest, ...]:
 def list_capabilities(
     *,
     enabled_ids: frozenset[str] | None = None,
-    availability: Mapping[str, bool] | None = None,
+    availability: Mapping[str, bool | tuple[bool, str | None]] | None = None,
     credential_check: Callable[[str], bool] = credential_binding_present,
 ) -> tuple[CapabilitySummary, ...]:
     """Return a public, secret-free view of installed maintained capabilities."""
@@ -108,12 +108,21 @@ def list_capabilities(
         enabled = manifest.id in enabled_ids
         if not enabled:
             available, reason = False, "disabled"
+        elif availability is not None:
+            observed = availability.get(manifest.id, (False, "runtime_unavailable"))
+            if isinstance(observed, tuple):
+                available, reason = observed
+            else:
+                available = observed
+                reason = None if available else "runtime_unavailable"
+            if not available and reason not in (
+                "disabled", "missing_credentials", "runtime_unavailable"
+            ):
+                reason = "runtime_unavailable"
         elif manifest.credential_binding_ref and not credential_check(
             manifest.credential_binding_ref
         ):
             available, reason = False, "missing_credentials"
-        elif availability is not None and not availability.get(manifest.id, False):
-            available, reason = False, "runtime_unavailable"
         else:
             available, reason = True, None
         summaries.append(

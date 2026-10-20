@@ -4,7 +4,9 @@ import json
 import uuid
 
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from ..chat.models import Conversation, Message
 from ..runs.models import Event, ProviderAttempt, Run
@@ -94,9 +96,18 @@ def append_event(
     Returns:
         The persisted Event object.
     """
-    # Validate conversation exists (within caller's transaction)
-    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
-    if not conv:
+    # Flush pending changes first, then allocate a sequence with one atomic
+    # update. Reading an ORM Conversation here can return a stale identity-map
+    # value after a tool gateway session has appended events during this run.
+    db.flush()
+    row = db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(next_event_sequence=Conversation.next_event_sequence + 1)
+        .returning(Conversation.next_event_sequence, Conversation.project_id)
+        .execution_options(synchronize_session=False)
+    ).first()
+    if row is None:
         raise HTTPException(
             status_code=404,
             detail={
@@ -107,32 +118,14 @@ def append_event(
             },
         )
 
-    # Atomically increment sequence using SELECT...FOR UPDATE lock
-    # and ORM update. This provides a conversation sequence lock
-    # that prevents concurrent writers from reading the same sequence.
-    locked_conv = (
-        db.query(Conversation)
-        .filter(Conversation.id == conversation_id)
-        .with_for_update()
-        .first()
-    )
-    if locked_conv is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": {
-                    "code": "conversation_not_found",
-                    "message": f"Conversation {conversation_id} not found",
-                }
-            },
-        )
-
-    # Increment within the same transaction
-    seq = locked_conv.next_event_sequence
-    locked_conv.next_event_sequence = seq + 1
+    next_sequence, project_id = row
+    seq = next_sequence - 1
+    conv = db.get(Conversation, conversation_id)
+    if conv is not None:
+        set_committed_value(conv, "next_event_sequence", next_sequence)
 
     event = Event(
-        project_id=locked_conv.project_id,
+        project_id=project_id,
         conversation_id=conversation_id,
         run_id=run_id,
         sequence=seq,
@@ -141,6 +134,9 @@ def append_event(
         actor_id=actor_id,
     )
     db.add(event)
+    # Make the sequence increment visible to another append_event call in the
+    # same transaction, even when that session has a cached Conversation row.
+    db.flush()
     return event
 
 

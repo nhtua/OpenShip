@@ -10,27 +10,50 @@ based optimistic concurrency control.
 """
 
 import argparse
+import json
 import logging
 import re
 import signal
 import threading
 import time
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from ..artifacts.filesystem import ArtifactStorageError
+from ..artifacts.maintenance import configured_store
+from ..capabilities.contracts import (
+    AuthorizationContext,
+    ExecutionConfig,
+    PublishedToolResult,
+    ToolInvocationContext,
+)
 from ..chat.models import Conversation, Message
 from ..config import settings
+from ..execution.availability import (
+    observe_tool_availability,
+    publish_tool_availability,
+)
+from ..execution.gateway import ToolGateway
 from ..providers.attempts import DatabaseAttemptRecorder
 from ..providers.control import InvocationControl
+from ..providers.credentials import credential_value
 from ..providers.errors import ProviderError
 from ..runs.schemas import _model_projection
 from ..runs.service import bind_run_model_config
 from .dispatch import UnsupportedGraphVersion, resolve_graph
 from .graph import ModelResult
-from .models import ProviderAttempt, Run, RunJob
-from .queue import claim_next, finalize, mark_provider_started, reconcile_expired, renew
+from .models import Outbox, ProviderAttempt, Run, RunJob
+from .queue import (
+    begin_execution_window,
+    claim_next,
+    finalize,
+    mark_provider_started,
+    reconcile_expired,
+    renew,
+)
 
 logger = logging.getLogger("worker")
 
@@ -176,12 +199,14 @@ class Worker:
         renew_every = getattr(settings, "worker_heartbeat_interval", 10)
 
         waited = 0.0
+        availability_waited = 0.0
         while not supervision.stop():
             # A poll on an interval: the first check happens while the turn is
             # still running, so a lease that moved interrupts a blocked read
             # rather than deciding the turn before it began.
             time.sleep(poll)
             waited += poll
+            availability_waited += poll
             if supervision.stop():
                 return
             try:
@@ -197,8 +222,22 @@ class Worker:
                 return
 
             if waited < renew_every:
+                if availability_waited >= 10:
+                    availability_waited = 0.0
+                    try:
+                        self._refresh_tool_availability(db)
+                    except Exception:
+                        db.rollback()
+                        logger.warning("Runtime tool availability refresh failed")
                 continue
             waited = 0.0
+            if availability_waited >= 10:
+                availability_waited = 0.0
+                try:
+                    self._refresh_tool_availability(db)
+                except Exception:
+                    db.rollback()
+                    logger.warning("Runtime tool availability refresh failed")
             try:
                 if not renew(db, run_id, fence):
                     logger.warning(
@@ -206,8 +245,9 @@ class Worker:
                     )
                     supervision.deny_lease()
                     return
-            except Exception as e:
-                logger.warning(f"[{self.worker_id}] Heartbeat error for run {run_id}: {e}")
+            except Exception:
+                db.rollback()
+                logger.warning("Worker heartbeat failed")
                 supervision.deny_lease()
                 return
 
@@ -219,13 +259,285 @@ class Worker:
         owner asked. Either half having moved means this worker no longer holds
         the turn, so its read must stop.
         """
-        run = db.query(Run).filter(Run.id == run_id).first()
+        run = (
+            db.query(Run)
+            .filter(Run.id == run_id)
+            .populate_existing()
+            .first()
+        )
         if run is None or run.fence != fence:
             return True
         if run.status not in ("queued", "running", "paused"):
             return True
-        job = db.query(RunJob).filter(RunJob.run_id == run_id).first()
+        job = (
+            db.query(RunJob)
+            .filter(RunJob.run_id == run_id)
+            .populate_existing()
+            .first()
+        )
         return job is None or job.fence != fence
+
+    def _refresh_tool_availability(self, db) -> None:
+        observations = observe_tool_availability(enabled_ids=settings.enabled_tool_ids)
+        publish_tool_availability(db, self.worker_id, observations)
+        db.commit()
+
+    def _tool_context(self, claim, run, conversation, execution):
+        try:
+            store = configured_store()
+        except ArtifactStorageError:
+            store = None
+        return ToolInvocationContext(
+            authorization=AuthorizationContext(
+                principal_id=conversation.user_id,
+                project_id=run.project_id,
+                conversation_id=conversation.id,
+                action="execute_tool",
+                target_id=str(run.id),
+            ),
+            execution=execution,
+            credential_resolver=credential_value,
+            artifact_store=store,
+        )
+
+    def _finalize_tool_run(
+        self,
+        db,
+        run,
+        conversation,
+        claim,
+        *,
+        outcome: str,
+        error_code: str | None = None,
+        safe_message: str | None = None,
+        operation_id: uuid.UUID | None = None,
+    ) -> bool:
+        from ..events.service import append_event
+        from ..providers.errors import SAFE_MESSAGES
+
+        # Tool publication and cancellation use conversation → run lock order.
+        locked_conversation = (
+            db.query(Conversation)
+            .filter(Conversation.id == conversation.id)
+            .with_for_update()
+            .first()
+        )
+        if locked_conversation is None:
+            db.rollback()
+            return False
+        finalized = finalize(
+            db=db,
+            run_id=run.id,
+            fence=claim.fence,
+            result={
+                "status": outcome,
+                "error_code": error_code,
+            },
+            commit=False,
+        )
+        if not finalized:
+            db.rollback()
+            return False
+        if outcome == "success":
+            event_type = "run.succeeded"
+            payload = {
+                "kind": "tool",
+                "operation_id": str(operation_id) if operation_id else None,
+            }
+        else:
+            event_type = "run.failed"
+            payload = {
+                "kind": "tool",
+                "error_code": error_code,
+                "error": safe_message or SAFE_MESSAGES.get(
+                    error_code, "The tool execution could not be completed safely."
+                ),
+                "model": None,
+            }
+        event = append_event(
+            db,
+            conversation_id=conversation.id,
+            run_id=run.id,
+            event_type=event_type,
+            payload=payload,
+        )
+        db.flush()
+        db.add(
+            Outbox(
+                conversation_id=conversation.id,
+                event_id=event.id,
+                type=event.type,
+                payload=json.dumps(
+                    {"event_id": str(event.id), "type": event.type},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+        )
+        db.commit()
+        return True
+
+    def _process_tool_job(
+        self,
+        claim,
+        job,
+        supervisor_db,
+        supervision,
+        run,
+        conversation,
+        graph_factory,
+    ) -> bool:
+        try:
+            execution = ExecutionConfig.model_validate_json(
+                run.execution_configuration or ""
+            )
+        except Exception:
+            return self._finalize_tool_run(
+                job,
+                run,
+                conversation,
+                claim,
+                outcome="failed",
+                error_code="configuration_error",
+            )
+        if execution.graph_kind != "tool" or execution.graph_version != run.graph_version:
+            return self._finalize_tool_run(
+                job,
+                run,
+                conversation,
+                claim,
+                outcome="failed",
+                error_code="configuration_error",
+            )
+
+        thread_id = f"{run.id}-{claim.checkpoint_ns}"
+        window = begin_execution_window(
+            job,
+            claim,
+            deadline_seconds=execution.loop_limits.deadline_seconds,
+            graph_thread_id=thread_id,
+        )
+        if window is None:
+            supervision.deny_lease()
+            return False
+        _started_at, deadline_at = window
+        remaining = max(0.0, (deadline_at - datetime.now(UTC)).total_seconds())
+        deadline = time.monotonic() + remaining
+        if remaining <= 0:
+            return self._finalize_tool_run(
+                job,
+                run,
+                conversation,
+                claim,
+                outcome="timed_out",
+                error_code="budget_exceeded",
+            )
+
+        def invocation_factory(state):
+            if state.get("run_id") != str(run.id):
+                raise ProviderError("lease_lost")
+            context = self._tool_context(claim, run, conversation, execution)
+            control = InvocationControl(
+                deadline=deadline,
+                clock=time.monotonic,
+                stop=supervision.stop,
+            )
+            return claim, context, control
+
+        graph = graph_factory(
+            self.checkpointer,
+            gateway_factory=lambda: ToolGateway(self.Session),
+            invocation_factory=invocation_factory,
+        )
+        state = {
+            "run_id": str(run.id),
+            "tool_command_json": run.tool_command_json or "",
+            "execution_configuration": run.execution_configuration or "",
+        }
+        supervisor_thread = threading.Thread(
+            target=self._supervise,
+            args=(supervision, supervisor_db, run.id, claim.fence),
+            daemon=True,
+        )
+        supervisor_thread.start()
+        result = None
+        graph_failure_code = None
+        graph_failure_message = None
+        try:
+            if self._ownership_lost(job, run.id, claim.fence):
+                supervision.deny_lease()
+                return False
+            graph_state = graph.invoke(
+                state,
+                config={"configurable": {"thread_id": thread_id}},
+            )
+            result = PublishedToolResult.model_validate_json(
+                json.dumps(graph_state["tool_result"])
+            )
+        except ProviderError as refused:
+            graph_failure_code = refused.code
+            graph_failure_message = refused.safe_message
+        except Exception:
+            logger.warning("Tool graph execution failed before a terminal result")
+            graph_failure_code = "execution_interrupted"
+            graph_failure_message = (
+                "The tool execution was interrupted and will not be repeated automatically."
+            )
+        finally:
+            supervision.interrupt()
+            if supervisor_thread.is_alive():
+                supervisor_thread.join(timeout=5)
+
+        if supervision.lease_lost():
+            return False
+        if graph_failure_code is not None:
+            if graph_failure_code == "lease_lost":
+                return False
+            if graph_failure_code == "budget_exceeded":
+                outcome = "timed_out"
+            elif graph_failure_code == "cancelled":
+                outcome = "cancelled"
+            else:
+                outcome = "failed"
+            return self._finalize_tool_run(
+                job,
+                run,
+                conversation,
+                claim,
+                outcome=outcome,
+                error_code=graph_failure_code,
+                safe_message=graph_failure_message,
+            )
+
+        assert result is not None
+        if result.status == "succeeded":
+            return self._finalize_tool_run(
+                job,
+                run,
+                conversation,
+                claim,
+                outcome="success",
+                operation_id=result.operation_id,
+            )
+        if result.status == "cancelled":
+            outcome = "cancelled"
+        elif result.error and result.error.code == "budget_exceeded":
+            outcome = "timed_out"
+        else:
+            outcome = "failed"
+        error_code = result.error.code if result.error else "execution_interrupted"
+        if time.monotonic() >= deadline and error_code == "capacity_timeout":
+            outcome, error_code = "timed_out", "budget_exceeded"
+        return self._finalize_tool_run(
+            job,
+            run,
+            conversation,
+            claim,
+            outcome=outcome,
+            error_code=error_code,
+            safe_message=result.error.message if result.error else None,
+            operation_id=result.operation_id,
+        )
 
     def _is_first_message(self, db, conversation, user_msg):
         """Check if this is the first message in the conversation."""
@@ -311,6 +623,17 @@ class Worker:
                     )
                     job.commit()
                 return bool(finalized)
+
+            if run.kind == "tool":
+                return self._process_tool_job(
+                    claim,
+                    job,
+                    supervisor_db,
+                    supervision,
+                    run,
+                    conv,
+                    graph_factory,
+                )
 
             user_msg = job.query(Message).filter(
                 Message.run_id == run_id,
@@ -626,10 +949,22 @@ class Worker:
         logger.info(f"[{self.worker_id}] Starting worker loop")
         last_reconcile = time.time()
         reconcile_interval = getattr(settings, "worker_reconcile_interval", 60)  # 60 seconds
+        last_availability = 0.0
 
         while self.running:
             # Periodically reconcile expired leases
             now = time.time()
+            if now - last_availability >= 10:
+                availability_db = self.Session()
+                try:
+                    self._refresh_tool_availability(availability_db)
+                except Exception:
+                    availability_db.rollback()
+                    logger.warning("Runtime tool availability refresh failed")
+                finally:
+                    availability_db.close()
+                last_availability = now
+
             if now - last_reconcile >= reconcile_interval:
                 db = self.Session()
                 try:

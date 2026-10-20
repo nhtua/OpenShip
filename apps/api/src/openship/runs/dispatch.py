@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 from .graph import build_chat_graph
+from .tool_graph import build_tool_graph
 
 
 class UnsupportedGraphVersion(ValueError):
@@ -11,6 +12,7 @@ class UnsupportedGraphVersion(ValueError):
 
 _GRAPH_FACTORIES: dict[tuple[str, int], Callable] = {
     ("chat", 1): build_chat_graph,
+    ("tool", 1): build_tool_graph,
 }
 
 
