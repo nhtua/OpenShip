@@ -290,6 +290,10 @@ class OpenAIAdapter:
             kwargs["tools"] = _wire_tools(request)
             # This profile is qualified for one function call per model turn.
             kwargs["parallel_tool_calls"] = False
+            if config.adapter_options.tool_call_reasoning_effort is not None:
+                kwargs["reasoning_effort"] = (
+                    config.adapter_options.tool_call_reasoning_effort
+                )
         try:
             stream = await client.chat.completions.create(**kwargs)
         except _SDK_ERRORS as error:

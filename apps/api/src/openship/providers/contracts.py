@@ -39,6 +39,7 @@ _CAPABILITY_NAMES = (
 
 _OPTION_NAMES = (
     "output_limit_parameter",
+    "tool_call_reasoning_effort",
     "token_counter_id",
     "server_side_fallback",
     "automatic_function_calling",
@@ -192,6 +193,7 @@ class AdapterOptions(BaseModel):
 
     adapter: Literal[ADAPTER_NAMES]
     output_limit_parameter: Literal["max_tokens", "max_completion_tokens"] | None = None
+    tool_call_reasoning_effort: Literal["none"] | None = None
     token_counter_id: str | None = Field(default=None, min_length=1, max_length=128)
     server_side_fallback: bool | None = None
     automatic_function_calling: bool | None = None
@@ -220,6 +222,8 @@ class AdapterOptions(BaseModel):
                 f"adapter_options for {self.adapter} must declare " + ", ".join(missing)
             )
         allowed = set(required) | {"token_counter_id"}
+        if self.adapter == "openai":
+            allowed.add("tool_call_reasoning_effort")
         unexpected = sorted(present - allowed)
         if unexpected:
             raise ValueError(

@@ -66,6 +66,28 @@ def test_contracts_reject_unknown_fields():
         ProviderProfile(**OPENAI_PROFILE, api_key="not-a-secret-here")
 
 
+def test_model_specific_tool_reasoning_option_is_scoped_to_openai():
+    """Only the OpenAI adapter accepts this declared Chat Completions option."""
+    from src.openship.providers.contracts import AdapterOptions
+
+    options = AdapterOptions(
+        adapter="openai",
+        output_limit_parameter="max_completion_tokens",
+        tool_call_reasoning_effort="none",
+    )
+    assert options.tool_call_reasoning_effort == "none"
+
+    with pytest.raises(ValidationError):
+        AdapterOptions(
+            adapter="openai_compatible",
+            endpoint_implementation="llama-server",
+            authentication="none",
+            stream_usage_supported=False,
+            output_limit_parameter="max_tokens",
+            tool_call_reasoning_effort="none",
+        )
+
+
 def test_message_order_and_content_survive_a_json_round_trip():
     """Conversation turns keep role, text, and order — the input to every adapter."""
     messages = (

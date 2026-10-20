@@ -263,9 +263,9 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 **Interfaces:** `OPENSHIP_LIVE_SEARCH_TOOL_ID` selects exactly one installed Brave/Tavily capability; `OPENSHIP_LIVE_TOOL_PROFILE_ID` selects one declared OpenAI model tuple. Missing opt-in skips ordinary discovery; an explicitly requested qualification run with absent prerequisites fails rather than pretending success. Network-free guard tests do not need secrets.
 
-- [ ] Add fixture and guard tests first; then real-stack synthetic services exercise both tools, restart/cancel/transcript/snapshot behavior and no hidden provider switching/duplicate request.
-- [ ] Only after explicit operator approval run `uv run pytest tests/live/test_search_tools.py -m provider_live -vv` for each tool and the model/tool smoke separately. No unapproved calls or cost; no stable-ranking assertions or real credential outputs.
-- [ ] Record exact successful tuples/tool revisions/IDs/times/digests and outstanding evidence. Keep other model adapters text-only until qualified; run cumulative unit/PG/browser gates. Obtain 4B accept/revise/stop before Task 15.
+- [x] Add fixture and guard tests; add the real-stack synthetic model/search worker and chat-v2 test for one exact tool call and transcript. The new PostgreSQL test is present but skipped because `TEST_POSTGRES_URL` is unavailable; the existing PostgreSQL/manual-search acceptance lane still covers both providers, restart, cancellation and no redispatch.
+- [x] The user authorized bounded interaction tests with local credentials. Brave and Tavily each passed one fixed-query, one-result live search; GPT-6 Luna completed a tool-call/final-answer smoke using one Brave call, two model requests, one destination and no fallback. Tests assert no stable ranking and print no credentials.
+- [ ] Record qualified tuples, capability revisions/digests, result timestamps and remaining gaps. The manifest/implementation digests and UTC date are recorded in provider-support; exact wall-clock test time and a durable operation ID are not available from the direct live-handler smoke. Keep other model adapters text-only until qualified; run cumulative unit/PG/browser gates. User acceptance remains pending while implementation continues at the user's direction.
 
 ### Task 15 — Persistent association and bounded workspace tools
 
@@ -326,6 +326,6 @@ Do not create `sandbox/`, sandbox host services, tool images, install scripts, S
 
 ## 5. Review and handoff
 
-The user approved the base plan on 2026-10-20. Tasks 1–9 and the accepted Task 9A revision have recorded implementation evidence. The user directed continuation through all remaining plan tasks. Tasks 10–12 are implemented and their available tests pass. Task 13 is underway. Live provider qualification remains opt-in and has not been authorized. The active SDD ledger records task evidence and local environment limits.
+The user approved the base plan on 2026-10-20. Tasks 1–9 and the accepted Task 9A revision have recorded implementation evidence. The user directed continuation through all remaining plan tasks. Tasks 10–13 are implemented and their available tests pass. The user explicitly authorized bounded live interaction tests using local credentials on 2026-10-20; the opt-in Brave, Tavily and GPT-6 Luna tool-call qualifications passed. PostgreSQL full-stack evidence and human acceptance remain separately recorded as pending. The active SDD ledger records task evidence and local environment limits.
 
-The user has directed implementation to continue through Tasks 10–17. Record technical and live-provider evidence honestly; do not issue live provider requests without explicit opt-in. No PR, merge, deployment or Phase 4 completion is implied by implementation approval.
+The user has directed implementation to continue through Tasks 10–17. The bounded live calls above were explicitly authorized; further live calls must be necessary to a changed integration and must not print credentials. No PR, merge, deployment or Phase 4 completion is implied by implementation approval.

@@ -18,8 +18,33 @@ technical evidence below remains historical evidence for Tasks 1–9.
 
 Phase 4A is limited to explicit, model-free Brave
 and Tavily search runs, safe operation snapshots, and immutable filesystem
-artifacts. It does not include model-directed tool calls, a provider-configuration
-UI, mutable workspace files, or sandbox execution. Those remain in later phases.
+artifacts. Phase 4B adds model-directed tool calls through the same gateway.
+Phase 4C associates immutable artifacts with conversations and exposes bounded
+list/read tools. Mutable files and sandbox execution remain in Phase 6.
+
+## Phase 4B qualification status
+
+The first tool-capable tuple is OpenAI Chat Completions with GPT-6 Luna. Its
+profile must explicitly declare `tool_calls: true`, keep parallel calls off,
+and set `tool_call_reasoning_effort: "none"`; the adapter includes that
+parameter only when the request carries tools. The official [GPT-6 Luna model
+documentation](https://developers.openai.com/api/docs/models/gpt-6-luna)
+requires `reasoning_effort` to be `none` for Chat Completions function calls.
+
+On 2026-10-20 UTC, one bounded direct search qualification passed for each of
+`brave_web_search@1.0.0` and `tavily_web_search@1.0.0`. A separate live
+GPT-6 Luna smoke completed one Brave tool call and a final answer using two
+model requests against the declared OpenAI endpoint, with no fallback. No
+result-ranking or answer-quality claim is made. Exact tool manifest and
+implementation digests are recorded in `docs/provider-support.md`. The direct
+handler smoke creates no durable operation ID.
+
+Offline provider/guard tests and the fixture browser tool-chat test pass. The
+synthetic PostgreSQL chat-v2 full-stack test is implemented but skipped here
+because `TEST_POSTGRES_URL` is unavailable. The actual-browser full-stack spec
+also requires the running application services and was not run. Phase 4B
+acceptance remains pending; implementation is continuing at the user's
+direction.
 
 Phase 4A is ready for acceptance only when the checks below have evidence from
 the CI qualification lanes or an equivalent disposable environment. A local
