@@ -10,6 +10,7 @@ import json
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,7 +31,7 @@ from src.openship.providers.registry import _adapter_factories
 from src.openship.providers.runner import run_model_turn
 from src.openship.runs.models import Event, ProviderAttempt, Run, RunJob
 from src.openship.runs.queue import claim_next, finalize, renew
-from src.openship.runs.schemas import project_run_response
+from src.openship.runs.schemas import _model_projection, project_run_response
 from src.openship.runs.service import bind_run_model_config, load_run_model_config
 from src.openship.runs.worker import Worker
 from src.openship.workspace.models import Project
@@ -800,8 +801,10 @@ def test_worker_attempt_admission_survives_process_exit(client, authorized_clien
 
     monkeypatch.setattr(
         worker_module,
-        "build_chat_graph",
-        lambda _saver, invocation_factory: ProcessExitGraph(invocation_factory),
+        "resolve_graph",
+        lambda _kind, _version: (
+            lambda _saver, invocation_factory: ProcessExitGraph(invocation_factory)
+        ),
     )
     monkeypatch.setattr(Worker, "_supervise", lambda *_args: None)
 
@@ -907,6 +910,32 @@ def test_the_requests_a_turn_made_are_stated_in_the_record(
         "a terminal event can be read on its own, after the events beside it "
         "were pruned"
     )
+
+
+def test_model_summary_reports_context_limit_for_the_profile_that_served():
+    primary = profile_spec(
+        "primary-fixture", allowed_fallbacks=["fallback-fixture"]
+    )
+    fallback = profile_spec("fallback-fixture")
+    fallback["capabilities"]["context_tokens"] = 64000
+    config = RunModelConfig(
+        schema_version=1,
+        primary=pin_profile(primary),
+        fallbacks=(pin_profile(fallback),),
+        limits=RunLimits(),
+        binding_origin="submission",
+    )
+    serving_attempt = SimpleNamespace(
+        outcome="succeeded",
+        profile_id="fallback-fixture",
+        actual_model=FIXTURE_MODEL,
+        adapter="openai",
+        destination_label="fixture.provider.test/v1",
+    )
+
+    projected = _model_projection(config.model_dump_json(), (serving_attempt,))
+
+    assert projected.serving_context_tokens == 64000
 
 
 def test_a_pruned_record_still_says_what_the_run_was(

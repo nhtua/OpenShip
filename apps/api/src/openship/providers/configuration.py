@@ -96,7 +96,7 @@ def destination_label(endpoint: str) -> str:
     return f"{host}{path}"
 
 
-def parse_profiles(raw: str) -> tuple[ProviderProfile, ...]:
+def parse_profiles(raw: str, *, context_tokens: int = 128000) -> tuple[ProviderProfile, ...]:
     """Parse and validate the operator's declared profiles, in declared order."""
     try:
         decoded = json.loads(raw)
@@ -119,6 +119,12 @@ def parse_profiles(raw: str) -> tuple[ProviderProfile, ...]:
                 "configuration_error",
                 safe_message=f"profile at position {index} is not an object",
             )
+        # A provider may declare a smaller window; it never gets inflated by
+        # the installation ceiling. Omission uses the simple environment setting.
+        capabilities = item.get("capabilities")
+        if isinstance(capabilities, dict):
+            capabilities = {"context_tokens": context_tokens, **capabilities}
+            item = {**item, "capabilities": capabilities}
         try:
             profile = ProviderProfile(**item)
         except ValidationError as invalid:
@@ -133,7 +139,11 @@ def parse_profiles(raw: str) -> tuple[ProviderProfile, ...]:
             )
         seen.add(profile.id)
         validate_endpoint(profile)
-        profiles.append(profile)
+        profiles.append(profile.model_copy(update={
+            "capabilities": profile.capabilities.model_copy(update={
+                "context_tokens": min(context_tokens, profile.capabilities.context_tokens),
+            }),
+        }))
 
     return tuple(profiles)
 

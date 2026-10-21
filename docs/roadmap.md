@@ -194,49 +194,44 @@ historical data migrations remain part of the application.
 
 ### Wave B — Useful Work Without Unsafe Execution
 
-#### Phase 4 — Execution Gateway and First Isolated Tool
+#### Phase 4 — Trusted Tools and Persistent Conversation Files
 
-**Milestone:** "OpenShip runs a real tool without giving it access to my host or other projects."
+**Milestone:** "OpenShip can use a bounded search tool in chat and continue working with files saved to the same conversation."
 
-**Build on:** The existing run worker, ownership fencing, provider contracts, and command/event API. This phase establishes the smallest common execution boundary used by every later tool, connector, workflow, and MCP call.
+**Build on:** The existing run worker, ownership fencing, provider contracts, and command/event API. Phase 4 establishes durable capability admission, bounded trusted-tool execution, immutable artifact snapshots and the first provider-neutral tool loop. Maintained tools execute in the existing runtime worker through the gateway; they do not need a sandbox.
 
 **Acceptance units**
 
-- **4A — One selected tool:** From the workspace, upload a sample log and explicitly run one maintained log-summary tool. The operation uses the existing run lifecycle and an authenticated sandbox request; it does not need model tool selection yet.
-- **4B — The same tool from conversation:** Extend the current graph and provider contract with a bounded model → tool request → gateway → tool result → model loop for one qualified profile. Text-only chat keeps working. Other profiles gain tool support only after applicable conformance tests pass.
+- **4A — Trusted search tools:** Invoke Brave or Tavily through explicit tool selection, persist the bounded observation as an immutable local artifact and recover the conversation after a service restart. Tool enablement and credential bindings remain operator-managed.
+- **4B — Model-directed search:** Add a bounded model → exact registered search tool → gateway → result → model loop for one qualified model profile. Plain chat remains available; other profiles add tool support only after qualification.
+- **4C — Persistent conversation files:** Associate a stable workspace with each conversation, list/read exact retained artifact versions, and reopen the files panel after restart. Explicit purge uses durable tombstones and coordinated restore verification.
 
 **Build**
 
-- Minimal capability manifests with stable IDs, immutable versions/digests, typed arguments/results, effect classification, limits, and exact lookup. Initially only one maintained built-in tool can be enabled; basic disablement blocks new dispatches.
-- Gateway argument validation and a common principal/project/action/target authorization context, initially enforcing current owner rules. Models and clients request operations; only the gateway admits them.
-- Durable operation IDs, argument/result digests, fenced dispatch/publication, and expiring authenticated execution requests. The sandbox worker receives selected references and limits, not control-plane database credentials.
-- Separate sandbox worker using the proposed gVisor profile.
-- One prebuilt, credential-free tool.
-- Minimal project-scoped artifacts: bounded upload/download, immutable ID/digest metadata, durable local storage behind a transfer interface, selected input materialization, output publication, and retention/backup instructions. Start with plain text/JSON; richer previews arrive in Phase 6.
-- Bounded logs, resource limits, cancellation, and orphan cleanup.
-- Provider-neutral tool-call IDs, validated arguments, tool-result messages, and call/time/output budgets. Provider-specific wire formats stay inside adapters; unsupported profiles explain the limitation before invocation.
+- Separate capability manifests, provider adapters, and gateway-owned operation lifecycle with exact IDs/digests, bounded contracts, authorization and fencing.
+- Brave and Tavily search as distinct capabilities, sharing only suitable typed transport helpers; provider credentials stay in runtime configuration and out of database/browser/model state.
+- Bounded filesystem artifacts with stable IDs, immutable bytes/digests, conversation association, quota counters, safe list/read/download, deletion tombstones, retention recovery and backup/restore verification.
+- Provider-neutral tool-call IDs, complete transcript messages and shared call/time/output budgets. Provider-specific wire formats stay inside adapters.
+- The compact conversation files panel and inline operation presentation; exact retry payloads and stale-response guards remain in the existing chat UI.
 
-**User demonstration:** Run the tool explicitly in 4A, then request the same result in chat in 4B; inspect the operation and output after reconnecting.
+**User demonstration:** Search from chat, inspect the compact result, reopen the same conversation after restarting the API/worker, and ask the agent to find and read the exact saved artifact without issuing a new search.
 
 **Exit gates**
 
-- The tool returns its typed result and execution status.
-- Manual and model-selected invocation use the same gateway, operation record, sandbox contract, and semantic events. Plain chat and first-turn titles still pass their earlier acceptance checks.
-- Unknown tools, changed digests, disabled capabilities, malformed tool calls, and unsupported provider capabilities fail before dispatch.
-- Forged/expired execution requests, lost ownership, and late results cannot start or publish unauthorized work.
-- Cross-project artifact reads and path traversal are denied; uploaded input and published output survive sandbox deletion and a service restart.
-- Actual sandbox tests block host-file, administrative-socket, metadata, cross-run, and unauthorized-network access.
-- Resource exhaustion is contained.
-- Cancellation terminates the sandbox and cleans temporary data.
-- An incompatible or unavailable worker causes execution refusal—never host-subprocess fallback.
+- Search services remain independently enabled and report their own safe failure states; search credentials never reach the browser, model context, or durable transcript.
+- Unknown/disabled tools, changed digests, malformed calls, unsupported model profiles, stale fencing, and unauthorized artifact references fail closed.
+- Exact artifact IDs and digests survive API/worker restart. Missing/corrupt restored bytes become unavailable; verification does not create a replacement volume or rerun a dispatched search.
+- An active run/operation input pin prevents purge. Purge dry-run is non-mutating; interrupted unlink is recoverable and preserves ID/digest tombstones.
+- Cross-conversation file reads are denied. Tool result UI, model selection, retries, reconnect, cancellation and existing plain chat journeys pass the applicable browser checks.
+- PostgreSQL migration/locking, filesystem lifecycle and synthetic real-stack recovery lanes run without required skips before acceptance.
 
-**Not yet:** Arbitrary package installation, cloud credentials in sandboxes, or the PoC executor exposed through an API.
+**Not yet:** User-managed connector credentials (Phase 5), sandbox drivers/images and generated-code execution, mutable logical files or edit/version capture (Phase 6), or shared/distributed artifact storage. Phase 4 only promises immutable captured versions; it does not require future step outputs to be immutable.
 
 #### Phase 5 — First Read-Only Cloud Connector
 
 **Milestone:** "OpenShip can tell me what is happening in my real staging environment."
 
-**Build on:** Phase 4's gateway, tool loop, operation records, and artifacts. A maintained connector is another admitted execution kind, not a second agent or privileged route around the gateway.
+**Build on:** Phase 4's gateway, tool loop, operation records, and artifacts. Add connector bindings and managed credentials through the gateway's existing capability contract; do not create a parallel provider-adapter or permission path for external services.
 
 **Acceptance units:** **5A** binds one staging target and performs one health read end to end. **5B** adds inventory and bounded log reads through the same connector contract. Add other clouds in Phase 18.
 
@@ -244,6 +239,7 @@ historical data migrations remain part of the application.
 
 - One maintained connector, preferably AWS unless the first user needs another platform.
 - Project/environment connector bindings with a stable target/resource reference, external account/region/identifier, management ownership where known, and timestamped observations. Phase 17 adds provisioning relationships to these records rather than introducing a competing resource identity.
+- Move provider credentials such as search API keys from operator-only Phase 4 bindings to a managed Connector/Connection lifecycle only when Phase 5 designs and accepts its ownership, encryption, rotation and recovery policy. Phase 4 stores no search credentials in the database or browser.
 - Credential broker with one configured credential source and short-lived delegated credentials where supported. Persist references; encrypt any stored credential material with a separately protected key, and document rotation, revocation, and backup/recovery before accepting real credentials.
 - Narrow health, inventory, and log-read operations.
 - Secret-safe audit records and evidence-linked responses.
@@ -268,13 +264,14 @@ historical data migrations remain part of the application.
 
 **Milestone:** "OpenShip can write and run a small analysis program, then show me its outputs."
 
-**Build on:** Phase 4's artifact IDs/storage/transfer, gateway, and sandbox lifecycle. Extend those contracts with a generated-code execution profile; do not introduce another artifact store or direct subprocess executor.
+**Build on:** Phase 4's artifact IDs/storage/transfer, gateway, and trusted runtime. Phase 6 owns the sandbox lifecycle: driver installation and qualification (including gVisor where selected), sandbox image build/reproducibility, worker protocol, execution limits, isolation tests and operational recovery. Extend the artifact contract with logical mutable files and immutable captured versions; do not introduce another artifact store or direct subprocess executor.
 
 **Acceptance units:** Start with one credential-free Python program and a prebuilt dependency set; qualify additional runtimes or dependency profiles separately.
 
 **Build**
 
 - Generated-code artifacts with digest, runtime, inputs, dependencies, and limits.
+- Logical file identities/current heads with expected-base edit checks and immutable version capture. Each step output declares whether it is a mutable logical file or an immutable artifact; edits create a new captured version and never rewrite an already referenced artifact.
 - Credential-free, network-denied execution by default.
 - Immutable output artifacts, metadata, authorized downloads, and safe previews.
 - First supported runtime, followed by others as separate increments.
@@ -461,7 +458,7 @@ historical data migrations remain part of the application.
 
 **Milestone:** "A configured MCP tool behaves like other OpenShip tools, including policy and audit."
 
-**Build on:** The Phase 4 gateway/sandbox/tool-result contract, Phase 5 credential broker, and Phase 11 registry. MCP is a capability adapter, not a model-specific execution path or another permission system.
+**Build on:** The Phase 4 gateway/tool-result contract, Phase 5 credential broker, and Phase 11 registry. Phase 6 qualifies the sandbox runtime for local executable servers; remote MCP endpoints remain separately scoped external destinations. MCP is a capability adapter, not a model-specific execution path or another permission system.
 
 **Acceptance units:** **12A** admits one configured local stdio server inside the installed-tool sandbox. **12B** admits one configured remote server with scoped authentication and destination checks. Qualify each transport separately before advertising both.
 
@@ -810,4 +807,4 @@ These distinctions should remain explicit throughout implementation:
 
 Stronger isolation providers, additional brokers, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
 
-**Next commitment:** Review these proposed revisions, then design **Phase 4A** against the delivered Phase 3 foundation, followed by 4B. Each design identifies the existing contracts it extends, the smallest working consumer, and the acceptance journeys it preserves. Reassess later increments using actual feedback and measured complexity. Saving this roadmap does not authorize implementation of future phases or mark them accepted.
+**Next commitment:** Complete the remaining Phase 4C acceptance evidence and present the user with the implementable result for accept, revise, or stop. Phase 4 implementation does not accept Phase 4 itself or authorize Phase 5/6 work. Keep the Phase 5 Connector and Phase 6 sandbox/mutable-file boundaries above as the handoff for their later designs.

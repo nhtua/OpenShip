@@ -21,7 +21,7 @@ test('register with confirmation enters the workspace', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Confirm Password' }).fill('password123')
   await page.getByRole('button', { name: 'Create Account' }).click()
 
-  await page.waitForURL('http://127.0.0.1:4173/')
+  await page.waitForURL((url) => url.pathname === '/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
   expect(await page.getByText('testuser').count()).toBeGreaterThan(0)
 })
@@ -64,7 +64,7 @@ test('valid login enters the workspace and persists the token', async ({
   await page.getByLabel('Password').fill('password123')
   await page.getByRole('button', { name: 'Sign In' }).click()
 
-  await page.waitForURL('http://127.0.0.1:4173/')
+  await page.waitForURL((url) => url.pathname === '/')
   expect(await page.evaluate(() => localStorage.getItem('access_token'))).toBe(
     E2E_TOKEN,
   )
@@ -91,7 +91,7 @@ test('loading guard disables the submit button and blocks double submit', async 
   // form submit → Vue's @submit handler → handleLogin).
   await page.getByLabel('Password').press('Enter')
 
-  await page.waitForURL('http://127.0.0.1:4173/')
+  await page.waitForURL((url) => url.pathname === '/')
 
   // The form should only have submitted once — the loading guard blocks
   // double-submit while the request is in flight.
@@ -105,7 +105,7 @@ test('logout leaves the workspace, clears the token, and lands on login', async 
   await page.getByLabel('Username').fill('testuser')
   await page.getByLabel('Password').fill('password123')
   await page.getByRole('button', { name: 'Sign In' }).click()
-  await page.waitForURL('http://127.0.0.1:4173/')
+  await page.waitForURL((url) => url.pathname === '/')
   await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
 
   // Expand the sidebar if collapsed (user menu is only visible in expanded mode)
@@ -316,7 +316,7 @@ test('reconnect after page reload shows eventual run completion', async ({ page 
 
   reloading = true
   await page.reload()
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await expect(page).toHaveURL(/\/conversation\/c1$/)
   await expect(page.getByText('Hello world')).toBeVisible()
   await expect.poll(() => streamRequests).toBeGreaterThanOrEqual(2)
 })

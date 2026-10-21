@@ -20,6 +20,9 @@ const props = withDefaults(
     conversations?: Conversation[]
     currentConversationId?: string | null
     busy?: boolean
+    showConversationFiles?: boolean
+    conversationFilesOpen?: boolean
+    conversationFileCount?: number
   }>(),
   {
     title: 'New Conversation',
@@ -28,6 +31,9 @@ const props = withDefaults(
     conversations: () => [],
     currentConversationId: null,
     busy: false,
+    showConversationFiles: false,
+    conversationFilesOpen: false,
+    conversationFileCount: 0,
   },
 )
 
@@ -35,6 +41,7 @@ const emit = defineEmits<{
   createConversation: [title: string]
   selectConversation: [id: string]
   signOut: []
+  toggleConversationFiles: []
 }>()
 </script>
 
@@ -54,6 +61,10 @@ const emit = defineEmits<{
         <AppHeader
           :title="props.title"
           :is-streaming="props.isStreaming"
+          :show-conversation-files="props.showConversationFiles"
+          :conversation-files-open="props.conversationFilesOpen"
+          :conversation-file-count="props.conversationFileCount"
+          @toggle-conversation-files="emit('toggleConversationFiles')"
         />
         <div class="flex min-h-0 min-w-0 flex-1 flex-col">
           <slot />

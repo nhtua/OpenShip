@@ -388,21 +388,46 @@ describe('UserMessage', () => {
     })
     expect(wrapper.get('.message').classes().join(' ')).toContain('justify-end')
     expect(wrapper.get('p').text()).toBe(longText)
-    // No v-html: the text stays text, never parsed markup.
+    // Plain-text messages remain a single text run.
     expect(wrapper.find('p > *').exists()).toBe(false)
   })
 
-  it('escapes markup and preserves newlines', () => {
+  it('renders markdown while keeping code literal and embedded HTML inert', () => {
+    const content = [
+      '**Bold** and *italic*',
+      '',
+      '- first item',
+      '- second item',
+      '',
+      '`**literal inline**`',
+      '',
+      '```ts',
+      'const text = "**literal block**"',
+      '```',
+      '',
+      '[documentation](https://docs.example.test/guide)',
+      '',
+      '[unsafe](javascript:alert(1))',
+      '',
+      '<b>raw HTML</b>',
+    ].join('\n')
     const wrapper = mount(UserMessage, {
       props: {
         message: {
           ...createMessages()[0],
-          content: '<b>bold</b>\nsecond line',
+          content,
         },
       },
     })
-    expect(wrapper.get('p').text()).toBe('<b>bold</b>\nsecond line')
+    expect(wrapper.get('strong').text()).toBe('Bold')
+    expect(wrapper.get('em').text()).toBe('italic')
+    expect(wrapper.findAll('li').map((item) => item.text())).toEqual(['first item', 'second item'])
+    expect(wrapper.get('p code').text()).toBe('**literal inline**')
+    expect(wrapper.get('pre code').text()).toBe('const text = "**literal block**"')
+    expect(wrapper.get('a[href="https://docs.example.test/guide"]').text()).toBe('documentation')
+    expect(wrapper.find('a[href^="javascript:"]').exists()).toBe(false)
     expect(wrapper.find('b').exists()).toBe(false)
+    expect(wrapper.text()).toContain('<b>raw HTML</b>')
   })
 })
 
@@ -424,6 +449,16 @@ describe('AgentMessage', () => {
       props: { message: createMessages()[1] },
     })
     expect(wrapper.find('.message').exists()).toBe(true)
+  })
+
+  it('renders assistant Markdown formatting', () => {
+    const wrapper = mount(AgentMessage, {
+      props: {
+        message: { ...createMessages()[1], content: '**Answer**\n\n1. First\n2. Second' },
+      },
+    })
+    expect(wrapper.get('strong').text()).toBe('Answer')
+    expect(wrapper.findAll('li').map((item) => item.text())).toEqual(['First', 'Second'])
   })
 
   it('shows agent label when streaming', () => {

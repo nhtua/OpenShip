@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, Mock } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useChatStore } from '@/stores/chat'
 import api, { modelProfilesApi, runsApi } from '@/services/api'
+import { buildConversationTimeline } from '@/lib/chatTimeline'
 import {
   apiError,
   fixtureConversations,
@@ -16,9 +17,11 @@ vi.mock('@/services/api', () => ({
   modelProfilesApi: { list: vi.fn() },
   runsApi: {
     submitTurn: vi.fn(),
+    submitTool: vi.fn(),
     cancelRun: vi.fn(),
     getSnapshot: vi.fn(),
     getRun: vi.fn(),
+    getOperations: vi.fn(),
   },
 }))
 
@@ -72,6 +75,12 @@ describe('chat store', () => {
       (async (url: string) => healthyChatApiGet(url)) as never,
     )
     mockApi.post.mockResolvedValue({ data: null })
+    mockRunsApi.getSnapshot.mockImplementation(async (id: string) => ({
+      data: { conversation_id: id, sequence: -1, events: [], runs: [] },
+    } as never))
+    mockRunsApi.getOperations.mockResolvedValue({
+      data: { items: [], next_cursor: null },
+    } as never)
     // What this installation offers. A test that wants a missing catalog
     // replaces this; nothing here guesses a profile in its place.
     mockProfiles.list.mockResolvedValue({ data: modelProfileCatalog })
@@ -85,6 +94,46 @@ describe('chat store', () => {
     expect(chat.currentConversation?.id).toBe('c1')
     expect(chat.currentConversation?.title).toBe('Deploy pipeline')
     expect(chat.messages).toEqual(messagesByConversation.c1)
+  })
+
+  it('deselecting a conversation invalidates its pending load', async () => {
+    let release: ((response: { data: unknown }) => void) | undefined
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/conversations/c1/messages') {
+        return new Promise((resolve) => { release = resolve })
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    const chat = useChatStore()
+    const loading = chat.loadConversation('c1')
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+
+    chat.deselectConversation()
+    release?.({ data: messagesByConversation.c1 })
+    await loading
+
+    expect(chat.currentConversation).toBeNull()
+    expect(chat.messages).toEqual([])
+  })
+
+  it('ignores a delayed load error for an older conversation', async () => {
+    let reject: ((error: Error) => void) | undefined
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/conversations/c1/messages') {
+        return new Promise((_resolve, rejectLoad) => { reject = rejectLoad })
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    const chat = useChatStore()
+    const loading = chat.loadConversation('c1')
+    await vi.waitFor(() => expect(reject).toBeTypeOf('function'))
+
+    await chat.loadConversation('c2')
+    reject?.(apiError('Old conversation unavailable'))
+    await loading
+
+    expect(chat.currentConversation?.id).toBe('c2')
+    expect(chat.error).toBeNull()
   })
 
   it('falls back to the title "Conversation" when metadata is unavailable', async () => {
@@ -209,6 +258,74 @@ describe('chat store', () => {
     )
   })
 
+  it('uses persisted event time to keep a live turn and its tools after existing history', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-20T12:00:00Z'))
+
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    chat.messages = [
+      {
+        id: 'old-user', role: 'user', content: 'Previous question', conversation_id: 'c1',
+        created_at: '2026-10-20T13:00:00Z',
+      },
+      {
+        id: 'old-assistant', role: 'assistant', content: 'Previous answer', conversation_id: 'c1',
+        created_at: '2026-10-20T13:00:05Z',
+      },
+    ]
+
+    const submitted = {
+      id: 'evt-live-submit', conversation_id: 'c1', run_id: 'run-live', sequence: 1,
+      type: 'turn_submitted', payload: { content: 'Current question' },
+      created_at: '2026-10-20T13:00:10Z',
+    }
+    const terminal = {
+      id: 'evt-live-done', conversation_id: 'c1', run_id: 'run-live', sequence: 2,
+      type: 'run.succeeded', payload: {}, created_at: '2026-10-20T13:00:20Z',
+    }
+    const encoder = new TextEncoder()
+    const mockStream = new ReadableStream({
+      start(controller) {
+        for (const event of [submitted, terminal]) {
+          controller.enqueue(encoder.encode(
+            `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+          ))
+        }
+        controller.close()
+      },
+    })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: mockStream,
+    } as Response)
+
+    const operation = {
+      id: 'search-live', run_id: 'run-live', conversation_id: 'c1',
+      logical_call_id: 'call-live', capability_id: 'brave_web_search',
+      capability_version: '1.0.0', manifest_digest: 'a'.repeat(64),
+      status: 'succeeded' as const, error_code: null, error: null, result: { items: [] },
+      artifacts: [], attempts: [], created_at: '2026-10-20T12:00:01Z',
+      updated_at: '2026-10-20T12:00:02Z', finished_at: '2026-10-20T12:00:02Z',
+    }
+    chat.toolOperationsByConversation.set('c1', new Map([[operation.id, operation]]))
+
+    try {
+      await chat.subscribeToEvents('c1', 0, (event) => chat.processDurableEvent(event))
+
+      const operations = [...chat.toolOperationsByConversation.get('c1')!.values()]
+      expect(buildConversationTimeline(chat.messages, operations).map((entry) => entry.id)).toEqual([
+        'old-user',
+        'old-assistant',
+        'user-evt-live-submit',
+        'search-live',
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('deduplicates events by event ID', async () => {
     mockRunsApi.submitTurn.mockResolvedValue({
       data: {
@@ -280,6 +397,112 @@ describe('chat store', () => {
     expect(mockRunsApi.getSnapshot).toHaveBeenCalledWith('c1')
     // Verify cursor was stored
     expect(chat.cursors.get('c1')).toBe(0)
+  })
+
+  it('retains operations from every snapshot run and deduplicates durable refreshes per conversation', async () => {
+    const operation = (id: string, runId: string) => ({
+      id,
+      run_id: runId,
+      conversation_id: 'c1',
+      logical_call_id: id,
+      capability_id: 'brave_web_search',
+      capability_version: '1.0.0',
+      manifest_digest: 'a'.repeat(64),
+      status: 'succeeded',
+      error_code: null,
+      error: null,
+      result: { query: id, items: [] },
+      artifacts: [],
+      attempts: [],
+      created_at: '2026-10-20T12:00:00Z',
+      updated_at: '2026-10-20T12:00:00Z',
+      finished_at: '2026-10-20T12:00:00Z',
+    })
+    const first = operation('search-1', 'run-1')
+    const second = operation('search-2', 'run-2')
+    mockRunsApi.getSnapshot.mockImplementation(async (id: string) => ({
+      data: {
+        conversation_id: id,
+        sequence: -1,
+        events: [],
+        runs: id === 'c1' ? [
+          { id: 'run-1', status: 'completed', attempt: 1, started_at: null, ended_at: null, error_code: null, kind: 'tool', operations: [first], operations_next_cursor: null },
+          { id: 'run-2', status: 'completed', attempt: 1, started_at: null, ended_at: null, error_code: null, kind: 'tool', operations: [second], operations_next_cursor: null },
+        ] : [],
+      },
+    } as never))
+    mockRunsApi.getOperations.mockResolvedValue({
+      data: { items: [first], next_cursor: null },
+    } as never)
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url === '/conversations/c2/messages') return { data: [] } as never
+      if (url === '/conversations/c1/messages') return { data: [] } as never
+      return healthyChatApiGet(url)
+    })
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+    expect([...chat.toolOperationsByConversation.get('c1')!.keys()]).toEqual(['search-1', 'search-2'])
+
+    const event = {
+      id: 'evt-tool-complete', conversation_id: 'c1', run_id: 'run-1', sequence: 2,
+      type: 'tool.completed', payload: {}, created_at: '2026-10-20T12:00:01Z',
+    }
+    chat.processDurableEvent(event as never)
+    chat.processDurableEvent(event as never)
+    await vi.waitFor(() => expect(mockRunsApi.getOperations).toHaveBeenCalledTimes(1))
+    expect([...chat.toolOperationsByConversation.get('c1')!.keys()]).toEqual(['search-1', 'search-2'])
+
+    await chat.loadConversation('c2')
+    expect([...chat.toolOperationsByConversation.get('c1')!.keys()]).toEqual(['search-1', 'search-2'])
+    expect(chat.toolOperationsByConversation.get('c2')?.size ?? 0).toBe(0)
+  })
+
+  it('continues every snapshot operation page into the conversation timeline', async () => {
+    const operation = (id: string) => ({
+      id,
+      run_id: 'run-paged',
+      conversation_id: 'c1',
+      logical_call_id: id,
+      capability_id: 'tavily_web_search',
+      capability_version: '1.0.0',
+      manifest_digest: 'b'.repeat(64),
+      status: 'succeeded',
+      error_code: null,
+      error: null,
+      result: { query: id, items: [] },
+      artifacts: [],
+      attempts: [],
+      created_at: '2026-10-20T12:00:00Z',
+      updated_at: '2026-10-20T12:00:00Z',
+      finished_at: '2026-10-20T12:00:00Z',
+    })
+    const first = operation('page-one')
+    const second = operation('page-two')
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1', sequence: -1, events: [],
+        runs: [{
+          id: 'run-paged', status: 'completed', attempt: 1, started_at: null,
+          ended_at: null, error_code: null, kind: 'tool', operations: [first],
+          operations_next_cursor: 'cursor-next',
+        }],
+      },
+    } as never)
+    mockRunsApi.getOperations.mockResolvedValue({
+      data: { items: [second], next_cursor: null },
+    } as never)
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url === '/conversations/c1/messages') return { data: [] } as never
+      return healthyChatApiGet(url)
+    })
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+    await vi.waitFor(() => {
+      expect([...chat.toolOperationsByConversation.get('c1')!.keys()]).toEqual(['page-one', 'page-two'])
+    })
+    expect(mockRunsApi.getOperations).toHaveBeenCalledWith('run-paged', { cursor: 'cursor-next' })
   })
 
   it('maintains cursor per conversation and resumes from last position', async () => {
@@ -401,7 +624,7 @@ describe('chat store', () => {
       start(controller) {
         resolveStream = () => {
           // Server confirms with turn_submitted event including client_request_id
-          const event = `data: {"id":"evt-confirm-1","sequence":0,"type":"turn_submitted","payload":{"client_request_id":"${mockUuid}"}}\n\n`
+          const event = `data: {"id":"evt-confirm-1","sequence":0,"run_id":"run-confirm-1","type":"turn_submitted","payload":{"client_request_id":"${mockUuid}"}}\n\n`
           controller.enqueue(encoder.encode(event))
           controller.close()
         }
@@ -426,6 +649,7 @@ describe('chat store', () => {
 
     // Temp ID should be replaced with server-derived ID
     expect(chat.messages[0].id).toBe('user-evt-confirm-1')
+    expect(chat.messages[0].run_id).toBe('run-confirm-1')
   })
 
   it('handles SSE out-of-order events without duplication', async () => {
@@ -1024,6 +1248,101 @@ describe('chat store', () => {
     expect(committedByRequestId.size).toBe(1)
     expect(chat.runCards.get('c1')?.run_id).toBe('run-reconciled')
     expect(chat.pendingRequests.has('stable-request')).toBe(false)
+  })
+
+  it('retries automatic tool mode with the exact original profile and no upload requirement', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('stable-tool-request')
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    await chat.loadModelProfiles()
+    chat.selectProfile('primary-fixture', [])
+    mockRunsApi.submitTurn
+      .mockRejectedValueOnce(new Error('response lost after server commit'))
+      .mockResolvedValueOnce({
+        data: {
+          id: 'run-tool-reconciled', conversation_id: 'c1', status: 'queued',
+          created_at: '', attempt: 0,
+        },
+      } as never)
+
+    await chat.sendMessage('Find current search results', 'c1', { enableTools: true })
+    const originalPayload = mockRunsApi.submitTurn.mock.calls[0][1]
+    expect(originalPayload).toMatchObject({
+      content: 'Find current search results',
+      client_request_id: 'stable-tool-request',
+      enable_tools: true,
+      provider_profile_id: 'primary-fixture',
+      fallback_profile_ids: [],
+    })
+    expect(originalPayload).not.toHaveProperty('artifact_ids')
+
+    chat.selectProfile('secondary-fixture', [])
+    serveStream(frame(0, 'run.succeeded', 'run-tool-reconciled'))
+    await chat.retrySubmission('stable-tool-request')
+
+    expect(mockRunsApi.submitTurn.mock.calls[1][1]).toEqual(originalPayload)
+    expect(chat.pendingRequests.has('stable-tool-request')).toBe(false)
+  })
+
+  it('retries a direct tool request with the originally selected capability version and count', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('stable-direct-tool-request')
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    mockRunsApi.submitTool
+      .mockRejectedValueOnce(new Error('response lost after server commit'))
+      .mockResolvedValueOnce({
+        data: {
+          id: 'run-direct-tool-reconciled', conversation_id: 'c1', status: 'queued',
+          created_at: '', attempt: 0, kind: 'tool', graph_version: 1, operations: [],
+        },
+      } as never)
+    const command = {
+      capability: {
+        id: 'tavily_web_search', version: '1.0.0', manifest_digest: 'b'.repeat(64),
+      },
+      arguments: { query: 'terraform modules', max_results: 8 },
+    }
+
+    await chat.submitToolSearch('c1', command)
+    const originalPayload = mockRunsApi.submitTool.mock.calls[0][1]
+    expect(originalPayload).toEqual({ client_request_id: 'stable-direct-tool-request', ...command })
+    chat.searchCapabilities = [
+      { id: 'tavily_web_search', version: '2.0.0', manifest_digest: 'c'.repeat(64), input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true, available: true, unavailable_reason: null },
+    ]
+
+    await chat.retryToolSubmission('stable-direct-tool-request')
+
+    expect(mockRunsApi.submitTool.mock.calls[1][1]).toEqual(originalPayload)
+    expect(chat.pendingToolRequests.has('stable-direct-tool-request')).toBe(false)
+  })
+
+  it('does not let an automatic-tool response replace a newly selected conversation', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('old-conversation-request')
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Old', created_at: '', updated_at: '' }
+    chat.messages = []
+    mockRunsApi.submitTurn.mockResolvedValue({
+      data: { id: 'run-old-conversation', conversation_id: 'c1', status: 'queued', created_at: '', attempt: 0 },
+    } as never)
+    let releaseOldResponse: ((response: { data: unknown }) => void) | undefined
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/conversations/c1/messages') {
+        return await new Promise((resolve) => { releaseOldResponse = resolve })
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    serveStream(frame(0, 'run.succeeded', 'run-old-conversation'))
+
+    await chat.sendMessage('Search this', 'c1', { enableTools: true })
+    expect(mockRunsApi.submitTurn.mock.calls[0][1]).toMatchObject({ enable_tools: true })
+    await vi.waitFor(() => expect(releaseOldResponse).toBeTypeOf('function'))
+
+    await chat.loadConversation('c2')
+    const selectedMessages = [...chat.messages]
+    releaseOldResponse?.({ data: messagesByConversation.c1 })
+    await vi.waitFor(() => expect(chat.currentConversation?.id).toBe('c2'))
+
+    expect(chat.messages).toEqual(selectedMessages)
   })
 
   it('refreshes failed run details when a reloaded running turn reaches a terminal event', async () => {

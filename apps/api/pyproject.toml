@@ -17,10 +17,12 @@ dependencies = [
     "bcrypt>=4.0.0",
     "openai>=1.10.0",
     "httpx>=0.26.0",
+    "httpcore>=1.0.0,<2",
     "langgraph>=1.2.12",
     "langgraph-checkpoint-postgres>=3.1.2",
     "anthropic>=1.13.0",
     "google-genai>=2.30.1",
+    "python-slugify>=8.0.4",
 ]
 
 [project.optional-dependencies]
@@ -49,7 +51,8 @@ ignore = ["B008"]
 [tool.pytest.ini_options]
 markers = [
     "postgres: requires a real PostgreSQL database named by TEST_POSTGRES_URL",
-    "provider_live: contacts a real provider; opt-in via OPENSHIP_LIVE_PROFILE_ID",
+    "provider_live: contacts a real provider; opt-in via explicit OPENSHIP_LIVE_* selector",
+    "full_stack: starts the real application stack with synthetic external services",
 ]
 
 [dependency-groups]

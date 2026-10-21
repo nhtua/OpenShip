@@ -2,7 +2,7 @@
 type: reference
 summary: Which provider tuples OpenShip can claim to serve, at which state, and the evidence each state rests on.
 status: proposed
-date: 2026-10-13
+date: 2026-10-20
 ---
 
 # Provider Support
@@ -20,19 +20,21 @@ evidence is named next to it.
 | State | What it means | What it does **not** mean |
 | --- | --- | --- |
 | `fixture-tested` | The shared conformance suite passes for this adapter against a synthetic transport: text, stream, error, cancel, and usage cases all behave. | Nothing about a real deployment. No model was observed, no ceiling was measured, no price was incurred. |
-| `live-qualified` | One real turn ran against this tuple through `tests/live/test_provider_smoke.py` and completed at the declared destination. | That a person accepts the result. Qualification is necessary, not sufficient. |
+| `live-qualified` | The opt-in test named in the row completed against the declared tuple and destination. | That a person accepts the result. Qualification is necessary, not sufficient. |
 | `accepted` | A person reviewed that live result and chose **accept**. Only then does the tuple become one the browser offers as a default. | — |
 
-**Credentials absent keeps the later states pending.** No credential binding is
-configured in this repository, so nothing here is `live-qualified` or
-`accepted`. That is a fact about the checkout, not a failure: the live test
-skips rather than pretending, and the matrix says so.
+Credentials are resolved from operator bindings and are never recorded in this
+document. The current local checkout has completed the bounded qualifications
+listed below; no tuple is marked `accepted` until a person reviews the evidence.
 
 ## The matrix
 
 | Tuple | Adapter | Endpoint implementation / API version | Requested model | Observed model | SDK | Effective capabilities | Mandatory test results | Live qualification | User acceptance | State |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `openai` · Chat Completions | `openai` | `chat-completions` | *not stated* | *not observed* | `openai` 3.24.0 (the version this environment resolves) | streaming, usage reporting; no token counting, no tool calls, no structured output, no attachments | 11 conformance cases + 12 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_openai.py`) | pending — no credential configured | pending | `fixture-tested` |
+| `openai` · Chat Completions, fixture tuple | `openai` | `chat-completions` | *not stated* | *not observed* | `openai` 3.24.0 | streaming and usage reporting; other capabilities depend on the exact declared profile | shared conformance, OpenAI adapter tests and tool-call contract fixtures pass | no model tuple claimed | n/a | `fixture-tested` |
+| `openai` · Chat Completions · GPT-6 Luna tool use | `openai` | `chat-completions` | `gpt-6-luna` | `gpt-6-luna` | `openai` 3.24.0 | streaming, usage reporting, one function call per response with parallel calls disabled; no token counting, structured output or attachments | OpenAI adapter/tool contract tests pass; opt-in model → Brave call → final-answer smoke passed | `tests/live/test_tool_provider_smoke.py`, one declared destination, no fallback, two model requests and one bounded Brave invocation; 2026-10-20 UTC | pending | `live-qualified` |
+| `brave_web_search` · Brave Search API | maintained OpenShip capability | `GET /res/v1/web/search` | n/a | n/a | none (`httpx` transport) | one fixed query, at most one normalized result, fixed HTTPS destination, immutable result artifact in full-stack lane | contract and provider conformance pass; live bounded request passed | `tests/live/test_search_tools.py`; 2026-10-20 UTC; manifest `93b2e49bdd5962ca6af25b6e05f9ced5e2c73843d87bdbf837f83700eaa00414`; implementation `9baf5986aa371c037dedc4cb9b4076926b3c7cb3235a7e5a83c0df7bf90ccf8d` | pending | `live-qualified` |
+| `tavily_web_search` · Tavily Search API | maintained OpenShip capability | `POST /search` | n/a | n/a | none (`httpx` transport) | one fixed query, at most one normalized result, fixed HTTPS destination, immutable result artifact in full-stack lane | contract and provider conformance pass; live bounded request passed | `tests/live/test_search_tools.py`; 2026-10-20 UTC; manifest `03f92df233d262242ac1006b920a5b8c095ad28ed76464d44cdfb77c3e80d2ac`; implementation `65869a7bf59c926c190aaf69ea31f7cf603d35ad1d539a9a309e1a3169f62ca0` | pending | `live-qualified` |
 | `anthropic` · Messages | `anthropic` | `messages` | *not stated* | *not observed* | `anthropic` 1.13.0 (the version this environment resolves) | streaming, usage reporting (per-field counts; this API reports no total), token counting through the provider's own counter; no tool calls, no structured output, no attachments | 10 of the 11 conformance cases (the eleventh is a shape only Chat Completions produces) + 20 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_anthropic.py`) | pending — no credential configured | pending | `fixture-tested` |
 | `google` · Gemini Developer API | `google` | `generate-content` streaming over `v1` | *not stated* | *not observed* | `google-genai` 2.30.1 (the version this environment resolves) | streaming, usage reporting (per-field counts, including this API's own total, a cached count, and a thought count), token counting through the provider's own counter; no tool calls — a predicted call is never executed here — no structured output, no attachments | 10 of the 11 conformance cases (the eleventh is a shape only Chat Completions produces) + 24 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_google.py`) | pending — no credential configured | pending | `fixture-tested` |
 | `openai_compatible` · Chat Completions at a declared endpoint | `openai_compatible` | `chat-completions` / the profile's own `api_version` | *not stated* | *not observed* | none — the adapter reads HTTP directly (`httpx` 0.28.1, already a declared dependency) | streaming, usage reporting only where the profile declares the endpoint reports it; no token counting, no tool calls, no structured output, no attachments | 11 of the 11 conformance cases + 20 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_openai_compatible.py`) | pending — no such endpoint is installed in this checkout | pending | `fixture-tested` |
@@ -49,29 +51,31 @@ turn confirms it.
 
 Profile configuration is non-secret. `MODEL_PROFILES_JSON` is a JSON array;
 every field the adapter needs is explicit, and arbitrary SDK kwargs are not
-accepted. This example names no real deployment and no real key.
+accepted. The supplied OpenAI example uses `gpt-6-luna`; it names no real key.
 
 ```json
 [
   {
     "id": "primary",
-    "label": "Primary model",
+    "label": "OpenAI GPT-6 Luna",
     "adapter": "openai",
-    "model": "<the exact model this deployment serves>",
-    "endpoint": "https://api.<destination>.test/v1",
+    "model": "gpt-6-luna",
+    "endpoint": "https://api.openai.com/v1",
     "api_version": "chat-completions",
-    "credential_ref": "PRIMARY_KEY",
+    "credential_ref": "OPENAI_API_KEY",
     "capabilities": {
       "streaming": true,
       "usage_reporting": true,
-      "context_tokens": 32768,
-      "max_output_tokens": 4096
+      "max_output_tokens": 4096,
+      "tool_calls": true,
+      "parallel_tool_calls": false
     },
     "allowed_fallback_profile_ids": ["backup"],
     "qualified_model_aliases": [],
     "adapter_options": {
       "adapter": "openai",
-      "output_limit_parameter": "max_tokens"
+      "output_limit_parameter": "max_completion_tokens",
+      "tool_call_reasoning_effort": "none"
     }
   }
 ]
@@ -79,7 +83,11 @@ accepted. This example names no real deployment and no real key.
 
 `adapter_options` is discriminated by adapter, and the contract refuses a
 profile that omits or invents one: `openai` needs `output_limit_parameter`
-(because some models reject `max_tokens`), `anthropic` needs
+(because some models reject `max_tokens`) and may declare
+`tool_call_reasoning_effort: "none"` for models that require it on function
+calls. The option is sent only when the request carries tools. GPT-6 Luna's
+Chat Completions function calls require this setting ([model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna)).
+`anthropic` needs
 `server_side_fallback`, `google` needs `native_api_version` and
 `automatic_function_calling`, and `openai_compatible` needs
 `endpoint_implementation`, `authentication`, `stream_usage_supported` and
@@ -92,9 +100,15 @@ profile that omits or invents one: `openai` needs `output_limit_parameter`
 | `MODEL_PROFILES_JSON` | at startup, once per process, when the registry is built | no |
 | `MODEL_DEFAULT_PROFILE_ID` | the profile that answers when the browser chooses nothing | no |
 | `MODEL_MAX_TOKENS` | the output ceiling a turn asks for, when a profile declares none | no |
+| `WORKFLOW_RUN_TIMEOUT_SECONDS` | installation run deadline in seconds (default 1800; range 1–3600), pinned at submission for chat and model-free tools | no |
+| `MODEL_CONTEXT_TOKENS` | default declared context window (128000); explicit provider declarations can only reduce it | no |
+| `MODEL_MAX_CONTEXT_BYTES` | normalized request byte guard (default 2097152), pinned with model limits | no |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and any name a profile's `credential_ref` gives | only where a client is constructed | **yes** |
+| `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY` | only inside the selected search handler | **yes** |
 | `TEST_POSTGRES_URL` | the durable-pipeline test lane | throwaway |
-| `OPENSHIP_LIVE_PROFILE_ID` | the opt-in live qualification test | n/a |
+| `OPENSHIP_LIVE_SEARCH_TOOL_ID` | exactly one explicitly selected Brave or Tavily qualification | n/a |
+| `OPENSHIP_LIVE_TOOL_PROFILE_ID` | the explicitly selected OpenAI tool-capable profile qualification | n/a |
+| `OPENSHIP_LIVE_PROFILE_ID` | the legacy text-only provider smoke test | n/a |
 
 A credential is named by reference and its value is read in exactly one place.
 That is what lets a catalog, an event, a checkpoint, a log line, and a
@@ -138,8 +152,8 @@ the catalog rather than guessed at.
 ## Limits
 
 One shared budget spans the initial call, every retry, and any fallback:
-`max_attempts` (default 3), `run_timeout_seconds` (120),
-`request_timeout_seconds` (45), `max_context_bytes` (64 KiB), and optional
+`max_attempts` (default 3), `run_timeout_seconds` (1800),
+`request_timeout_seconds` (45), `max_context_bytes` (2 MiB), and optional
 `max_total_tokens` / `max_cost_usd` ceilings. No SDK retries on its own —
 `max_retries=0` on the OpenAI and Anthropic clients, one attempt in the
 Gemini client's transport options — and the Gemini adapter also disables the
@@ -147,6 +161,72 @@ two SDK behaviours that would make one attempt into several requests
 (`automatic_function_calling`, `automatic_continuation`). So the number of
 generation requests a turn makes is the number the tests count. A provider
 that reports usage only when asked is asked.
+
+Set `WORKFLOW_RUN_TIMEOUT_SECONDS` to adjust the overall deadline without
+editing profile JSON. For tool-enabled chat, admission pins the smaller of
+this setting and the selected profile's timeout into its execution snapshot;
+model-free tool runs pin the installation setting directly. Tool network
+timeouts remain separate. Restart both API and worker to apply changes to new
+runs; existing run snapshots and persisted deadlines are preserved.
+
+`MODEL_CONTEXT_TOKENS=128000` supplies `capabilities.context_tokens` when it is
+omitted. Explicit provider declarations are capped by the installation value,
+never inflated. Remove an older explicit `8192` declaration to inherit the
+new default. Profile JSON may be formatted across multiple lines inside a
+single-quoted `.env` value, as shown in both `.env.example` files.
+
+The context declaration is not an exact local token counter. The OpenAI
+adapter still has no qualified counter; local admission uses
+`MODEL_MAX_CONTEXT_BYTES` over UTF-8 messages, function schemas and tool
+results, and the provider validates its actual token window. These are
+independent ceilings, without a claimed bytes-per-token conversion or silent
+history truncation. Explicit profile byte limits may reduce the installation
+guard.
+
+Supported OpenAI models enable prompt caching by default. The adapter retains
+that behavior, sends unchanged message prefixes, and preserves reported
+`cached_input_tokens`; it does not force retention options across models.
+Prefix reuse is required for a hit, and cached input still occupies context.
+See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
+
+## Tool-enabled chat
+
+Chat-v2 uses the qualified OpenAI Chat Completions adapter to expose only the
+exact search capabilities pinned to the run and still enabled by the
+installation. Each completed tool call goes through the same audited
+`ToolGateway` as an explicitly attached search; tool arguments, results and
+provider call IDs are saved as complete transcript entries before the next
+model turn. A disabled tool is omitted from later function definitions while
+its already completed call/result remains valid conversation history.
+
+One durable budget covers all model turns and retries: at most three model
+turns, three generation attempts, two tool calls, 1800 seconds by default, 4,000 output
+tokens per request and 12,000 reserved output tokens for the run. Context
+admission counts the UTF-8 JSON size of normalized messages, function schemas
+and tool results. Output reservations are not refunded when the provider omits
+usage. A profile's optional total-token and cost ceilings also apply across
+every turn and retry, using the run's durable reservations. These limits are
+implementation guardrails, not a claim that an exact provider invoice or model
+context ceiling has been measured. The `gpt-6-luna` OpenAI Chat Completions
+tuple passed one opt-in tool-call qualification with exactly one selected
+Brave capability. This is transport and contract evidence, not model-quality
+or ranking evidence. The direct live handler checks do not create durable
+operation IDs. Separately, the synthetic PostgreSQL chat, manual-search, and
+workspace-restore lanes passed against the local PostgreSQL 15 service on
+2026-10-20; those prove durable pipeline behavior, not a provider-backed browser
+journey. The profile remains `live-qualified`, not `accepted`. The original
+live qualification recorded its UTC date but no exact wall-clock timestamp.
+
+Before each generation attempt, durable budget admission checks whether another
+tool could still be followed by a final answer. It accounts for the remaining
+tool calls, model turns, attempts (including retries), and output reservations.
+When no such allowance remains, the OpenAI adapter sends `tool_choice: "none"`
+with the same tool definitions and completed results, so the model can answer
+from what it has collected. It retains the profile's tool reasoning setting.
+This uses the documented [Chat Completions tool-choice control](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+An unexpected tool request on that final attempt is rejected before gateway
+dispatch with `tool_limit_exceeded`, and is recorded as a failure rather than
+a timeout. The independent tool-admission call-count guard remains enforced.
 
 ## Credential rotation and revocation
 
@@ -189,12 +269,21 @@ stopped.
 
 ## Qualification record
 
-Nothing is `live-qualified` in this checkout. The live test is opt-in and
-contacts a real provider:
+Live qualification is opt-in and contacts the exact configured provider. The
+bounded tests require explicit destination IDs, refuse missing prerequisites
+before network access, never print credentials, and do not assert stable search
+rankings:
 
 ```bash
-cd apps/api && OPENSHIP_LIVE_PROFILE_ID=<an installed profile id> \
-  uv run pytest tests/live/test_provider_smoke.py -m provider_live -q
+cd apps/api && OPENSHIP_LIVE_SEARCH_TOOL_ID=brave_web_search \
+  uv run pytest tests/live/test_search_tools.py -m provider_live -q
+
+cd apps/api && OPENSHIP_LIVE_SEARCH_TOOL_ID=tavily_web_search \
+  uv run pytest tests/live/test_search_tools.py -m provider_live -q
+
+cd apps/api && OPENSHIP_LIVE_TOOL_PROFILE_ID=primary \
+  OPENSHIP_LIVE_SEARCH_TOOL_ID=brave_web_search \
+  uv run pytest tests/live/test_tool_provider_smoke.py -m provider_live -q
 ```
 
 Run without a credential configured, it fails with the reason the

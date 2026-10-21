@@ -27,6 +27,8 @@ export interface ChatMessage {
   content: string
   conversation_id: string | null
   created_at: string
+  /** Durable run that created the message; absent on older conversation history. */
+  run_id?: string | null
 }
 
 export interface Conversation {
@@ -43,16 +45,22 @@ export interface Run {
   status: 'created' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'stale'
   created_at: string
   attempt: number
+  kind?: 'chat' | 'tool'
+  graph_version?: number
   // A run read states what it was pinned to and what it asked. Null means
   // "not recorded", never "the default".
   model?: RunModelSummary | null
   usage?: UsageSummary | null
   error?: ErrorSummary | null
   provider_attempts?: ProviderAttemptSummary[]
+  operations?: ToolOperationSummary[]
+  operations_next_cursor?: string | null
 }
 
 export interface RunCard {
   run_id: string
+  kind: 'chat' | 'tool'
+  graph_version: number
   status: string
   started_at: string | null
   ended_at: string | null
@@ -64,6 +72,8 @@ export interface RunCard {
   error_message: string | null
   model: RunModelSummary | null
   attempts: ProviderAttemptSummary[]
+  operations: ToolOperationSummary[]
+  operations_next_cursor: string | null
 }
 
 export interface TurnSubmitRequest {
@@ -74,6 +84,9 @@ export interface TurnSubmitRequest {
   // reproducible. A browser never names an endpoint, adapter, or credential.
   provider_profile_id?: string | null
   fallback_profile_ids?: string[] | null
+  // Automatic tool selection is an opt-in for this submitted turn. The
+  // server resolves and pins the exact enabled capability versions.
+  enable_tools?: boolean
 }
 
 // What an installation offers. Deliberately contains no credential value,
@@ -104,6 +117,7 @@ export interface RunModelSummary {
   label: string
   adapter: string
   requested_model: string
+  serving_context_tokens?: number | null
   actual_model: string | null
   destination_label: string | null
   serving_profile_id?: string | null
@@ -160,6 +174,8 @@ export interface Snapshot {
   sequence: number
   events: DurableEvent[]
   runs?: SnapshotRun[]
+  artifacts?: ArtifactSummary[]
+  artifacts_next_cursor?: string | null
 }
 
 export interface SnapshotRun {
@@ -169,8 +185,143 @@ export interface SnapshotRun {
   started_at: string | null
   ended_at: string | null
   error_code: string | null
+  kind?: 'chat' | 'tool'
+  graph_version?: number
   model?: RunModelSummary | null
   usage?: UsageSummary | null
   error?: ErrorSummary | null
   provider_attempts?: ProviderAttemptSummary[]
+  operations?: ToolOperationSummary[]
+  operations_next_cursor?: string | null
+}
+
+export interface CapabilityRef {
+  id: string
+  version: string
+  manifest_digest: string
+}
+
+export interface CapabilitySummary extends CapabilityRef {
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
+  effect: 'read_only_external' | 'read_only_local'
+  enabled: boolean
+  available: boolean
+  unavailable_reason: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
+}
+
+export interface ToolCommandRequest {
+  client_request_id: string
+  capability: CapabilityRef
+  arguments: { query: string; max_results: number }
+}
+
+export interface ArtifactSummary {
+  id: string
+  sha256: string
+  size_bytes: number
+  media_type: string
+  conversation_id: string
+  project_id: string
+  name: string
+  source: string
+  status: 'staging' | 'ready' | 'deleting' | 'deleted' | 'unavailable'
+  created_at: string
+  mutability: 'immutable' | 'mutable'
+}
+
+export interface SearchResultItem {
+  title: string
+  url: string
+  snippet: string
+  rank: number
+}
+
+export interface ToolFailureSummary {
+  code: string
+  message: string
+}
+
+export interface ToolAttemptSummary {
+  id: string
+  operation_id: string
+  ordinal: number
+  fence: number
+  dispatch_started_at: string | null
+  finished_at: string | null
+  outcome: string
+  error_code: string | null
+}
+
+export interface ToolOperationSummary {
+  id: string
+  run_id: string
+  conversation_id: string
+  logical_call_id: string
+  capability_id: string
+  capability_version: string
+  manifest_digest: string
+  status: 'admitted' | 'dispatching' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
+  error_code: string | null
+  error: ToolFailureSummary | null
+  // Added with the owned operation summary; absent on legacy snapshots.
+  query?: string | null
+  result: {
+    operation_id?: string
+    observed_at?: string
+    query?: string
+    items?: SearchResultItem[]
+    truncated?: boolean
+  } | null
+  artifacts: ArtifactSummary[]
+  attempts: ToolAttemptSummary[]
+  created_at: string | null
+  updated_at: string | null
+  finished_at: string | null
+}
+
+export interface OperationPage {
+  items: ToolOperationSummary[]
+  next_cursor: string | null
+}
+
+export interface ArtifactPage {
+  items: ArtifactSummary[]
+  next_cursor: string | null
+}
+
+export interface ConversationWorkspaceSummary {
+  id: string
+  conversation_id: string
+  project_id: string
+  schema_version: 1
+  relative_root: string
+  storage_id: string
+  status: 'available' | 'unavailable' | 'deleted'
+  created_at: string
+  quota: {
+    committed_bytes: number
+    committed_count: number
+    reserved_bytes: number
+    reserved_count: number
+    max_bytes: number
+    max_count: number
+  }
+}
+
+export interface ConversationWorkspacePage {
+  workspace: ConversationWorkspaceSummary
+  files: ArtifactPage
+}
+
+export interface WorkspaceFileRead {
+  workspace_id: string
+  artifact_id: string
+  version_id: string
+  sha256: string
+  media_type: string
+  size_bytes: number
+  offset: number
+  content: string
+  next_offset: number | null
 }

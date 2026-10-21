@@ -84,7 +84,7 @@ export const modelProfileCatalog: ModelProfileCatalog = {
       profile_id: 'primary-fixture',
       label: 'Fixture primary',
       adapter: 'openai',
-      model: 'primary-model',
+      model: 'gpt-6-luna',
       destination_label: 'fixture.provider.test',
       capabilities: { context_tokens: 8192, tool_calling: false },
       available: true,

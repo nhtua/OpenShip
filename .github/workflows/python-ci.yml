@@ -54,9 +54,10 @@ jobs:
   # The API suite minus the lanes that need a service or a live provider. It
   # has to pass with no PostgreSQL and no vendor credentials, which is what
   # lets an ordinary PR be reviewed at all: every response in it is a
-  # fixture.
+  # fixture. Synthetic full-stack cases have their own isolated job.
   api-unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -68,7 +69,7 @@ jobs:
         with:
           enable-cache: true
       - run: cd apps/api && uv sync --extra dev
-      - run: cd apps/api && uv run pytest -q -m "not postgres and not provider_live"
+      - run: cd apps/api && uv run pytest -q -o faulthandler_timeout=60 -m "not postgres and not provider_live and not full_stack"
 
   # The durable pipeline's promises are only proved where the real locks,
   # JSON serialization, and saver writes exist. The service only has to
@@ -118,8 +119,19 @@ jobs:
         run: |
           cd apps/api
           set -o pipefail
-          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/pg-lane.xml -m postgres tests/integration/test_provider_pinning_migration.py tests/integration/test_provider_worker_postgres.py 2>&1 | tee /tmp/pg-lane.log
-          ! grep -q skipped /tmp/pg-lane.log
+          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/pg-lane.xml -m postgres tests/integration 2>&1 | tee /tmp/pg-lane.log
+          python - /tmp/pg-lane.xml <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          tests = sum(int(suite.attrib.get("tests", 0)) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
+          if tests == 0 or skipped:
+              raise SystemExit(f"PostgreSQL qualification must run tests without skips: tests={tests}, skipped={skipped}")
+          print(f"PostgreSQL qualification: {tests} tests, no skips")
+          PY
       - name: Report PostgreSQL waits on failure
         if: failure()
         env:
@@ -139,3 +151,56 @@ jobs:
             /tmp/pg-lane.log
             /tmp/pg-lane.xml
           if-no-files-found: ignore
+
+  # A disposable database and the worker's test-only synthetic HTTP transport
+  # exercise the real API/runtime/filesystem boundary without vendor keys.
+  api-full-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: openship
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: lane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openship -d lane"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          enable-cache: true
+      - run: cd apps/api && uv sync --extra dev
+      - name: Run synthetic full-stack qualification
+        timeout-minutes: 10
+        shell: bash
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://openship@localhost:5432/lane
+          PYTHONUNBUFFERED: "1"
+        run: |
+          cd apps/api
+          set -o pipefail
+          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/full-stack.xml -m full_stack tests/full_stack/test_manual_search.py
+          python - /tmp/full-stack.xml <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          tests = sum(int(suite.attrib.get("tests", 0)) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
+          if tests == 0 or skipped:
+              raise SystemExit(f"Full-stack qualification must run tests without skips: tests={tests}, skipped={skipped}")
+          print(f"Full-stack qualification: {tests} tests, no skips")
+          PY

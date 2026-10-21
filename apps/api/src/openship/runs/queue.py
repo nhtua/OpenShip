@@ -14,6 +14,7 @@ from enum import Enum
 from sqlalchemy import and_, func, or_, update
 from sqlalchemy.orm import Session
 
+from ..chat.models import Conversation
 from ..config import settings
 from .models import Run, RunJob
 
@@ -47,6 +48,10 @@ def _db_now():
 def _py_now():
     """Get current UTC time for setting values."""
     return datetime.now(UTC)
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def claim_next(db: Session, worker_id: str, lease_seconds: int | None = None) -> Claim | None:
@@ -134,14 +139,32 @@ def renew(db: Session, run_id: uuid.UUID, fence: int, lease_seconds: int | None 
     if lease_seconds is None:
         lease_seconds = getattr(settings, "worker_lease_seconds", 30)
 
+    now = _py_now()
+    run = db.query(Run).filter(
+        Run.id == run_id,
+        Run.fence == fence,
+        Run.status == "running",
+    ).first()
+    job = db.query(RunJob).filter(
+        RunJob.run_id == run_id,
+        RunJob.fence == fence,
+        RunJob.owner_id.isnot(None),
+        RunJob.lease_until > now,
+    ).first()
+    if run is None or job is None:
+        db.rollback()
+        return False
     result = db.execute(
         update(RunJob)
         .where(and_(
             RunJob.run_id == run_id,
             RunJob.fence == fence,
+            RunJob.owner_id == job.owner_id,
+            RunJob.lease_until > now,
         ))
-        .values(lease_until=_py_now() + timedelta(seconds=lease_seconds))
+        .values(lease_until=now + timedelta(seconds=lease_seconds))
         .returning(RunJob.id)
+        .execution_options(synchronize_session=False)
     )
     row = result.fetchone()
     db.commit()
@@ -203,59 +226,101 @@ def finalize(db: Session, run_id: uuid.UUID, fence: int, result: dict, commit: b
 
 
 def reconcile_expired(db: Session) -> int:
-    """Reconcile expired leases with a single commit.
+    """Reconcile expired claims by dispatch state in one caller transaction.
 
-    Jobs that expired without starting a provider call are requeued.
-    Jobs that expired during a provider call are marked as failed
-    with error code 'model_interrupted'.
-
-    Uses database time (NOW()) for expiration comparison and commits
-    all changes in a single transaction.
-
-    Returns:
-        Number of leases reclaimed.
+    Tool intents which have crossed the committed dispatch boundary fail as
+    ``execution_interrupted``. Undispatched commands may be claimed again.
+    Provider-only chat runs retain their historical ``model_interrupted``
+    behavior, while chat-v2 tool dispatches are fenced like manual tools.
+    Locks follow conversation → run → job → operation.
     """
-    # Find expired leases
-    # Use database time for expiration comparison
-    expired_jobs = (
-        db.query(RunJob)
-        .join(Run)
-        .filter(and_(
+    expired_ids = (
+        db.query(RunJob.run_id)
+        .join(Run, Run.id == RunJob.run_id)
+        .filter(
             RunJob.lease_until.isnot(None),
             RunJob.lease_until < _db_now(),
             Run.status == "running",
-        ))
-        .with_for_update()
+        )
         .all()
+    )
+    from ..execution.recovery import (
+        append_run_terminal_event,
+        has_uncertain_tool_dispatch,
+        mark_expired_tool_interrupted,
     )
 
     reclaimed = 0
-    for job in expired_jobs:
-        run = db.query(Run).filter(Run.id == job.run_id).first()
-        if not run:
+    now = _py_now()
+    for (run_id,) in expired_ids:
+        identity = db.query(Run.conversation_id).filter(Run.id == run_id).first()
+        if identity is None:
+            continue
+        conversation = (
+            db.query(Conversation)
+            .filter(Conversation.id == identity.conversation_id)
+            .with_for_update()
+            .first()
+        )
+        run = (
+            db.query(Run)
+            .filter(Run.id == run_id)
+            .with_for_update()
+            .populate_existing()
+            .first()
+        )
+        job = (
+            db.query(RunJob)
+            .filter(RunJob.run_id == run_id)
+            .with_for_update()
+            .populate_existing()
+            .first()
+        )
+        if (
+            conversation is None
+            or run is None
+            or job is None
+            or run.status != "running"
+            or job.lease_until is None
+            or _as_utc(job.lease_until) >= now
+        ):
             continue
 
-        if run.provider_started_at is None:
-            # Was not yet calling provider — requeue
+        old_fence = job.fence
+        has_tool_dispatch = has_uncertain_tool_dispatch(db, run.id)
+        from_tool_dispatch = has_tool_dispatch or run.provider_started_at is not None
+        if not from_tool_dispatch:
             run.status = "queued"
+            run.error_code = None
+            run.ended_at = None
             run.fence = job.fence
             job.owner_id = None
             job.lease_until = None
-        else:
-            # Was in-flight during provider call — mark as failed
-            run.status = "failed"
-            run.error_code = "model_interrupted"
-            # Use Python time for setting values
-            run.ended_at = _py_now()
-            job.lease_until = None
-            job.owner_id = None
+            reclaimed += 1
+            continue
 
+        error_code = "execution_interrupted" if has_tool_dispatch or run.kind == "tool" else "model_interrupted"
+        if has_tool_dispatch or run.kind == "tool":
+            mark_expired_tool_interrupted(
+                db,
+                run_id=run.id,
+                conversation_id=conversation.id,
+                old_fence=old_fence,
+            )
+        run.status = "failed"
+        run.error_code = error_code
+        run.ended_at = now
+        run.fence = max(run.fence, job.fence) + 1
+        job.fence = run.fence
+        job.owner_id = None
+        job.lease_until = None
+        append_run_terminal_event(db, run, conversation.id, error_code=error_code)
         reclaimed += 1
 
-    # Single commit for all changes
-    if reclaimed > 0:
+    if reclaimed:
         db.commit()
-
+    elif expired_ids:
+        db.rollback()
     return reclaimed
 
 
@@ -335,9 +400,107 @@ def mark_provider_started(db: Session, run_id: uuid.UUID, fence: int) -> bool:
     Returns:
         True if successful, False on fence mismatch or not found.
     """
-    return fenced_update_run(
-        db=db,
-        run_id=run_id,
-        fence=fence,
-        provider_started_at=_py_now(),
+    identity = db.query(Run.conversation_id).filter(Run.id == run_id).first()
+    if identity is None:
+        return False
+    conversation = (
+        db.query(Conversation)
+        .filter(Conversation.id == identity.conversation_id)
+        .with_for_update()
+        .first()
     )
+    run = (
+        db.query(Run)
+        .filter(Run.id == run_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    job = (
+        db.query(RunJob)
+        .filter(RunJob.run_id == run_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    now = _py_now()
+    if (
+        conversation is None
+        or run is None
+        or job is None
+        or run.status != "running"
+        or run.fence != fence
+        or job.fence != fence
+        or job.owner_id is None
+        or job.lease_until is None
+        or _as_utc(job.lease_until) <= now
+    ):
+        db.rollback()
+        return False
+    run.provider_started_at = now
+    db.commit()
+    return True
+
+
+def begin_execution_window(
+    db: Session,
+    claim: Claim,
+    *,
+    deadline_seconds: int,
+    graph_thread_id: str,
+) -> tuple[datetime, datetime] | None:
+    """Persist one deadline per run and its current fenced graph thread."""
+    if deadline_seconds < 1 or deadline_seconds > 3600:
+        raise ValueError("execution deadline is outside the supported range")
+    identity = db.query(Run.conversation_id).filter(Run.id == claim.run_id).first()
+    if identity is None:
+        return None
+    conversation = (
+        db.query(Conversation)
+        .filter(Conversation.id == identity.conversation_id)
+        .with_for_update()
+        .first()
+    )
+    run = (
+        db.query(Run)
+        .filter(Run.id == claim.run_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    job = (
+        db.query(RunJob)
+        .filter(RunJob.run_id == claim.run_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    now = _py_now()
+    if (
+        conversation is None
+        or run is None
+        or job is None
+        or not (
+            run.kind == "tool"
+            or (run.kind == "chat" and run.graph_version == 2)
+        )
+        or run.status != "running"
+        or run.fence != claim.fence
+        or job.fence != claim.fence
+        or job.owner_id != claim.worker_id
+        or job.lease_until is None
+        or _as_utc(job.lease_until) <= now
+    ):
+        db.rollback()
+        return None
+    if run.execution_started_at is None and run.execution_deadline_at is None:
+        run.execution_started_at = now
+        run.execution_deadline_at = now + timedelta(seconds=deadline_seconds)
+    elif run.execution_started_at is None or run.execution_deadline_at is None:
+        db.rollback()
+        return None
+    run.graph_thread_id = graph_thread_id
+    started = _as_utc(run.execution_started_at)
+    deadline = _as_utc(run.execution_deadline_at)
+    db.commit()
+    return started, deadline

@@ -94,6 +94,7 @@ async def get_conversation_messages(
     return [
         {
             "id": str(msg.id),
+            "run_id": str(msg.run_id) if msg.run_id else None,
             "role": msg.role,
             "content": msg.content,
             "created_at": msg.created_at.isoformat(),

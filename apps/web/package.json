@@ -9,6 +9,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:full-stack": "playwright test -c playwright.full-stack.config.ts",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
@@ -18,6 +19,7 @@
     "axios": "^1.7.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
+    "markdown-it": "^15.0.3",
     "motion-v": "^2.5.2",
     "pinia": "^2.2.0",
     "primeicons": "^8.0.2",

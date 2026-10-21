@@ -2,14 +2,24 @@ import json
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_serializer,
+    field_validator,
+)
 
+from ..execution.projections import OperationSummary
 from ..providers.configuration import destination_label
 from ..providers.errors import SAFE_MESSAGES
 from .models import ProviderAttempt, Run
 
 
 class TurnSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     content: str = Field(..., min_length=1, max_length=10000)
     client_request_id: str = Field(..., description="UUID generated once per browser send, for idempotency")
     # A browser names a profile and nothing else: no endpoint, no model, no SDK
@@ -18,6 +28,15 @@ class TurnSubmitRequest(BaseModel):
     # Omitted means "the installation's default"; an explicit empty list means
     # fallback disabled. The two are not the same request.
     fallback_profile_ids: list[str] | None = None
+    enable_tools: StrictBool = False
+    artifact_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
+
+    @field_validator("artifact_ids")
+    @classmethod
+    def _unique_artifact_ids(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("artifact_ids must be distinct")
+        return value
 
 
 class ModelSummary(BaseModel):
@@ -26,6 +45,7 @@ class ModelSummary(BaseModel):
     label: str
     adapter: str
     requested_model: str
+    serving_context_tokens: int | None = None
     actual_model: str | None = None
     destination_label: str | None = None
     serving_profile_id: str | None = None
@@ -74,10 +94,14 @@ class RunResponse(BaseModel):
     status: str
     created_at: datetime
     attempt: int = 0
+    kind: str = "chat"
+    graph_version: int = 1
     model: ModelSummary | None = None
     usage: UsageSummary | None = None
     error: ErrorSummary | None = None
     provider_attempts: list[AttemptSummary] = Field(default_factory=list)
+    operations: list[OperationSummary] = Field(default_factory=list)
+    operations_next_cursor: str | None = None
 
     @field_serializer('id')
     def serialize_id(self, value: uuid.UUID) -> str:
@@ -129,18 +153,31 @@ def _model_projection(snapshot: str | None, attempts=()) -> ModelSummary | None:
         adapter = primary["adapter"]
         model = primary["model"]
         endpoint = primary["endpoint"]
-        fallback_ids = tuple(profile["id"] for profile in config.get("fallbacks", ()))
+        fallbacks = config.get("fallbacks", ())
+        profiles = (primary, *fallbacks)
+        fallback_ids = tuple(profile["id"] for profile in fallbacks)
         labels = {profile["id"]: profile["label"] for profile in (primary, *config.get("fallbacks", ()))}
     except (json.JSONDecodeError, TypeError, KeyError, ValueError):
         # A snapshot can outlive the schema that wrote it. Its normalized
         # failure remains readable even when its provider metadata does not.
         return None
     serving = _serving_attempt(attempts)
+    serving_context_tokens = None
+    if serving is not None:
+        serving_profile = next(
+            (profile for profile in profiles if profile.get("id") == serving.profile_id),
+            None,
+        )
+        capabilities = serving_profile.get("capabilities") if serving_profile else None
+        context_tokens = capabilities.get("context_tokens") if isinstance(capabilities, dict) else None
+        if isinstance(context_tokens, int) and not isinstance(context_tokens, bool) and context_tokens > 0:
+            serving_context_tokens = context_tokens
     return ModelSummary(
         profile_id=profile_id,
         label=label,
         adapter=adapter,
         requested_model=model,
+        serving_context_tokens=serving_context_tokens,
         # Requested and actual are separate fields on the contract, and they
         # stay separate here: a provider that answered from an alias it was
         # handed would otherwise be indistinguishable from one that answered
@@ -183,7 +220,7 @@ def _attempt_projection(attempt: ProviderAttempt) -> AttemptSummary:
     )
 
 
-def project_run_response(run: Run, attempts=()) -> RunResponse:
+def project_run_response(run: Run, attempts=(), operation_page=None) -> RunResponse:
     """The public shape of a run: only what a browser is allowed to see."""
     return RunResponse(
         id=run.id,
@@ -191,8 +228,12 @@ def project_run_response(run: Run, attempts=()) -> RunResponse:
         status=run.status,
         created_at=run.created_at,
         attempt=run.attempt,
+        kind=run.kind or "chat",
+        graph_version=run.graph_version or 1,
         model=_model_projection(run.model_configuration, attempts),
         usage=_usage_projection(run.usage),
         error=_error_projection(run.error_code),
         provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
+        operations=list(operation_page.items) if operation_page else [],
+        operations_next_cursor=operation_page.next_cursor if operation_page else None,
     )

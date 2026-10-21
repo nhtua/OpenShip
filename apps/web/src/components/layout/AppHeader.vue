@@ -8,12 +8,22 @@ const props = withDefaults(
   defineProps<{
     title?: string
     isStreaming?: boolean
+    showConversationFiles?: boolean
+    conversationFilesOpen?: boolean
+    conversationFileCount?: number
   }>(),
   {
     title: 'New Conversation',
     isStreaming: false,
+    showConversationFiles: false,
+    conversationFilesOpen: false,
+    conversationFileCount: 0,
   },
 )
+
+const emit = defineEmits<{
+  toggleConversationFiles: []
+}>()
 
 const theme = useThemeStore()
 
@@ -27,6 +37,11 @@ const statusClass = computed(() =>
 const dotClass = computed(() =>
   props.isStreaming ? 'bg-success' : 'bg-muted-foreground',
 )
+const conversationFilesLabel = computed(() => {
+  const count = props.conversationFileCount
+  const countLabel = count ? `, ${count} ${count === 1 ? 'file' : 'files'}` : ''
+  return `${props.conversationFilesOpen ? 'Close' : 'Open'} conversation files${countLabel}`
+})
 </script>
 
 <template>
@@ -59,6 +74,20 @@ const dotClass = computed(() =>
     </div>
 
     <div class="flex shrink-0 items-center gap-2">
+      <Button
+        v-if="props.showConversationFiles"
+        variant="ghost"
+        size="icon-sm"
+        :aria-label="conversationFilesLabel"
+        aria-controls="conversation-files-panel"
+        :aria-expanded="props.conversationFilesOpen"
+        title="Conversation files"
+        data-testid="conversation-files-trigger"
+        @click="emit('toggleConversationFiles')"
+      >
+        <Icon name="folder-open" />
+        <span v-if="props.conversationFileCount" class="sr-only">{{ props.conversationFileCount }}</span>
+      </Button>
       <Button
         variant="ghost"
         size="icon"

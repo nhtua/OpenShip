@@ -4,9 +4,15 @@ import json
 import uuid
 
 from fastapi import HTTPException
+from sqlalchemy import and_, or_, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
+from ..artifacts.contracts import ArtifactSummary
+from ..artifacts.models import Artifact
 from ..chat.models import Conversation, Message
+from ..execution.pagination import decode_cursor, encode_cursor
+from ..execution.reads import read_operation_page
 from ..runs.models import Event, ProviderAttempt, Run
 from ..runs.schemas import (
     _attempt_projection,
@@ -53,7 +59,7 @@ def _message_to_summary(msg: Message) -> MessageSummary:
     )
 
 
-def _run_to_summary(run: Run, attempts=()) -> RunSummary:
+def _run_to_summary(run: Run, attempts=(), operation_page=None) -> RunSummary:
     """Convert Run model to RunSummary schema: only the public projection."""
     return RunSummary(
         id=str(run.id),
@@ -62,10 +68,14 @@ def _run_to_summary(run: Run, attempts=()) -> RunSummary:
         started_at=run.created_at.isoformat() if run.created_at else None,
         ended_at=run.ended_at.isoformat() if run.ended_at else None,
         error_code=run.error_code,
+        kind=run.kind or "chat",
+        graph_version=run.graph_version or 1,
         model=_model_projection(run.model_configuration, attempts),
         usage=_usage_projection(run.usage),
         error=_error_projection(run.error_code),
         provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
+        operations=list(operation_page.items) if operation_page else [],
+        operations_next_cursor=operation_page.next_cursor if operation_page else None,
     )
 
 
@@ -94,9 +104,18 @@ def append_event(
     Returns:
         The persisted Event object.
     """
-    # Validate conversation exists (within caller's transaction)
-    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
-    if not conv:
+    # Flush pending changes first, then allocate a sequence with one atomic
+    # update. Reading an ORM Conversation here can return a stale identity-map
+    # value after a tool gateway session has appended events during this run.
+    db.flush()
+    row = db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(next_event_sequence=Conversation.next_event_sequence + 1)
+        .returning(Conversation.next_event_sequence, Conversation.project_id)
+        .execution_options(synchronize_session=False)
+    ).first()
+    if row is None:
         raise HTTPException(
             status_code=404,
             detail={
@@ -107,32 +126,14 @@ def append_event(
             },
         )
 
-    # Atomically increment sequence using SELECT...FOR UPDATE lock
-    # and ORM update. This provides a conversation sequence lock
-    # that prevents concurrent writers from reading the same sequence.
-    locked_conv = (
-        db.query(Conversation)
-        .filter(Conversation.id == conversation_id)
-        .with_for_update()
-        .first()
-    )
-    if locked_conv is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": {
-                    "code": "conversation_not_found",
-                    "message": f"Conversation {conversation_id} not found",
-                }
-            },
-        )
-
-    # Increment within the same transaction
-    seq = locked_conv.next_event_sequence
-    locked_conv.next_event_sequence = seq + 1
+    next_sequence, project_id = row
+    seq = next_sequence - 1
+    conv = db.get(Conversation, conversation_id)
+    if conv is not None:
+        set_committed_value(conv, "next_event_sequence", next_sequence)
 
     event = Event(
-        project_id=locked_conv.project_id,
+        project_id=project_id,
         conversation_id=conversation_id,
         run_id=run_id,
         sequence=seq,
@@ -141,10 +142,21 @@ def append_event(
         actor_id=actor_id,
     )
     db.add(event)
+    # Make the sequence increment visible to another append_event call in the
+    # same transaction, even when that session has a cached Conversation row.
+    db.flush()
     return event
 
 
-def read_snapshot(db: Session, user_id: uuid.UUID, conversation_id: str) -> SnapshotResponse:
+def read_snapshot(
+    db: Session,
+    user_id: uuid.UUID,
+    conversation_id: str,
+    *,
+    artifact_limit: int = 50,
+    artifact_cursor: str | None = None,
+    operation_limit: int = 50,
+) -> SnapshotResponse:
     """Read the current authoritative state snapshot for a conversation.
 
     The snapshot captures the maximum committed sequence and all events
@@ -174,6 +186,12 @@ def read_snapshot(db: Session, user_id: uuid.UUID, conversation_id: str) -> Snap
         raise HTTPException(
             status_code=404,
             detail={"error": {"code": "conversation_not_found", "message": "Conversation not found"}},
+        )
+
+    if not 1 <= artifact_limit <= 100 or not 1 <= operation_limit <= 100:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": "invalid_snapshot_limit", "message": "Snapshot page sizes must be between 1 and 100"}},
         )
 
     # Read all events up to the current committed sequence
@@ -215,12 +233,63 @@ def read_snapshot(db: Session, user_id: uuid.UUID, conversation_id: str) -> Snap
     if max_sequence < 0:
         max_sequence = -1
 
+    artifact_query = db.query(Artifact).filter(
+        Artifact.conversation_id == conv_id,
+        Artifact.status.in_(("ready", "unavailable", "deleting", "deleted")),
+    )
+    if artifact_cursor:
+        try:
+            cursor_created_at, cursor_id = decode_cursor(artifact_cursor)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": {"code": "invalid_artifact_cursor", "message": "Artifact cursor is invalid"}},
+            ) from exc
+        artifact_query = artifact_query.filter(
+            or_(
+                Artifact.created_at < cursor_created_at,
+                and_(Artifact.created_at == cursor_created_at, Artifact.id < cursor_id),
+            )
+        )
+    artifact_rows = artifact_query.order_by(Artifact.created_at.desc(), Artifact.id.desc()).limit(artifact_limit + 1).all()
+    artifacts_have_more = len(artifact_rows) > artifact_limit
+    artifact_rows = artifact_rows[:artifact_limit]
+    artifact_summaries = [
+        ArtifactSummary(
+            id=item.id,
+            sha256=item.sha256,
+            size_bytes=item.size_bytes,
+            media_type=item.media_type,
+            conversation_id=item.conversation_id,
+            project_id=item.project_id,
+            name=item.display_name,
+            source=item.source,
+            status=item.status,
+            created_at=item.created_at,
+            mutability=item.mutability,
+        )
+        for item in artifact_rows
+    ]
+
+    run_summaries = []
+    for run in runs:
+        operation_page = read_operation_page(db, run.id, limit=operation_limit)
+        run_summaries.append(
+            _run_to_summary(run, recorded_attempts.get(run.id, ()), operation_page)
+        )
+
     return SnapshotResponse(
         conversation_id=str(conv_id),
         sequence=max_sequence,
         events=[_event_to_read(ev) for ev in events],
         messages=[_message_to_summary(msg) for msg in messages],
-        runs=[_run_to_summary(run, recorded_attempts.get(run.id, ())) for run in runs],
+        runs=run_summaries,
+        artifacts=artifact_summaries,
+        artifacts_next_cursor=(
+            encode_cursor(artifact_rows[-1].created_at, artifact_rows[-1].id)
+            if artifacts_have_more and artifact_rows
+            else None
+        ),
     )
 
 

@@ -170,6 +170,9 @@ def _configuration_digest(settings) -> str:
         "profiles": settings.model_profiles_json,
         "default": settings.model_default_profile_id,
         "max_output_tokens": settings.model_max_tokens,
+        "run_timeout_seconds": settings.workflow_run_timeout_seconds,
+        "context_tokens": settings.model_context_tokens,
+        "max_context_bytes": settings.model_max_context_bytes,
     }
     return hashlib.sha256(repr(sorted(material.items())).encode("utf-8")).hexdigest()
 
@@ -182,7 +185,7 @@ def _build_registry(settings) -> ProviderRegistry:
             "configuration_error",
             safe_message="MODEL_PROFILES_JSON must declare at least one model profile",
         )
-    profiles = parse_profiles(declared)
+    profiles = parse_profiles(declared, context_tokens=settings.model_context_tokens)
     if not profiles:
         raise ProviderError(
             "configuration_error",
@@ -208,7 +211,11 @@ def _build_registry(settings) -> ProviderRegistry:
                 ),
             )
 
-    installation = RunLimits(max_output_tokens=settings.model_max_tokens)
+    installation = RunLimits(
+        max_output_tokens=settings.model_max_tokens,
+        run_timeout_seconds=settings.workflow_run_timeout_seconds,
+        max_context_bytes=settings.model_max_context_bytes,
+    )
     pinned = {
         profile.id: pin_profile(profile, defaults=installation) for profile in profiles
     }

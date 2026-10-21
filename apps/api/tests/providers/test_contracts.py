@@ -66,6 +66,28 @@ def test_contracts_reject_unknown_fields():
         ProviderProfile(**OPENAI_PROFILE, api_key="not-a-secret-here")
 
 
+def test_model_specific_tool_reasoning_option_is_scoped_to_openai():
+    """Only the OpenAI adapter accepts this declared Chat Completions option."""
+    from src.openship.providers.contracts import AdapterOptions
+
+    options = AdapterOptions(
+        adapter="openai",
+        output_limit_parameter="max_completion_tokens",
+        tool_call_reasoning_effort="none",
+    )
+    assert options.tool_call_reasoning_effort == "none"
+
+    with pytest.raises(ValidationError):
+        AdapterOptions(
+            adapter="openai_compatible",
+            endpoint_implementation="llama-server",
+            authentication="none",
+            stream_usage_supported=False,
+            output_limit_parameter="max_tokens",
+            tool_call_reasoning_effort="none",
+        )
+
+
 def test_message_order_and_content_survive_a_json_round_trip():
     """Conversation turns keep role, text, and order — the input to every adapter."""
     messages = (
@@ -91,9 +113,9 @@ def test_shared_budget_defaults_exist_before_any_adapter_runs():
 
     assert limits.max_output_tokens == 4000
     assert limits.max_attempts == 3
-    assert limits.run_timeout_seconds == 120.0
+    assert limits.run_timeout_seconds == 1800.0
     assert limits.request_timeout_seconds == 45.0
-    assert limits.max_context_bytes == 65536
+    assert limits.max_context_bytes == 2 * 1024 * 1024
     assert limits.max_total_tokens is None
     assert limits.max_cost_usd is None
 

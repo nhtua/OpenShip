@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ChatMessage } from '@/types'
+import MarkdownContent from './MarkdownContent.vue'
 
 withDefaults(
   defineProps<{
@@ -56,11 +57,7 @@ withDefaults(
         v-if="message.content || !isStreaming"
         class="rounded-lg border border-border bg-card px-4 py-3"
       >
-        <p
-          class="min-w-0 max-w-full whitespace-pre-wrap text-sm [overflow-wrap:anywhere]"
-        >
-          {{ message.content }}
-        </p>
+        <MarkdownContent :content="message.content" />
       </div>
     </div>
   </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Conversation } from '@/types'
 import { Button, Icon } from '@/components/ui'
 import {
@@ -38,6 +38,10 @@ const { setOpen, state } = useSidebar()
 
 const showUserMenu = ref(false)
 const showAllConversations = ref(false)
+const showProjectMenu = ref(false)
+const projectTrigger = ref<HTMLButtonElement | null>(null)
+const projectMenu = ref<HTMLElement | null>(null)
+const currentProjectOption = ref<HTMLButtonElement | null>(null)
 
 function expandSidebar() {
   setOpen(true)
@@ -50,6 +54,35 @@ function toggleUserMenu() {
 function toggleConversations() {
   showAllConversations.value = !showAllConversations.value
 }
+
+async function toggleProjectMenu() {
+  showProjectMenu.value = !showProjectMenu.value
+  if (showProjectMenu.value) {
+    await nextTick()
+    currentProjectOption.value?.focus()
+  }
+}
+
+function closeProjectMenu(returnFocus = false) {
+  showProjectMenu.value = false
+  if (returnFocus) void nextTick(() => projectTrigger.value?.focus())
+}
+
+function onProjectMenuKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !showProjectMenu.value) return
+  event.preventDefault()
+  closeProjectMenu(true)
+}
+
+function onDocumentClick(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Node)) return
+  if (projectMenu.value?.contains(target) || projectTrigger.value?.contains(target)) return
+  closeProjectMenu()
+}
+
+onMounted(() => document.addEventListener('click', onDocumentClick))
+onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
 
 /** Max conversations shown before expand is needed. */
 const COLLAPSED_CONVERSATION_LIMIT = 8
@@ -84,12 +117,48 @@ const extraCount = computed(() => {
       </span>
     </SidebarHeader>
 
-    <!-- Project indicator (Phase 2: single default project) -->
-    <div class="shrink-0 border-b border-sidebar-border px-3 py-2 group-data-[collapsible=icon]:hidden">
+    <!-- The project menu currently has one option; project switching follows multi-project support. -->
+    <div
+      class="relative shrink-0 border-b border-sidebar-border px-3 py-2 group-data-[collapsible=icon]:hidden"
+      @keydown="onProjectMenuKeydown"
+    >
       <div class="text-xs text-sidebar-foreground/60">Project</div>
-      <div class="flex items-center gap-1 text-sm font-medium text-sidebar-foreground">
-        <Icon name="box" class="size-3" />
-        Personal Workspace
+      <button
+        ref="projectTrigger"
+        type="button"
+        data-testid="project-selector-trigger"
+        aria-controls="project-selector-menu"
+        aria-label="Select project"
+        aria-haspopup="menu"
+        :aria-expanded="showProjectMenu"
+        class="flex w-full items-center gap-2 rounded-md text-left text-sm font-medium text-sidebar-foreground transition-colors hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+        @click="toggleProjectMenu"
+      >
+        <Icon name="box" class="size-3 shrink-0" />
+        <span class="min-w-0 flex-1 truncate">Personal Workspace</span>
+        <Icon name="chevron-down" class="size-3 shrink-0 text-sidebar-foreground/60" />
+      </button>
+      <div
+        v-if="showProjectMenu"
+        ref="projectMenu"
+        id="project-selector-menu"
+        data-testid="project-selector-menu"
+        role="menu"
+        aria-label="Project choices"
+        class="absolute left-2 right-2 top-full z-40 mt-1 rounded-lg border border-sidebar-border bg-popover p-1 text-popover-foreground shadow-lg"
+      >
+        <button
+          ref="currentProjectOption"
+          type="button"
+          role="menuitemradio"
+          aria-checked="true"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium text-primary hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @click="closeProjectMenu(true)"
+        >
+          <Icon name="box" class="size-3 shrink-0" />
+          <span class="min-w-0 flex-1 truncate">Personal Workspace</span>
+          <Icon name="check" class="size-3 shrink-0" />
+        </button>
       </div>
     </div>
 
@@ -145,12 +214,16 @@ const extraCount = computed(() => {
                 <SidebarMenuButton
                   :is-active="conv.id === props.currentConversationId"
                   :disabled="props.busy"
+                  class="text-[13px]"
                   :title="conv.title"
                   :aria-label="`Open conversation ${conv.title}`"
                   @click="emit('selectConversation', conv.id)"
                 >
                   <Icon name="comments" />
-                  <span>{{ conv.title }}</span>
+                  <span
+                    data-testid="conversation-title"
+                    :class="conv.id === props.currentConversationId ? 'font-semibold text-primary' : ''"
+                  >{{ conv.title }}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>

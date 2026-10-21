@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..artifacts.contracts import ArtifactSummary
+from ..execution.projections import OperationSummary
 from ..runs.schemas import AttemptSummary, ErrorSummary, ModelSummary, UsageSummary
 
 
@@ -42,10 +44,14 @@ class RunSummary(BaseModel):
     started_at: str | None
     ended_at: str | None
     error_code: str | None
+    kind: str = "chat"
+    graph_version: int = 1
     model: ModelSummary | None = None
     usage: UsageSummary | None = None
     error: ErrorSummary | None = None
     provider_attempts: list[AttemptSummary] = Field(default_factory=list)
+    operations: list[OperationSummary] = Field(default_factory=list)
+    operations_next_cursor: str | None = None
 
 
 class SnapshotResponse(BaseModel):
@@ -55,6 +61,8 @@ class SnapshotResponse(BaseModel):
     events: list[EventRead]
     messages: list[MessageSummary]
     runs: list[RunSummary]
+    artifacts: list[ArtifactSummary] = Field(default_factory=list)
+    artifacts_next_cursor: str | None = None
 
 
 class StreamResponse(BaseModel):

@@ -36,6 +36,12 @@ async function openConversation(page: Page): Promise<void> {
   await page.getByTestId('provider-selector').waitFor()
 }
 
+async function chooseProfile(page: Page, label: string): Promise<void> {
+  const trigger = page.getByTestId('model-trigger')
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click()
+  await page.getByTestId('provider-option').filter({ hasText: label }).getByRole('menuitemradio').click()
+}
+
 /** The whole turn: choose, send, and let the stream reach its end. */
 async function sendATurn(page: Page, content: string): Promise<void> {
   const composer = page.getByLabel('Message')
@@ -62,23 +68,19 @@ test('a profile this installation cannot serve is stated before anything is sent
   await mockApi(page)
   await mockDurableApi(page)
   await openConversation(page)
+  await page.getByTestId('model-trigger').click()
 
   // The reason is stated in the same place the choices are, so a reader acts
   // instead of guessing why a name has no button. Two reasons are shown here,
   // because the reason is what a reader acts on and neither one is hidden
   // behind a name with nothing under it: a key this installation does not
   // configure, and a declaration this build cannot use.
-  await expect(
-    page.getByText('Needs a key — Not available in this installation'),
-  ).toBeVisible()
-  await expect(
-    page.getByText('Needs a binding — This profile needs a credential binding it does not name'),
-  ).toBeVisible()
-  expect(
-    await page
-      .getByRole('button', { name: /Needs a key|Needs a binding/ })
-      .count(),
-  ).toBe(0)
+  const missingKey = page.getByTestId('provider-option').filter({ hasText: 'Needs a key' })
+  const invalidBinding = page.getByTestId('provider-option').filter({ hasText: 'Needs a binding' })
+  await expect(missingKey).toContainText('Not available in this installation')
+  await expect(invalidBinding).toContainText('This profile needs a credential binding it does not name')
+  expect(await missingKey.getByRole('button').count()).toBe(0)
+  expect(await invalidBinding.getByRole('button').count()).toBe(0)
 })
 
 test('choosing another profile names it, and the next turn asks for it', async ({
@@ -92,10 +94,10 @@ test('choosing another profile names it, and the next turn asks for it', async (
   })
   await openConversation(page)
 
-  await page.getByRole('button', { name: 'Backup model', exact: true }).click()
+  await chooseProfile(page, 'Backup model')
   // The choice is stated where the next turn is composed, and it is the
   // choice that answers — not the installation's default.
-  await expect(page.getByRole('button', { name: /Backup model.*\(chosen\)/ })).toBeVisible()
+  await expect(page.getByTestId('model-trigger')).toContainText('backup-fixture')
 
   await sendATurn(page, 'Deploy staging')
 
@@ -118,18 +120,20 @@ test('a chosen profile survives a reload, because the run read states it', async
   })
   await openConversation(page)
 
-  await page.getByRole('button', { name: 'Backup model', exact: true }).click()
+  await chooseProfile(page, 'Backup model')
   await sendATurn(page, 'Deploy staging')
 
   const named =
     page.getByText('Backup model · backup-fixture at api.backup.test')
+  await page.getByTestId('run-summary').click()
   await expect(named).toBeVisible()
 
   // A reload is a different browser: the events it replays are pruned and
   // carry no provider, so the card can only name one because the run read
   // said so.
   await page.reload()
-  await openConversation(page)
+  await expect(page).toHaveURL(/\/conversation\/c1$/)
+  await page.getByTestId('run-summary').click()
   await expect(named).toBeVisible()
   expect(asked.submitted).toHaveLength(1)
 })
@@ -147,12 +151,13 @@ test('a destination of a different kind reads the same way', async ({ page }) =>
   // the first: the browser never learns what an adapter is or what a
   // destination is, so nothing here is a second kind of choice — it is the
   // same choice, at another address.
-  await page.getByRole('button', { name: 'Local model', exact: true }).click()
+  await chooseProfile(page, 'Local model')
   await sendATurn(page, 'Deploy staging')
 
   // The request itself names the profile, so the choice reached the server
   // rather than only the card.
   expect(asked.submitted[0].payload['provider_profile_id']).toBe('local-model')
+  await page.getByTestId('run-summary').click()
 
   // The card makes the same sentence it made for the first profile: a label,
   // a model, a destination. Nothing about this one is shaped by either.
@@ -160,10 +165,8 @@ test('a destination of a different kind reads the same way', async ({ page }) =>
     page.getByText('Local model · local-fixture at localhost:11434'),
   ).toBeVisible()
 
-  // And it reported no counts, so the card says so rather than estimating —
-  // the other half of the claim, and the reason the fixture leaves usage
-  // empty here.
-  await expect(page.getByText('Not reported')).toBeVisible()
+  // Missing usage leaves the compact summary's token statistic absent.
+  await expect(page.getByTestId('run-total-tokens')).toHaveCount(0)
 })
 
 test('a profile under an adapter added later reads the same way', async ({ page }) => {
@@ -178,19 +181,17 @@ test('a profile under an adapter added later reads the same way', async ({ page 
   // The same choice, at a destination reached by a second adapter: nothing in
   // the browser was written for one adapter, so a profile added later is
   // offered and chosen the way the first ones were.
-  await page.getByRole('button', { name: 'Messages model', exact: true }).click()
+  await chooseProfile(page, 'Messages model')
   await sendATurn(page, 'Deploy staging')
 
   expect(asked.submitted[0].payload['provider_profile_id']).toBe('messages-model')
+  await page.getByTestId('run-summary').click()
 
-  // The card makes the same sentence, and states the counts this provider
-  // reported without adding a total it never reported: a card that needed
-  // one would have said "Not reported" instead.
+  // Input/output counts do not imply a provider-reported total.
   await expect(
     page.getByText('Messages model · messages-fixture at api.messages.test'),
   ).toBeVisible()
-  await expect(page.getByText('in 11 · out 7')).toBeVisible()
-  expect(await page.getByText('Not reported').count()).toBe(0)
+  await expect(page.getByTestId('run-total-tokens')).toHaveCount(0)
 })
 
 test('a fallback is offered only where the chosen profile allows it', async ({
@@ -206,14 +207,16 @@ test('a fallback is offered only where the chosen profile allows it', async ({
 
   // The default profile names one destination it can fall back to, so the
   // opt-in is offered; the backup profile names none, so it is not.
-  await page.getByRole('button', { name: 'Fall back to Backup model' }).click()
+  await page.getByTestId('model-trigger').click()
+  await page.getByTestId('fallback-option').filter({ hasText: 'backup-fixture' }).click()
   await sendATurn(page, 'Deploy staging')
   expect(asked.submitted[0].payload['fallback_profile_ids']).toEqual(['backup-model'])
 
   // Choosing a profile that allows no fallback drops the promise rather than
   // leaving a control the server would refuse.
-  await page.getByRole('button', { name: 'Backup model', exact: true }).click()
-  expect(await page.getByRole('button', { name: /Fall back to/ }).count()).toBe(0)
+  await chooseProfile(page, 'Backup model')
+  await page.getByTestId('model-trigger').click()
+  expect(await page.getByTestId('fallback-option').count()).toBe(0)
 })
 
 test('a bounded outage is reported with the copy the API settled', async ({
@@ -229,6 +232,7 @@ test('a bounded outage is reported with the copy the API settled', async ({
   await sendATurn(page, 'Deploy staging')
 
   await expect(page.getByText('Failed')).toBeVisible()
+  await page.getByTestId('run-summary').click()
   // The safe copy, never a provider's own body: the API settled these words.
   await expect(
     page.getByText('The model provider is busy right now. Try again in a moment.'),

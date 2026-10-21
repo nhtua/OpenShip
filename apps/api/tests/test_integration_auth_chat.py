@@ -73,7 +73,6 @@ def test_full_auth_then_chat_flow(client: TestClient, monkeypatch):
     )
 
     assert resp.status_code == 202
-
     # --- Step 4: List conversations (should include the one we just created) ---
     convs = client.get("/api/conversations", headers=headers)
     assert convs.status_code == 200

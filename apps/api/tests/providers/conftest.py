@@ -124,6 +124,44 @@ def sdk_chunk(*, content=None, finish_reason=None, usage=None, model=FIXTURE_MOD
     )
 
 
+def sdk_tool_chunk(*, fragments, finish_reason=None, model=FIXTURE_MODEL):
+    """One Chat Completions chunk with native tool-call deltas."""
+    calls = [
+        _Delta(
+            index=fragment.get("index", 0),
+            id=fragment.get("id"),
+            type=fragment.get("type"),
+            function=_Delta(
+                name=fragment.get("name"),
+                arguments=fragment.get("arguments"),
+            ),
+        )
+        for fragment in fragments
+    ]
+    return _Chunk(
+        choices=[
+            _Choice(
+                finish_reason=finish_reason,
+                index=0,
+                delta=_Delta(
+                    content=None,
+                    role=None,
+                    refusal=None,
+                    tool_calls=calls,
+                ),
+                logprobs=None,
+                message=None,
+            )
+        ],
+        created=0,
+        id="chunk-fixture",
+        model=model,
+        object="chat.completion.chunk",
+        system_fingerprint=None,
+        usage=None,
+    )
+
+
 class _Delta:
     def __init__(self, **fields):
         self.__dict__.update(fields)

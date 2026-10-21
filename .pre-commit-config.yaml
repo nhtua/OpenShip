@@ -19,7 +19,8 @@ repos:
 
       # The API's own validation, gated on the API changing so a frontend
       # commit never pays for it. The unit lane is the whole suite minus the
-      # lanes that need a service or a live provider — the same lane CI runs.
+      # lanes that need a service, a synthetic full stack, or a live provider —
+      # the same network-free lane CI runs.
       - id: api-ruff
         name: API Ruff Lint
         entry: bash -c "cd apps/api && uv run ruff check ."
@@ -30,7 +31,7 @@ repos:
 
       - id: api-tests
         name: API Unit Tests
-        entry: bash -c "cd apps/api && uv run pytest -q -m 'not postgres and not provider_live'"
+        entry: bash -c "cd apps/api && uv run pytest -q -m 'not postgres and not provider_live and not full_stack'"
         language: system
         types: [python]
         pass_filenames: false

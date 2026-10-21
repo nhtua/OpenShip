@@ -39,11 +39,21 @@ def _sse_heartbeat() -> str:
 @router.get("/{conversation_id}/snapshot", response_model=SnapshotResponse)
 async def get_snapshot(
     conversation_id: str,
+    artifact_limit: int = Query(default=50, ge=1, le=100),
+    artifact_cursor: str | None = None,
+    operation_limit: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
     """Get the current authoritative state snapshot for a conversation."""
-    return read_snapshot(db, user.id, conversation_id)
+    return read_snapshot(
+        db,
+        user.id,
+        conversation_id,
+        artifact_limit=artifact_limit,
+        artifact_cursor=artifact_cursor,
+        operation_limit=operation_limit,
+    )
 
 
 @router.get("/{conversation_id}/events", response_model=StreamResponse)

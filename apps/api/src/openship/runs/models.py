@@ -54,12 +54,24 @@ class Run(Base):
     # guessed for it.
     model_selection = Column(Text, nullable=True)
     model_configuration = Column(Text, nullable=True)
+    kind = Column(String(20), nullable=False, server_default="chat")
+    graph_version = Column(Integer, nullable=False, server_default="1")
+    execution_configuration = Column(Text, nullable=True)
+    execution_started_at = Column(DateTime(timezone=True), nullable=True)
+    execution_deadline_at = Column(DateTime(timezone=True), nullable=True)
+    command_digest = Column(String(64), nullable=True)
+    tool_command_json = Column(Text, nullable=True)
+    # Digest of the original user-visible submission semantics. Null means
+    # this run predates tool-mode request pinning and must remain unknown.
+    submission_digest = Column(String(64), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
             "status IN ('created', 'queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out', 'stale')",
             name="ck_runs_status",
         ),
+        CheckConstraint("kind IN ('chat', 'tool')", name="ck_runs_kind"),
+        CheckConstraint("graph_version >= 1", name="ck_runs_graph_version"),
         Index("ix_runs_conversation_id", "conversation_id"),
         Index("ix_runs_project_id", "project_id"),
         Index("ix_runs_status", "status"),
@@ -117,6 +129,10 @@ class ProviderAttempt(Base):
     error_code = Column(String(50), nullable=True)
     usage = Column(Text, nullable=True)
     reserved_cost_usd = Column(Numeric(12, 6), nullable=True)
+    model_turn_ordinal = Column(Integer, nullable=True)
+    reserved_input_tokens = Column(Integer, nullable=True)
+    reserved_output_tokens = Column(Integer, nullable=True)
+    reserved_total_tokens = Column(Integer, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("run_id", "ordinal", name="uq_provider_attempts_run_id_ordinal"),
@@ -124,7 +140,45 @@ class ProviderAttempt(Base):
             "outcome IN ('started', 'succeeded', 'failed', 'cancelled')",
             name="ck_provider_attempts_outcome",
         ),
+        CheckConstraint(
+            "model_turn_ordinal IS NULL OR model_turn_ordinal >= 0",
+            name="ck_provider_attempts_model_turn_ordinal",
+        ),
+        CheckConstraint(
+            "reserved_input_tokens IS NULL OR reserved_input_tokens >= 0",
+            name="ck_provider_attempts_reserved_input_tokens",
+        ),
+        CheckConstraint(
+            "reserved_output_tokens IS NULL OR reserved_output_tokens >= 0",
+            name="ck_provider_attempts_reserved_output_tokens",
+        ),
+        CheckConstraint(
+            "reserved_total_tokens IS NULL OR reserved_total_tokens >= 0",
+            name="ck_provider_attempts_reserved_total_tokens",
+        ),
         Index("ix_provider_attempts_run_id", "run_id"),
+    )
+
+
+class RunTranscriptRecord(Base):
+    """One complete normalized message in a tool-enabled run."""
+
+    __tablename__ = "run_transcript_entries"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    ordinal = Column(Integer, nullable=False)
+    model_turn_ordinal = Column(Integer, nullable=False)
+    message_json = Column(Text, nullable=False)
+    logical_call_ids_json = Column(Text, nullable=False, server_default="[]")
+    logical_call_id = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "ordinal", name="uq_run_transcript_run_ordinal"),
+        CheckConstraint("ordinal >= 0", name="ck_run_transcript_ordinal"),
+        CheckConstraint("model_turn_ordinal >= 0", name="ck_run_transcript_model_turn"),
+        Index("ix_run_transcript_run_turn", "run_id", "model_turn_ordinal", "ordinal"),
     )
 
 

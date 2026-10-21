@@ -1,32 +1,57 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { useArtifactsStore } from '@/stores/artifacts'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import RunCard from '@/components/chat/RunCard.vue'
+import ConversationFiles from '@/components/chat/ConversationFiles.vue'
+import Icon from '@/components/common/Icon.vue'
 import {
   Alert,
   AlertDescription,
   AlertTitle,
   Button,
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
 } from '@/components/ui'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const chat = useChatStore()
+const artifacts = useArtifactsStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
 const isCreatingConversation = ref(false)
 const isLoadingConversation = ref(false)
+const isToolSubmitting = ref(false)
+const conversationFilesOpen = ref(false)
 // Driven from the resulting store error, never inferred from an empty list.
 const historyLoadFailed = ref(false)
+const routeReady = ref(false)
+let disposed = false
+let routeLoadGeneration = 0
+let routeLoad: Promise<void> = Promise.resolve()
+
+chat.deselectConversation()
+
+const hasActiveRun = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  const status = conversationId ? chat.runCards.get(conversationId)?.status : null
+  return status ? ['queued', 'running', 'paused'].includes(status) : false
+})
 
 const busy = computed(
   () =>
+    !routeReady.value ||
     chat.isStreaming ||
     isCreatingConversation.value ||
     isLoadingConversation.value,
@@ -36,10 +61,42 @@ const title = computed(
   () => chat.currentConversation?.title || 'New Conversation',
 )
 
+const conversationOperations = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  return conversationId
+    ? [...(chat.toolOperationsByConversation.get(conversationId)?.values() ?? [])]
+    : []
+})
+
+const conversationFiles = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  return conversationId ? artifacts.byConversation.get(conversationId) ?? [] : []
+})
+const conversationFileCount = computed(() =>
+  conversationWorkspace.value?.quota.committed_count ?? conversationFiles.value.length,
+)
+const conversationWorkspace = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  return conversationId ? artifacts.workspaceByConversation.get(conversationId) ?? null : null
+})
+const selectedArtifactId = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  return conversationId ? artifacts.selectedByConversation.get(conversationId) ?? null : null
+})
+const selectedFileRead = computed(() =>
+  selectedArtifactId.value ? artifacts.contentByArtifact.get(selectedArtifactId.value) ?? null : null,
+)
+
+watch(() => chat.currentConversation?.id, () => {
+  conversationFilesOpen.value = false
+})
+
 const pendingSubmissionId = computed(() => {
   const conversationId = chat.currentConversation?.id
   if (!conversationId) return null
   return [...chat.pendingRequests.entries()].find(
+    ([, pending]) => pending.conversation_id === conversationId,
+  )?.[0] ?? [...chat.pendingToolRequests.entries()].find(
     ([, pending]) => pending.conversation_id === conversationId,
   )?.[0] ?? null
 })
@@ -53,53 +110,76 @@ async function loadHistory() {
   isLoadingConversations.value = false
 }
 
-async function loadConversationById(id: string) {
-  isLoadingConversation.value = true
+async function loadConversationFromRoute() {
+  const generation = ++routeLoadGeneration
+  chat.deselectConversation()
+  conversationFilesOpen.value = false
+  const id = route.name === 'conversation' && typeof route.params.conversationId === 'string'
+    ? route.params.conversationId
+    : null
+  isLoadingConversation.value = Boolean(id)
+  if (!id) return
+  // Router params are decoded; separators must never become API path segments.
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    chat.error = 'Invalid conversation link.'
+    isLoadingConversation.value = false
+    return
+  }
   try {
     await chat.loadConversation(id)
+    if (generation !== routeLoadGeneration) return
+    if (chat.currentConversation?.id === id) await artifacts.loadConversation(id)
   } finally {
-    isLoadingConversation.value = false
+    if (generation === routeLoadGeneration) isLoadingConversation.value = false
   }
 }
 
-async function handleCreateConversation(newTitle: string) {
-  if (busy.value) return
+watch(() => [route.name, route.params.conversationId], () => {
+  if (routeReady.value) routeLoad = loadConversationFromRoute()
+})
+
+async function createAndOpenConversation(newTitle: string): Promise<string | null> {
+  const origin = route.fullPath
+  const generation = routeLoadGeneration
   isCreatingConversation.value = true
   chat.error = null
   try {
     const conv = await chat.createConversation(newTitle)
-    if (conv) {
-      await loadConversationById(conv.id)
-    }
+    // A pending creation must not navigate away from a newer browser location.
+    if (!conv || disposed || route.fullPath !== origin || generation !== routeLoadGeneration) return null
+    await router.push({ name: 'conversation', params: { conversationId: conv.id } })
+    await nextTick()
+    await routeLoad
+    return chat.currentConversation?.id === conv.id ? conv.id : null
   } finally {
     isCreatingConversation.value = false
   }
 }
 
-async function handleSelectConversation(id: string) {
-  if (busy.value || id === chat.currentConversation?.id) return
-  chat.error = null
-  await loadConversationById(id)
+async function handleCreateConversation(newTitle: string) {
+  if (busy.value) return
+  await createAndOpenConversation(newTitle)
 }
 
-async function handleSend(content: string) {
+async function handleSelectConversation(id: string) {
+  if (busy.value || id === chat.currentConversation?.id) return
+  const generation = routeLoadGeneration
+  // Lazy route resolution can finish after another composer interaction.
+  isLoadingConversation.value = true
+  try {
+    await router.push({ name: 'conversation', params: { conversationId: id } })
+  } finally {
+    if (generation === routeLoadGeneration) isLoadingConversation.value = false
+  }
+}
+
+async function handleSend(content: string, options?: { enableTools: boolean }) {
   if (busy.value) return
   chat.error = null
 
-  // If no conversation is selected, create one first
-  if (!chat.currentConversation) {
-    isCreatingConversation.value = true
-    try {
-      const conv = await chat.createConversation('New Conversation')
-      if (conv) {
-        await loadConversationById(conv.id)
-      }
-    } finally {
-      isCreatingConversation.value = false
-    }
-  }
-
-  await chat.sendMessage(content, chat.currentConversation?.id ?? null)
+  const conversationId = chat.currentConversation?.id
+    ?? await createAndOpenConversation('New Conversation')
+  if (conversationId) await chat.sendMessage(content, conversationId, options)
 }
 
 // A run that has reached an end has nothing left to stop, and a run that has
@@ -132,7 +212,47 @@ function dismissError() {
 
 async function handleRetrySubmission() {
   const requestId = pendingSubmissionId.value
-  if (requestId) await chat.retrySubmission(requestId)
+  if (!requestId) return
+  if (chat.pendingRequests.has(requestId)) await chat.retrySubmission(requestId)
+  else await chat.retryToolSubmission(requestId)
+}
+
+async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: { query: string; max_results: number } }) {
+  if (busy.value || hasActiveRun.value) return
+  isToolSubmitting.value = true
+  try {
+    const conversationId = chat.currentConversation?.id
+      ?? await createAndOpenConversation('New Conversation')
+    if (conversationId) await chat.submitToolSearch(conversationId, command)
+  } finally {
+    isToolSubmitting.value = false
+  }
+}
+
+function handleDownloadArtifact(artifactId: string, name: string) {
+  void artifacts.download(artifactId, name)
+}
+
+function handleSelectFile(conversationId: string, artifactId: string) {
+  void artifacts.selectFile(conversationId, artifactId)
+}
+
+function handleReadMoreFile(conversationId: string, artifactId: string) {
+  void artifacts.readMore(conversationId, artifactId)
+}
+
+function handleDeleteFile(conversationId: string, artifactId: string) {
+  const file = artifacts.byConversation.get(conversationId)?.find((item) => item.id === artifactId)
+  if (!file || !window.confirm(`Delete saved file “${file.name}”?`)) return
+  void artifacts.deleteArtifact(conversationId, artifactId)
+}
+
+function toggleConversationFiles() {
+  conversationFilesOpen.value = !conversationFilesOpen.value
+}
+
+function handleCancelOperation(runId: string) {
+  if (activeRunId.value === runId) void chat.cancelRun(runId)
 }
 
 // The composer's selector names a profile; the store decides what the next
@@ -144,9 +264,11 @@ function handleSelectProfile(profileId: string | null, fallbackIds: string[]) {
 async function handleSignOut() {
   auth.logout()
   chat.clearMessages()
+  artifacts.clear()
   chat.conversations = []
   chat.error = null
   historyLoadFailed.value = false
+  conversationFilesOpen.value = false
   await router.replace({ name: 'login' })
 }
 
@@ -155,33 +277,39 @@ onMounted(async () => {
   // it is loaded when the page is. A missing catalog is stated by the store
   // rather than guessed at here, and the next turn simply names no profile.
   await chat.loadModelProfiles()
+  await chat.loadCapabilities()
   await loadHistory()
-  // Auto-create a conversation if none exist so the user can immediately start chatting
-  if (!isLoadingConversations.value && chat.conversations.length === 0 && !historyLoadFailed.value) {
-    isCreatingConversation.value = true
-    try {
-      const conv = await chat.createConversation('New Conversation')
-      if (conv) {
-        await loadConversationById(conv.id)
-      }
-    } finally {
-      isCreatingConversation.value = false
-    }
+  if (disposed) return
+  routeReady.value = true
+  if (route.name === 'conversation') {
+    routeLoad = loadConversationFromRoute()
+    await routeLoad
   }
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+  routeReady.value = false
+  routeLoadGeneration += 1
+  chat.deselectConversation()
 })
 </script>
 
 <template>
   <AppLayout
     :title="title"
-    :is-streaming="chat.isStreaming"
+    :is-streaming="chat.isStreaming && !isToolSubmitting"
     :username="auth.user?.username ?? null"
     :conversations="chat.conversations"
     :current-conversation-id="chat.currentConversation?.id ?? null"
+    :show-conversation-files="Boolean(chat.currentConversation)"
+    :conversation-files-open="conversationFilesOpen"
+    :conversation-file-count="conversationFileCount"
     :busy="busy"
     @create-conversation="handleCreateConversation"
     @select-conversation="handleSelectConversation"
     @sign-out="handleSignOut"
+    @toggle-conversation-files="toggleConversationFiles"
   >
     <!-- Error banner lives outside the stream's scrolling content so a
          failure never disappears below the history. -->
@@ -210,24 +338,41 @@ onMounted(async () => {
            still be stopped - a run that reached an end has nothing left to
            stop, and offering it would be a control that does nothing. -->
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
-        <RunCard :card="chat.runCards.get(chat.currentConversation.id)!" />
-        <div v-if="pendingSubmissionId" class="shrink-0 px-4 pt-2">
-          <Button size="sm" @click="handleRetrySubmission">
-            Retry submission
-          </Button>
-        </div>
-        <div v-if="activeRunId" class="shrink-0 px-4 pt-2">
+        <RunCard
+          :card="chat.runCards.get(chat.currentConversation.id)!"
+          :has-actions="Boolean(pendingSubmissionId || (activeRunId && chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool'))"
+        >
           <Button
-            size="sm"
-            variant="destructive"
+            v-if="pendingSubmissionId"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Retry submission"
+            title="Retry submission"
+            @click="handleRetrySubmission"
+          >
+            <Icon name="refresh" />
+          </Button>
+          <Button
+            v-if="activeRunId && chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool'"
+            size="icon-sm"
+            variant="ghost"
+            class="text-destructive hover:text-destructive"
+            aria-label="Cancel run"
+            title="Cancel run"
             @click="handleCancelRun"
           >
-            Cancel run
+            <Icon name="times" />
           </Button>
-        </div>
+        </RunCard>
       </div>
       <!-- The stream/composer components own their data-testid hooks. -->
-      <ChatStream :messages="chat.messages" :is-streaming="chat.isStreaming" />
+      <ChatStream
+        :messages="chat.messages"
+        :operations="conversationOperations"
+        :is-streaming="chat.isStreaming"
+        @download="handleDownloadArtifact"
+        @cancel="handleCancelOperation"
+      />
       <ChatInput
         :disabled="busy"
         :selection-disabled="chat.isSubmitting"
@@ -236,9 +381,51 @@ onMounted(async () => {
         :selected-profile-id="chat.selectedProfileId"
         :fallback-ids="chat.selectedFallbackIds"
         :catalog-error="chat.profileError"
+        :capabilities="chat.searchCapabilities"
+        :tool-submission-disabled="hasActiveRun"
+        :submission-error="chat.error"
         @send="handleSend"
+        @search="handleSearch"
         @select="handleSelectProfile"
       />
     </div>
+
+    <Sheet
+      :open="conversationFilesOpen"
+      @update:open="conversationFilesOpen = $event"
+    >
+      <SheetContent
+        id="conversation-files-panel"
+        data-testid="conversation-files-panel"
+        class="w-[min(28rem,92vw)] gap-0 p-0 sm:max-w-md"
+      >
+        <SheetHeader class="shrink-0 border-b border-border px-5 py-4 pr-14 text-left">
+          <SheetTitle>Conversation files</SheetTitle>
+          <SheetDescription>
+            Files saved during this conversation.
+          </SheetDescription>
+        </SheetHeader>
+        <ConversationFiles
+          v-if="chat.currentConversation"
+          :conversation-id="chat.currentConversation.id"
+          :workspace="conversationWorkspace"
+          :files="conversationFiles"
+          :loading="artifacts.loadingConversation === chat.currentConversation.id"
+          :loading-more="artifacts.loadingMoreConversation === chat.currentConversation.id"
+          :error="artifacts.error"
+          :next-cursor="artifacts.nextCursor.get(chat.currentConversation.id) ?? null"
+          :selected-artifact-id="selectedArtifactId"
+          :selected-content="selectedFileRead?.content ?? null"
+          :selected-next-offset="selectedFileRead?.next_offset ?? null"
+          :reading-artifact-id="artifacts.readingArtifactId"
+          :deleting-artifact-id="artifacts.deletingArtifactId"
+          @load-more="artifacts.loadMore"
+          @select-file="handleSelectFile"
+          @read-more="handleReadMoreFile"
+          @download-file="handleDownloadArtifact"
+          @delete-file="handleDeleteFile"
+        />
+      </SheetContent>
+    </Sheet>
   </AppLayout>
 </template>

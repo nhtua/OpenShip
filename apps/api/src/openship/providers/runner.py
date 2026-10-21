@@ -16,6 +16,7 @@ request is made. None of this is an exact provider invoice.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 from decimal import Decimal
 
@@ -51,21 +52,27 @@ class _Observed:
 
     def __init__(self):
         self.parts: list[str] = []
+        self.tool_calls = []
+        self.saw_tool_fragments = False
         self.usage: TokenUsage | None = None
         self.actual_model: str | None = None
         self.reason: str | None = None
 
     def produced(self) -> bool:
         """Whether an answer had already begun."""
-        return bool(self.parts)
+        return bool(self.parts or self.tool_calls or self.saw_tool_fragments)
 
 
 def _context_bytes(request: ModelRequest) -> int:
-    """The UTF-8 size of the conversation as it would actually be sent."""
-    return sum(
-        len(message.role.encode("utf-8")) + len(message.content.encode("utf-8"))
-        for message in request.messages
+    """The UTF-8 size of the normalized request, including schemas and tool data."""
+    encoded = json.dumps(
+        request.model_dump(mode="json", exclude_none=True),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
     )
+    return len(encoded.encode("utf-8"))
 
 
 def _admit(request: ModelRequest, limits: RunLimits, profile) -> None:
@@ -170,6 +177,10 @@ async def _drain(stream, observed: _Observed) -> None:
         elif event.type == "usage_update":
             # Cumulative snapshots: the last one is the fullest, never a sum.
             observed.usage = event.usage
+        elif event.type == "tool_call_delta":
+            observed.saw_tool_fragments = True
+        elif event.type == "tool_call_ready":
+            observed.tool_calls.append(event.tool_call)
         else:
             observed.reason = event.reason
             observed.actual_model = event.actual_model
@@ -300,6 +311,8 @@ async def run_model_turn(
     sleeper=None,
     jitter=None,
     authorize_profile=None,
+    budget=None,
+    model_turn_ordinal: int = 0,
 ) -> ProviderTurnResult:
     """Run one bounded model turn through the configuration this run pinned.
 
@@ -342,13 +355,28 @@ async def run_model_turn(
         if authorize_profile is not None:
             authorize_profile(profile)
 
-        attempt_id = recorder.start(
-            profile,
-            reason=_reason(index, made),
-            reserved_cost_usd=reservation[1] if reservation is not None else None,
-        )
+        reason = _reason(index, made)
+        attempt_request = request
+        if budget is None:
+            attempt_id = recorder.start(
+                profile,
+                reason=reason,
+                reserved_cost_usd=reservation[1] if reservation is not None else None,
+            )
+        else:
+            admitted = budget.reserve_generation(
+                profile,
+                reason=reason,
+                model_turn_ordinal=model_turn_ordinal,
+                requested_output_tokens=request.max_output_tokens,
+                reserved_tokens=reservation[0] if reservation is not None else None,
+                reserved_cost=reservation[1] if reservation is not None else None,
+            )
+            attempt_id = admitted.attempt_id
+            if not admitted.tool_calls_allowed:
+                attempt_request = request.model_copy(update={"tool_choice": "none"})
         observed = _Observed()
-        kind, detail = await _attempt(adapter, request, profile, control, observed)
+        kind, detail = await _attempt(adapter, attempt_request, profile, control, observed)
         made += 1
 
         if kind == "interrupted":
@@ -424,10 +452,11 @@ async def run_model_turn(
         text = "".join(observed.parts).strip()
         return ProviderTurnResult(
             text=text,
+            tool_calls=tuple(observed.tool_calls),
             usage=observed.usage,
             actual_model=observed.actual_model,
             selected_profile_id=profile.id,
             attempt_count=made,
             finish_reason=observed.reason or "stop",
-            partial=observed.reason is not None and observed.reason != "stop",
+            partial=observed.reason not in (None, "stop", "tool_calls"),
         )

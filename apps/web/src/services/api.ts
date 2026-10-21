@@ -1,5 +1,18 @@
 import axios from 'axios'
-import type { AuthResponse, Run, Snapshot, TurnSubmitRequest, ModelProfileCatalog } from '@/types'
+import type {
+  ArtifactPage,
+  ArtifactSummary,
+  AuthResponse,
+  CapabilitySummary,
+  ConversationWorkspacePage,
+  OperationPage,
+  Run,
+  Snapshot,
+  ToolCommandRequest,
+  TurnSubmitRequest,
+  ModelProfileCatalog,
+  WorkspaceFileRead,
+} from '@/types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -52,10 +65,20 @@ export const runsApi = {
     api.post(`/runs/${runId}/cancel`, {}),
 
   getSnapshot: (conversationId: string): Promise<{ data: Snapshot }> =>
-    api.get(`/conversations/${conversationId}/snapshot`),
+    api.get(`/conversations/${encodeURIComponent(conversationId)}/snapshot`),
 
   getRun: (runId: string): Promise<{ data: Run }> =>
     api.get(`/runs/${runId}`),
+
+  submitTool: (
+    conversationId: string,
+    request: ToolCommandRequest,
+  ): Promise<{ data: Run }> => api.post(`/runs/${conversationId}/tools`, request),
+
+  getOperations: (
+    runId: string,
+    params: { limit?: number; cursor?: string } = {},
+  ): Promise<{ data: OperationPage }> => api.get(`/runs/${runId}/operations`, { params }),
 }
 
 // The installation's own model profiles: what may be selected, and nothing
@@ -63,6 +86,39 @@ export const runsApi = {
 // credential.
 export const modelProfilesApi = {
   list: (): Promise<{ data: ModelProfileCatalog }> => api.get('/model-profiles'),
+}
+
+export const capabilitiesApi = {
+  list: (): Promise<{ data: CapabilitySummary[] }> => api.get('/capabilities'),
+}
+
+export const artifactsApi = {
+  list: (
+    conversationId: string,
+    params: { limit?: number; cursor?: string } = {},
+  ): Promise<{ data: ArtifactPage }> =>
+    api.get(`/conversations/${conversationId}/artifacts`, { params }),
+
+  download: (artifactId: string): Promise<{ data: Blob }> =>
+    api.get(`/artifacts/${artifactId}/content`, { responseType: 'blob' }),
+
+  delete: (artifactId: string): Promise<{ data: ArtifactSummary }> =>
+    api.delete(`/artifacts/${artifactId}`),
+}
+
+export const workspaceApi = {
+  get: (
+    conversationId: string,
+    params: { limit?: number; cursor?: string } = {},
+  ): Promise<{ data: ConversationWorkspacePage }> =>
+    api.get(`/conversations/${conversationId}/workspace`, { params }),
+
+  readFile: (
+    conversationId: string,
+    artifactId: string,
+    params: { offset?: number; max_bytes?: number } = {},
+  ): Promise<{ data: WorkspaceFileRead }> =>
+    api.get(`/conversations/${conversationId}/workspace/files/${artifactId}`, { params }),
 }
 
 export default api
