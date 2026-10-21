@@ -316,7 +316,7 @@ test('reconnect after page reload shows eventual run completion', async ({ page 
 
   reloading = true
   await page.reload()
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await expect(page).toHaveURL(/\/conversation\/c1$/)
   await expect(page.getByText('Hello world')).toBeVisible()
   await expect.poll(() => streamRequests).toBeGreaterThanOrEqual(2)
 })

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { authReturnPath } from '@/lib/navigation'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui'
 
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 
 const username = ref('')
 const email = ref('')
@@ -52,7 +54,7 @@ async function handleRegister() {
   })
 
   if (result.success) {
-    router.push({ name: 'chat' })
+    await router.replace(authReturnPath(router, route.query.redirect))
   } else {
     localError.value = result.error ?? auth.error ?? 'Registration failed'
   }
@@ -174,7 +176,7 @@ async function handleRegister() {
       <div class="mt-6 text-center">
         <p class="text-sm text-muted-foreground">
           Already have an account?
-          <router-link to="/login" class="text-primary hover:text-primary/90 underline-offset-4 hover:underline">Sign in</router-link>
+          <router-link :to="{ name: 'login', query: route.query.redirect ? { redirect: route.query.redirect } : {} }" class="text-primary hover:text-primary/90 underline-offset-4 hover:underline">Sign in</router-link>
         </p>
       </div>
     </div>

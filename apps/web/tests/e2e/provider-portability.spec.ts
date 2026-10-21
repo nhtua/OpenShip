@@ -125,13 +125,15 @@ test('a chosen profile survives a reload, because the run read states it', async
 
   const named =
     page.getByText('Backup model · backup-fixture at api.backup.test')
+  await page.getByTestId('run-summary').click()
   await expect(named).toBeVisible()
 
   // A reload is a different browser: the events it replays are pruned and
   // carry no provider, so the card can only name one because the run read
   // said so.
   await page.reload()
-  await openConversation(page)
+  await expect(page).toHaveURL(/\/conversation\/c1$/)
+  await page.getByTestId('run-summary').click()
   await expect(named).toBeVisible()
   expect(asked.submitted).toHaveLength(1)
 })
@@ -155,6 +157,7 @@ test('a destination of a different kind reads the same way', async ({ page }) =>
   // The request itself names the profile, so the choice reached the server
   // rather than only the card.
   expect(asked.submitted[0].payload['provider_profile_id']).toBe('local-model')
+  await page.getByTestId('run-summary').click()
 
   // The card makes the same sentence it made for the first profile: a label,
   // a model, a destination. Nothing about this one is shaped by either.
@@ -162,10 +165,8 @@ test('a destination of a different kind reads the same way', async ({ page }) =>
     page.getByText('Local model · local-fixture at localhost:11434'),
   ).toBeVisible()
 
-  // And it reported no counts, so the card says so rather than estimating —
-  // the other half of the claim, and the reason the fixture leaves usage
-  // empty here.
-  await expect(page.getByText('Not reported')).toBeVisible()
+  // Missing usage leaves the compact summary's token statistic absent.
+  await expect(page.getByTestId('run-total-tokens')).toHaveCount(0)
 })
 
 test('a profile under an adapter added later reads the same way', async ({ page }) => {
@@ -184,15 +185,13 @@ test('a profile under an adapter added later reads the same way', async ({ page 
   await sendATurn(page, 'Deploy staging')
 
   expect(asked.submitted[0].payload['provider_profile_id']).toBe('messages-model')
+  await page.getByTestId('run-summary').click()
 
-  // The card makes the same sentence, and states the counts this provider
-  // reported without adding a total it never reported: a card that needed
-  // one would have said "Not reported" instead.
+  // Input/output counts do not imply a provider-reported total.
   await expect(
     page.getByText('Messages model · messages-fixture at api.messages.test'),
   ).toBeVisible()
-  await expect(page.getByText('in 11 · out 7')).toBeVisible()
-  expect(await page.getByText('Not reported').count()).toBe(0)
+  await expect(page.getByTestId('run-total-tokens')).toHaveCount(0)
 })
 
 test('a fallback is offered only where the chosen profile allows it', async ({
@@ -233,6 +232,7 @@ test('a bounded outage is reported with the copy the API settled', async ({
   await sendATurn(page, 'Deploy staging')
 
   await expect(page.getByText('Failed')).toBeVisible()
+  await page.getByTestId('run-summary').click()
   // The safe copy, never a provider's own body: the API settled these words.
   await expect(
     page.getByText('The model provider is busy right now. Try again in a moment.'),

@@ -184,12 +184,13 @@ export const useChatStore = defineStore('chat', () => {
           await hydrateRunCard(conversationId, rebuilt.run_id)
         }
       } catch (snapErr) {
+        if (loadGeneration !== conversationLoadGeneration) return
         // Snapshot may not be available yet; fall through to messages
         console.warn('Snapshot unavailable, falling back to messages', snapErr)
       }
 
       // Fetch messages (authoritative for message content)
-      const res = await api.get(`/conversations/${conversationId}/messages`)
+      const res = await api.get(`/conversations/${encodeURIComponent(conversationId)}/messages`)
       if (loadGeneration !== conversationLoadGeneration) return
       const known = conversations.value.find((c) => c.id === conversationId)
       currentConversation.value = {
@@ -231,6 +232,7 @@ export const useChatStore = defineStore('chat', () => {
         }).catch((e) => console.warn('Event subscription failed', e))
       }
     } catch (err: unknown) {
+      if (loadGeneration !== conversationLoadGeneration) return
       const axiosErr = err as { response?: { data?: { detail?: string } } }
       error.value =
         axiosErr.response?.data?.detail ?? 'Failed to load conversation'
@@ -957,9 +959,17 @@ export const useChatStore = defineStore('chat', () => {
     messages.value.push(msg)
   }
 
-  function clearMessages() {
+  function deselectConversation() {
+    // Leaving the selected page also invalidates any outstanding history load.
+    // Runs and pending submissions stay available when the user returns.
+    conversationLoadGeneration += 1
     messages.value = []
     currentConversation.value = null
+    error.value = null
+  }
+
+  function clearMessages() {
+    deselectConversation()
     runCards.value.clear()
     toolOperationsByConversation.value.clear()
     pendingRequests.value.clear()
@@ -1000,6 +1010,7 @@ export const useChatStore = defineStore('chat', () => {
     subscribeToEvents,
     processDurableEvent,
     appendMessage,
+    deselectConversation,
     clearMessages,
   }
 })

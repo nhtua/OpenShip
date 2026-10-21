@@ -65,7 +65,7 @@ export const runsApi = {
     api.post(`/runs/${runId}/cancel`, {}),
 
   getSnapshot: (conversationId: string): Promise<{ data: Snapshot }> =>
-    api.get(`/conversations/${conversationId}/snapshot`),
+    api.get(`/conversations/${encodeURIComponent(conversationId)}/snapshot`),
 
   getRun: (runId: string): Promise<{ data: Run }> =>
     api.get(`/runs/${runId}`),

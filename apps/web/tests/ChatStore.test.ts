@@ -96,6 +96,46 @@ describe('chat store', () => {
     expect(chat.messages).toEqual(messagesByConversation.c1)
   })
 
+  it('deselecting a conversation invalidates its pending load', async () => {
+    let release: ((response: { data: unknown }) => void) | undefined
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/conversations/c1/messages') {
+        return new Promise((resolve) => { release = resolve })
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    const chat = useChatStore()
+    const loading = chat.loadConversation('c1')
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+
+    chat.deselectConversation()
+    release?.({ data: messagesByConversation.c1 })
+    await loading
+
+    expect(chat.currentConversation).toBeNull()
+    expect(chat.messages).toEqual([])
+  })
+
+  it('ignores a delayed load error for an older conversation', async () => {
+    let reject: ((error: Error) => void) | undefined
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/conversations/c1/messages') {
+        return new Promise((_resolve, rejectLoad) => { reject = rejectLoad })
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    const chat = useChatStore()
+    const loading = chat.loadConversation('c1')
+    await vi.waitFor(() => expect(reject).toBeTypeOf('function'))
+
+    await chat.loadConversation('c2')
+    reject?.(apiError('Old conversation unavailable'))
+    await loading
+
+    expect(chat.currentConversation?.id).toBe('c2')
+    expect(chat.error).toBeNull()
+  })
+
   it('falls back to the title "Conversation" when metadata is unavailable', async () => {
     const chat = useChatStore()
     await chat.loadConversation('unknown-id')

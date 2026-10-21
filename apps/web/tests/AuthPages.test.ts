@@ -75,6 +75,34 @@ describe('LoginView', () => {
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('Invalid credentials')
   })
+
+  test.each([
+    ['/conversation/c2?view=files#latest', '/conversation/c2?view=files#latest'],
+    ['https://example.test/', '/'],
+    ['//example.test/', '/'],
+    ['/unrecognized-page', '/'],
+    ['/login', '/'],
+  ])('handles the sign-in return URL %s safely', async (redirect, expectedPath) => {
+    const { wrapper, router } = await mountWithRouter(LoginView, `/login?redirect=${encodeURIComponent(redirect)}`)
+    vi.spyOn(useAuthStore(), 'login').mockResolvedValue({ success: true })
+    await wrapper.get('input[name="username"]').setValue('testuser')
+    await wrapper.get('input[name="password"]').setValue('password123')
+    await wrapper.get('form').trigger('submit')
+
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe(expectedPath))
+    wrapper.unmount()
+  })
+
+  test('preserves the bookmarked conversation when moving to registration', async () => {
+    const { wrapper, router } = await mountWithRouter(LoginView, '/login?redirect=/conversation/c2')
+    await wrapper.get('a[href^="/register"]').trigger('click')
+
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.path).toBe('/register')
+      expect(router.currentRoute.value.query.redirect).toBe('/conversation/c2')
+    })
+    wrapper.unmount()
+  })
 })
 
 describe('RegisterView', () => {
@@ -105,6 +133,19 @@ describe('RegisterView', () => {
       global: { plugins: [createTestRouter()] },
     })
     expect(wrapper.find('a[href="/login"]').exists()).toBe(true)
+  })
+
+  test('opens the bookmarked conversation after successful registration', async () => {
+    const { wrapper, router } = await mountWithRouter(RegisterView, '/register?redirect=/conversation/c2')
+    vi.spyOn(useAuthStore(), 'register').mockResolvedValue({ success: true })
+    await wrapper.get('input[name="username"]').setValue('testuser')
+    await wrapper.get('input[name="email"]').setValue('test@example.com')
+    await wrapper.get('input[name="password"]').setValue('password123')
+    await wrapper.get('input[name="confirmPassword"]').setValue('password123')
+    await wrapper.get('form').trigger('submit')
+
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/conversation/c2'))
+    wrapper.unmount()
   })
 
   test('validation rejects short password', async () => {

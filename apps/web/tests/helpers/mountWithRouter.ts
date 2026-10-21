@@ -11,7 +11,7 @@ export interface MountResult {
 
 /**
  * Mounts a view with a memory router that mirrors the app's real route
- * names ('/' is the chat route, matching src/router.ts) and a fresh pinia.
+ * names (home, conversation, and auth pages) and a fresh pinia.
  */
 export async function mountWithRouter(
   component: Component,
@@ -23,6 +23,12 @@ export async function mountWithRouter(
 
   const routes = [
     { path: '/', name: 'chat', component: { template: '<div>Chat</div>' } },
+    {
+      path: '/conversation/:conversationId',
+      name: 'conversation',
+      component: { template: '<div>Chat</div>' },
+      meta: { requiresAuth: true },
+    },
     { path: '/login', name: 'login', component: { template: '<div>Login</div>' } },
     {
       path: '/register',

@@ -85,6 +85,9 @@ describe('ChatView', () => {
       (async (url: string) => healthyChatApiGet(url)) as never,
     )
     mockApi.post.mockResolvedValue({ data: null })
+    mockRunsApi.getSnapshot.mockReset().mockImplementation(async (id: string) => ({
+      data: { conversation_id: id, sequence: -1, events: [], runs: [] },
+    }))
     mockWorkspaceApi.get.mockReset().mockResolvedValue({
       data: {
         workspace: {
@@ -100,7 +103,7 @@ describe('ChatView', () => {
   })
 
   it('renders conversation history with the active selection', async () => {
-    const { wrapper } = await mountWithRouter(ChatView, '/')
+    const { wrapper, router } = await mountWithRouter(ChatView, '/')
 
     await vi.waitFor(
       () => {
@@ -120,6 +123,109 @@ describe('ChatView', () => {
       { timeout: wait },
     )
     expect(row.attributes('data-active')).toBe('true')
+    expect(router.currentRoute.value.path).toBe('/conversation/c2')
+  })
+
+  it('opens a bookmarked conversation and its files without a sidebar click', async () => {
+    const { wrapper, router } = await mountWithRouter(ChatView, '/conversation/c2')
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('h1').text()).toBe('Scale up web')
+      expect(wrapper.text()).toContain('Scale web to 3 replicas')
+      expect(mockWorkspaceApi.get).toHaveBeenCalledWith('c2', { cursor: undefined, limit: 50 })
+    })
+    expect(router.currentRoute.value.path).toBe('/conversation/c2')
+    expect(mockApi.post).not.toHaveBeenCalled()
+  })
+
+  it('restores conversation content with Back and Forward and clears it at home', async () => {
+    const { wrapper, router } = await mountWithRouter(ChatView, '/')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Deploy pipeline'))
+    await findByText(wrapper, 'Deploy pipeline')!.trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Staging deployed successfully.'))
+    await findByText(wrapper, 'Scale up web')!.trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Scaled web to 3 replicas.'))
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.path).toBe('/conversation/c1')
+      expect(wrapper.text()).toContain('Staging deployed successfully.')
+      expect(wrapper.text()).not.toContain('Scaled web to 3 replicas.')
+    })
+    router.forward()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Scaled web to 3 replicas.'))
+
+    await wrapper.get('a[href="/"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.path).toBe('/')
+      expect(wrapper.text()).toContain('Start a conversation')
+      expect(useChatStore().currentConversation).toBeNull()
+      expect(wrapper.text()).not.toContain('Scaled web to 3 replicas.')
+    })
+  })
+
+  it('keeps home empty until the first conversation is created', async () => {
+    mockApi.post.mockResolvedValue({ data: {
+      id: 'unexpected', title: 'New Conversation', created_at: '', updated_at: '',
+    } })
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/workspace/conversations') return { data: [] }
+      return healthyChatApiGet(url)
+    }) as never)
+    const { wrapper, router } = await mountWithRouter(ChatView, '/')
+    await vi.waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/workspace/conversations'))
+    await nextTick()
+
+    expect(router.currentRoute.value.path).toBe('/')
+    expect(wrapper.text()).toContain('Start a conversation')
+    expect(mockApi.post).not.toHaveBeenCalled()
+  })
+
+  it('shows a conversation link error without retaining the previous conversation content', async () => {
+    const { wrapper, router } = await mountWithRouter(ChatView, '/conversation/c1')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Staging deployed successfully.'))
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/conversations/missing/messages') throw apiError('Conversation not found')
+      return healthyChatApiGet(url)
+    }) as never)
+
+    await router.push('/conversation/missing')
+
+    await vi.waitFor(() => expect(wrapper.find('[role="alert"]').text()).toContain('Conversation not found'))
+    expect(router.currentRoute.value.path).toBe('/conversation/missing')
+    expect(wrapper.text()).not.toContain('Staging deployed successfully.')
+    expect(useChatStore().currentConversation).toBeNull()
+  })
+
+  it.each(['c1%2F..%2Fc2', 'c1%5C..%5Cc2', '..'])('rejects a malformed conversation link %s', async (id) => {
+    const { wrapper } = await mountWithRouter(ChatView, `/conversation/${id}`)
+
+    await vi.waitFor(() => expect(wrapper.find('[role="alert"]').text()).toContain('Invalid conversation link'))
+    expect(mockRunsApi.getSnapshot).not.toHaveBeenCalled()
+    expect(useChatStore().currentConversation).toBeNull()
+  })
+
+  it('does not restore a delayed conversation after navigating home', async () => {
+    const { wrapper, router } = await mountWithRouter(ChatView, '/')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Deploy pipeline'))
+    let release: ((response: { data: unknown }) => void) | undefined
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/conversations/c1/messages') {
+        return new Promise((resolve) => { release = resolve })
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    await router.push('/conversation/c1')
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+
+    await router.push('/')
+    release?.({ data: [{ id: 'late', role: 'assistant', content: 'Old content', conversation_id: 'c1', created_at: '' }] })
+    await nextTick()
+    await nextTick()
+
+    expect(useChatStore().currentConversation).toBeNull()
+    expect(wrapper.text()).not.toContain('Old content')
+    expect(wrapper.text()).toContain('Start a conversation')
   })
 
   it('shows a generated conversation title in the active chat header', async () => {
@@ -305,10 +411,10 @@ describe('ChatView', () => {
       }) as never,
     )
 
-    const { wrapper } = await mountWithRouter(ChatView, '/')
+    const { wrapper, router } = await mountWithRouter(ChatView, '/')
     await vi.waitFor(
       () => {
-        expect(findByText(wrapper, 'New Conversation')).toBeTruthy()
+        expect(findByText(wrapper, 'New Conversation')!.attributes('disabled')).toBeUndefined()
       },
       { timeout: wait },
     )
@@ -323,6 +429,7 @@ describe('ChatView', () => {
     await vi.waitFor(
       () => {
         expect(mockApi.get).toHaveBeenCalledWith('/conversations/c3/messages')
+        expect(router.currentRoute.value.path).toBe('/conversation/c3')
       },
       { timeout: wait },
     )

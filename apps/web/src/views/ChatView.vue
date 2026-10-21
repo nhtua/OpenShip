@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useArtifactsStore } from '@/stores/artifacts'
@@ -23,6 +23,7 @@ import {
 } from '@/components/ui'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const chat = useChatStore()
 const artifacts = useArtifactsStore()
@@ -35,6 +36,12 @@ const isToolSubmitting = ref(false)
 const conversationFilesOpen = ref(false)
 // Driven from the resulting store error, never inferred from an empty list.
 const historyLoadFailed = ref(false)
+const routeReady = ref(false)
+let disposed = false
+let routeLoadGeneration = 0
+let routeLoad: Promise<void> = Promise.resolve()
+
+chat.deselectConversation()
 
 const hasActiveRun = computed(() => {
   const conversationId = chat.currentConversation?.id
@@ -44,6 +51,7 @@ const hasActiveRun = computed(() => {
 
 const busy = computed(
   () =>
+    !routeReady.value ||
     chat.isStreaming ||
     isCreatingConversation.value ||
     isLoadingConversation.value,
@@ -102,54 +110,76 @@ async function loadHistory() {
   isLoadingConversations.value = false
 }
 
-async function loadConversationById(id: string) {
-  isLoadingConversation.value = true
+async function loadConversationFromRoute() {
+  const generation = ++routeLoadGeneration
+  chat.deselectConversation()
+  conversationFilesOpen.value = false
+  const id = route.name === 'conversation' && typeof route.params.conversationId === 'string'
+    ? route.params.conversationId
+    : null
+  isLoadingConversation.value = Boolean(id)
+  if (!id) return
+  // Router params are decoded; separators must never become API path segments.
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    chat.error = 'Invalid conversation link.'
+    isLoadingConversation.value = false
+    return
+  }
   try {
     await chat.loadConversation(id)
+    if (generation !== routeLoadGeneration) return
     if (chat.currentConversation?.id === id) await artifacts.loadConversation(id)
   } finally {
-    isLoadingConversation.value = false
+    if (generation === routeLoadGeneration) isLoadingConversation.value = false
   }
 }
 
-async function handleCreateConversation(newTitle: string) {
-  if (busy.value) return
+watch(() => [route.name, route.params.conversationId], () => {
+  if (routeReady.value) routeLoad = loadConversationFromRoute()
+})
+
+async function createAndOpenConversation(newTitle: string): Promise<string | null> {
+  const origin = route.fullPath
+  const generation = routeLoadGeneration
   isCreatingConversation.value = true
   chat.error = null
   try {
     const conv = await chat.createConversation(newTitle)
-    if (conv) {
-      await loadConversationById(conv.id)
-    }
+    // A pending creation must not navigate away from a newer browser location.
+    if (!conv || disposed || route.fullPath !== origin || generation !== routeLoadGeneration) return null
+    await router.push({ name: 'conversation', params: { conversationId: conv.id } })
+    await nextTick()
+    await routeLoad
+    return chat.currentConversation?.id === conv.id ? conv.id : null
   } finally {
     isCreatingConversation.value = false
   }
 }
 
+async function handleCreateConversation(newTitle: string) {
+  if (busy.value) return
+  await createAndOpenConversation(newTitle)
+}
+
 async function handleSelectConversation(id: string) {
   if (busy.value || id === chat.currentConversation?.id) return
-  chat.error = null
-  await loadConversationById(id)
+  const generation = routeLoadGeneration
+  // Lazy route resolution can finish after another composer interaction.
+  isLoadingConversation.value = true
+  try {
+    await router.push({ name: 'conversation', params: { conversationId: id } })
+  } finally {
+    if (generation === routeLoadGeneration) isLoadingConversation.value = false
+  }
 }
 
 async function handleSend(content: string, options?: { enableTools: boolean }) {
   if (busy.value) return
   chat.error = null
 
-  // If no conversation is selected, create one first
-  if (!chat.currentConversation) {
-    isCreatingConversation.value = true
-    try {
-      const conv = await chat.createConversation('New Conversation')
-      if (conv) {
-        await loadConversationById(conv.id)
-      }
-    } finally {
-      isCreatingConversation.value = false
-    }
-  }
-
-  await chat.sendMessage(content, chat.currentConversation?.id ?? null, options)
+  const conversationId = chat.currentConversation?.id
+    ?? await createAndOpenConversation('New Conversation')
+  if (conversationId) await chat.sendMessage(content, conversationId, options)
 }
 
 // A run that has reached an end has nothing left to stop, and a run that has
@@ -191,16 +221,8 @@ async function handleSearch(command: { capability: { id: string; version: string
   if (busy.value || hasActiveRun.value) return
   isToolSubmitting.value = true
   try {
-    if (!chat.currentConversation) {
-      isCreatingConversation.value = true
-      try {
-        const conversation = await chat.createConversation('New Conversation')
-        if (conversation) await loadConversationById(conversation.id)
-      } finally {
-        isCreatingConversation.value = false
-      }
-    }
     const conversationId = chat.currentConversation?.id
+      ?? await createAndOpenConversation('New Conversation')
     if (conversationId) await chat.submitToolSearch(conversationId, command)
   } finally {
     isToolSubmitting.value = false
@@ -257,18 +279,19 @@ onMounted(async () => {
   await chat.loadModelProfiles()
   await chat.loadCapabilities()
   await loadHistory()
-  // Auto-create a conversation if none exist so the user can immediately start chatting
-  if (!isLoadingConversations.value && chat.conversations.length === 0 && !historyLoadFailed.value) {
-    isCreatingConversation.value = true
-    try {
-      const conv = await chat.createConversation('New Conversation')
-      if (conv) {
-        await loadConversationById(conv.id)
-      }
-    } finally {
-      isCreatingConversation.value = false
-    }
+  if (disposed) return
+  routeReady.value = true
+  if (route.name === 'conversation') {
+    routeLoad = loadConversationFromRoute()
+    await routeLoad
   }
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+  routeReady.value = false
+  routeLoadGeneration += 1
+  chat.deselectConversation()
 })
 </script>
 
