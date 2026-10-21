@@ -35,6 +35,55 @@ describe('AppLayout', () => {
     expect(wrapper.findAll('[aria-current="page"]').length).toBe(1)
   })
 
+  it('opens a project dropdown with the current workspace selected', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/')
+    const trigger = wrapper.get('[data-testid="project-selector-trigger"]')
+
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+    expect(trigger.classes()).toContain('gap-2')
+    await trigger.trigger('click')
+
+    expect(trigger.attributes('aria-expanded')).toBe('true')
+    const menu = wrapper.get('[data-testid="project-selector-menu"]')
+    expect(menu.text()).toContain('Personal Workspace')
+    expect(menu.find('[aria-checked="true"]').text()).toContain('Personal Workspace')
+  })
+
+  it('closes the project dropdown on outside click and Escape', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/')
+    const trigger = wrapper.get('[data-testid="project-selector-trigger"]')
+
+    await trigger.trigger('click')
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await wrapper.vm.$nextTick()
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+
+    await trigger.trigger('click')
+    await wrapper.get('[data-testid="project-selector-menu"] [role="menuitemradio"]')
+      .trigger('keydown', { key: 'Escape' })
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+  })
+
+  it('uses compact conversation labels and clearly highlights the selected conversation', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      conversations,
+      currentConversationId: 'c2',
+    })
+    const activeRow = wrapper
+      .findAll('[data-slot="sidebar-menu-button"]')
+      .find((row) => row.text().includes('Scale up web'))
+    const inactiveRow = wrapper
+      .findAll('[data-slot="sidebar-menu-button"]')
+      .find((row) => row.text().includes('Deploy pipeline'))
+
+    expect(activeRow?.attributes('data-active')).toBe('true')
+    expect(activeRow?.classes()).toContain('text-[13px]')
+    expect(activeRow?.get('[data-testid="conversation-title"]').classes()).toContain('text-primary')
+    expect(activeRow?.get('[data-testid="conversation-title"]').classes()).toContain('font-semibold')
+    expect(inactiveRow?.classes()).toContain('text-[13px]')
+    expect(inactiveRow?.get('[data-testid="conversation-title"]').classes()).not.toContain('text-primary')
+  })
+
   it('emits createConversation immediately on button click', async () => {
     const { wrapper } = await mountWithRouter(AppLayout, '/')
     const newButton = wrapper
