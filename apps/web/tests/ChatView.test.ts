@@ -487,6 +487,8 @@ describe('ChatView', () => {
     // The control sits beside the run it names, and it is not disabled while
     // a turn streams: stopping a run is what a person does while one is
     // running, and a control that could not be pressed would be a lie.
+    await nextTick()
+    expect(wrapper.find('[data-testid="run-details"]').exists()).toBe(false)
     await vi.waitFor(
       () => {
         expect(wrapper.find('[aria-label="Cancel run"]').exists()).toBe(true)

@@ -39,11 +39,11 @@ describe('RunCard', () => {
     expect(wrapper.text()).toContain('Running')
   })
 
-  it('renders reported usage', () => {
+  it('shows only duration, context use, and provider-reported total tokens when collapsed', async () => {
     const usage: Usage = {
-      input_tokens: 150,
-      output_tokens: 20,
-      total_tokens: 170,
+      input_tokens: 613,
+      output_tokens: 105,
+      total_tokens: 718,
       cached_input_tokens: null,
       reasoning_tokens: null,
       source: 'fixture provider',
@@ -54,25 +54,79 @@ describe('RunCard', () => {
       started_at: '2026-10-04T00:00:00Z',
       ended_at: '2026-10-04T00:00:05Z',
       usage,
+      model: {
+        profile_id: 'primary-fixture',
+        label: 'Fixture primary',
+        adapter: 'openai',
+        requested_model: 'primary-model',
+        actual_model: 'primary-model',
+        destination_label: 'fixture.provider.test',
+        serving_profile_id: 'primary-fixture',
+        serving_context_tokens: 128000,
+        serving_label: 'Fixture primary',
+        serving_adapter: 'openai',
+        serving_destination_label: 'fixture.provider.test',
+        fallback_profile_ids: [],
+        recorded: true,
+      },
     })
-    expect(wrapper.text()).toContain('in 150')
-    expect(wrapper.text()).toContain('out 20')
+
+    const summary = wrapper.get('[data-testid="run-summary"]')
+    expect(summary.attributes('aria-expanded')).toBe('false')
+    expect(summary.text()).toContain('Duration 5s')
+    expect(summary.text()).toContain('Context 0.5%')
+    expect(summary.text()).toContain('718 tokens')
+    expect(wrapper.find('[data-testid="run-details"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Requested:')
   })
 
-  it('says so when usage was not reported', () => {
+  it('omits unavailable statistics', () => {
     const wrapper = render({
       run_id: 'run-3',
       status: 'succeeded',
-      started_at: '2026-10-04T00:00:00Z',
-      ended_at: '2026-10-04T00:00:05Z',
       usage: null,
     })
-    expect(wrapper.text()).toContain('Not reported')
-    // Nothing is estimated on the reader's behalf.
+    expect(wrapper.get('[data-testid="run-summary"]').text()).toContain('Completed')
+    expect(wrapper.text()).not.toContain('Duration')
+    expect(wrapper.text()).not.toContain('Context')
     expect(wrapper.text()).not.toContain('tokens')
   })
 
-  it('says so when a provider reported only part of a count', () => {
+  it('keeps actionable controls visible while details stay collapsed', () => {
+    const wrapper = mount(RunCard, {
+      props: {
+        card: card({ run_id: 'run-actions', status: 'running' }),
+        hasActions: true,
+      },
+      slots: {
+        default: '<button aria-label="Cancel run">Cancel</button>',
+      },
+    })
+
+    const action = wrapper.get('[aria-label="Cancel run"]')
+    expect(wrapper.get('[data-testid="run-card"]').attributes('data-has-actions')).toBe('true')
+    expect(wrapper.find('[data-testid="run-details"]').exists()).toBe(false)
+    expect(action.element.closest('[data-testid="run-details"]')).toBeNull()
+    expect(action.isVisible()).toBe(true)
+  })
+
+  it('does not reserve row space for actions when none are actionable', () => {
+    const wrapper = mount(RunCard, {
+      props: {
+        card: card({ run_id: 'run-settled', status: 'succeeded' }),
+        hasActions: false,
+      },
+      slots: {
+        default: '<button aria-label="Cancel run">Cancel</button>',
+      },
+    })
+
+    expect(wrapper.get('[data-testid="run-card"]').attributes('data-has-actions')).toBe('false')
+    expect(wrapper.find('[data-testid="run-actions"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="run-summary"]').text()).toContain('Completed')
+  })
+
+  it('omits token and context statistics when their provider counts are absent', () => {
     const usage: Usage = {
       input_tokens: null,
       output_tokens: 20,
@@ -86,11 +140,11 @@ describe('RunCard', () => {
       status: 'succeeded',
       usage,
     })
-    expect(wrapper.text()).toContain('out 20')
-    expect(wrapper.text()).not.toContain('in ')
+    expect(wrapper.text()).not.toContain('Context')
+    expect(wrapper.text()).not.toContain('tokens')
   })
 
-  it('names the provider a run was pinned to', () => {
+  it('reveals provider details when the compact status is expanded', async () => {
     const model: Model = {
       profile_id: 'primary-fixture',
       label: 'Fixture primary',
@@ -106,13 +160,15 @@ describe('RunCard', () => {
       status: 'succeeded',
       model,
     })
+    expect(wrapper.text()).not.toContain('Fixture primary')
+    await wrapper.get('[data-testid="run-summary"]').trigger('click')
     expect(wrapper.text()).toContain('Fixture primary')
     // The model that actually served is stated, not the one merely asked for.
     expect(wrapper.text()).toContain('primary-model-2026')
     expect(wrapper.text()).toContain('fixture.provider.test')
   })
 
-  it('separates requested primary details from the successful fallback destination', () => {
+  it('separates requested primary details from the successful fallback destination', async () => {
     const model: Model = {
       profile_id: 'primary-fixture',
       label: 'Primary profile',
@@ -132,6 +188,7 @@ describe('RunCard', () => {
       status: 'succeeded',
       model,
     })
+    await wrapper.get('[data-testid="run-summary"]').trigger('click')
     const text = wrapper.text()
 
     expect(text).toContain('Requested: Primary profile · primary-model at primary.provider.test')
@@ -139,16 +196,17 @@ describe('RunCard', () => {
     expect(text).not.toContain('backup-served-model at primary.provider.test')
   })
 
-  it('says so for a run from before profiles existed', () => {
+  it('says so for a run from before profiles existed after expanding details', async () => {
     const wrapper = render({
       run_id: 'run-6',
       status: 'succeeded',
       model: null,
     })
+    await wrapper.get('[data-testid="run-summary"]').trigger('click')
     expect(wrapper.text()).toContain('Provider not recorded')
   })
 
-  it('shows the requests actually made, including a fallback', () => {
+  it('shows the requests actually made, including a fallback, when expanded', async () => {
     const attempts: Attempt[] = [
       {
         ordinal: 1,
@@ -182,6 +240,7 @@ describe('RunCard', () => {
       status: 'succeeded',
       attempts,
     })
+    await wrapper.get('[data-testid="run-summary"]').trigger('click')
     // A fallback is part of the chain rather than hidden, because it is what
     // a reader would want to know.
     expect(wrapper.text()).toContain('primary-fixture')
@@ -189,13 +248,14 @@ describe('RunCard', () => {
     expect(wrapper.text()).toContain('→')
   })
 
-  it('states a provider failure in settled copy, never a raw body', () => {
+  it('states a provider failure in settled copy, never a raw body', async () => {
     const wrapper = render({
       run_id: 'run-8',
       status: 'failed',
       error_code: 'output_limit_exceeded',
       error_message: 'The answer hit the limit set for this profile.',
     })
+    await wrapper.get('[data-testid="run-summary"]').trigger('click')
     expect(wrapper.text()).toContain(
       'The answer hit the limit set for this profile.',
     )

@@ -33,6 +33,15 @@ const toolCapableProfiles: ModelProfileItem[] = modelProfileCatalog.profiles.map
 }))
 
 describe('ChatInput', () => {
+  it('hides the keyboard helper on mobile while retaining it on larger screens', () => {
+    const wrapper = mountInput()
+    const helper = wrapper.get('[data-testid="chat-input-help"]')
+
+    expect(helper.classes()).toContain('hidden')
+    expect(helper.classes()).toContain('sm:block')
+    expect(helper.text()).toContain('Shift+Enter for a new line')
+  })
+
   it('sends ordinary chat when no tool is attached', async () => {
     const wrapper = mountInput()
     await wrapper.get('textarea').setValue('hello agent')

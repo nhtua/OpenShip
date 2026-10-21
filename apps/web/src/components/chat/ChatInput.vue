@@ -306,7 +306,7 @@ onMounted(() => { void focusInput() })
         </Button>
       </div>
     </div>
-    <p class="mt-1.5 text-xs text-muted-foreground">
+    <p data-testid="chat-input-help" class="mt-1.5 hidden text-xs text-muted-foreground sm:block">
       Enter to {{ attachedCapability ? 'search' : 'send' }} · Shift+Enter for a new line
     </p>
   </form>

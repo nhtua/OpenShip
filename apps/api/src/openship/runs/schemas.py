@@ -45,6 +45,7 @@ class ModelSummary(BaseModel):
     label: str
     adapter: str
     requested_model: str
+    serving_context_tokens: int | None = None
     actual_model: str | None = None
     destination_label: str | None = None
     serving_profile_id: str | None = None
@@ -152,18 +153,31 @@ def _model_projection(snapshot: str | None, attempts=()) -> ModelSummary | None:
         adapter = primary["adapter"]
         model = primary["model"]
         endpoint = primary["endpoint"]
-        fallback_ids = tuple(profile["id"] for profile in config.get("fallbacks", ()))
+        fallbacks = config.get("fallbacks", ())
+        profiles = (primary, *fallbacks)
+        fallback_ids = tuple(profile["id"] for profile in fallbacks)
         labels = {profile["id"]: profile["label"] for profile in (primary, *config.get("fallbacks", ()))}
     except (json.JSONDecodeError, TypeError, KeyError, ValueError):
         # A snapshot can outlive the schema that wrote it. Its normalized
         # failure remains readable even when its provider metadata does not.
         return None
     serving = _serving_attempt(attempts)
+    serving_context_tokens = None
+    if serving is not None:
+        serving_profile = next(
+            (profile for profile in profiles if profile.get("id") == serving.profile_id),
+            None,
+        )
+        capabilities = serving_profile.get("capabilities") if serving_profile else None
+        context_tokens = capabilities.get("context_tokens") if isinstance(capabilities, dict) else None
+        if isinstance(context_tokens, int) and not isinstance(context_tokens, bool) and context_tokens > 0:
+            serving_context_tokens = context_tokens
     return ModelSummary(
         profile_id=profile_id,
         label=label,
         adapter=adapter,
         requested_model=model,
+        serving_context_tokens=serving_context_tokens,
         # Requested and actual are separate fields on the contract, and they
         # stay separate here: a provider that answered from an alias it was
         # handed would otherwise be indistinguishable from one that answered

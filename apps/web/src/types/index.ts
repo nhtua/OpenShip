@@ -117,6 +117,7 @@ export interface RunModelSummary {
   label: string
   adapter: string
   requested_model: string
+  serving_context_tokens?: number | null
   actual_model: string | null
   destination_label: string | null
   serving_profile_id?: string | null

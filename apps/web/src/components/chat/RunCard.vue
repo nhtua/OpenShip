@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Badge } from '@/components/ui'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Badge, Icon } from '@/components/ui'
 import type {
   ProviderAttemptSummary,
   RunCard,
@@ -10,10 +10,15 @@ import type {
 
 interface Props {
   card: RunCard
+  hasActions?: boolean
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), { hasActions: false })
 const kind = computed(() => props.card.kind ?? 'chat')
+const expanded = ref(false)
+const now = ref(Date.now())
+const detailsId = computed(() => `run-details-${props.card.run_id || 'current'}`)
+let durationTimer: number | null = null
 
 const statusLabel = computed(() => {
   switch (props.card.status) {
@@ -98,54 +103,148 @@ const attemptText = computed(() => {
   return attempts.map((attempt) => attempt.profile_id).join(' → ')
 })
 
-// Provider-reported counts only. Missing stays missing: nothing is
-// estimated, and a reader can tell the difference.
-const usageText = computed(() => {
-  const usage: UsageSummary | null = props.card.usage
-  if (!usage) return 'Not reported'
-  const parts: string[] = []
-  if (usage.input_tokens !== null) parts.push(`in ${usage.input_tokens}`)
-  if (usage.output_tokens !== null) parts.push(`out ${usage.output_tokens}`)
-  return parts.length ? parts.join(' · ') : 'Not reported'
+function formatDuration(milliseconds: number): string {
+  const seconds = Math.floor(milliseconds / 1000)
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainder = seconds % 60
+  if (hours) return `${hours}h ${minutes}m`
+  if (minutes) return `${minutes}m ${remainder}s`
+  return `${remainder}s`
+}
+
+const durationText = computed(() => {
+  if (!props.card.started_at) return null
+  const started = Date.parse(props.card.started_at)
+  const finished = props.card.ended_at
+    ? Date.parse(props.card.ended_at)
+    : props.card.status === 'running'
+      ? now.value
+      : Number.NaN
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return null
+  return `Duration ${formatDuration(finished - started)}`
+})
+
+const contextText = computed(() => {
+  const inputTokens = props.card.usage?.input_tokens
+  const contextTokens = props.card.model?.serving_context_tokens
+  if (inputTokens == null || contextTokens == null || contextTokens <= 0) return null
+  return `Context ${((inputTokens / contextTokens) * 100).toFixed(1)}%`
+})
+
+const totalTokensText = computed(() => {
+  const totalTokens: UsageSummary['total_tokens'] = props.card.usage?.total_tokens ?? null
+  return totalTokens == null ? null : `${totalTokens.toLocaleString()} tokens`
+})
+
+function syncDurationTimer() {
+  if (props.card.status === 'running' && durationTimer === null) {
+    now.value = Date.now()
+    durationTimer = window.setInterval(() => {
+      now.value = Date.now()
+    }, 1000)
+  } else if (props.card.status !== 'running' && durationTimer !== null) {
+    window.clearInterval(durationTimer)
+    durationTimer = null
+  }
+}
+
+watch(() => props.card.status, syncDurationTimer)
+onMounted(syncDurationTimer)
+onBeforeUnmount(() => {
+  if (durationTimer !== null) window.clearInterval(durationTimer)
 })
 </script>
 
 <template>
   <div
     data-testid="run-card"
-    class="flex flex-col gap-2 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs"
+    :data-has-actions="hasActions"
+    class="run-card overflow-hidden rounded-md border border-slate-700 bg-slate-800/50 text-xs"
   >
-    <div class="flex min-w-0 items-center gap-2 text-xs">
-      <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-        <span class="text-slate-400">{{ kind === 'tool' ? 'Search run:' : 'Run:' }}</span>
-        <Badge :variant="statusVariant" class="h-5 text-[10px]">
+    <div class="flex min-w-0 items-center gap-2 px-2.5 py-1.5">
+      <button
+        :aria-controls="detailsId"
+        :aria-expanded="expanded"
+        :aria-label="`${statusLabel}. ${expanded ? 'Hide' : 'Show'} run details`"
+        data-testid="run-summary"
+        type="button"
+        class="run-card__summary flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        @click="expanded = !expanded"
+      >
+        <Badge :variant="statusVariant" class="run-card__status h-5 shrink-0 text-[10px]">
           {{ statusLabel }}
         </Badge>
-        <span v-if="card.started_at" class="text-slate-500">
-          Started {{ new Date(card.started_at).toLocaleTimeString() }}
+        <span v-if="durationText" data-testid="run-duration" class="run-card__stat run-card__duration truncate text-slate-400">
+          {{ durationText }}
         </span>
-        <span v-if="card.ended_at" class="text-slate-500">
-          Ended {{ new Date(card.ended_at).toLocaleTimeString() }}
+        <span v-if="contextText" data-testid="run-context" class="run-card__stat run-card__context truncate text-slate-400">
+          {{ contextText }}
         </span>
-        <template v-if="kind === 'chat' && finished">
-          <span class="text-slate-400">{{ requestedText }}</span>
-          <span v-if="servingText" class="text-slate-400">{{ servingText }}</span>
-        </template>
-        <span v-if="attemptText" class="text-slate-500">
-          {{ attemptText }}
+        <span v-if="totalTokensText" data-testid="run-total-tokens" class="run-card__stat run-card__tokens truncate text-slate-400">
+          {{ totalTokensText }}
         </span>
-        <span v-if="kind === 'chat' && finished" class="text-slate-500">{{ usageText }}</span>
-        <!-- The settled safe copy, never a provider's own body. -->
-        <span v-if="card.error_message" class="text-red-400">
-          ({{ card.error_message }})
-        </span>
-        <span v-else-if="card.error_code" class="text-red-400">
-          ({{ card.error_code }})
-        </span>
-      </div>
-      <div class="flex shrink-0 items-center gap-1">
+        <Icon
+          :name="expanded ? 'chevron-up' : 'chevron-down'"
+          class="ml-auto size-3 shrink-0 text-slate-500"
+          aria-hidden="true"
+        />
+      </button>
+      <div v-if="hasActions" data-testid="run-actions" class="flex shrink-0 items-center gap-1">
         <slot />
       </div>
     </div>
+
+    <div
+      v-if="expanded"
+      :id="detailsId"
+      data-testid="run-details"
+      class="flex flex-col gap-1.5 border-t border-slate-700 px-3 py-2 text-slate-400"
+    >
+      <span v-if="card.started_at">
+        Started {{ new Date(card.started_at).toLocaleTimeString() }}
+      </span>
+      <span v-if="card.ended_at">
+        Ended {{ new Date(card.ended_at).toLocaleTimeString() }}
+      </span>
+      <template v-if="kind === 'chat' && finished">
+        <span>{{ requestedText }}</span>
+        <span v-if="servingText">{{ servingText }}</span>
+      </template>
+      <span v-if="attemptText">{{ attemptText }}</span>
+      <!-- The settled safe copy, never a provider's own body. -->
+      <span v-if="card.error_message" class="text-red-400">
+        ({{ card.error_message }})
+      </span>
+      <span v-else-if="card.error_code" class="text-red-400">
+        ({{ card.error_code }})
+      </span>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.run-card {
+  container-name: run-card;
+  container-type: inline-size;
+}
+
+@container run-card (max-width: 26rem) {
+  .run-card[data-has-actions='true'] .run-card__context,
+  .run-card[data-has-actions='true'] .run-card__tokens {
+    display: none;
+  }
+}
+
+@container run-card (max-width: 18rem) {
+  .run-card[data-has-actions='true'] .run-card__duration {
+    display: none;
+  }
+}
+
+@container run-card (max-width: 14rem) {
+  .run-card[data-has-actions='true'] .run-card__status {
+    display: none;
+  }
+}
+</style>

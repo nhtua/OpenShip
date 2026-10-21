@@ -315,7 +315,10 @@ onMounted(async () => {
            still be stopped - a run that reached an end has nothing left to
            stop, and offering it would be a control that does nothing. -->
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
-        <RunCard :card="chat.runCards.get(chat.currentConversation.id)!">
+        <RunCard
+          :card="chat.runCards.get(chat.currentConversation.id)!"
+          :has-actions="Boolean(pendingSubmissionId || (activeRunId && chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool'))"
+        >
           <Button
             v-if="pendingSubmissionId"
             variant="ghost"
