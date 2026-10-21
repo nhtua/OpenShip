@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { generateRequestId } from '@/lib/requestId'
 import api, { runsApi, modelProfilesApi, capabilitiesApi } from '@/services/api'
 import type {
   CapabilitySummary,
@@ -16,15 +17,6 @@ import type {
   ToolOperationSummary,
   TurnSubmitRequest,
 } from '@/types'
-
-// Stable client request ID generation
-function generateRequestId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  // Fallback for environments without crypto.randomUUID
-  return 'req-' + Date.now() + '-' + Math.random().toString(36).slice(2)
-}
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([])
