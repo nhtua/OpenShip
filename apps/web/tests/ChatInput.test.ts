@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { nextTick } from 'vue'
+import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import { modelProfileCatalog } from './helpers/chatFixtures'
@@ -33,13 +34,38 @@ const toolCapableProfiles: ModelProfileItem[] = modelProfileCatalog.profiles.map
 }))
 
 describe('ChatInput', () => {
-  it('hides the keyboard helper on mobile while retaining it on larger screens', () => {
-    const wrapper = mountInput()
-    const helper = wrapper.get('[data-testid="chat-input-help"]')
+  it('shows keyboard instructions in the placeholder only at desktop widths', async () => {
+    const matchMedia = vi.spyOn(window, 'matchMedia')
+    const listeners = new Set<(event: MediaQueryListEvent) => void>()
+    let matches = false
+    const query = {
+      get matches() {
+        return matches
+      },
+      addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        listeners.add(listener)
+      },
+      removeEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        listeners.delete(listener)
+      },
+    } as unknown as MediaQueryList
+    matchMedia.mockReturnValue(query)
 
-    expect(helper.classes()).toContain('hidden')
-    expect(helper.classes()).toContain('sm:block')
-    expect(helper.text()).toContain('Shift+Enter for a new line')
+    const wrapper = mountInput()
+    try {
+      const textarea = wrapper.get('textarea')
+      expect(textarea.attributes('placeholder')).toBe('Message the agent...')
+
+      matches = true
+      for (const listener of listeners) listener({ matches } as MediaQueryListEvent)
+      await nextTick()
+      expect(textarea.attributes('placeholder')).toBe(
+        'Message the agent...   Enter to send · Shift+Enter for a new line',
+      )
+    } finally {
+      wrapper.unmount()
+      matchMedia.mockRestore()
+    }
   })
 
   it('sends ordinary chat when no tool is attached', async () => {
