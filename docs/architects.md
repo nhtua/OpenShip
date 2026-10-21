@@ -2,7 +2,7 @@
 type: architecture
 summary: Proposed high-level design for the self-hosted OpenShip harness, conversational workflows, capability registry, and secure execution.
 status: proposed
-date: 2026-10-01
+date: 2026-10-21
 ---
 
 # OpenShip Harness Architecture
@@ -225,6 +225,7 @@ Each trigger specifies its type, configuration parameters, optional input mappin
 | Artifact | Immutable document, diagram, code, report, or log version with access policy and provenance. |
 | Connector binding | Project/environment reference to an external account, endpoint, and credential policy; stores references rather than raw secrets. |
 | Resource object / binding | Desired abstract resource and mappings to concrete provider resources, with observation history. |
+| Temporary access request / grant | Later-phase authority to use a predefined connector role for selected actions/targets and a bounded duration; references approval, initiator, execution identity and run/operation. Does not itself create cloud IAM permissions. |
 
 Conversation IDs, run IDs, workflow-definition IDs, and LangGraph thread IDs are distinct. Persist their relationships explicitly. Each workflow run receives a stable graph thread identity; checkpoints are not overloaded as the entire application data model.
 
@@ -462,7 +463,28 @@ Preauthorized low-risk reads need no repeated prompts. Mutations, destructive ac
 
 For Terraform, show a saved plan and its backend/environment, approve its digest, and apply that exact plan through the credentialed profile. Revalidate relevant state/policy before apply; a stale plan requires a new review instead of unreviewed replanning.
 
-Manage secrets separately from workflows. Start with an encrypted instance credential store whose key is protected separately from database backups; provide a broker interface for Vault/cloud secret managers. Prefer short-lived delegated credentials over long-lived secrets. Never put raw credentials in model context, embeddings, conversation history, checkpoints, Git, or browser payloads.
+Manage secrets separately from workflows. Start with an encrypted instance credential store whose key is protected separately from database backups; provide a broker interface for Vault/cloud secret managers. Prefer short-lived delegated credentials over long-lived secrets. Never put raw credentials in model context, embeddings, conversation history, checkpoints, Git, or browser read responses. A dedicated authenticated write-only setup form may submit credentials over TLS; it never reads them back or persists them in browser storage, chat drafts or retry queues.
+
+### Workload identity and predefined connector roles
+
+**Agreed direction (2026-10-21):** OpenShip uses a dedicated, organization-owned workload identity rather than an employee's personal cloud credentials. This preserves connector continuity when team members leave. Record the executing workload identity separately from the human initiator and approver; a shared agent identity must not erase accountability or bypass project/actor authorization.
+
+For AWS, prefer IAM roles and temporary role sessions. An AWS role is identified by an ARN, not a service-account email, and a role identifier alone grants no access. A configured trust policy and authenticated workload credential source establish who may assume it; its permissions policy establishes what it can do. OpenShip may run on AWS, GCP or localhost. The hosting identity and target-cloud role need not be from the same provider, but each supported federation or credential source needs explicit setup and qualification. Short-lived credentials renew through that source; an expired pasted token cannot renew itself.
+
+Configure two role bindings as the initial AWS authorization model:
+
+| Binding | Purpose | Runtime gate |
+| --- | --- | --- |
+| Basic | Administrator-defined low-risk reads | Existing project/connector/gateway policy; no repeated prompts within delegated authority |
+| Maintenance (optional) | Administrator-defined set of supported changes; not automatically unrestricted administrator access | Concrete action approval plus a scoped, time-bounded grant before privileged dispatch |
+
+Create and configure these cloud roles once. Normal workflow/conversation execution does not require the user to edit IAM permissions. When a supported task needs the maintenance role, present the exact target/action and authority window; after eligible approval, the broker obtains temporary credentials for that existing role. Permission to use a role is not permission to invoke every operation it allows. Approval of the action and its authority grant remain separate bindings, even when one review screen captures both.
+
+If the maintenance role is absent or lacks the requested permission, block the affected task with an administrator configuration action, not the entire conversation. Never modify IAM policy automatically to authorize the agent. Connector reconfiguration does not approve or replay the pending action; revalidate current scope and decisions, and reconcile any potentially dispatched operation before proceeding.
+
+Phase 5 implements only the basic read path. Roadmap Phase 10A supplies the first approved mutation; [Phase 10B](./roadmap.md#phase-10b--approved-temporary-maintenance-authority) adds the durable temporary-authority lifecycle using the same gateway, broker and Phase 8 decision mechanism. It binds execution identity, initiator, connector/role revision, project/environment, exact targets/actions, operation digest, approver and expiry. Completion/cancellation/expiry/revocation closes the local grant and blocks further privileged dispatch; renewal cannot outlive that window. Team approver eligibility additionally requires the Phase 20A membership/role qualification.
+
+This design is approval-gated temporary access. If the trusted broker can assume the maintenance role without an independent external grant, it retains standing ability to acquire that authority. It is not a zero-standing-privilege guarantee against broker compromise, and closing a local grant does not universally invalidate issued cloud credentials. An optional external access broker such as Apono can strengthen that separation later; OpenShip does not require that vendor or build a general-purpose IAM management platform. External grants still pass through OpenShip's normal action policy, and each target environment requires explicit integration/trust configuration.
 
 ### Just-in-Time Permission Management
 
@@ -473,7 +495,7 @@ Connectors can implement Just-in-Time (JIT) permission management, where credent
 - **Azure:** Use managed identities with just-in-time role assignments, or service principal tokens with scope-limited claims
 - **Custom services:** Use brokered token services that issue short-lived signed credentials valid for specific operations and durations
 
-The credential broker can integrate with these JIT services to issue credentials dynamically when a tool requires them, rather than relying on standing permissions. This reduces the risk of credential theft and limits lateral movement in case of compromise.
+The credential broker can integrate with these JIT services to acquire scoped credentials when a tool requires them. Short-lived issuance and true just-in-time entitlement creation are different guarantees: assuming a predefined role may retain standing assumption authority, while a separately controlled grant service can enforce entitlement changes. Declare the guarantee of each configured integration rather than inferring zero standing privilege from token expiry alone.
 
 Keep credentials in the broker/maintained connector when possible. If a CLI needs one, supply it only to that credentialed execution, revoke/expire it promptly, and avoid logging environment/configuration contents. Publication applies redaction, sensitivity classification, limits, and access policy. Redaction is defense in depth, not permission to expose secrets to arbitrary code.
 
