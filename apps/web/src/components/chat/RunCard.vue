@@ -160,7 +160,7 @@ onBeforeUnmount(() => {
   <div
     data-testid="run-card"
     :data-has-actions="hasActions"
-    class="run-card overflow-hidden rounded-md border border-slate-700 bg-slate-800/50 text-xs"
+    class="run-card overflow-hidden rounded-md border border-border bg-card text-card-foreground text-xs"
   >
     <div class="flex min-w-0 items-center gap-2 px-2.5 py-1.5">
       <button
@@ -175,18 +175,30 @@ onBeforeUnmount(() => {
         <Badge :variant="statusVariant" class="run-card__status h-5 shrink-0 text-[10px]">
           {{ statusLabel }}
         </Badge>
-        <span v-if="durationText" data-testid="run-duration" class="run-card__stat run-card__duration truncate text-slate-400">
+        <span
+          v-if="durationText"
+          data-testid="run-duration"
+          class="run-card__stat run-card__duration truncate text-muted-foreground"
+        >
           {{ durationText }}
         </span>
-        <span v-if="contextText" data-testid="run-context" class="run-card__stat run-card__context truncate text-slate-400">
+        <span
+          v-if="contextText"
+          data-testid="run-context"
+          class="run-card__stat run-card__context truncate text-muted-foreground"
+        >
           {{ contextText }}
         </span>
-        <span v-if="totalTokensText" data-testid="run-total-tokens" class="run-card__stat run-card__tokens truncate text-slate-400">
+        <span
+          v-if="totalTokensText"
+          data-testid="run-total-tokens"
+          class="run-card__stat run-card__tokens truncate text-muted-foreground"
+        >
           {{ totalTokensText }}
         </span>
         <Icon
           :name="expanded ? 'chevron-up' : 'chevron-down'"
-          class="ml-auto size-3 shrink-0 text-slate-500"
+          class="ml-auto size-3 shrink-0 text-muted-foreground"
           aria-hidden="true"
         />
       </button>
@@ -199,7 +211,7 @@ onBeforeUnmount(() => {
       v-if="expanded"
       :id="detailsId"
       data-testid="run-details"
-      class="flex flex-col gap-1.5 border-t border-slate-700 px-3 py-2 text-slate-400"
+      class="flex flex-col gap-1.5 border-t border-border px-3 py-2 text-muted-foreground"
     >
       <span v-if="card.started_at">
         Started {{ new Date(card.started_at).toLocaleTimeString() }}
@@ -213,10 +225,10 @@ onBeforeUnmount(() => {
       </template>
       <span v-if="attemptText">{{ attemptText }}</span>
       <!-- The settled safe copy, never a provider's own body. -->
-      <span v-if="card.error_message" class="text-red-400">
+      <span v-if="card.error_message" class="text-destructive">
         ({{ card.error_message }})
       </span>
-      <span v-else-if="card.error_code" class="text-red-400">
+      <span v-else-if="card.error_code" class="text-destructive">
         ({{ card.error_code }})
       </span>
     </div>

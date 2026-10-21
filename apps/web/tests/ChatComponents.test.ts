@@ -355,6 +355,8 @@ describe('ChatInput', () => {
     const wrapper = mount(ChatInput, { props: { disabled: true } })
     const btn = wrapper.find('button[type="submit"]')
     expect(btn.text()).toContain('Streaming')
+    expect(btn.attributes('aria-label')).toBe('Streaming')
+    expect(btn.findAll('.animate-bounce')).toHaveLength(3)
     expect(btn.element.disabled).toBe(true)
   })
 })

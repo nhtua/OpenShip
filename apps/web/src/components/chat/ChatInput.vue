@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Button, Icon, Label, Textarea } from '@/components/ui'
 import ProviderSelector from '@/components/ProviderSelector.vue'
 import ToolAttachmentMenu from './ToolAttachmentMenu.vue'
@@ -40,6 +40,11 @@ const emit = defineEmits<{
 }>()
 
 const content = ref('')
+const desktopViewportQuery =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(min-width: 40rem)')
+    : null
+const showKeyboardHint = ref(desktopViewportQuery?.matches ?? false)
 const maxResults = ref(5)
 const attachedCapability = ref<CapabilityRef | null>(null)
 const automaticToolMode = ref(false)
@@ -52,6 +57,12 @@ let pendingDraft: {
   maxResults: number
   automaticToolMode: boolean
 } | null = null
+
+const inputPlaceholder = computed(() =>
+  showKeyboardHint.value
+    ? 'Message the agent...   Enter to send · Shift+Enter for a new line'
+    : 'Message the agent...',
+)
 
 const effectiveProfile = computed(() =>
   props.profiles.find((profile) => profile.profile_id === props.selectedProfileId) ??
@@ -205,7 +216,18 @@ function handleKeydown(event: KeyboardEvent) {
   void handleSubmit()
 }
 
-onMounted(() => { void focusInput() })
+function updateKeyboardHint(event: MediaQueryListEvent) {
+  showKeyboardHint.value = event.matches
+}
+
+onMounted(() => {
+  void focusInput()
+  desktopViewportQuery?.addEventListener('change', updateKeyboardHint)
+})
+
+onBeforeUnmount(() => {
+  desktopViewportQuery?.removeEventListener('change', updateKeyboardHint)
+})
 </script>
 
 <template>
@@ -222,7 +244,7 @@ onMounted(() => { void focusInput() })
       name="message"
       rows="1"
       :disabled="props.disabled"
-      placeholder="Message the agent..."
+      :placeholder="inputPlaceholder"
       class="min-h-[42px] max-h-48 resize-none overflow-y-auto py-2"
       @keydown="handleKeydown"
       @input="grow"
@@ -300,14 +322,34 @@ onMounted(() => { void focusInput() })
           :change-disabled="props.selectionDisabled"
           @select="forwardSelect"
         />
-        <Button type="submit" size="sm" :disabled="submitDisabled" class="h-8 shrink-0 px-3">
+        <Button
+          type="submit"
+          size="sm"
+          :disabled="submitDisabled"
+          :aria-label="props.disabled ? 'Streaming' : undefined"
+          class="h-8 shrink-0 px-3"
+        >
           <Icon name="send" />
-          {{ props.disabled ? 'Streaming...' : attachedCapability ? 'Search' : 'Send' }}
+          <span v-if="props.disabled" class="relative inline-flex items-center justify-center">
+            <span class="invisible">{{ attachedCapability ? 'Search' : 'Send' }}</span>
+            <span class="absolute inset-0 inline-flex items-center justify-center" aria-hidden="true">
+              <span class="flex gap-1">
+                <span class="size-1.5 animate-bounce rounded-full bg-current"></span>
+                <span
+                  class="size-1.5 animate-bounce rounded-full bg-current"
+                  style="animation-delay: 150ms"
+                ></span>
+                <span
+                  class="size-1.5 animate-bounce rounded-full bg-current"
+                  style="animation-delay: 300ms"
+                ></span>
+              </span>
+            </span>
+            <span class="sr-only">Streaming</span>
+          </span>
+          <span v-else>{{ attachedCapability ? 'Search' : 'Send' }}</span>
         </Button>
       </div>
     </div>
-    <p data-testid="chat-input-help" class="mt-1.5 hidden text-xs text-muted-foreground sm:block">
-      Enter to {{ attachedCapability ? 'search' : 'send' }} · Shift+Enter for a new line
-    </p>
   </form>
 </template>
