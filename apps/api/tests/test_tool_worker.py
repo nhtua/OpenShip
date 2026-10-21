@@ -164,7 +164,10 @@ def test_expired_tool_run_without_dispatch_requeues_safely():
         db.refresh(run)
         db.refresh(job)
         db.refresh(operation)
-        assert reclaimed == 1
+        # Reconciliation is installation-wide. Other expired leases in the
+        # shared test database may be reclaimed in the same pass, especially
+        # after earlier tests' short leases age out during a long CI run.
+        assert reclaimed >= 1
         assert run.status == "queued"
         assert job.owner_id is None
         assert job.lease_until is None
