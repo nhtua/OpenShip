@@ -119,13 +119,16 @@ Each condition must have an explicit owning test:
 
 **Tests:** `tests/connectors/test_routes.py`, `test_selection.py`, `tests/integration/test_connector_commands_postgres.py`.
 
-- [ ] Implement the specification’s project/global route families and project service-default commands.
-- [ ] Authenticate before handling secret content. Project management requires ownership; global management requires the configured operator user ID.
-- [ ] Use locked revision preconditions for changes and immutable new revisions for accepted configuration changes. Credential replacement creates a new credential version and explicitly activates a new connector revision.
-- [ ] Implement the 24-hour request ledger using keyed HMACs. Identical retries return the original safe result; changed requests, foreign requests and expired IDs fail without revealing input.
-- [ ] Return only safe usage metadata to global consumers. No read route returns ciphertext, nonce, source credentials or decrypted values.
-- [ ] Resolve explicit selection, then project default, then a sole eligible candidate. Reject ambiguity; do not prefer a scope by name or fall back after failure.
-- [ ] Enforce origin checks against configured browser origins, bounded setup bodies and database-backed write-rate limits. Secret validation errors must omit rejected inputs.
+**Migration extension:** `009a_phase5_connector_default_tombstones.py`, revision `phase5a009b`, follows `phase5a009` and retains a cleared default's monotonic settings revision.
+
+- [x] Implement the specification’s project/global route families and project service-default commands.
+- [x] Authenticate before handling secret content. Project management requires ownership; global management requires the configured operator user ID.
+- [x] Use locked revision preconditions for changes and immutable new revisions for accepted configuration changes. Credential replacement creates a new credential version and explicitly activates a new connector revision.
+- [x] Implement the 24-hour request ledger using keyed HMACs. Identical retries return the original safe result; changed requests, foreign requests and expired IDs fail without revealing input.
+- [x] Return only safe usage metadata to global consumers. No read route returns ciphertext, nonce, source credentials or decrypted values.
+- [x] Resolve explicit selection, then project default, then a sole eligible candidate. Reject ambiguity; do not prefer a scope by name or fall back after failure.
+- [x] Enforce origin checks against configured browser origins, bounded setup bodies and database-backed write-rate limits. Secret validation errors must omit rejected inputs.
+- [x] Retain a revisioned tombstone when a project default is cleared so stale writes cannot reset its expected revision.
 
 **Critical tests:** Non-operator global mutation denied; foreign project connector hidden; global ciphertext stored once; stale update conflicts; ambiguous selection; revoked default has no fallback; malformed secrets absent from captured logs/errors.
 
@@ -236,7 +239,7 @@ Each condition must have an explicit owning test:
 
 **Files:** New `resources/{models,contracts,service,routes}.py`, connector-blocker models and run/artifact model updates.
 
-**Migration:** `010_phase5_resources_and_connector_waits.py`, revision `phase5a010`.
+**Migration:** `010_phase5_resources_and_connector_waits.py`, revision `phase5a010`, following `phase5a009b`.
 
 **Tests:** `tests/resources/test_bindings.py`, `tests/integration/test_phase5_resources_postgres.py`.
 

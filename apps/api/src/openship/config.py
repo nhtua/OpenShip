@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     connector_idempotency_hmac_key_file: Path = Path(
         "/run/secrets/openship-connector-idempotency-hmac-keys.json"
     )
+    connector_operator_user_id: UUID | None = None
+    connector_browser_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    connector_setup_max_body_bytes: int = Field(default=32 * 1024, ge=1024, le=128 * 1024)
+    connector_write_rate_limit_per_minute: int = Field(default=20, ge=1, le=120)
 
     # Shared persistent local artifact storage. Initialization is an explicit
     # operator action; API requests never create or replace an empty root.

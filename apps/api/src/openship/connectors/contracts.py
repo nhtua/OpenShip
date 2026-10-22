@@ -51,7 +51,7 @@ class ConnectorUsage(FrozenContract):
     kind: Literal["brave", "tavily", "aws"]
     visibility: Literal["global", "project"]
     name: str = Field(min_length=1, max_length=255)
-    status: Literal["configured", "expired", "revoked", "unavailable"]
+    status: Literal["configured", "disabled", "expired", "revoked", "unavailable"]
     revision: int = Field(ge=1)
     is_default: bool = False
 

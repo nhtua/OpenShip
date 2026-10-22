@@ -118,6 +118,8 @@ Connector visibility and owning project are immutable. Moving a project secret t
 
 Selection is explicit or uses a per-project, per-service default pointing to an eligible Connector ID; admission pins its current revision. With no selection/default, exactly one eligible enabled Connector may be resolved; multiple global/project candidates require selection. Do not silently prefer a global, shadow it by name or fall back to another provider/credential after failure. Record the resolved scope and revision before execution. Project policy can disallow an otherwise visible global; availability alone never grants operation authority.
 
+Default changes use a monotonically increasing settings revision. Clearing a default retains a tombstone with no selected Connector, so a stale write cannot reset the revision and overwrite a newer clear.
+
 ## 5. Credential ownership and broker
 
 ### 5.1 Write-only managed store
@@ -217,6 +219,8 @@ Explain that S3 daily storage metrics may include noncurrent versions, multipart
 
 Project routes use current JWT/project-owner checks; foreign IDs return 404. Global-management routes additionally require the configured operator user from section 4.1; global use is resolved through an owned consuming project. No browser credential-read endpoint exists. Caller-supplied revision preconditions prevent lost configuration updates; request IDs make creation/replacement/activation safe under uncertain submission. Exact secret-write retries use a request ledger scoped to the management actor, owning scope and command, with a keyed server-side HMAC of the secret-bearing canonical request (and a separately protected idempotency key). Never persist plaintext or an unkeyed secret digest. Keep that key ID valid for the ledger's declared 24-hour retry window; reject an expired request ID rather than creating another credential version. Do not automatically retry a cleared secret form; allow checking the submitted request's authorized status before re-entry.
 
+Setup writes require an Origin matching a configured browser origin, parse bounded JSON bodies, reject duplicate properties and non-finite numbers, and use a database-backed per-actor/scope write limit. Authentication and project/operator authorization run before the route reads secret-bearing content. Validation and persistence errors expose fixed messages without rejected values or driver details.
+
 | Route family | Contract |
 | --- | --- |
 | `/api/projects/{id}/connectors` | List eligible project/global non-secret usage metadata; create project-owned Connectors only; typed service forms, no arbitrary backend/plugin selector |
@@ -241,7 +245,7 @@ Add fixed versioned events `connector.blocked`, `connector.resumed` and `resourc
 
 ## 10. Migrations, operational controls and defaults
 
-Add sequential Alembic revisions after `phase4c008`: `phase5a009` for global/project Connector/credential/default/audit records and scope constraints; `phase5a010` for environments/resources/observations, new artifact kind and connector wait state; `phase5b011` only when 5B requires an additional schema change. Do not add an empty migration for metadata-tool breadth. Preserve existing rows/provider configs/transcripts and explicitly reject destructive downgrade when protected new data exists. No live API call, filesystem access or secret import occurs during schema migration.
+Add sequential Alembic revisions after `phase4c008`: `phase5a009` for global/project Connector/credential/default/audit records and scope constraints, followed by `phase5a009b` to allow a cleared-default tombstone while retaining monotonic settings revisions; `phase5a010` for environments/resources/observations, new artifact kind and connector wait state; `phase5b011` only when 5B requires an additional schema change. Do not add an empty migration for metadata-tool breadth. Preserve existing rows/provider configs/transcripts and explicitly reject destructive downgrade when protected new data exists. No live API call, filesystem access or secret import occurs during schema migration.
 
 Upgrade drains old workers before enabling new execution/manifest versions. Unknown versions fail closed and remain readable. The runtime advertises versioned managed-Connector support and fresh per-project readiness; API cannot dispatch a new graph to an incompatible worker. Qualify the upgrade/downgrade boundary with old queued runs and ready files. No team role tables, sandbox process or shared storage is introduced here.
 

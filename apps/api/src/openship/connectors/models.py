@@ -172,8 +172,8 @@ class ProjectConnectorDefault(Base):
         UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
     service = Column(String(16), nullable=False)
-    connector_id = Column(UUID(as_uuid=True), nullable=False)
-    connector_revision = Column(Integer, nullable=False)
+    connector_id = Column(UUID(as_uuid=True), nullable=True)
+    connector_revision = Column(Integer, nullable=True)
     settings_revision = Column(Integer, nullable=False, server_default="1")
     updated_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
@@ -191,6 +191,11 @@ class ProjectConnectorDefault(Base):
         CheckConstraint("service IN ('brave', 'tavily')", name="ck_project_connector_defaults_service"),
         CheckConstraint("connector_revision >= 1", name="ck_project_connector_defaults_connector_revision"),
         CheckConstraint("settings_revision >= 1", name="ck_project_connector_defaults_settings_revision"),
+        CheckConstraint(
+            "(connector_id IS NULL AND connector_revision IS NULL) OR "
+            "(connector_id IS NOT NULL AND connector_revision IS NOT NULL)",
+            name="ck_project_connector_defaults_target_shape",
+        ),
         Index("ix_project_connector_defaults_connector", "connector_id"),
     )
 
