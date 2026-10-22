@@ -163,6 +163,12 @@ const displayName = (kind: ConnectorKind) => kind === 'brave' ? 'Brave Search' :
         <p class="text-sm text-muted-foreground">
           Choose which shared connector this project uses for each search service. These choices are independent per project.
         </p>
+        <RouterLink
+          to="/connectors"
+          class="mt-2 inline-block text-sm font-medium text-primary underline-offset-4 hover:underline"
+        >
+          Browse Global connectors
+        </RouterLink>
       </div>
       <div v-if="connectors.loading" role="status" class="text-sm text-muted-foreground">Loading project search settings…</div>
       <div v-for="kind in defaultKinds" :key="kind" class="grid max-w-xl gap-2">

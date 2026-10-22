@@ -20,6 +20,7 @@ export const useConnectorsStore = defineStore('connectors', () => {
   const loading = ref(false)
   const globalLoading = ref(false)
   const error = ref<string | null>(null)
+  const globalError = ref<string | null>(null)
   let projectLoadGeneration = 0
   let loadedProjectId: string | null = null
 
@@ -34,6 +35,7 @@ export const useConnectorsStore = defineStore('connectors', () => {
 
   async function loadGlobalManagement(): Promise<void> {
     globalLoading.value = true
+    globalError.value = null
     try {
       let setup: Awaited<ReturnType<typeof connectorsApi.getSetupContext>>
       try {
@@ -43,6 +45,7 @@ export const useConnectorsStore = defineStore('connectors', () => {
         canManageGlobal.value = false
         credentialStoreReady.value = false
         setupUnavailableReason.value = null
+        globalError.value = 'Failed to load global connector setup.'
         return
       }
 
@@ -63,6 +66,7 @@ export const useConnectorsStore = defineStore('connectors', () => {
         // existing authorization check to succeed before showing its data.
         globalConnectors.value = []
         canManageGlobal.value = false
+        globalError.value = 'Failed to load the global connector catalog.'
       }
     } finally {
       globalLoading.value = false
@@ -148,6 +152,7 @@ export const useConnectorsStore = defineStore('connectors', () => {
     loading.value = false
     globalLoading.value = false
     error.value = null
+    globalError.value = null
   }
 
   return {
@@ -161,6 +166,7 @@ export const useConnectorsStore = defineStore('connectors', () => {
     loading,
     globalLoading,
     error,
+    globalError,
     initialize,
     loadGlobalManagement,
     loadProjectContext,

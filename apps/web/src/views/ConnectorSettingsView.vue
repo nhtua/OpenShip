@@ -1,32 +1,60 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/layouts/AppLayout.vue'
-import ConnectorCredentialForm from '@/components/connectors/ConnectorCredentialForm.vue'
-import { Button, Input, Label } from '@/components/ui'
-import { generateRequestId } from '@/lib/requestId'
-import { connectorsApi } from '@/services/api'
+import ConnectorCard from '@/components/connectors/ConnectorCard.vue'
+import ConnectorConfigurationDialog from '@/components/connectors/ConnectorConfigurationDialog.vue'
+import { Button } from '@/components/ui'
+import { connectorCatalog, type ConnectorCatalogEntry } from '@/lib/connectorCatalog'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
-import type { ConnectorKind, ConnectorUsage } from '@/types'
+import type { ConnectorUsage } from '@/types'
 
 const router = useRouter()
 const auth = useAuthStore()
 const chat = useChatStore()
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
-const kinds: ConnectorKind[] = ['brave', 'tavily']
-const displayName = (kind: ConnectorKind) => kind === 'brave' ? 'Brave Search' : 'Tavily Search'
-const createNames = reactive<Record<ConnectorKind, string>>({
-  brave: 'Brave Search',
-  tavily: 'Tavily Search',
-})
-const busyConnectors = ref(new Set<string>())
 const pageError = ref<string | null>(null)
 const projectCreationError = ref<string | null>(null)
 const projectCreating = ref(false)
+const returnFocusElement = ref<HTMLElement | null>(null)
+
+interface DialogSelection {
+  entry: ConnectorCatalogEntry
+  connector: ConnectorUsage | null
+  scope: 'global' | 'project'
+  projectId: string | null
+}
+interface CatalogCard {
+  entry: ConnectorCatalogEntry
+  connector: ConnectorUsage | null
+}
+
+const selectedDialog = ref<DialogSelection | null>(null)
+const currentProject = computed(() =>
+  projects.projects.find((project) => project.id === projects.currentProjectId) ?? null,
+)
+const projectConversations = computed(() => chat.conversations.filter(
+  (conversation) => !conversation.project_id || conversation.project_id === projects.currentProjectId,
+))
+const globalInstances = computed(() => {
+  const source = connectors.canManageGlobal ? connectors.globalConnectors : connectors.connectors
+  return source.filter((connector) => connector.visibility === 'global')
+})
+const catalogCards = computed<CatalogCard[]>(() => connectorCatalog.flatMap<CatalogCard>((entry) => {
+  const instances = globalInstances.value.filter((connector) => connector.kind === entry.kind)
+  return instances.length
+    ? instances.map((connector) => ({ entry, connector }))
+    : [{ entry, connector: null }]
+}))
+const legacyProjectConnectors = computed(() => connectors.connectors.filter(
+  (connector) => connector.visibility === 'project' && connector.kind !== 'aws',
+))
+const catalogLoading = computed(() => connectors.loading || connectors.globalLoading)
+const catalogError = computed(() => pageError.value ?? connectors.error ?? connectors.globalError)
 const setupUnavailableMessage = computed(() => {
   const reason = connectors.setupUnavailableReason
   if (reason === 'installation_id_missing') {
@@ -40,128 +68,58 @@ const setupUnavailableMessage = computed(() => {
   }
   return null
 })
-const currentProject = computed(() =>
-  projects.projects.find((project) => project.id === projects.currentProjectId) ?? null,
-)
-const projectConversations = computed(() => chat.conversations.filter(
-  (conversation) => !conversation.project_id || conversation.project_id === projects.currentProjectId,
-))
-const scopedConnectors = (visibility: 'project' | 'global', kind?: ConnectorKind) =>
-  (visibility === 'project' ? connectors.connectors : connectors.globalConnectors).filter(
-    (connector) => connector.visibility === visibility && (!kind || connector.kind === kind),
-  )
-function requestStatus(scope: 'project' | 'global', projectId: string | null) {
-  return async (requestId: string) => {
-    const response = scope === 'project' && projectId
-      ? await connectorsApi.projectRequestStatus(projectId, requestId)
-      : await connectorsApi.globalRequestStatus(requestId)
-    return response.data
+
+function selectGlobalConnector(
+  entry: ConnectorCatalogEntry,
+  connector: ConnectorUsage | null,
+  event: Event,
+): void {
+  returnFocusElement.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  selectedDialog.value = { entry, connector, scope: 'global', projectId: null }
+}
+
+function selectLegacyConnector(connector: ConnectorUsage, event: Event): void {
+  const entry = connectorCatalog.find((item) => item.kind === connector.kind)
+  if (!entry || !projects.currentProjectId) return
+  returnFocusElement.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  selectedDialog.value = {
+    entry,
+    connector,
+    scope: 'project',
+    projectId: projects.currentProjectId,
   }
 }
 
-function createConnector(scope: 'project' | 'global', kind: ConnectorKind) {
-  return async (apiKey: string, requestId: string): Promise<Record<string, unknown>> => {
-    const name = createNames[kind].trim()
-    if (!name) throw new Error('Enter a connector name')
-    if (scope === 'project') {
-      const projectId = projects.currentProjectId
-      if (!projectId) throw new Error('Choose a project first')
-      const response = await connectorsApi.createProjectConnector(projectId, requestId, {
-        kind,
-        name,
-        configuration: {},
-        api_key: apiKey,
-      })
-      return response.data as Record<string, unknown>
-    }
-    const response = await connectorsApi.createGlobalConnector(requestId, {
-      kind,
-      name,
-      configuration: {},
-      api_key: apiKey,
-    })
-    return response.data as Record<string, unknown>
-  }
+function closeDialog(open: boolean): void {
+  if (!open) selectedDialog.value = null
 }
 
-function replaceCredential(scope: 'project' | 'global', connector: ConnectorUsage) {
-  return async (apiKey: string, requestId: string): Promise<Record<string, unknown>> => {
-    if (scope === 'project') {
-      const projectId = projects.currentProjectId
-      if (!projectId) throw new Error('Choose a project first')
-      const response = await connectorsApi.replaceProjectCredential(
-        projectId,
-        connector.id,
-        requestId,
-        { expected_revision: connector.revision, api_key: apiKey },
-      )
-      return response.data as Record<string, unknown>
-    }
-    const response = await connectorsApi.replaceGlobalCredential(
-      connector.id,
-      requestId,
-      { expected_revision: connector.revision, api_key: apiKey },
-    )
-    return response.data as Record<string, unknown>
-  }
-}
-
-async function onCredentialComplete() {
+async function refreshConnectorViews(): Promise<void> {
+  pageError.value = null
   await connectors.reload(projects.currentProjectId)
 }
 
-async function updateConnector(scope: 'project' | 'global', connector: ConnectorUsage, change: 'toggle' | 'revoke') {
-  if (change === 'revoke') {
-    const impact = scope === 'global'
-      ? 'This affects every project currently using this global connector.'
-      : 'This affects searches in this project.'
-    if (!window.confirm(`Revoke ${connector.name}? ${impact}`)) return
-  }
-  const busyKey = `${scope}:${connector.id}`
-  busyConnectors.value.add(busyKey)
-  pageError.value = null
-  try {
-    const payload = {
-      expected_revision: connector.revision,
-      ...(change === 'revoke'
-        ? { revoke: true }
-        : { enabled: connector.status === 'disabled' }),
-    }
-    if (scope === 'project' && projects.currentProjectId) {
-      await connectorsApi.updateProjectConnector(
-        projects.currentProjectId,
-        connector.id,
-        generateRequestId(),
-        payload,
-      )
-    } else {
-      await connectorsApi.updateGlobalConnector(connector.id, generateRequestId(), payload)
-    }
-    await connectors.reload(projects.currentProjectId)
-  } catch {
-    pageError.value = 'The connector could not be updated. Reload connector settings and try again.'
-  } finally {
-    busyConnectors.value.delete(busyKey)
-  }
+function showDialogError(message: string): void {
+  pageError.value = message
 }
 
-async function selectProject(projectId: string) {
+async function selectProject(projectId: string): Promise<void> {
   if (!projects.selectProject(projectId)) return
   await connectors.loadProjectContext(projectId)
 }
 
-async function goToConversation(id: string) {
+async function goToConversation(id: string): Promise<void> {
   await router.push({ name: 'conversation', params: { conversationId: id } })
 }
 
-async function createConversation(title: string) {
+async function createConversation(title: string): Promise<void> {
   const conversation = await chat.createConversation(title, projects.currentProjectId)
   if (conversation) {
     await router.push({ name: 'conversation', params: { conversationId: conversation.id } })
   }
 }
 
-async function createProject(name: string) {
+async function createProject(name: string): Promise<void> {
   if (projectCreating.value) return
   projectCreating.value = true
   projectCreationError.value = null
@@ -175,13 +133,17 @@ async function createProject(name: string) {
   }
 }
 
-async function signOut() {
+async function signOut(): Promise<void> {
   auth.logout()
   chat.clearMessages()
   connectors.clear()
   projects.clear()
   await router.replace({ name: 'login' })
 }
+
+watch(() => projects.currentProjectId, (next, previous) => {
+  if (next !== previous) selectedDialog.value = null
+})
 
 onMounted(async () => {
   if (!projects.projects.length) await projects.initialize()
@@ -211,173 +173,106 @@ onMounted(async () => {
         <header class="grid gap-2">
           <h1 class="text-2xl font-semibold">Search connectors</h1>
           <p class="max-w-3xl text-sm text-muted-foreground">
-            Connect Brave Search or Tavily to this project. A configured key is write-only and will not be shown again.
+            Brave Search and Tavily Search are shared Global integrations. Each project keeps its own search defaults.
           </p>
         </header>
 
-        <p v-if="connectors.loading" role="status" class="text-sm text-muted-foreground">Loading project connector settings…</p>
-        <p v-if="connectors.error || pageError" role="alert" class="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
-          {{ pageError ?? connectors.error }}
+        <p v-if="catalogLoading" role="status" class="text-sm text-muted-foreground">Loading connector catalog…</p>
+        <p v-if="catalogError" role="alert" class="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
+          {{ catalogError }}
         </p>
-        <p v-if="setupUnavailableMessage" role="status" class="rounded-md border border-border p-3 text-sm text-muted-foreground">
+        <p v-if="setupUnavailableMessage && !catalogError" role="status" class="rounded-md border border-border p-3 text-sm text-muted-foreground">
           {{ setupUnavailableMessage }} Restart the API and worker after correcting their shared configuration.
         </p>
-        <p v-if="!currentProject && !connectors.loading" class="rounded-md border border-border p-4 text-sm text-muted-foreground">
-          No owned project is available. Connector setup requires a project.
+        <p v-if="!currentProject && !catalogLoading && !catalogError" class="rounded-md border border-border p-4 text-sm text-muted-foreground">
+          No owned project is available. Global connector use requires a project context.
         </p>
 
-        <template v-if="currentProject">
-          <section
-            v-for="kind in kinds"
-            :key="kind"
-            class="grid gap-4 rounded-xl border border-border bg-card p-4 md:p-6"
-            :aria-labelledby="`${kind}-connector-heading`"
-          >
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h2 :id="`${kind}-connector-heading`" class="text-lg font-semibold">{{ displayName(kind) }}</h2>
-                <p class="text-sm text-muted-foreground">Project: {{ currentProject.name }}</p>
+        <template v-if="!catalogLoading && !catalogError && currentProject">
+          <section class="grid gap-4" aria-labelledby="global-catalog-heading" data-connector-catalog>
+            <header class="flex flex-wrap items-end justify-between gap-3">
+              <div class="grid gap-1">
+                <h2 id="global-catalog-heading" class="text-lg font-semibold">Global search connectors</h2>
+                <p class="text-sm text-muted-foreground">
+                  Supported services are shared across eligible projects. Select a card to view details or configure it.
+                </p>
               </div>
-              <span class="rounded-full bg-muted px-3 py-1 text-xs">Project visibility</span>
-            </div>
+            </header>
 
-            <div class="grid gap-3 rounded-lg border border-border/70 p-3 md:p-4">
-              <h3 class="font-medium">Add a project connector</h3>
-              <div class="grid gap-1.5">
-                <Label :for="`${kind}-project-name`">Connector name</Label>
-                <Input :id="`${kind}-project-name`" v-model="createNames[kind]" :aria-label="`${displayName(kind)} project connector name`" />
-              </div>
-              <ConnectorCredentialForm
-                :key="`new-project-${kind}`"
-                :title="displayName(kind)"
-                :request-scope-key="`project:${projects.currentProjectId}:create:${kind}`"
-                submit-label="Add project connector"
-                :can-submit="Boolean(createNames[kind].trim()) && connectors.credentialStoreReady"
-                :submit="createConnector('project', kind)"
-                :read-status="requestStatus('project', projects.currentProjectId)"
-                @complete="onCredentialComplete"
-              />
-            </div>
-
-            <div class="grid gap-3">
-              <h3 class="font-medium">Project connectors</h3>
-              <p v-if="!scopedConnectors('project', kind).length" class="text-sm text-muted-foreground">No project {{ kind }} connectors are configured.</p>
-              <article
-                v-for="connector in scopedConnectors('project', kind)"
-                :key="connector.id"
-                class="grid gap-3 rounded-lg border border-border/70 p-3 md:grid-cols-[1fr_auto] md:items-start md:p-4"
-              >
-                <div class="grid gap-1">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <strong>{{ connector.name }}</strong>
-                    <span class="rounded-full bg-muted px-2 py-0.5 text-xs">Project</span>
-                    <span class="rounded-full bg-muted px-2 py-0.5 text-xs">{{ connector.status }}</span>
-                    <span v-if="connector.is_default" class="text-xs text-primary">Project default</span>
-                  </div>
-                  <span class="text-xs text-muted-foreground">Revision {{ connector.revision }}</span>
-                  <ConnectorCredentialForm
-                    :key="`replace-project-${connector.id}-${connector.revision}`"
-                    :title="`${connector.name} (${displayName(kind)})`"
-                    :request-scope-key="`project:${projects.currentProjectId}:credential:${connector.id}`"
-                    submit-label="Replace API key"
-                    :can-submit="connectors.credentialStoreReady"
-                    :submit="replaceCredential('project', connector)"
-                    :read-status="requestStatus('project', projects.currentProjectId)"
-                    @complete="onCredentialComplete"
-                  />
-                </div>
-                <div class="flex flex-wrap gap-2">
-                  <Button
-                    v-if="connector.status !== 'revoked'"
-                    size="sm"
-                    variant="outline"
-                    :disabled="busyConnectors.has(`project:${connector.id}`) || !connectors.credentialStoreReady"
-                    @click="updateConnector('project', connector, 'toggle')"
-                  >
-                    {{ connector.status === 'disabled' ? 'Enable' : 'Disable' }}
-                  </Button>
-                  <Button
-                    v-if="connector.status !== 'revoked'"
-                    size="sm"
-                    variant="destructive"
-                    :disabled="busyConnectors.has(`project:${connector.id}`) || !connectors.credentialStoreReady"
-                    @click="updateConnector('project', connector, 'revoke')"
-                  >
-                    Revoke
-                  </Button>
-                </div>
-              </article>
-            </div>
-
-            <div v-if="scopedConnectors('global', kind).length" class="grid gap-2 border-t border-border pt-4">
-              <h3 class="font-medium">Shared global connectors available to this project</h3>
-              <div v-for="connector in scopedConnectors('global', kind)" :key="connector.id" class="flex flex-wrap items-center gap-2 text-sm">
-                <span class="font-medium">{{ connector.name }}</span>
-                <span class="rounded-full bg-muted px-2 py-0.5 text-xs">Global</span>
-                <span class="rounded-full bg-muted px-2 py-0.5 text-xs">{{ connector.status }}</span>
+            <div class="grid gap-3 md:grid-cols-2">
+              <div v-for="card in catalogCards" :key="`${card.entry.kind}:${card.connector?.id ?? 'unconfigured'}`" class="grid gap-2">
+                <ConnectorCard
+                  :entry="card.entry"
+                  :connector="card.connector ?? undefined"
+                  @select="selectGlobalConnector(card.entry, card.connector, $event)"
+                />
+                <Button
+                  v-if="connectors.canManageGlobal"
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  class="w-fit"
+                  :aria-label="`${globalInstances.some((item) => item.kind === card.entry.kind) ? 'Add another' : 'Add'} ${card.entry.name}`"
+                  @click="selectGlobalConnector(card.entry, null, $event)"
+                >
+                  {{ globalInstances.some((item) => item.kind === card.entry.kind) ? `Add another ${card.entry.name}` : `Add ${card.entry.name}` }}
+                </Button>
               </div>
             </div>
           </section>
 
-          <section v-if="connectors.canManageGlobal" class="grid gap-5 rounded-xl border border-primary/30 bg-card p-4 md:p-6">
-            <div>
-              <h2 class="text-lg font-semibold">Global connector management</h2>
-              <p class="mt-1 text-sm text-muted-foreground">
-                Global connectors are visible to eligible projects. Rotating or revoking one can interrupt searches in every project using it.
+          <section v-if="legacyProjectConnectors.length" class="grid gap-4" aria-labelledby="legacy-connectors-heading" data-legacy-connectors>
+            <header class="grid gap-1">
+              <h2 id="legacy-connectors-heading" class="text-lg font-semibold">Legacy Project connectors</h2>
+              <p class="max-w-3xl text-sm text-muted-foreground">
+                These existing private connectors keep their original project scope. Choose a Global connector to replace this legacy Project default in Project Settings before retiring a private key.
               </p>
-            </div>
-            <div v-for="kind in kinds" :key="`global-${kind}`" class="grid gap-3 border-t border-border pt-4">
-              <h3 class="font-medium">Add global {{ displayName(kind) }}</h3>
-              <div class="grid gap-1.5">
-                <Label :for="`${kind}-global-name`">Connector name</Label>
-                <Input :id="`${kind}-global-name`" v-model="createNames[kind]" :aria-label="`${displayName(kind)} global connector name`" />
-              </div>
-              <ConnectorCredentialForm
-                :key="`new-global-${kind}`"
-                :title="displayName(kind)"
-                :request-scope-key="`global:create:${kind}`"
-                submit-label="Add global connector"
-                :can-submit="Boolean(createNames[kind].trim()) && connectors.credentialStoreReady"
-                :submit="createConnector('global', kind)"
-                :read-status="requestStatus('global', null)"
-                @complete="onCredentialComplete"
-              />
-              <article
-                v-for="connector in scopedConnectors('global', kind)"
-                :key="connector.id"
-                class="grid gap-3 rounded-lg border border-border/70 p-3 md:grid-cols-[1fr_auto] md:items-start md:p-4"
+              <RouterLink
+                v-if="projects.currentProjectId"
+                :to="{ name: 'project-settings', params: { projectId: projects.currentProjectId } }"
+                class="w-fit text-sm font-medium text-primary underline-offset-4 hover:underline"
               >
-                <div class="grid gap-1">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <strong>{{ connector.name }}</strong>
-                    <span class="rounded-full bg-primary/10 px-2 py-0.5 text-xs">Global visibility</span>
-                    <span class="rounded-full bg-muted px-2 py-0.5 text-xs">{{ connector.status }}</span>
-                  </div>
-                  <span class="text-xs text-muted-foreground">Revision {{ connector.revision }}</span>
-                  <ConnectorCredentialForm
-                    :key="`replace-global-${connector.id}-${connector.revision}`"
-                    :title="`${connector.name} (${displayName(kind)})`"
-                    :request-scope-key="`global:credential:${connector.id}`"
-                    submit-label="Rotate global API key"
-                    :can-submit="connectors.credentialStoreReady"
-                    :submit="replaceCredential('global', connector)"
-                    :read-status="requestStatus('global', null)"
-                    @complete="onCredentialComplete"
-                  />
+                Review Project Settings
+              </RouterLink>
+            </header>
+            <ul class="grid gap-3 md:grid-cols-2">
+              <li v-for="connector in legacyProjectConnectors" :key="connector.id" class="grid gap-1 rounded-xl border border-border bg-card p-4">
+                <div class="flex flex-wrap items-center gap-2">
+                  <strong>{{ connector.name }}</strong>
+                  <span class="rounded-full border border-amber-500/40 px-2 py-0.5 text-xs">Project visibility</span>
+                  <span class="rounded-full bg-muted px-2 py-0.5 text-xs">{{ connector.status }}</span>
+                  <span v-if="connector.is_default" class="text-xs text-primary">Current project default</span>
                 </div>
+                <span class="text-xs text-muted-foreground">{{ connector.kind === 'brave' ? 'Brave Search' : 'Tavily Search' }} · Revision {{ connector.revision }}</span>
                 <Button
-                  v-if="connector.status !== 'revoked'"
+                  type="button"
                   size="sm"
-                  variant="destructive"
-                  :disabled="busyConnectors.has(`global:${connector.id}`) || !connectors.credentialStoreReady"
-                  @click="updateConnector('global', connector, 'revoke')"
+                  variant="outline"
+                  class="w-fit"
+                  :aria-label="`Manage legacy ${connector.name}`"
+                  @click="selectLegacyConnector(connector, $event)"
                 >
-                  Revoke globally
+                  Manage legacy connector
                 </Button>
-              </article>
-            </div>
+              </li>
+            </ul>
           </section>
         </template>
+
+        <ConnectorConfigurationDialog
+          :open="Boolean(selectedDialog)"
+          :entry="selectedDialog?.entry ?? connectorCatalog[0]"
+          :scope="selectedDialog?.scope ?? 'global'"
+          :connector="selectedDialog?.connector ?? null"
+          :project-id="selectedDialog?.projectId ?? null"
+          :selected-project-id="projects.currentProjectId"
+          :can-manage-global="connectors.canManageGlobal"
+          :credential-store-ready="connectors.credentialStoreReady"
+          :return-focus-element="returnFocusElement"
+          @update:open="closeDialog"
+          @complete="refreshConnectorViews"
+          @error="showDialogError"
+        />
       </div>
     </main>
   </AppLayout>

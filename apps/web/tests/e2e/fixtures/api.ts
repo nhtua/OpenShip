@@ -200,8 +200,18 @@ export async function mockApi(
       connector_readiness: { [capability.id.startsWith('brave') ? 'brave' : 'tavily']: 'ready' },
     }))),
   )
+  await page.route('**/api/connectors/setup-context', (route) =>
+    json(route, 200, {
+      can_manage_global: false,
+      credential_store_ready: true,
+      unavailable_reason: null,
+    }),
+  )
   await page.route('**/api/global-connectors', (route) =>
     json(route, 403, { error: { code: 'global_management_forbidden', message: 'Global Connector management is not available to this account' } }),
+  )
+  await page.route('**/api/global-connectors/requests/*', (route) =>
+    json(route, 404, { error: { code: 'connector_not_found', message: 'Connector or request not found' } }),
   )
   await page.route('**/api/projects/project-e2e/connector-requests/*', (route) =>
     json(route, 404, { error: { code: 'connector_not_found', message: 'Connector or request not found' } }),

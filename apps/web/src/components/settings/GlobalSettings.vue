@@ -41,7 +41,7 @@ const unavailableMessage = () => {
         {{ unavailableMessage() }}
       </p>
       <RouterLink to="/connectors" class="w-fit text-sm font-medium text-primary underline-offset-4 hover:underline">
-        Open Connectors
+        Open Connector catalog
       </RouterLink>
     </section>
   </section>
