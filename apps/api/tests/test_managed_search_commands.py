@@ -68,14 +68,15 @@ def _identity(db, label: str):
     return user, project, conversation
 
 
-def _connector(db, user, project, *, visibility="project"):
+def _connector(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
     result = create_connector(
         db,
         actor=user,
-        visibility=visibility,
-        project_id=project.id if visibility == "project" else None,
+        visibility="global",
+        project_id=None,
         kind="brave",
-        name=f"{visibility} Brave",
+        name="global Brave",
         configuration_raw={"schema_version": 1, "kind": "brave"},
         api_key=API_KEY,
     )
@@ -118,7 +119,7 @@ def test_manual_search_pins_connector_and_exact_retry_ignores_later_rotation(
     db = SessionLocal()
     try:
         user, project, conversation = _identity(db, "manual")
-        connector_id = _connector(db, user, project)
+        connector_id = _connector(db, user, monkeypatch)
         reference = _ref(db, connector_id)
         set_default(
             db,
@@ -144,7 +145,7 @@ def test_manual_search_pins_connector_and_exact_retry_ignores_later_rotation(
         assert API_KEY not in first.execution_configuration
         assert API_KEY not in (first.tool_command_json or "")
 
-        changed_default = _connector(db, user, project)
+        changed_default = _connector(db, user, monkeypatch)
         set_default(
             db,
             project_id=project.id,
@@ -181,9 +182,9 @@ def test_changed_connector_selection_conflicts_on_manual_request_replay(
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:
-        user, project, conversation = _identity(db, "conflict")
-        first_connector = _connector(db, user, project)
-        second_connector = _connector(db, user, project)
+        user, _project, conversation = _identity(db, "conflict")
+        first_connector = _connector(db, user, monkeypatch)
+        second_connector = _connector(db, user, monkeypatch)
         request_id = uuid.uuid4()
         original = ToolCommandRequest(
             client_request_id=request_id,
@@ -220,7 +221,7 @@ def test_tool_chat_pins_selected_connector_and_plain_chat_needs_no_connector_key
     db = SessionLocal()
     try:
         user, project, conversation = _identity(db, "chat")
-        connector_id = _connector(db, user, project)
+        connector_id = _connector(db, user, monkeypatch)
         run = submit_turn(
             db=db,
             user_id=user.id,
@@ -281,8 +282,8 @@ def test_tool_chat_exact_retry_keeps_pinned_connector_after_default_changes(
     db = SessionLocal()
     try:
         user, project, conversation = _identity(db, "chat-replay")
-        first_connector = _connector(db, user, project)
-        second_connector = _connector(db, user, project)
+        first_connector = _connector(db, user, monkeypatch)
+        second_connector = _connector(db, user, monkeypatch)
         set_default(
             db,
             project_id=project.id,

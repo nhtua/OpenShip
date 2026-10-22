@@ -528,11 +528,12 @@ async def test_connector_revoked_after_dispatch_cannot_publish_result(
     )
     db.add(conversation)
     db.flush()
+    monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
     connector = create_connector(
         db,
         actor=user,
-        visibility="project",
-        project_id=project.id,
+        visibility="global",
+        project_id=None,
         kind="brave",
         name="Managed Brave",
         configuration_raw={"schema_version": 1, "kind": "brave"},
@@ -548,7 +549,7 @@ async def test_connector_revoked_after_dispatch_cannot_publish_result(
         id=connector_id,
         kind="brave",
         configuration_revision=revision.revision,
-        visibility="project",
+        visibility="global",
         credential_version_id=revision.credential_version_id,
     )
     execution = ExecutionConfigV2(

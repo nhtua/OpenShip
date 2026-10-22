@@ -115,6 +115,7 @@ def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
 
 
 def test_exact_tool_command_replay_precedes_current_enablement(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:
@@ -133,6 +134,7 @@ def test_exact_tool_command_replay_precedes_current_enablement(monkeypatch):
 
 
 def test_changed_or_foreign_command_key_is_not_replayed(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:
@@ -162,6 +164,7 @@ def test_changed_or_foreign_command_key_is_not_replayed(monkeypatch):
 
 
 def test_only_one_active_manual_run_is_admitted(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:
@@ -285,6 +288,7 @@ def test_tool_command_accepts_json_uuid_and_preserves_historical_chat_contract()
 
 
 def test_tool_submission_route_is_authenticated_and_model_free(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:

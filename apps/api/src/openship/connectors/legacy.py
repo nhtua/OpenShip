@@ -11,7 +11,6 @@ from ..auth.models import User
 from .service import (
     ConnectorCommandError,
     create_connector,
-    owned_project,
     require_global_operator,
     set_default,
 )
@@ -28,16 +27,17 @@ def _validate_migration(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     selected = tuple(services)
     defaults = tuple(default_services)
+    if visibility == "project":
+        raise ConnectorCommandError("connector_visibility_unsupported")
     if (
-        visibility not in {"global", "project"}
+        visibility != "global"
         or not selected
         or len(set(selected)) != len(selected)
         or any(service not in _SERVICES for service in selected)
         or len(set(defaults)) != len(defaults)
         or any(service not in selected for service in defaults)
         or (visibility == "global" and project_id is not None)
-        or (visibility == "project" and project_id is None)
-        or (visibility == "global" and defaults)
+        or defaults
     ):
         raise ValueError("invalid_search_migration_selection")
     return selected, defaults
@@ -88,11 +88,7 @@ def import_legacy_search_connectors(
         project_id=project_id,
         default_services=default_services,
     )
-    if visibility == "global":
-        require_global_operator(actor)
-    else:
-        assert project_id is not None
-        owned_project(db, project_id=project_id, user_id=actor.id)
+    require_global_operator(actor)
 
     imported: list[dict[str, object]] = []
     for service in selected:

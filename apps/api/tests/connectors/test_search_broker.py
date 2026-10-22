@@ -11,6 +11,7 @@ import pytest
 from src.openship.auth.models import User
 from src.openship.capabilities.contracts import ConnectorRef
 from src.openship.config import settings
+from src.openship.connectors.contracts import ConnectorConfiguration
 from src.openship.connectors.credentials.broker import (
     ConnectorCredentialError,
     SearchCredentialBroker,
@@ -20,7 +21,7 @@ from src.openship.connectors.models import (
     ConnectorRevision,
     CredentialVersion,
 )
-from src.openship.connectors.service import create_connector
+from src.openship.connectors.service import _new_credential, create_connector
 from src.openship.database.session import SessionLocal
 from src.openship.workspace.models import Project
 
@@ -63,17 +64,54 @@ def _identity(db, label: str):
 
 
 def _create_connector(db, user, project, *, visibility: str, api_key: str = API_KEY):
-    result = create_connector(
-        db,
-        actor=user,
-        visibility=visibility,
-        project_id=project.id if visibility == "project" else None,
-        kind="brave",
-        name=f"{visibility} Brave",
-        configuration_raw={"schema_version": 1, "kind": "brave"},
-        api_key=api_key,
-    )
-    connector_id = uuid.UUID(result["id"])
+    if visibility == "global":
+        result = create_connector(
+            db,
+            actor=user,
+            visibility="global",
+            project_id=None,
+            kind="brave",
+            name="global Brave",
+            configuration_raw={"schema_version": 1, "kind": "brave"},
+            api_key=api_key,
+        )
+        connector_id = uuid.UUID(result["id"])
+    else:
+        # Broker tests need a pre-policy private record to verify its isolation.
+        connector = Connector(
+            id=uuid.uuid4(),
+            kind="brave",
+            visibility="project",
+            project_id=project.id,
+            name="Historical project Brave",
+            current_revision=1,
+            enabled=True,
+            managed_by_user_id=user.id,
+            created_by_user_id=user.id,
+        )
+        db.add(connector)
+        db.flush()
+        credential = _new_credential(
+            db, connector=connector, project_id=project.id, api_key=api_key
+        )
+        db.flush()
+        configuration = ConnectorConfiguration(kind="brave")
+        db.add(
+            ConnectorRevision(
+                id=uuid.uuid4(),
+                connector_id=connector.id,
+                revision=1,
+                schema_version=1,
+                visibility="project",
+                project_id=project.id,
+                configuration_json=configuration.canonical_bytes().decode("utf-8"),
+                configuration_digest=configuration.digest(),
+                credential_version_id=credential.id,
+                created_by_user_id=user.id,
+            )
+        )
+        db.flush()
+        connector_id = connector.id
     revision = (
         db.query(ConnectorRevision)
         .filter(ConnectorRevision.connector_id == connector_id)
@@ -97,6 +135,7 @@ def test_global_search_credential_is_reused_for_each_authorized_project(
         operator, operator_project = _identity(db, "operator")
         _consumer_a, project_a = _identity(db, "a")
         _consumer_b, project_b = _identity(db, "b")
+        monkeypatch.setattr(settings, "connector_operator_user_id", operator.id)
         reference = _create_connector(
             db, operator, operator_project, visibility="global"
         )

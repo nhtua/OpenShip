@@ -7,7 +7,7 @@ date: 2026-10-22
 
 # Phase 5A.1 Managed Connector Qualification
 
-**Technical qualification: passed. User acceptance: pending.** Task 7 exercised
+**Original technical qualification: passed. User acceptance: revisions requested.** Task 7 exercised
 the real API and worker against a disposable PostgreSQL database and filesystem
 artifact store. Every search credential was synthetic. No live search provider,
 AWS service, or local `.env` value was used. The 5A.1 acceptance decision is a
@@ -40,7 +40,15 @@ is not counted as a pass or failure.
 
 ## Acceptance decision
 
-**Decision: pending user review.** Choose one:
+**Decision: revisions requested on 2026-10-22.** The user identified missing
+project lifecycle/settings ownership, a rejected credential submission becoming
+an uncertain status-check loop, and the need for a connector-card catalog with
+configuration dialogs. The [proposed review revision plan](../superpowers/plans/2026-10-22-phase5a1-project-settings-review.md)
+records the findings and scoped follow-up. Its implementation and renewed
+qualification remain pending; the original test pass does not establish that
+these browser behaviors work.
+
+After the revisions are reviewed and qualified, choose one:
 
 - **Accept 5A.1:** authorize starting Task 8 (AWS SDK runner), still using
   synthetic tests until any separate live-service authorization.

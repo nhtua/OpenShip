@@ -13,18 +13,30 @@ from starlette.requests import Request
 from src.openship.auth.models import User
 from src.openship.auth.routes import require_jwt
 from src.openship.config import settings
-from src.openship.connectors.models import CredentialVersion
+from src.openship.connectors.contracts import ConnectorConfiguration
+from src.openship.connectors.models import (
+    Connector,
+    ConnectorRevision,
+    CredentialVersion,
+)
 from src.openship.connectors.routes import (
     _require_browser_origin,
     global_connector_create,
+    global_connector_request_status,
     project_connector_create,
     project_connector_default_get,
     project_connector_default_set,
     project_connector_detail,
     project_connector_list,
     project_connector_replace_credential,
-    project_connector_request_status,
     project_connector_update,
+)
+from src.openship.connectors.service import (
+    ConnectorCommandError,
+    _audit,
+    _new_credential,
+    create_connector,
+    detail,
 )
 from src.openship.database.session import SessionLocal
 from src.openship.workspace.models import Project
@@ -108,6 +120,55 @@ def _create_body(secret="synthetic-brave-secret-sentinel"):
     }
 
 
+def _seed_legacy_project_connector(actor, project_id, *, kind="brave"):
+    """Insert an encrypted pre-policy fixture without using the creation API."""
+    configuration = ConnectorConfiguration(kind=kind)
+    with SessionLocal() as db:
+        connector = Connector(
+            id=uuid.uuid4(),
+            kind=kind,
+            visibility="project",
+            project_id=project_id,
+            name=f"Legacy {kind.title()}",
+            current_revision=1,
+            enabled=True,
+            managed_by_user_id=actor.id,
+            created_by_user_id=actor.id,
+        )
+        db.add(connector)
+        db.flush()
+        credential = _new_credential(
+            db,
+            connector=connector,
+            project_id=project_id,
+            api_key="synthetic-legacy-project-secret",
+        )
+        db.flush()
+        db.add(
+            ConnectorRevision(
+                id=uuid.uuid4(),
+                connector_id=connector.id,
+                revision=1,
+                schema_version=1,
+                visibility="project",
+                project_id=project_id,
+                configuration_json=configuration.canonical_bytes().decode("utf-8"),
+                configuration_digest=configuration.digest(),
+                credential_version_id=credential.id,
+                created_by_user_id=actor.id,
+            )
+        )
+        _audit(
+            db,
+            connector=connector,
+            actor_user_id=actor.id,
+            action="created",
+            revision=1,
+        )
+        db.commit()
+        return detail(db, connector)
+
+
 def _request(method, path, *, headers=None, content=None):
     body = content or b""
     raw_headers = [
@@ -150,14 +211,15 @@ def _json_response(response):
     return json.loads(response.body)
 
 
-def test_project_setup_encrypts_secret_once_and_exact_retry_returns_safe_result(
+def test_global_setup_encrypts_secret_once_and_exact_retry_returns_safe_result(
     connector_identity, monkeypatch, tmp_path
 ):
-    actor, project_id = connector_identity
+    actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
     body = _create_body()
     request_id = uuid.uuid4()
-    path = f"/api/projects/{project_id}/connectors"
+    path = "/api/global-connectors"
     headers = {"Origin": ORIGIN, "Idempotency-Key": str(request_id)}
 
     async def create(request_body):
@@ -165,13 +227,13 @@ def test_project_setup_encrypts_secret_once_and_exact_retry_returns_safe_result(
             "POST", path, headers=headers, content=json.dumps(request_body).encode()
         )
         with SessionLocal() as db:
-            return await project_connector_create(project_id, request, db, actor)
+            return await global_connector_create(request, db, actor)
 
     created = _invoke(create(body))
     retried = _invoke(create(body))
     created_result = _json_response(created)
 
-    assert created_result["visibility"] == "project"
+    assert created_result["visibility"] == "global"
     assert created_result["status"] == "configured"
     assert "api_key" not in created_result
     assert "synthetic-brave-secret-sentinel" not in json.dumps(created_result)
@@ -191,7 +253,7 @@ def test_project_setup_encrypts_secret_once_and_exact_retry_returns_safe_result(
             content=json.dumps(_create_body("different-secret-sentinel")).encode(),
         )
         with SessionLocal() as db:
-            await project_connector_create(project_id, request, db, actor)
+            await global_connector_create(request, db, actor)
 
     with pytest.raises(HTTPException) as refused:
         _invoke(changed_retry())
@@ -199,10 +261,85 @@ def test_project_setup_encrypts_secret_once_and_exact_retry_returns_safe_result(
     assert "different-secret-sentinel" not in str(refused.value.detail)
 
     with SessionLocal() as db:
-        status = project_connector_request_status(project_id, request_id, db, actor)
+        status = global_connector_request_status(request_id, db, actor)
     assert status["status"] == "complete"
     assert status["result"]["id"] == created_result["id"]
     assert "api_key" not in json.dumps(status)
+
+
+@pytest.mark.parametrize("kind", ["brave", "tavily"])
+def test_new_project_search_credentials_are_refused_before_body_read(
+    connector_identity, monkeypatch, tmp_path, kind
+):
+    actor, project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    body = _create_body()
+    body["kind"] = kind
+    body["configuration"] = {"schema_version": 1, "kind": kind}
+    request, consumed = _request(
+        "POST",
+        f"/api/projects/{project_id}/connectors",
+        headers={"Origin": ORIGIN, "Idempotency-Key": str(uuid.uuid4())},
+        content=json.dumps(body).encode(),
+    )
+
+    async def create():
+        with SessionLocal() as db:
+            return await project_connector_create(project_id, request, db, actor)
+
+    with pytest.raises(HTTPException) as refused:
+        _invoke(create())
+
+    assert refused.value.status_code == 422
+    assert refused.value.detail["error"]["code"] == "connector_visibility_unsupported"
+    assert not consumed()
+    assert "synthetic-brave-secret-sentinel" not in str(refused.value.detail)
+    with SessionLocal() as db:
+        assert db.query(Connector).filter(Connector.project_id == project_id).count() == 0
+
+
+def test_shared_service_refuses_new_project_search_credentials(
+    connector_identity, monkeypatch, tmp_path
+):
+    actor, project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    with SessionLocal() as db:
+        with pytest.raises(ConnectorCommandError) as refused:
+            create_connector(
+                db,
+                actor=actor,
+                visibility="project",
+                project_id=project_id,
+                kind="brave",
+                name="Private Brave",
+                configuration_raw={"schema_version": 1, "kind": "brave"},
+                api_key="synthetic-brave-secret-sentinel",
+            )
+        assert refused.value.code == "connector_visibility_unsupported"
+        db.rollback()
+        assert db.query(Connector).filter(Connector.project_id == project_id).count() == 0
+
+
+def test_shared_service_requires_operator_for_global_search_creation(
+    connector_identity, monkeypatch, tmp_path
+):
+    actor, _project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", uuid.uuid4())
+    with SessionLocal() as db:
+        with pytest.raises(ConnectorCommandError) as refused:
+            create_connector(
+                db,
+                actor=actor,
+                visibility="global",
+                project_id=None,
+                kind="tavily",
+                name="Unauthorized Tavily",
+                configuration_raw={"schema_version": 1, "kind": "tavily"},
+                api_key="synthetic-tavily-secret-sentinel",
+            )
+        assert refused.value.code == "global_management_forbidden"
+        db.rollback()
 
 
 def test_credential_replacement_activates_new_revision_without_exposing_secret(
@@ -210,18 +347,7 @@ def test_credential_replacement_activates_new_revision_without_exposing_secret(
 ):
     actor, project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    create_request, _ = _request(
-        "POST",
-        f"/api/projects/{project_id}/connectors",
-        headers={"Origin": ORIGIN, "Idempotency-Key": str(uuid.uuid4())},
-        content=json.dumps(_create_body()).encode(),
-    )
-
-    async def create():
-        with SessionLocal() as db:
-            return await project_connector_create(project_id, create_request, db, actor)
-
-    created = _json_response(_invoke(create()))
+    created = _seed_legacy_project_connector(actor, project_id)
     connector_id = uuid.UUID(created["id"])
     request_id = uuid.uuid4()
     headers = {"Origin": ORIGIN, "Idempotency-Key": str(request_id)}
@@ -366,16 +492,17 @@ def test_project_defaults_set_clear_and_advance_revision_monotonically(
 ):
     actor, project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
     create_request, _ = _request(
         "POST",
-        f"/api/projects/{project_id}/connectors",
+        "/api/global-connectors",
         headers={"Origin": ORIGIN, "Idempotency-Key": str(uuid.uuid4())},
         content=json.dumps(_create_body()).encode(),
     )
 
     async def create():
         with SessionLocal() as db:
-            return await project_connector_create(project_id, create_request, db, actor)
+            return await global_connector_create(create_request, db, actor)
 
     connector = _json_response(_invoke(create()))
     connector_id = uuid.UUID(connector["id"])
@@ -414,19 +541,20 @@ def test_project_defaults_set_clear_and_advance_revision_monotonically(
 def test_database_backed_write_rate_limit_and_invalid_secret_errors_are_safe(
     connector_identity, monkeypatch, tmp_path
 ):
-    actor, project_id = connector_identity
+    actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
     monkeypatch.setattr(settings, "connector_write_rate_limit_per_minute", 1)
 
     async def create(secret, request_id):
         request, _ = _request(
             "POST",
-            f"/api/projects/{project_id}/connectors",
+            "/api/global-connectors",
             headers={"Origin": ORIGIN, "Idempotency-Key": str(request_id)},
             content=json.dumps(_create_body(secret)).encode(),
         )
         with SessionLocal() as db:
-            return await project_connector_create(project_id, request, db, actor)
+            return await global_connector_create(request, db, actor)
 
     first = _json_response(_invoke(create("valid-first-secret", uuid.uuid4())))
     assert first["status"] == "configured"
@@ -445,9 +573,10 @@ def test_database_backed_write_rate_limit_and_invalid_secret_errors_are_safe(
 def test_duplicate_properties_and_non_finite_json_are_rejected_without_echoing_secrets(
     connector_identity, monkeypatch, tmp_path
 ):
-    actor, project_id = connector_identity
+    actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    path = f"/api/projects/{project_id}/connectors"
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    path = "/api/global-connectors"
     malformed_bodies = (
         (
             b'{"kind":"brave","name":"first","name":"second",'
@@ -468,7 +597,7 @@ def test_duplicate_properties_and_non_finite_json_are_rejected_without_echoing_s
             content=body,
         )
         with SessionLocal() as db, pytest.raises(HTTPException) as invalid:
-            _invoke(project_connector_create(project_id, request, db, actor))
+            _invoke(global_connector_create(request, db, actor))
         assert invalid.value.status_code == 400
         assert "secret-sentinel" not in str(invalid.value.detail)
 
@@ -478,20 +607,8 @@ def test_stale_revision_precondition_does_not_overwrite_newer_configuration(
 ):
     actor, project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
+    created = _seed_legacy_project_connector(actor, project_id)
     path = f"/api/projects/{project_id}/connectors"
-    create_headers = {"Origin": ORIGIN, "Idempotency-Key": str(uuid.uuid4())}
-    create_request, _ = _request(
-        "POST",
-        path,
-        headers=create_headers,
-        content=json.dumps(_create_body()).encode(),
-    )
-
-    async def create():
-        with SessionLocal() as db:
-            return await project_connector_create(project_id, create_request, db, actor)
-
-    created = _json_response(_invoke(create()))
     connector_id = uuid.UUID(created["id"])
 
     async def update(expected_revision, name):

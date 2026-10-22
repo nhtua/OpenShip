@@ -88,33 +88,37 @@ CONNECTOR_DISPATCH_LOCK_FILE=../../secrets/openship-managed-dispatch.lock \
 uv run python -m src.openship.connectors.cli dispatch unlock
 ```
 
-## Migrate legacy Brave or Tavily bindings
+## Cut over legacy Brave or Tavily bindings
 
-Migration is explicit by service and scope. Preview the selected service,
-visibility, target project, credential presence and any project-default
-change. The preview and import output contain no credential values. Import
-reads only the selected `BRAVE_SEARCH_API_KEY` and/or `TAVILY_API_KEY` from the
-process environment or the explicitly named source file.
+New Brave and Tavily Connectors are installation-global and require the
+configured operator. Projects keep independent defaults that point to a global
+Connector. Existing project-scoped Connectors and defaults remain readable and
+usable during cutover under their original project authorization; they are
+never relabeled, copied or widened automatically. Project-scoped search import
+is rejected before reading an environment file or credential. Do not re-import
+an existing project key as a project Connector.
+
+Preview the selected global service and credential presence. Preview and import
+output contain no credential values. Import reads only the selected
+`BRAVE_SEARCH_API_KEY` and/or `TAVILY_API_KEY` from the process environment or
+the explicitly named source file.
 
 ```sh
 uv run python -m src.openship.connectors.cli search-import-preview \
-  --visibility project --project-id <project-uuid> \
-  --service brave --default-service brave --env-file <legacy-env-file>
+  --visibility global --service brave --env-file <legacy-env-file>
 
 uv run python -m src.openship.connectors.cli search-import \
-  --visibility project --project-id <project-uuid> \
-  --actor-user-id <project-owner-uuid> \
-  --service brave --default-service brave --env-file <legacy-env-file>
+  --visibility global --actor-user-id <operator-user-uuid> \
+  --service brave --env-file <legacy-env-file>
 ```
 
-Choose `--visibility global` only when deliberately importing an installation
-connector; do not pass a project ID or default service in that case. Global
-import requires `--actor-user-id` to match the configured operator. Project
-import requires that actor to own the target project. No service is imported
-unless it is named with `--service`; defaults are changed only for explicitly
-named project services. Review the preview before running the import command.
-The import is one database transaction and stores credentials encrypted with
-the current active key.
+Pass `--visibility global` without a project ID or `--default-service`.
+`--actor-user-id` must match the configured operator. No service is imported
+unless it is explicitly named with `--service`. Review the preview before
+running the import command. The import is one database transaction and stores
+credentials encrypted with the current active key. After import, each project
+owner explicitly selects that global instance in Project Settings. A legacy
+project default remains in force until that project's owner changes it.
 
 ## Restore
 

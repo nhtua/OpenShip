@@ -25,7 +25,7 @@ from .credentials.rotation import (
     verify_retained_credentials,
 )
 from .legacy import import_legacy_search_connectors, preview_legacy_search_import
-from .service import ConnectorCommandError, owned_project, require_global_operator
+from .service import ConnectorCommandError, require_global_operator
 
 
 def _source_values(env_file: Path | None) -> dict[str, str]:
@@ -219,11 +219,7 @@ def _search_import(args: argparse.Namespace) -> int:
         actor = db.query(User).filter(User.id == args.actor_user_id).first()
         if actor is None:
             raise RuntimeError("operator_user_not_found")
-        if args.visibility == "global":
-            require_global_operator(actor)
-        else:
-            assert args.project_id is not None
-            owned_project(db, project_id=args.project_id, user_id=actor.id)
+        require_global_operator(actor)
         credentials = _legacy_credentials(_source_values(args.env_file))
         imported = import_legacy_search_connectors(
             db,

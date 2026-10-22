@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 import src.openship.database.session as db_session
@@ -120,6 +121,66 @@ datefmt = %H:%M:%S
     assert result.returncode == 0, f"Migration failed: {result.stderr}"
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def cleanup_global_connector_fixtures(setup_db):
+    """Keep installation-global Connector fixtures isolated between tests."""
+    from src.openship.connectors.models import (
+        Connector,
+        ConnectorAvailability,
+        ConnectorRequestLedger,
+        ConnectorRevision,
+        CredentialVersion,
+        ProjectConnectorDefault,
+    )
+
+    db = TestSessionLocal()
+    try:
+        before = {
+            row[0]
+            for row in db.query(Connector.id)
+            .filter(Connector.visibility == "global")
+            .all()
+        }
+    except OperationalError:
+        db.rollback()
+        db.close()
+        yield
+        return
+    db.close()
+
+    yield
+
+    with TestSessionLocal() as db:
+        current = {
+            row[0]
+            for row in db.query(Connector.id)
+            .filter(Connector.visibility == "global")
+            .all()
+        }
+        created = current - before
+        if not created:
+            return
+        db.query(ConnectorAvailability).filter(
+            ConnectorAvailability.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(ProjectConnectorDefault).filter(
+            ProjectConnectorDefault.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(ConnectorRequestLedger).filter(
+            ConnectorRequestLedger.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(ConnectorRevision).filter(
+            ConnectorRevision.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(CredentialVersion).filter(
+            CredentialVersion.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(Connector).filter(Connector.id.in_(created)).delete(
+            synchronize_session=False
+        )
+        db.commit()
 
 
 @pytest.fixture

@@ -17,6 +17,7 @@ from src.openship.connectors.selection import (
     ConnectorSelectionError,
     resolve_connector,
 )
+from src.openship.connectors.service import ConnectorCommandError, set_default
 from src.openship.database.session import SessionLocal
 from src.openship.workspace.models import Project
 
@@ -118,6 +119,40 @@ def test_explicit_selection_overrides_default_and_returns_immutable_revision_ref
         assert resolved.revision == 1
         assert resolved.visibility == "project"
         assert resolved.credential_version_id is not None
+
+
+def test_historical_project_default_remains_executable_but_cannot_be_reassigned():
+    with SessionLocal() as db:
+        owner, project = _scope(db)
+        legacy = _connector(db, owner=owner, project=project, visibility="project")
+        row = ProjectConnectorDefault(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            service="brave",
+            connector_id=legacy.id,
+            connector_revision=1,
+            settings_revision=1,
+            updated_by_user_id=owner.id,
+        )
+        db.add(row)
+        db.flush()
+
+        resolved = resolve_connector(db, project_id=project.id, service="brave")
+        assert resolved.connector_id == legacy.id
+        assert resolved.visibility == "project"
+
+        with pytest.raises(ConnectorCommandError) as refused:
+            set_default(
+                db,
+                project_id=project.id,
+                actor=owner,
+                service="brave",
+                expected_revision=1,
+                connector_id=legacy.id,
+            )
+        assert refused.value.code == "connector_visibility_unsupported"
+        assert row.connector_id == legacy.id
+        assert row.settings_revision == 1
 
 
 def test_one_eligible_candidate_is_selected_but_two_scopes_are_ambiguous():

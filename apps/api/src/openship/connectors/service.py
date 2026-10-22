@@ -52,6 +52,7 @@ _ERROR_STATUS = {
     "connector_unavailable": 409,
     "credential_store_unavailable": 503,
     "global_management_forbidden": 403,
+    "connector_visibility_unsupported": 422,
     "invalid_connector_request": 422,
 }
 
@@ -350,22 +351,17 @@ def create_connector(
     configuration_raw: dict[str, Any] | None,
     api_key: str,
 ) -> dict[str, Any]:
+    if visibility != "global" or project_id is not None:
+        raise ConnectorCommandError("connector_visibility_unsupported")
+    require_global_operator(actor)
     if kind not in {"brave", "tavily"} or not name.strip() or len(name) > 255:
         raise ConnectorCommandError("invalid_connector_request")
-    if project_id is not None:
-        db.query(Project).filter(Project.id == project_id).with_for_update().first()
-        count = (
-            db.query(func.count(Connector.id))
-            .filter(Connector.visibility == "project", Connector.project_id == project_id)
-            .scalar()
-        )
-    else:
-        db.query(User).filter(User.id == actor.id).with_for_update().first()
-        count = (
-            db.query(func.count(Connector.id))
-            .filter(Connector.visibility == "global", Connector.project_id.is_(None))
-            .scalar()
-        )
+    db.query(User).filter(User.id == actor.id).with_for_update().first()
+    count = (
+        db.query(func.count(Connector.id))
+        .filter(Connector.visibility == "global", Connector.project_id.is_(None))
+        .scalar()
+    )
     if count >= MAX_CONNECTORS_PER_SCOPE:
         raise ConnectorCommandError("connector_limit_reached")
     configuration = _validate_configuration(kind, configuration_raw)
@@ -546,6 +542,8 @@ def set_default(
             )
         except ConnectorSelectionError as exc:
             raise ConnectorCommandError(exc.code) from None
+        if resolved.visibility != "global":
+            raise ConnectorCommandError("connector_visibility_unsupported")
         target_revision = resolved.revision
     else:
         target_revision = None

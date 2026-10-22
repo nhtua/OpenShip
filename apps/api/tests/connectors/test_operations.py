@@ -50,7 +50,7 @@ from src.openship.connectors.models import (
     CredentialVersion,
     ProjectConnectorDefault,
 )
-from src.openship.connectors.service import ConnectorCommandError
+from src.openship.connectors.service import ConnectorCommandError, set_default
 from src.openship.database.models import Base
 from src.openship.database.session import SessionLocal
 from src.openship.workspace.models import Project
@@ -135,11 +135,12 @@ def test_reencryption_resumes_by_key_id_preserves_version_and_verifies_all_rows(
         project = Project(owner_user_id=owner.id, name="Rotation project")
         db.add(project)
         db.flush()
+        monkeypatch.setattr(settings, "connector_operator_user_id", owner.id)
         create_result = import_legacy_search_connectors(
             db,
             actor=owner,
-            visibility="project",
-            project_id=project.id,
+            visibility="global",
+            project_id=None,
             services=("brave",),
             credentials={"brave": "synthetic-rotation-sentinel"},
         )[0]
@@ -280,17 +281,12 @@ def test_cli_migration_preview_and_key_commands_never_print_source_values(
     env_file.write_text(
         "BRAVE_SEARCH_API_KEY=synthetic-cli-import-sentinel\n", encoding="utf-8"
     )
-    project_id = uuid.uuid4()
     assert main(
         [
             "search-import-preview",
             "--visibility",
-            "project",
-            "--project-id",
-            str(project_id),
+            "global",
             "--service",
-            "brave",
-            "--default-service",
             "brave",
             "--env-file",
             str(env_file),
@@ -299,20 +295,31 @@ def test_cli_migration_preview_and_key_commands_never_print_source_values(
     preview = capsys.readouterr().out
     assert "synthetic-cli-import-sentinel" not in preview
     assert '"credential_available": true' in preview
-    assert '"will_set_default": true' in preview
+    assert '"will_set_default": false' in preview
 
 
-def test_legacy_search_preview_is_explicit_and_never_returns_credentials():
+def test_legacy_project_search_preview_is_rejected():
+    with pytest.raises(ConnectorCommandError) as refused:
+        preview_legacy_search_import(
+            services=("brave", "tavily"),
+            visibility="project",
+            project_id=uuid.uuid4(),
+            default_services=("brave",),
+            available_services=("brave",),
+        )
+    assert refused.value.code == "connector_visibility_unsupported"
+
+
+def test_legacy_global_search_preview_is_explicit_and_never_returns_credentials():
     preview = preview_legacy_search_import(
         services=("brave", "tavily"),
-        visibility="project",
-        project_id=uuid.uuid4(),
-        default_services=("brave",),
+        visibility="global",
+        project_id=None,
         available_services=("brave",),
     )
 
     assert [row["service"] for row in preview] == ["brave", "tavily"]
-    assert preview[0]["will_set_default"] is True
+    assert preview[0]["will_set_default"] is False
     assert preview[0]["credential_available"] is True
     assert preview[1]["credential_available"] is False
     assert all("api_key" not in row and "secret" not in row for row in preview)
@@ -385,6 +392,54 @@ def test_global_legacy_import_requires_configured_operator(
         db.close()
 
 
+def test_project_legacy_import_is_refused_before_credential_lookup(monkeypatch, tmp_path):
+    _install_keys(monkeypatch, tmp_path)
+
+    class UnreadCredentials:
+        def get(self, _service):
+            pytest.fail("project-scoped migration must be refused before reading credentials")
+
+    actor = User(
+        id=uuid.uuid4(),
+        username=f"legacy-{uuid.uuid4().hex[:12]}",
+        email=f"{uuid.uuid4().hex}@example.test",
+        password_hash="test-only",
+    )
+    with SessionLocal() as db, pytest.raises(ConnectorCommandError) as refused:
+        import_legacy_search_connectors(
+            db,
+            actor=actor,
+            visibility="project",
+            project_id=uuid.uuid4(),
+            services=("brave",),
+            credentials=UnreadCredentials(),
+        )
+    assert refused.value.code == "connector_visibility_unsupported"
+
+
+def test_cli_project_import_preview_is_refused_before_reading_env_file(
+    tmp_path, capsys
+):
+    absent_env_file = tmp_path / "must-not-be-read.env"
+    result = main(
+        [
+            "search-import-preview",
+            "--visibility",
+            "project",
+            "--project-id",
+            str(uuid.uuid4()),
+            "--service",
+            "brave",
+            "--env-file",
+            str(absent_env_file),
+        ]
+    )
+
+    assert result == 2
+    assert capsys.readouterr().err == "connector_visibility_unsupported\n"
+    assert not absent_env_file.exists()
+
+
 def test_cli_checks_global_authority_before_loading_legacy_environment_file(
     monkeypatch, tmp_path, capsys
 ):
@@ -420,7 +475,7 @@ def test_cli_checks_global_authority_before_loading_legacy_environment_file(
     assert not absent_env_file.exists()
 
 
-def test_project_legacy_import_encrypts_only_selected_keys_and_can_set_default(
+def test_global_legacy_import_encrypts_selected_key_for_project_default(
     monkeypatch, tmp_path
 ):
     _install_keys(monkeypatch, tmp_path)
@@ -436,15 +491,23 @@ def test_project_legacy_import_encrypts_only_selected_keys_and_can_set_default(
         project = Project(owner_user_id=user.id, name="Migration project")
         db.add(project)
         db.flush()
+        monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
 
         result = import_legacy_search_connectors(
             db,
             actor=user,
-            visibility="project",
-            project_id=project.id,
+            visibility="global",
+            project_id=None,
             services=("brave",),
             credentials={"brave": "synthetic-brave-migration-sentinel"},
-            default_services=("brave",),
+        )
+        set_default(
+            db,
+            project_id=project.id,
+            actor=user,
+            service="brave",
+            expected_revision=0,
+            connector_id=uuid.UUID(result[0]["id"]),
         )
         db.commit()
 
@@ -462,8 +525,8 @@ def test_project_legacy_import_encrypts_only_selected_keys_and_can_set_default(
         assert result[0]["id"] == str(connector.id)
         assert default.project_id == project.id
         assert default.connector_id == connector.id
-        assert credential.project_id == project.id
-        assert credential.visibility == "project"
+        assert credential.project_id is None
+        assert credential.visibility == "global"
         assert b"synthetic-brave-migration-sentinel" not in credential.ciphertext
         assert "synthetic-brave-migration-sentinel" not in repr(result)
     finally:

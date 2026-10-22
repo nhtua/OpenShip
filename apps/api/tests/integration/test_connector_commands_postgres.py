@@ -19,17 +19,24 @@ from starlette.requests import Request
 from alembic import command
 from src.openship.auth.models import User
 from src.openship.config import settings
+from src.openship.connectors.contracts import ConnectorConfiguration
+from src.openship.connectors.models import (
+    Connector,
+    ConnectorRevision,
+    ProjectConnectorDefault,
+)
 from src.openship.connectors.routes import (
     global_connector_create,
+    global_connector_request_status,
     project_connector_create,
     project_connector_default_get,
     project_connector_default_set,
     project_connector_list,
     project_connector_replace_credential,
-    project_connector_request_status,
     project_connector_update,
 )
 from src.openship.connectors.selection import ConnectorSelectionError, resolve_connector
+from src.openship.connectors.service import _audit, _new_credential, detail
 from src.openship.database.models import Base
 from src.openship.workspace.models import Project
 from tests.integration.postgres import bounded_postgres_url
@@ -95,7 +102,14 @@ def _install_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_id: uuid
     monkeypatch.setattr(settings, "connector_write_rate_limit_per_minute", 100)
 
 
-def _cleanup(engine, *, user_id: uuid.UUID, project_id: uuid.UUID) -> None:
+def _cleanup(
+    engine,
+    *,
+    user_id: uuid.UUID,
+    project_id: uuid.UUID,
+    second_user_id: uuid.UUID,
+    second_project_id: uuid.UUID,
+) -> None:
     with engine.begin() as connection:
         connection.execute(
             text(
@@ -107,6 +121,14 @@ def _cleanup(engine, *, user_id: uuid.UUID, project_id: uuid.UUID) -> None:
         parameters = {"user_id": str(user_id), "project_id": str(project_id)}
         connection.execute(text("DELETE FROM projects WHERE id = :project_id"), parameters)
         connection.execute(text("DELETE FROM users WHERE id = :user_id"), parameters)
+        connection.execute(
+            text("DELETE FROM projects WHERE id = :project_id"),
+            {"project_id": str(second_project_id)},
+        )
+        connection.execute(
+            text("DELETE FROM users WHERE id = :user_id"),
+            {"user_id": str(second_user_id)},
+        )
 
 
 @pytest.mark.postgres
@@ -136,7 +158,10 @@ def test_connector_commands_commit_scoped_revisions_and_idempotency(monkeypatch,
 
     user_id = uuid.uuid4()
     project_id = uuid.uuid4()
+    second_user_id = uuid.uuid4()
+    second_project_id = uuid.uuid4()
     username = f"connector-pg-{user_id.hex[:16]}"
+    second_username = f"connector-pg-{second_user_id.hex[:16]}"
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     try:
         with session_factory() as db:
@@ -147,7 +172,18 @@ def test_connector_commands_commit_scoped_revisions_and_idempotency(monkeypatch,
                 password_hash="unused",
             )
             project = Project(id=project_id, owner_user_id=user_id, name="Connector PG test")
-            db.add_all([actor, project])
+            second_actor_row = User(
+                id=second_user_id,
+                username=second_username,
+                email=f"{second_username}@example.test",
+                password_hash="unused",
+            )
+            second_project = Project(
+                id=second_project_id,
+                owner_user_id=second_user_id,
+                name="Connector PG second project",
+            )
+            db.add_all([actor, project, second_actor_row, second_project])
             db.commit()
             db.refresh(actor)
 
@@ -157,13 +193,18 @@ def test_connector_commands_commit_scoped_revisions_and_idempotency(monkeypatch,
             email=f"{username}@example.test",
             password_hash="unused",
         )
+        second_actor = User(
+            id=second_user_id,
+            username=second_username,
+            email=f"{second_username}@example.test",
+            password_hash="unused",
+        )
         _install_keys(monkeypatch, tmp_path, user_id)
 
-        create_request_id = uuid.uuid4()
         create_path = f"/api/projects/{project_id}/connectors"
         create_payload = {
             "kind": "brave",
-            "name": "Project Brave",
+            "name": "New Private Brave",
             "configuration": {"schema_version": 1, "kind": "brave"},
             "api_key": SECRET,
         }
@@ -179,46 +220,101 @@ def test_connector_commands_commit_scoped_revisions_and_idempotency(monkeypatch,
                     )
                 )
 
-        created = create_project_connector(create_payload, create_request_id)
-        replayed = create_project_connector(create_payload, create_request_id)
-        project_result = json.loads(created.body)
-        assert created.status_code == 201
-        assert replayed.status_code == 200
-        assert json.loads(replayed.body) == project_result
-        assert project_result["visibility"] == "project"
-        assert project_result["revision"] == 1
-        assert SECRET not in created.body.decode()
+        with pytest.raises(HTTPException) as refused:
+            create_project_connector(create_payload, uuid.uuid4())
+        assert refused.value.status_code == 422
+        assert refused.value.detail["error"]["code"] == "connector_visibility_unsupported"
+        assert SECRET not in json.dumps(refused.value.detail)
 
-        with pytest.raises(HTTPException) as conflict:
-            create_project_connector(
-                {**create_payload, "name": "Changed retry"}, create_request_id
-            )
-        assert conflict.value.status_code == 409
-        assert "Changed retry" not in json.dumps(conflict.value.detail)
-
-        global_request_id = uuid.uuid4()
+        # Simulate an immutable record admitted before the global-only policy.
         with session_factory() as db:
-            global_response = asyncio.run(
-                global_connector_create(
-                    _request(
-                        "POST",
-                        "/api/global-connectors",
-                        global_request_id,
-                        {
-                            "kind": "brave",
-                            "name": "Installation Brave",
-                            "configuration": {"schema_version": 1, "kind": "brave"},
-                            "api_key": GLOBAL_SECRET,
-                        },
-                    ),
-                    db,
-                    actor,
+            legacy_connector = Connector(
+                id=uuid.uuid4(),
+                kind="brave",
+                visibility="project",
+                project_id=project_id,
+                name="Historical Project Brave",
+                current_revision=1,
+                enabled=True,
+                managed_by_user_id=user_id,
+                created_by_user_id=user_id,
+            )
+            db.add(legacy_connector)
+            db.flush()
+            legacy_credential = _new_credential(
+                db,
+                connector=legacy_connector,
+                project_id=project_id,
+                api_key=SECRET,
+            )
+            db.flush()
+            configuration = ConnectorConfiguration(kind="brave")
+            db.add(
+                ConnectorRevision(
+                    id=uuid.uuid4(),
+                    connector_id=legacy_connector.id,
+                    revision=1,
+                    schema_version=1,
+                    visibility="project",
+                    project_id=project_id,
+                    configuration_json=configuration.canonical_bytes().decode("utf-8"),
+                    configuration_digest=configuration.digest(),
+                    credential_version_id=legacy_credential.id,
+                    created_by_user_id=user_id,
                 )
             )
+            db.add(
+                ProjectConnectorDefault(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    service="brave",
+                    connector_id=legacy_connector.id,
+                    connector_revision=1,
+                    settings_revision=1,
+                    updated_by_user_id=user_id,
+                )
+            )
+            _audit(
+                db,
+                connector=legacy_connector,
+                actor_user_id=user_id,
+                action="created",
+                revision=1,
+            )
+            db.commit()
+            project_result = detail(db, legacy_connector)
+        assert project_result["visibility"] == "project"
+        assert project_result["revision"] == 1
+
+        global_request_id = uuid.uuid4()
+        global_payload = {
+            "kind": "brave",
+            "name": "Installation Brave",
+            "configuration": {"schema_version": 1, "kind": "brave"},
+            "api_key": GLOBAL_SECRET,
+        }
+
+        def create_global_connector():
+            with session_factory() as db:
+                return asyncio.run(
+                    global_connector_create(
+                        _request(
+                            "POST", "/api/global-connectors", global_request_id, global_payload
+                        ),
+                        db,
+                        actor,
+                    )
+                )
+
+        global_response = create_global_connector()
+        global_replay = create_global_connector()
         global_result = json.loads(global_response.body)
         global_id = uuid.UUID(global_result["id"])
         assert global_response.status_code == 201
+        assert global_replay.status_code == 200
+        assert json.loads(global_replay.body) == global_result
         assert global_result["visibility"] == "global"
+        assert global_id != uuid.UUID(project_result["id"])
         assert GLOBAL_SECRET not in global_response.body.decode()
 
         with session_factory() as db:
@@ -227,29 +323,67 @@ def test_connector_commands_commit_scoped_revisions_and_idempotency(monkeypatch,
                 ("project", uuid.UUID(project_result["id"])),
                 ("global", global_id),
             }
-            with pytest.raises(ConnectorSelectionError, match="connector_ambiguous"):
-                resolve_connector(db, project_id=project_id, service="brave")
+            historical_default = resolve_connector(db, project_id=project_id, service="brave")
+            assert historical_default.connector_id == uuid.UUID(project_result["id"])
+            assert historical_default.visibility == "project"
 
-        default_id = uuid.uuid4()
+        def set_project_default(connector_id: str | None, expected_revision: int):
+            with session_factory() as db:
+                return asyncio.run(
+                    project_connector_default_set(
+                        project_id,
+                        "brave",
+                        _request(
+                            "PUT",
+                            f"/api/projects/{project_id}/connector-defaults/brave",
+                            uuid.uuid4(),
+                            {
+                                "expected_revision": expected_revision,
+                                "connector_id": connector_id,
+                            },
+                        ),
+                        db,
+                        actor,
+                    )
+                )
+
+        with pytest.raises(HTTPException) as reassignment_refused:
+            set_project_default(project_result["id"], 1)
+        assert reassignment_refused.value.status_code == 422
+        assert (
+            reassignment_refused.value.detail["error"]["code"]
+            == "connector_visibility_unsupported"
+        )
+
+        default = set_project_default(global_result["id"], 1)
+        assert default["revision"] == 2
+        assert default["connector_id"] == global_result["id"]
+
         with session_factory() as db:
-            default = asyncio.run(
+            second_default = asyncio.run(
                 project_connector_default_set(
-                    project_id,
+                    second_project_id,
                     "brave",
                     _request(
                         "PUT",
-                        f"/api/projects/{project_id}/connector-defaults/brave",
-                        default_id,
-                        {"expected_revision": 0, "connector_id": project_result["id"]},
+                        f"/api/projects/{second_project_id}/connector-defaults/brave",
+                        uuid.uuid4(),
+                        {"expected_revision": 0, "connector_id": global_result["id"]},
                     ),
                     db,
-                    actor,
+                    second_actor,
                 )
             )
-            assert default["revision"] == 1
-            assert default["connector_id"] == project_result["id"]
+            assert second_default == {
+                "service": "brave",
+                "connector_id": global_result["id"],
+                "revision": 1,
+            }
+
+        with session_factory() as db:
             selected = resolve_connector(db, project_id=project_id, service="brave")
-            assert selected.connector_id == uuid.UUID(project_result["id"])
+            assert selected.connector_id == global_id
+            assert selected.visibility == "global"
 
         update_id = uuid.uuid4()
         with session_factory() as db:
@@ -288,33 +422,27 @@ def test_connector_commands_commit_scoped_revisions_and_idempotency(monkeypatch,
             assert replaced["revision"] == 3
             assert REPLACEMENT_SECRET not in json.dumps(replaced)
 
-        clear_id = uuid.uuid4()
+        cleared = set_project_default(None, 2)
         with session_factory() as db:
-            cleared = asyncio.run(
-                project_connector_default_set(
-                    project_id,
-                    "brave",
-                    _request(
-                        "PUT",
-                        f"/api/projects/{project_id}/connector-defaults/brave",
-                        clear_id,
-                        {"expected_revision": 1, "connector_id": None},
-                    ),
-                    db,
-                    actor,
-                )
-            )
-            assert cleared == {"service": "brave", "connector_id": None, "revision": 2}
+            assert cleared == {"service": "brave", "connector_id": None, "revision": 3}
             assert project_connector_default_get(project_id, "brave", db, actor) == cleared
             with pytest.raises(ConnectorSelectionError, match="connector_ambiguous"):
                 resolve_connector(db, project_id=project_id, service="brave")
+            assert project_connector_default_get(
+                second_project_id, "brave", db, second_actor
+            ) == {
+                "service": "brave",
+                "connector_id": global_result["id"],
+                "revision": 1,
+            }
+            assert resolve_connector(
+                db, project_id=second_project_id, service="brave"
+            ).connector_id == global_id
 
         with session_factory() as db:
-            status = project_connector_request_status(
-                project_id, create_request_id, db, actor
-            )
+            status = global_connector_request_status(global_request_id, db, actor)
             assert status["status"] == "complete"
-            assert status["result"]["id"] == project_result["id"]
+            assert status["result"]["id"] == global_result["id"]
             rows = db.execute(
                 text(
                     "SELECT result_json FROM connector_request_ledger "
@@ -331,5 +459,11 @@ def test_connector_commands_commit_scoped_revisions_and_idempotency(monkeypatch,
             assert len(ciphertexts) == 2
             assert all(SECRET.encode() not in bytes(value) for value in ciphertexts)
     finally:
-        _cleanup(engine, user_id=user_id, project_id=project_id)
+        _cleanup(
+            engine,
+            user_id=user_id,
+            project_id=project_id,
+            second_user_id=second_user_id,
+            second_project_id=second_project_id,
+        )
         engine.dispose()

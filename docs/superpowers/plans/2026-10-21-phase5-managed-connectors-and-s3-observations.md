@@ -39,7 +39,7 @@ Execute tasks sequentially. Obtain accept/revise/stop at each acceptance gate be
 - Keep existing terminal statuses, including `completed`; add only `waiting_connector`.
 - Preserve readable manifest/configuration v1 and chat-v1/chat-v2/tool-v1 history. New managed execution uses manifest schema v2, execution configuration v2, chat graph v3 and tool graph v2.
 - Search capability IDs remain `brave_web_search` and `tavily_web_search`. Services remain independent.
-- Global means installation-wide eligibility for authenticated projects. Only the configured operator manages global search connectors; project owners manage their project connectors. AWS remains project-scoped.
+- Global means installation-wide eligibility for authenticated projects. Only the configured operator manages global search connectors; project owners set their own defaults. New Brave/Tavily connectors and imports are global-only. Retained legacy project-scoped search records remain available under their original authorization during explicit cutover; AWS remains project-scoped.
 - Execute distribution-owned handlers in the trusted worker. Portable connector packaging, third-party executables, CLI execution and generated-code credential handoff remain deferred.
 - Queue rows, checkpoints, transcripts, events, artifacts, browser reads and logs contain no credentials or secret-bearing provider responses.
 - Preserve shared capacity and ownership fences. No database locks across network or filesystem I/O.
@@ -198,6 +198,15 @@ Each condition must have an explicit owning test:
 - [ ] Record the user's accept/revise/stop decision in the qualification record.
 
 **Gate:** Do not admit real AWS credentials or begin 5A.2 before 5A.1 acceptance.
+
+**Review follow-up (2026-10-22):** The user requested revisions before accepting
+5A.1. See the [approved Project Settings and connector review addendum](2026-10-22-phase5a1-project-settings-review.md)
+for basic multiple-project lifecycle, scoped settings, actionable setup errors
+and connector cards/dialogs. The approved addendum additionally sets Brave/Tavily search
+to use Global visibility for new configuration, with project-owned defaults
+and an explicit cutover for existing private connectors. The addendum records
+this policy change. The 5A.1 revision plan is approved for implementation;
+renewed 5A.1 acceptance is still pending and Task 8 remains gated.
 
 ## 3. Tasks 8–16: AWS, observations and gated expansion
 

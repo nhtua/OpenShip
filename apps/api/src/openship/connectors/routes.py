@@ -59,6 +59,7 @@ _ERROR_MESSAGES = {
     "connector_unavailable": "Connector is currently unavailable",
     "credential_store_unavailable": "Connector credential storage is unavailable",
     "global_management_forbidden": "Global Connector management is not available to this account",
+    "connector_visibility_unsupported": "Brave and Tavily Connectors must be configured globally",
     "invalid_connector_request": "Connector request is invalid",
 }
 
@@ -277,32 +278,7 @@ async def project_connector_create(
     try:
         owned_project(db, project_id=project_id, user_id=user.id)
         _require_browser_origin(request)
-        request_id = _request_id(request)
-        body = await _validated_body(request, _CreateConnector)
-        reservation = _begin_request(
-            db,
-            user=user,
-            visibility="project",
-            project_id=project_id,
-            request_id=request_id,
-            command="project_connector_create",
-            payload=_safe_payload(body),
-        )
-        if reservation.replay_result is not None:
-            return JSONResponse(status_code=200, content=reservation.replay_result)
-        result = create_connector(
-            db,
-            actor=user,
-            visibility="project",
-            project_id=project_id,
-            kind=body.kind,
-            name=body.name,
-            configuration_raw=body.configuration,
-            api_key=body.api_key,
-        )
-        finalize_request(reservation, result, connector_id=uuid.UUID(result["id"]))
-        _commit_or_safe_error(db)
-        return JSONResponse(status_code=201, content=result)
+        raise ConnectorCommandError("connector_visibility_unsupported")
     except HTTPException:
         db.rollback()
         raise
