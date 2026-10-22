@@ -1,7 +1,7 @@
 ---
 type: spec
 summary: Archive and restore projects and conversations while preserving history and resource associations, and consolidate connector dialog actions.
-status: proposed
+status: approved
 date: 2026-10-22
 ---
 
