@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useArtifactsStore } from '@/stores/artifacts'
 import { useConnectorsStore } from '@/stores/connectors'
+import { useProjectsStore } from '@/stores/projects'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
@@ -29,6 +30,7 @@ const auth = useAuthStore()
 const chat = useChatStore()
 const artifacts = useArtifactsStore()
 const connectors = useConnectorsStore()
+const projects = useProjectsStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
@@ -38,6 +40,8 @@ const isToolSubmitting = ref(false)
 const conversationFilesOpen = ref(false)
 // Driven from the resulting store error, never inferred from an empty list.
 const historyLoadFailed = ref(false)
+const projectCreationError = ref<string | null>(null)
+const projectCreating = ref(false)
 const routeReady = ref(false)
 let disposed = false
 let routeLoadGeneration = 0
@@ -63,7 +67,7 @@ const title = computed(
   () => chat.currentConversation?.title || 'New Conversation',
 )
 const projectConversations = computed(() => chat.conversations.filter(
-  (conversation) => !conversation.project_id || conversation.project_id === connectors.currentProjectId,
+  (conversation) => !conversation.project_id || conversation.project_id === projects.currentProjectId,
 ))
 
 const conversationOperations = computed(() => {
@@ -134,8 +138,10 @@ async function loadConversationFromRoute() {
     await chat.loadConversation(id)
     if (generation !== routeLoadGeneration) return
     const projectId = chat.currentConversation?.project_id
-    if (projectId && projectId !== connectors.currentProjectId) {
-      await connectors.selectProject(projectId)
+    if (projectId && projectId !== projects.currentProjectId) {
+      if (projects.selectProject(projectId)) {
+        await connectors.loadProjectContext(projectId)
+      }
     }
     if (chat.currentConversation?.id === id) await artifacts.loadConversation(id)
   } finally {
@@ -153,7 +159,7 @@ async function createAndOpenConversation(newTitle: string): Promise<string | nul
   isCreatingConversation.value = true
   chat.error = null
   try {
-    const conv = await chat.createConversation(newTitle, connectors.currentProjectId)
+    const conv = await chat.createConversation(newTitle, projects.currentProjectId)
     // A pending creation must not navigate away from a newer browser location.
     if (!conv || disposed || route.fullPath !== origin || generation !== routeLoadGeneration) return null
     await router.push({ name: 'conversation', params: { conversationId: conv.id } })
@@ -275,6 +281,7 @@ async function handleSignOut() {
   chat.clearMessages()
   artifacts.clear()
   connectors.clear()
+  projects.clear()
   chat.conversations = []
   chat.error = null
   historyLoadFailed.value = false
@@ -283,13 +290,35 @@ async function handleSignOut() {
 }
 
 async function handleSelectProject(projectId: string) {
-  if (busy.value || projectId === connectors.currentProjectId) return
-  await connectors.selectProject(projectId)
   if (
-    chat.currentConversation?.project_id &&
-    chat.currentConversation.project_id !== projectId
-  ) {
+    !routeReady.value ||
+    isCreatingConversation.value ||
+    isLoadingConversation.value ||
+    projectId === projects.currentProjectId
+  ) return
+  if (!projects.selectProject(projectId)) return
+  const conversationProjectId = chat.currentConversation?.project_id
+  projectCreationError.value = null
+  chat.deselectConversation()
+  await connectors.loadProjectContext(projectId)
+  if (route.name === 'conversation' && conversationProjectId !== projectId) {
     await router.replace({ name: 'chat' })
+  }
+}
+
+async function handleCreateProject(name: string) {
+  if (projectCreating.value) return
+  projectCreating.value = true
+  projectCreationError.value = null
+  try {
+    const project = await projects.createProject(name)
+    chat.deselectConversation()
+    if (route.name !== 'chat') await router.replace({ name: 'chat' })
+    await connectors.loadProjectContext(project.id)
+  } catch {
+    projectCreationError.value = projects.error ?? 'Failed to create project'
+  } finally {
+    projectCreating.value = false
   }
 }
 
@@ -298,7 +327,8 @@ onMounted(async () => {
   // it is loaded when the page is. A missing catalog is stated by the store
   // rather than guessed at here, and the next turn simply names no profile.
   await chat.loadModelProfiles()
-  await connectors.initialize()
+  await projects.initialize()
+  await connectors.initialize(projects.currentProjectId)
   await loadHistory()
   if (disposed) return
   routeReady.value = true
@@ -327,11 +357,14 @@ onBeforeUnmount(() => {
     :conversation-files-open="conversationFilesOpen"
     :conversation-file-count="conversationFileCount"
     :busy="busy"
-    :projects="connectors.projects"
-    :current-project-id="connectors.currentProjectId"
+    :projects="projects.projects"
+    :current-project-id="projects.currentProjectId"
+    :create-project-error="projectCreationError"
+    :project-creating="projectCreating"
     @create-conversation="handleCreateConversation"
     @select-conversation="handleSelectConversation"
     @select-project="handleSelectProject"
+    @create-project="handleCreateProject"
     @sign-out="handleSignOut"
     @toggle-conversation-files="toggleConversationFiles"
   >

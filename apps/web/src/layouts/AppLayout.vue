@@ -25,6 +25,8 @@ const props = withDefaults(
     conversationFileCount?: number
     projects?: ProjectSummary[]
     currentProjectId?: string | null
+    createProjectError?: string | null
+    projectCreating?: boolean
   }>(),
   {
     title: 'New Conversation',
@@ -38,6 +40,8 @@ const props = withDefaults(
     conversationFileCount: 0,
     projects: () => [],
     currentProjectId: null,
+    createProjectError: null,
+    projectCreating: false,
   },
 )
 
@@ -47,6 +51,7 @@ const emit = defineEmits<{
   signOut: []
   toggleConversationFiles: []
   selectProject: [id: string]
+  createProject: [name: string]
 }>()
 </script>
 
@@ -60,10 +65,13 @@ const emit = defineEmits<{
         :username="props.username"
         :projects="props.projects"
         :current-project-id="props.currentProjectId"
+        :create-project-error="props.createProjectError"
+        :project-creating="props.projectCreating"
         @create-conversation="emit('createConversation', $event)"
         @select-conversation="emit('selectConversation', $event)"
         @sign-out="emit('signOut')"
         @select-project="emit('selectProject', $event)"
+        @create-project="emit('createProject', $event)"
       />
       <SidebarInset class="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <AppHeader

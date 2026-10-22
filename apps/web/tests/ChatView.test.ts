@@ -4,8 +4,10 @@ import { mountWithRouter } from './helpers/mountWithRouter'
 import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
-import api, { runsApi, workspaceApi } from '@/services/api'
+import { useConnectorsStore } from '@/stores/connectors'
+import api, { connectorsApi, projectsApi, runsApi, workspaceApi } from '@/services/api'
 import type { Conversation, RunCard as RunCardType, ToolOperationSummary } from '@/types'
+import { useProjectsStore } from '@/stores/projects'
 import {
   apiError,
   fixtureConversations,
@@ -16,6 +18,17 @@ import {
 vi.mock('@/services/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
   authApi: { login: vi.fn(), register: vi.fn(), logout: vi.fn() },
+  projectsApi: {
+    list: vi.fn(), create: vi.fn(), rename: vi.fn(), delete: vi.fn(),
+  },
+  connectorsApi: {
+    listProjectConnectors: vi.fn(),
+    getProjectDefault: vi.fn(),
+    setProjectDefault: vi.fn(),
+    getProjectCapabilities: vi.fn(),
+    getSetupContext: vi.fn(),
+    listGlobalConnectors: vi.fn(),
+  },
   // The view reaches the durable endpoints only through a run's card:
   // cancelling asks, and the read answers with what the cancellation left.
   runsApi: {
@@ -42,6 +55,8 @@ vi.mock('@/services/api', () => ({
 }))
 
 const mockApi = vi.mocked(api)
+const mockProjectsApi = vi.mocked(projectsApi)
+const mockConnectorsApi = vi.mocked(connectorsApi)
 const mockRunsApi = vi.mocked(runsApi)
 const mockWorkspaceApi = vi.mocked(workspaceApi)
 
@@ -81,6 +96,20 @@ describe('ChatView', () => {
     document.body.innerHTML = ''
     localStorage.clear()
     vi.clearAllMocks()
+    mockProjectsApi.list.mockResolvedValue({
+      data: [{ id: 'project-1', name: 'Production' }],
+    } as never)
+    mockProjectsApi.create.mockResolvedValue({
+      data: { id: 'project-new', name: 'Sandbox' },
+    } as never)
+    mockConnectorsApi.listProjectConnectors.mockResolvedValue({ data: [] } as never)
+    mockConnectorsApi.getProjectDefault.mockImplementation(async (_projectId, service) => ({
+      data: { service, connector_id: null, revision: 0 },
+    } as never))
+    mockConnectorsApi.getProjectCapabilities.mockResolvedValue({ data: [] } as never)
+    mockConnectorsApi.getSetupContext.mockResolvedValue({
+      data: { can_manage_global: false, credential_store_ready: true, unavailable_reason: null },
+    } as never)
     mockApi.get.mockImplementation(
       (async (url: string) => healthyChatApiGet(url)) as never,
     )
@@ -136,6 +165,106 @@ describe('ChatView', () => {
     })
     expect(router.currentRoute.value.path).toBe('/conversation/c2')
     expect(mockApi.post).not.toHaveBeenCalled()
+  })
+
+  it('uses the selected project for new conversations and filters history after switching', async () => {
+    mockProjectsApi.list.mockResolvedValue({
+      data: [
+        { id: 'project-1', name: 'Production' },
+        { id: 'project-2', name: 'Staging' },
+      ],
+    } as never)
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/workspace/conversations') {
+        return {
+          data: [
+            { ...fixtureConversations[0], project_id: 'project-1' },
+            { ...fixtureConversations[1], project_id: 'project-2' },
+          ],
+        }
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    mockApi.post.mockResolvedValue({
+      data: {
+        id: 'c3', project_id: 'project-2', title: 'New Conversation',
+        created_at: '', updated_at: '',
+      },
+    })
+    const { wrapper } = await mountWithRouter(ChatView, '/')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Production'), { timeout: wait })
+
+    await wrapper.get('[data-testid="project-selector-trigger"]').trigger('click')
+    await wrapper.findAll('[role="menuitemradio"]')[1].trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Scale up web'), { timeout: wait })
+    expect(wrapper.text()).not.toContain('Deploy pipeline')
+
+    await findByText(wrapper, 'New Conversation')!.trigger('click')
+
+    await vi.waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/conversations', {
+      title: 'New Conversation',
+      project_id: 'project-2',
+    }), { timeout: wait })
+  })
+
+  it('selects the owning project when opened from a conversation deep link', async () => {
+    mockProjectsApi.list.mockResolvedValue({
+      data: [
+        { id: 'project-1', name: 'Production' },
+        { id: 'project-2', name: 'Staging' },
+      ],
+    } as never)
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/workspace/conversations') {
+        return {
+          data: [
+            { ...fixtureConversations[0], project_id: 'project-1' },
+            { ...fixtureConversations[1], project_id: 'project-2' },
+          ],
+        }
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: { conversation_id: 'c2', project_id: 'project-2', sequence: -1, events: [], runs: [] },
+    } as never)
+
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c2')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Scale web to 3 replicas'), { timeout: wait })
+
+    expect(useProjectsStore().currentProjectId).toBe('project-2')
+    expect(mockConnectorsApi.listProjectConnectors).toHaveBeenLastCalledWith('project-2')
+  })
+
+  it('switches projects without cancelling a run in the previous project', async () => {
+    mockProjectsApi.list.mockResolvedValue({
+      data: [
+        { id: 'project-1', name: 'Production' },
+        { id: 'project-2', name: 'Staging' },
+      ],
+    } as never)
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/workspace/conversations') {
+        return {
+          data: [
+            { ...fixtureConversations[0], project_id: 'project-1' },
+            { ...fixtureConversations[1], project_id: 'project-2' },
+          ],
+        }
+      }
+      return healthyChatApiGet(url)
+    }) as never)
+    const { wrapper, router } = await mountWithRouter(ChatView, '/conversation/c1')
+    const chat = useChatStore()
+    await vi.waitFor(() => expect(chat.currentConversation?.id).toBe('c1'), { timeout: wait })
+    chat.isStreaming = true
+
+    await wrapper.get('[data-testid="project-selector-trigger"]').trigger('click')
+    await wrapper.findAll('[role="menuitemradio"]')[1].trigger('click')
+
+    expect(useProjectsStore().currentProjectId).toBe('project-2')
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('chat'), { timeout: wait })
+    expect(mockRunsApi.cancelRun).not.toHaveBeenCalled()
   })
 
   it('restores conversation content with Back and Forward and clears it at home', async () => {
@@ -424,6 +553,7 @@ describe('ChatView', () => {
     expect(mockApi.post).toHaveBeenCalledTimes(1)
     expect(mockApi.post).toHaveBeenCalledWith('/conversations', {
       title: 'New Conversation',
+      project_id: 'project-1',
     })
 
     await vi.waitFor(
@@ -436,7 +566,14 @@ describe('ChatView', () => {
   })
 
   it('shows an actionable error with Retry when history loading fails', async () => {
-    mockApi.get.mockRejectedValueOnce(apiError('Server exploded'))
+    let failHistory = true
+    mockApi.get.mockImplementation((async (url: string) => {
+      if (url === '/workspace/conversations' && failHistory) {
+        failHistory = false
+        throw apiError('Server exploded')
+      }
+      return healthyChatApiGet(url)
+    }) as never)
     const { wrapper } = await mountWithRouter(ChatView, '/')
 
     await vi.waitFor(
@@ -500,8 +637,16 @@ describe('ChatView', () => {
   it('logout clears chat state and returns to login', async () => {
     const { wrapper, router } = await mountWithRouter(ChatView, '/')
     const auth = useAuthStore()
+    const connectorState = useConnectorsStore()
     auth.token = 'test-token'
     auth.user = fixtureUser
+    connectorState.connectors = [{
+      id: 'global-brave', kind: 'brave', visibility: 'global', name: 'Shared Brave',
+      status: 'configured', revision: 1, is_default: true,
+    }]
+    connectorState.defaults = {
+      brave: { service: 'brave', connector_id: 'global-brave', revision: 1 },
+    }
 
     await vi.waitFor(
       () => {
@@ -532,6 +677,10 @@ describe('ChatView', () => {
     expect(chat.messages).toEqual([])
     expect(chat.conversations).toEqual([])
     expect(chat.error).toBeNull()
+    expect(useProjectsStore().projects).toEqual([])
+    expect(useProjectsStore().currentProjectId).toBeNull()
+    expect(useConnectorsStore().connectors).toEqual([])
+    expect(useConnectorsStore().defaults).toEqual({})
     await vi.waitFor(
       () => {
         expect(router.currentRoute.value.name).toBe('login')

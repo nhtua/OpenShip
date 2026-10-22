@@ -9,12 +9,14 @@ import { connectorsApi } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useConnectorsStore } from '@/stores/connectors'
+import { useProjectsStore } from '@/stores/projects'
 import type { ConnectorKind, ConnectorUsage } from '@/types'
 
 const router = useRouter()
 const auth = useAuthStore()
 const chat = useChatStore()
 const connectors = useConnectorsStore()
+const projects = useProjectsStore()
 const kinds: ConnectorKind[] = ['brave', 'tavily']
 const displayName = (kind: ConnectorKind) => kind === 'brave' ? 'Brave Search' : 'Tavily Search'
 const createNames = reactive<Record<ConnectorKind, string>>({
@@ -23,6 +25,8 @@ const createNames = reactive<Record<ConnectorKind, string>>({
 })
 const busyConnectors = ref(new Set<string>())
 const pageError = ref<string | null>(null)
+const projectCreationError = ref<string | null>(null)
+const projectCreating = ref(false)
 const setupUnavailableMessage = computed(() => {
   const reason = connectors.setupUnavailableReason
   if (reason === 'installation_id_missing') {
@@ -37,19 +41,15 @@ const setupUnavailableMessage = computed(() => {
   return null
 })
 const currentProject = computed(() =>
-  connectors.projects.find((project) => project.id === connectors.currentProjectId) ?? null,
+  projects.projects.find((project) => project.id === projects.currentProjectId) ?? null,
 )
 const projectConversations = computed(() => chat.conversations.filter(
-  (conversation) => !conversation.project_id || conversation.project_id === connectors.currentProjectId,
+  (conversation) => !conversation.project_id || conversation.project_id === projects.currentProjectId,
 ))
 const scopedConnectors = (visibility: 'project' | 'global', kind?: ConnectorKind) =>
   (visibility === 'project' ? connectors.connectors : connectors.globalConnectors).filter(
     (connector) => connector.visibility === visibility && (!kind || connector.kind === kind),
   )
-const defaultChoices = (kind: ConnectorKind) => connectors.connectors.filter(
-  (connector) => connector.kind === kind && connector.status === 'configured',
-)
-
 function requestStatus(scope: 'project' | 'global', projectId: string | null) {
   return async (requestId: string) => {
     const response = scope === 'project' && projectId
@@ -64,7 +64,7 @@ function createConnector(scope: 'project' | 'global', kind: ConnectorKind) {
     const name = createNames[kind].trim()
     if (!name) throw new Error('Enter a connector name')
     if (scope === 'project') {
-      const projectId = connectors.currentProjectId
+      const projectId = projects.currentProjectId
       if (!projectId) throw new Error('Choose a project first')
       const response = await connectorsApi.createProjectConnector(projectId, requestId, {
         kind,
@@ -87,7 +87,7 @@ function createConnector(scope: 'project' | 'global', kind: ConnectorKind) {
 function replaceCredential(scope: 'project' | 'global', connector: ConnectorUsage) {
   return async (apiKey: string, requestId: string): Promise<Record<string, unknown>> => {
     if (scope === 'project') {
-      const projectId = connectors.currentProjectId
+      const projectId = projects.currentProjectId
       if (!projectId) throw new Error('Choose a project first')
       const response = await connectorsApi.replaceProjectCredential(
         projectId,
@@ -107,18 +107,7 @@ function replaceCredential(scope: 'project' | 'global', connector: ConnectorUsag
 }
 
 async function onCredentialComplete() {
-  await connectors.reload()
-}
-
-async function setDefault(kind: ConnectorKind, event: Event) {
-  const connectorId = (event.target as HTMLSelectElement).value || null
-  try {
-    await connectors.setDefault(kind, connectorId)
-    pageError.value = null
-  } catch {
-    pageError.value = 'The project default could not be updated. Reload connector settings and try again.'
-    await connectors.reload()
-  }
+  await connectors.reload(projects.currentProjectId)
 }
 
 async function updateConnector(scope: 'project' | 'global', connector: ConnectorUsage, change: 'toggle' | 'revoke') {
@@ -138,9 +127,9 @@ async function updateConnector(scope: 'project' | 'global', connector: Connector
         ? { revoke: true }
         : { enabled: connector.status === 'disabled' }),
     }
-    if (scope === 'project' && connectors.currentProjectId) {
+    if (scope === 'project' && projects.currentProjectId) {
       await connectorsApi.updateProjectConnector(
-        connectors.currentProjectId,
+        projects.currentProjectId,
         connector.id,
         generateRequestId(),
         payload,
@@ -148,7 +137,7 @@ async function updateConnector(scope: 'project' | 'global', connector: Connector
     } else {
       await connectorsApi.updateGlobalConnector(connector.id, generateRequestId(), payload)
     }
-    await connectors.reload()
+    await connectors.reload(projects.currentProjectId)
   } catch {
     pageError.value = 'The connector could not be updated. Reload connector settings and try again.'
   } finally {
@@ -157,7 +146,8 @@ async function updateConnector(scope: 'project' | 'global', connector: Connector
 }
 
 async function selectProject(projectId: string) {
-  await connectors.selectProject(projectId)
+  if (!projects.selectProject(projectId)) return
+  await connectors.loadProjectContext(projectId)
 }
 
 async function goToConversation(id: string) {
@@ -165,9 +155,23 @@ async function goToConversation(id: string) {
 }
 
 async function createConversation(title: string) {
-  const conversation = await chat.createConversation(title, connectors.currentProjectId)
+  const conversation = await chat.createConversation(title, projects.currentProjectId)
   if (conversation) {
     await router.push({ name: 'conversation', params: { conversationId: conversation.id } })
+  }
+}
+
+async function createProject(name: string) {
+  if (projectCreating.value) return
+  projectCreating.value = true
+  projectCreationError.value = null
+  try {
+    const project = await projects.createProject(name)
+    await connectors.loadProjectContext(project.id)
+  } catch {
+    projectCreationError.value = projects.error ?? 'Failed to create project'
+  } finally {
+    projectCreating.value = false
   }
 }
 
@@ -175,12 +179,13 @@ async function signOut() {
   auth.logout()
   chat.clearMessages()
   connectors.clear()
+  projects.clear()
   await router.replace({ name: 'login' })
 }
 
 onMounted(async () => {
-  if (!connectors.projects.length) await connectors.initialize()
-  await connectors.loadGlobalManagement()
+  if (!projects.projects.length) await projects.initialize()
+  await connectors.initialize(projects.currentProjectId, true)
   if (!chat.conversations.length) await chat.getConversations()
 })
 </script>
@@ -191,9 +196,12 @@ onMounted(async () => {
     :username="auth.user?.username ?? null"
     :conversations="projectConversations"
     :current-conversation-id="null"
-    :projects="connectors.projects"
-    :current-project-id="connectors.currentProjectId"
+    :projects="projects.projects"
+    :current-project-id="projects.currentProjectId"
+    :create-project-error="projectCreationError"
+    :project-creating="projectCreating"
     @select-project="selectProject"
+    @create-project="createProject"
     @select-conversation="goToConversation"
     @create-conversation="createConversation"
     @sign-out="signOut"
@@ -242,30 +250,13 @@ onMounted(async () => {
               <ConnectorCredentialForm
                 :key="`new-project-${kind}`"
                 :title="displayName(kind)"
-                :request-scope-key="`project:${connectors.currentProjectId}:create:${kind}`"
+                :request-scope-key="`project:${projects.currentProjectId}:create:${kind}`"
                 submit-label="Add project connector"
                 :can-submit="Boolean(createNames[kind].trim()) && connectors.credentialStoreReady"
                 :submit="createConnector('project', kind)"
-                :read-status="requestStatus('project', connectors.currentProjectId)"
+                :read-status="requestStatus('project', projects.currentProjectId)"
                 @complete="onCredentialComplete"
               />
-            </div>
-
-            <div class="grid gap-2">
-              <Label :for="`${kind}-default`">Project default for {{ kind }} searches</Label>
-              <select
-                :id="`${kind}-default`"
-                :value="connectors.defaults[kind]?.connector_id ?? ''"
-                :disabled="!defaultChoices(kind).length || !connectors.credentialStoreReady"
-                class="h-9 max-w-xl rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-                @change="setDefault(kind, $event)"
-              >
-                <option value="">No default — choose for each search</option>
-                <option v-for="connector in defaultChoices(kind)" :key="connector.id" :value="connector.id">
-                  {{ connector.name }} · {{ connector.visibility === 'global' ? 'Global' : 'Project' }}
-                </option>
-              </select>
-              <p class="text-xs text-muted-foreground">When more than one connector is eligible, searches ask you to choose unless a project default is set.</p>
             </div>
 
             <div class="grid gap-3">
@@ -287,11 +278,11 @@ onMounted(async () => {
                   <ConnectorCredentialForm
                     :key="`replace-project-${connector.id}-${connector.revision}`"
                     :title="`${connector.name} (${displayName(kind)})`"
-                    :request-scope-key="`project:${connectors.currentProjectId}:credential:${connector.id}`"
+                    :request-scope-key="`project:${projects.currentProjectId}:credential:${connector.id}`"
                     submit-label="Replace API key"
                     :can-submit="connectors.credentialStoreReady"
                     :submit="replaceCredential('project', connector)"
-                    :read-status="requestStatus('project', connectors.currentProjectId)"
+                    :read-status="requestStatus('project', projects.currentProjectId)"
                     @complete="onCredentialComplete"
                   />
                 </div>

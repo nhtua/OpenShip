@@ -144,11 +144,11 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 
 **Interfaces:** `useProjectsStore()` owns `projects`, `currentProjectId`, initialization, create, rename, delete, select and clear. Connector state consumes an explicit owned project ID; it does not maintain a second project list. Settings routes are `/projects/:projectId/settings` and `/settings/global`; `/connectors` keeps the independent connector page, and `/settings/connectors` redirects there. Existing project-default APIs remain unchanged.
 
-- [ ] Add `apps/web/tests/ProjectStore.test.ts` and `ProjectSettings.test.ts`: CRUD, two-project switching, foreign/stale selection, independent defaults using one global Brave instance, empty/default-disabled explanations, settings tabs and compatibility navigation.
-- [ ] Extend chat/sidebar tests for selected-project creation, switching conversation history, deep-linking a conversation in another owned project and logout clearing all project/connector state. Add a late-response test proving project A cannot overwrite B after switching.
-- [ ] Run the tests to observe failure, then separate project lifecycle state from connector state. Capture mutation project IDs at submission and guard asynchronous results against current-scope changes.
-- [ ] Implement the sidebar selector's create action and the two settings tabs. Put name/lifecycle controls and search defaults in Project Settings. Global Settings shows safe readiness/authority and links to the Global catalog context. Keep the separate Connectors sidebar entry; do not duplicate its credential forms in Settings.
-- [ ] Run affected component/store tests, all frontend typechecks and production build. Review and commit the tested increment.
+- [x] Add `apps/web/tests/ProjectStore.test.ts` and `ProjectSettings.test.ts`: CRUD, two-project switching, foreign/stale selection, independent defaults using one global Brave instance, empty/default-disabled explanations, settings tabs and compatibility navigation.
+- [x] Extend chat/sidebar tests for selected-project creation, switching conversation history, deep-linking a conversation in another owned project and logout clearing all project/connector state. Add a late-response test proving project A cannot overwrite B after switching.
+- [x] Run the tests to observe failure, then separate project lifecycle state from connector state. Capture mutation project IDs at submission and guard asynchronous results against current-scope changes.
+- [x] Implement the sidebar selector's create action and the two settings tabs. Put name/lifecycle controls and search defaults in Project Settings. Global Settings shows safe readiness/authority and links to the Global catalog context. Keep the separate Connectors sidebar entry; do not duplicate its credential forms in Settings.
+- [x] Run affected component/store tests, all frontend typechecks and production build. Review and commit the tested increment.
 
 **Deliverable:** Settings and defaults belong visibly to the selected project, and the same global connector can be chosen independently by two projects.
 

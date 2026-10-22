@@ -6,13 +6,10 @@ import type {
   ConnectorUsage,
   ProjectCapabilitySummary,
   ProjectConnectorDefault,
-  ProjectSummary,
   ConnectorSetupUnavailableReason,
 } from '@/types'
 
 export const useConnectorsStore = defineStore('connectors', () => {
-  const projects = ref<ProjectSummary[]>([])
-  const currentProjectId = ref<string | null>(null)
   const connectors = ref<ConnectorUsage[]>([])
   const defaults = ref<Partial<Record<ConnectorKind, ProjectConnectorDefault>>>({})
   const capabilities = ref<ProjectCapabilitySummary[]>([])
@@ -21,74 +18,71 @@ export const useConnectorsStore = defineStore('connectors', () => {
   const credentialStoreReady = ref(false)
   const setupUnavailableReason = ref<ConnectorSetupUnavailableReason | null>(null)
   const loading = ref(false)
+  const globalLoading = ref(false)
   const error = ref<string | null>(null)
   let projectLoadGeneration = 0
+  let loadedProjectId: string | null = null
 
-  async function initialize(includeGlobalManagement = false): Promise<void> {
-    loading.value = true
-    error.value = null
-    try {
-      const response = await connectorsApi.listProjects()
-      projects.value = response.data
-      if (!projects.value.some((project) => project.id === currentProjectId.value)) {
-        currentProjectId.value = projects.value[0]?.id ?? null
-      }
-      const loads = [loadProjectContext(currentProjectId.value)]
-      if (includeGlobalManagement) loads.push(loadGlobalManagement())
-      await Promise.all(loads)
-    } catch (err: unknown) {
-      error.value = safeMessage(err, 'Failed to load project connectors')
-      projects.value = []
-      currentProjectId.value = null
-      connectors.value = []
-      capabilities.value = []
-    } finally {
-      loading.value = false
-    }
+  async function initialize(
+    projectId: string | null,
+    includeGlobalManagement = false,
+  ): Promise<void> {
+    const loads = [loadProjectContext(projectId)]
+    if (includeGlobalManagement) loads.push(loadGlobalManagement())
+    await Promise.all(loads)
   }
 
   async function loadGlobalManagement(): Promise<void> {
-    let setup: Awaited<ReturnType<typeof connectorsApi.getSetupContext>>
+    globalLoading.value = true
     try {
-      setup = await connectorsApi.getSetupContext()
-    } catch {
-      globalConnectors.value = []
-      canManageGlobal.value = false
-      credentialStoreReady.value = false
-      setupUnavailableReason.value = null
-      return
-    }
+      let setup: Awaited<ReturnType<typeof connectorsApi.getSetupContext>>
+      try {
+        setup = await connectorsApi.getSetupContext()
+      } catch {
+        globalConnectors.value = []
+        canManageGlobal.value = false
+        credentialStoreReady.value = false
+        setupUnavailableReason.value = null
+        return
+      }
 
-    credentialStoreReady.value = setup.data.credential_store_ready
-    setupUnavailableReason.value = setup.data.unavailable_reason
-    canManageGlobal.value = setup.data.can_manage_global
-    if (!setup.data.can_manage_global) {
-      globalConnectors.value = []
-      return
-    }
+      credentialStoreReady.value = setup.data.credential_store_ready
+      setupUnavailableReason.value = setup.data.unavailable_reason
+      canManageGlobal.value = setup.data.can_manage_global
+      if (!setup.data.can_manage_global) {
+        globalConnectors.value = []
+        return
+      }
 
-    try {
-      const response = await connectorsApi.listGlobalConnectors()
-      globalConnectors.value = response.data
-      canManageGlobal.value = true
-    } catch {
-      // Keep the safe readiness result, but require the management endpoint's
-      // existing authorization check to succeed before showing its data.
-      globalConnectors.value = []
-      canManageGlobal.value = false
+      try {
+        const response = await connectorsApi.listGlobalConnectors()
+        globalConnectors.value = response.data
+        canManageGlobal.value = true
+      } catch {
+        // Keep the safe readiness result, but require the management endpoint's
+        // existing authorization check to succeed before showing its data.
+        globalConnectors.value = []
+        canManageGlobal.value = false
+      }
+    } finally {
+      globalLoading.value = false
     }
   }
 
   async function loadProjectContext(projectId: string | null): Promise<void> {
     const generation = ++projectLoadGeneration
-    if (!projectId || !projects.value.some((project) => project.id === projectId)) {
-      currentProjectId.value = null
+    loadedProjectId = projectId
+    if (!projectId) {
       connectors.value = []
       defaults.value = {}
       capabilities.value = []
+      error.value = null
+      loading.value = false
       return
     }
-    currentProjectId.value = projectId
+
+    loading.value = true
+    error.value = null
     try {
       const [connectorResponse, braveDefault, tavilyDefault, capabilityResponse] = await Promise.all([
         connectorsApi.listProjectConnectors(projectId),
@@ -103,46 +97,47 @@ export const useConnectorsStore = defineStore('connectors', () => {
         tavily: tavilyDefault.data,
       }
       capabilities.value = capabilityResponse.data
-      error.value = null
     } catch (err: unknown) {
       if (generation !== projectLoadGeneration) return
       error.value = safeMessage(err, 'Failed to load project connector settings')
       connectors.value = []
       defaults.value = {}
       capabilities.value = []
+    } finally {
+      if (generation === projectLoadGeneration) loading.value = false
     }
   }
 
-  async function selectProject(projectId: string): Promise<void> {
-    if (!projects.value.some((project) => project.id === projectId)) return
-    await loadProjectContext(projectId)
-  }
-
-  async function setDefault(kind: ConnectorKind, connectorId: string | null): Promise<void> {
-    const projectId = currentProjectId.value
-    if (!projectId) return
+  async function setDefault(
+    projectId: string,
+    kind: ConnectorKind,
+    connectorId: string | null,
+  ): Promise<void> {
+    if (loadedProjectId !== projectId) return
+    const generation = projectLoadGeneration
     const current = defaults.value[kind]
     const response = await connectorsApi.setProjectDefault(projectId, kind, {
       expected_revision: current?.revision ?? 0,
       connector_id: connectorId,
     })
+    if (generation !== projectLoadGeneration || loadedProjectId !== projectId) return
     const [connectorResponse, capabilityResponse] = await Promise.all([
       connectorsApi.listProjectConnectors(projectId),
       connectorsApi.getProjectCapabilities(projectId),
     ])
+    if (generation !== projectLoadGeneration || loadedProjectId !== projectId) return
     defaults.value = { ...defaults.value, [kind]: response.data }
     connectors.value = connectorResponse.data
     capabilities.value = capabilityResponse.data
   }
 
-  async function reload(): Promise<void> {
-    await Promise.all([loadGlobalManagement(), loadProjectContext(currentProjectId.value)])
+  async function reload(projectId: string | null): Promise<void> {
+    await Promise.all([loadGlobalManagement(), loadProjectContext(projectId)])
   }
 
   function clear(): void {
     projectLoadGeneration += 1
-    projects.value = []
-    currentProjectId.value = null
+    loadedProjectId = null
     connectors.value = []
     defaults.value = {}
     capabilities.value = []
@@ -151,12 +146,11 @@ export const useConnectorsStore = defineStore('connectors', () => {
     credentialStoreReady.value = false
     setupUnavailableReason.value = null
     loading.value = false
+    globalLoading.value = false
     error.value = null
   }
 
   return {
-    projects,
-    currentProjectId,
     connectors,
     defaults,
     capabilities,
@@ -165,11 +159,11 @@ export const useConnectorsStore = defineStore('connectors', () => {
     credentialStoreReady,
     setupUnavailableReason,
     loading,
+    globalLoading,
     error,
     initialize,
     loadGlobalManagement,
     loadProjectContext,
-    selectProject,
     setDefault,
     reload,
     clear,

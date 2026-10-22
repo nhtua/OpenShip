@@ -61,6 +61,22 @@ export const authApi = {
   logout: (): Promise<void> => api.post('/auth/logout'),
 }
 
+export const projectsApi = {
+  list: (): Promise<{ data: ProjectSummary[] }> => api.get('/projects'),
+
+  create: (payload: { name: string }): Promise<{ data: ProjectSummary }> =>
+    api.post('/projects', payload),
+
+  get: (projectId: string): Promise<{ data: ProjectSummary }> =>
+    api.get(`/projects/${encodeURIComponent(projectId)}`),
+
+  rename: (projectId: string, payload: { name: string }): Promise<{ data: ProjectSummary }> =>
+    api.patch(`/projects/${encodeURIComponent(projectId)}`, payload),
+
+  delete: (projectId: string): Promise<unknown> =>
+    api.delete(`/projects/${encodeURIComponent(projectId)}`),
+}
+
 // Durable run commands
 export const runsApi = {
   submitTurn: (
@@ -101,8 +117,6 @@ export const capabilitiesApi = {
 }
 
 export const connectorsApi = {
-  listProjects: (): Promise<{ data: ProjectSummary[] }> => api.get('/projects'),
-
   getSetupContext: (): Promise<{ data: ConnectorSetupContext }> =>
     api.get('/connectors/setup-context'),
 

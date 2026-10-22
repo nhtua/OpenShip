@@ -66,6 +66,29 @@ describe('AppLayout', () => {
     expect(wrapper.emitted('selectProject')).toEqual([['project-2']])
   })
 
+  it('offers project creation and emits the trimmed name', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Production' }],
+      currentProjectId: 'project-1',
+    })
+    await wrapper.get('[data-testid="project-selector-trigger"]').trigger('click')
+    await wrapper.get('[data-testid="create-project-trigger"]').trigger('click')
+    await wrapper.get('input[aria-label="New project name"]').setValue('  Sandbox  ')
+    await wrapper.get('button[aria-label="Create project"]').trigger('click')
+
+    expect(wrapper.emitted('createProject')).toEqual([['Sandbox']])
+  })
+
+  it('links Settings to the currently selected project', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Production' }],
+      currentProjectId: 'project-1',
+    })
+
+    expect(wrapper.get('a[aria-label="Project Settings"]').attributes('href'))
+      .toBe('/projects/project-1/settings')
+  })
+
   it('closes the project dropdown on outside click and Escape', async () => {
     const { wrapper } = await mountWithRouter(AppLayout, '/', {
       projects: [{ id: 'project-1', name: 'Personal Workspace' }],

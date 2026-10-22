@@ -6,6 +6,7 @@ const LoginView = () => import('./views/LoginView.vue')
 const RegisterView = () => import('./views/RegisterView.vue')
 const ChatView = () => import('./views/ChatView.vue')
 const ConnectorSettingsView = () => import('./views/ConnectorSettingsView.vue')
+const SettingsView = () => import('./views/SettingsView.vue')
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -33,9 +34,25 @@ export const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
-      path: '/settings/connectors',
-      name: 'connectors-settings',
+      path: '/connectors',
+      name: 'connectors',
       component: ConnectorSettingsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/settings/connectors',
+      redirect: '/connectors',
+    },
+    {
+      path: '/projects/:projectId/settings',
+      name: 'project-settings',
+      component: SettingsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/settings/global',
+      name: 'global-settings',
+      component: SettingsView,
       meta: { requiresAuth: true },
     },
   ],

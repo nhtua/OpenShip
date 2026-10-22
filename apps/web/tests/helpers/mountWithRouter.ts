@@ -31,8 +31,24 @@ export async function mountWithRouter(
     },
     {
       path: '/settings/connectors',
-      name: 'connectors-settings',
+      redirect: '/connectors',
+    },
+    {
+      path: '/connectors',
+      name: 'connectors',
       component: { template: '<div>Connectors</div>' },
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/projects/:projectId/settings',
+      name: 'project-settings',
+      component: { template: '<div>Project Settings</div>' },
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/settings/global',
+      name: 'global-settings',
+      component: { template: '<div>Global Settings</div>' },
       meta: { requiresAuth: true },
     },
     { path: '/login', name: 'login', component: { template: '<div>Login</div>' } },
