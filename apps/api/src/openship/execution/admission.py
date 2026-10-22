@@ -18,15 +18,17 @@ from ..capabilities.catalog import resolve_capability
 from ..capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
-    ExecutionConfig,
     canonical_digest,
+    decode_execution_config,
+)
+from ..capabilities.definitions import (
+    get_tool_definition,
+    get_tool_definition_by_id,
 )
 from ..chat.models import Conversation
 from ..config import settings
 from ..runs.models import Run, RunJob
 from ..runs.queue import Claim
-from ..tools.search.contracts import SearchArguments
-from ..workspace.schemas import WorkspaceListArguments, WorkspaceReadArguments
 from .errors import CapabilityError
 from .models import ExecutionSlot, ToolOperation
 
@@ -107,7 +109,7 @@ def admit_operation(
             "This run does not support maintained tool execution",
         )
     try:
-        pinned = ExecutionConfig.model_validate_json(run.execution_configuration or "{}")
+        pinned = decode_execution_config(run.execution_configuration or "{}")
     except (TypeError, ValueError):
         raise _refused(409, "changed", "The pinned tool execution settings are unavailable") from None
     if ref not in pinned.allowed_capabilities:
@@ -124,18 +126,24 @@ def admit_operation(
         raise _refused(404, "operation_not_found", "The requested operation is not available")
 
     effective_inputs = list(inputs)
-    if ref.id == "workspace_read_file":
+    try:
+        candidate_definition = get_tool_definition_by_id(ref.id)
+        candidate_arguments = candidate_definition.validate_arguments(arguments)
+        referenced_artifacts = candidate_definition.input_artifact_ids(candidate_arguments)
+    except (LookupError, TypeError, ValueError):
+        referenced_artifacts = ()
+    for referenced_artifact_id in referenced_artifacts:
         try:
-            read_arguments = WorkspaceReadArguments.model_validate(arguments)
-        except ValueError:
-            read_arguments = None
-        if read_arguments is not None and not any(
-            item.id == read_arguments.artifact_id for item in effective_inputs
-        ):
+            already_selected = any(
+                item.id == referenced_artifact_id for item in effective_inputs
+            )
+        except AttributeError:
+            already_selected = False
+        if not already_selected:
             target = (
                 db.query(Artifact)
                 .filter(
-                    Artifact.id == read_arguments.artifact_id,
+                    Artifact.id == referenced_artifact_id,
                     Artifact.conversation_id == run.conversation_id,
                     Artifact.project_id == run.project_id,
                 )
@@ -178,18 +186,12 @@ def admit_operation(
 
     try:
         manifest = resolve_capability(ref, settings.enabled_tool_ids)
-        argument_models = {
-            "brave_web_search": SearchArguments,
-            "tavily_web_search": SearchArguments,
-            "workspace_list_files": WorkspaceListArguments,
-            "workspace_read_file": WorkspaceReadArguments,
-        }
-        argument_model = argument_models.get(manifest.id)
-        if argument_model is None:
-            raise _refused(422, "unsupported_tool", "This tool is not supported by this execution version")
-        normalized = argument_model.model_validate(arguments).model_dump(mode="json")
+        definition = get_tool_definition(manifest)
+        normalized = definition.validate_arguments(arguments).model_dump(mode="json")
     except CapabilityError as refused:
         raise _refused(422, refused.code, str(refused)) from refused
+    except LookupError as refused:
+        raise _refused(422, "unsupported_tool", "This tool is not supported by this execution version") from refused
     except ValueError as invalid:
         raise _refused(422, "invalid_tool_arguments", "Tool arguments are invalid") from invalid
 
@@ -232,7 +234,7 @@ def admit_operation(
         arguments_digest=canonical_digest(normalized),
         request_digest=raw_digest,
         input_artifact_refs=json.dumps(input_refs, sort_keys=True, separators=(",", ":")),
-        credential_binding_ref=manifest.credential_binding_ref,
+        credential_binding_ref=getattr(manifest, "credential_binding_ref", None),
         configuration_revision=manifest.manifest_digest,
         execution_bundle_digest=bundle_digest,
         status="admitted",

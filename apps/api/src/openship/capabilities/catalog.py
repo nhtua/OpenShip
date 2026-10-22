@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.openship.capabilities.contracts import (
     CapabilityManifest,
+    CapabilityManifestLike,
     CapabilityRef,
     CapabilitySummary,
     OutputPolicy,
@@ -28,6 +29,7 @@ _SEARCH_SOURCE_FILES = {
         "tools/search/brave.py",
         "tools/search/naming.py",
         "execution/publication.py",
+        "capabilities/definitions.py",
     ),
     "tavily_web_search": (
         "tools/search/contracts.py",
@@ -35,6 +37,7 @@ _SEARCH_SOURCE_FILES = {
         "tools/search/tavily.py",
         "tools/search/naming.py",
         "execution/publication.py",
+        "capabilities/definitions.py",
     ),
 }
 
@@ -153,12 +156,18 @@ def _workspace_manifests() -> tuple[CapabilityManifest, CapabilityManifest]:
     return tuple(manifests)
 
 
-def list_capability_manifests() -> tuple[CapabilityManifest, ...]:
-    return (
+def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
+    from src.openship.capabilities.definitions import registered_tool_definitions
+
+    builtins: tuple[CapabilityManifestLike, ...] = (
         _search_manifest("brave_web_search", "BRAVE_SEARCH_API_KEY"),
         _search_manifest("tavily_web_search", "TAVILY_API_KEY"),
         *_workspace_manifests(),
     )
+    registered = tuple(
+        entry.manifest for entry in registered_tool_definitions()
+    )
+    return (*builtins, *registered)
 
 
 def list_capabilities(
@@ -189,7 +198,7 @@ def list_capabilities(
                 "disabled", "missing_credentials", "runtime_unavailable"
             ):
                 reason = "runtime_unavailable"
-        elif manifest.credential_binding_ref and not credential_check(
+        elif getattr(manifest, "credential_binding_ref", None) and not credential_check(
             manifest.credential_binding_ref
         ):
             available, reason = False, "missing_credentials"
@@ -213,7 +222,7 @@ def list_capabilities(
 
 def resolve_capability(
     ref: CapabilityRef, enabled_ids: frozenset[str]
-) -> CapabilityManifest:
+) -> CapabilityManifestLike:
     manifest = next(
         (item for item in list_capability_manifests() if item.id == ref.id), None
     )
@@ -230,7 +239,7 @@ def resolve_capability(
     return manifest
 
 
-def require_phase4_dispatchable(manifest: CapabilityManifest) -> None:
+def require_phase4_dispatchable(manifest: CapabilityManifestLike) -> None:
     if manifest.execution_kind != "maintained":
         raise CapabilityError("unsupported_execution")
     if any(output.mutability != "immutable" for output in manifest.outputs):

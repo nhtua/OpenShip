@@ -21,6 +21,7 @@ from ..capabilities.contracts import (
     ToolCommandRequest,
     canonical_digest,
 )
+from ..capabilities.definitions import get_tool_definition
 from ..chat.models import Conversation, Message
 from ..config import settings
 from ..execution.errors import CapabilityError
@@ -28,7 +29,6 @@ from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
 from ..runs.models import Event, Outbox, Run, RunJob
-from ..tools.search.contracts import SearchArguments
 from .queue import fenced_update_run
 
 
@@ -172,8 +172,9 @@ def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[Arti
                 detail={"error": {"code": refused.code, "message": str(refused)}},
             ) from refused
         refs.append(ref)
-        if manifest.credential_binding_ref:
-            binding_refs.append(manifest.credential_binding_ref)
+        credential_binding_ref = getattr(manifest, "credential_binding_ref", None)
+        if credential_binding_ref:
+            binding_refs.append(credential_binding_ref)
     if not refs:
         raise HTTPException(
             status_code=422,
@@ -458,14 +459,14 @@ def submit_tool_run(
 
     try:
         manifest = resolve_capability(command.capability, settings.enabled_tool_ids)
-        normalized_arguments = SearchArguments.model_validate(command.arguments)
+        definition = get_tool_definition(manifest)
+        normalized_arguments = definition.validate_arguments(command.arguments)
     except CapabilityError as refused:
         raise _tool_command_error(422, refused.code, str(refused)) from refused
+    except LookupError as refused:
+        raise _tool_command_error(422, "unsupported_tool", "This tool command is not supported") from refused
     except ValueError as invalid:
         raise _tool_command_error(422, "invalid_tool_arguments", "Tool arguments are invalid") from invalid
-
-    if manifest.id not in ("brave_web_search", "tavily_web_search"):
-        raise _tool_command_error(422, "unsupported_tool", "This tool command is not supported")
 
     execution = ExecutionConfig(
         graph_kind="tool",
@@ -473,7 +474,7 @@ def submit_tool_run(
         loop_limits=LoopLimits(deadline_seconds=settings.workflow_run_timeout_seconds),
         allowed_capabilities=(command.capability,),
         credential_binding_refs=(manifest.credential_binding_ref,)
-        if manifest.credential_binding_ref
+        if getattr(manifest, "credential_binding_ref", None)
         else (),
     )
     run = Run(

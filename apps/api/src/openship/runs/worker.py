@@ -27,9 +27,9 @@ from ..artifacts.filesystem import ArtifactStorageError
 from ..artifacts.maintenance import configured_store
 from ..capabilities.contracts import (
     AuthorizationContext,
-    ExecutionConfig,
     PublishedToolResult,
     ToolInvocationContext,
+    decode_execution_config,
 )
 from ..chat.models import Conversation, Message
 from ..config import settings
@@ -391,7 +391,7 @@ class Worker:
         graph_factory,
     ) -> bool:
         try:
-            execution = ExecutionConfig.model_validate_json(
+            execution = decode_execution_config(
                 run.execution_configuration or ""
             )
         except Exception:
@@ -653,7 +653,7 @@ class Worker:
                 snapshot = bind_run_model_config(job, run, fence)
                 if run.kind == "chat" and run.graph_version == 2:
                     try:
-                        agent_execution = ExecutionConfig.model_validate_json(
+                        agent_execution = decode_execution_config(
                             run.execution_configuration or ""
                         )
                     except Exception as invalid:

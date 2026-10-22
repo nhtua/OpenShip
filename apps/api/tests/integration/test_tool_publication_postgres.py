@@ -22,6 +22,7 @@ from src.openship.capabilities.contracts import (
     ExecutionConfig,
     ToolInvocationContext,
 )
+from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.events.service import Event
@@ -214,7 +215,7 @@ async def test_postgres_publishes_ready_artifact_result_and_events_in_one_commit
     import src.openship.execution.gateway as gateway_module
 
     monkeypatch.setitem(
-        gateway_module.MAINTAINED_TOOL_HANDLERS,
+        TOOL_HANDLER_OVERRIDES,
         "brave_web_search",
         fake_search,
     )

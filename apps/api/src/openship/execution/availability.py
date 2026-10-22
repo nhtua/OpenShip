@@ -45,7 +45,7 @@ def observe_tool_availability(
     for manifest in list_capability_manifests():
         if manifest.id not in enabled_ids:
             available, reason = False, "disabled"
-        elif manifest.credential_binding_ref is None:
+        elif getattr(manifest, "credential_binding_ref", None) is None:
             if manifest.effect == "read_only_local":
                 try:
                     configured_store().verify()
@@ -56,7 +56,7 @@ def observe_tool_availability(
                 available, reason = True, None
         else:
             try:
-                available = bool(credential_check(manifest.credential_binding_ref))
+                available = bool(credential_check(getattr(manifest, "credential_binding_ref", None)))
                 reason = None if available else "missing_credentials"
             except Exception:  # noqa: BLE001 - never expose resolver details in readiness.
                 available, reason = False, "configuration_error"

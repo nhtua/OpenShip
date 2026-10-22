@@ -330,8 +330,8 @@ def test_persisted_tool_deadline_is_reused_after_a_pre_dispatch_reclaim():
 def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
     monkeypatch, tmp_path
 ):
+    from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
     from src.openship.chat.routes import get_conversation_messages
-    from src.openship.execution.gateway import MAINTAINED_TOOL_HANDLERS
     from src.openship.runs import dispatch as dispatch_module
     from src.openship.runs import worker as worker_module
     from src.openship.runs.worker import Worker
@@ -372,7 +372,7 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
             provider_metadata={},
         )
 
-    monkeypatch.setitem(MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     worker = Worker(
         worker_id=claim.worker_id,
         session_factory=SessionLocal,
@@ -463,7 +463,7 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
 def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
     monkeypatch, tmp_path
 ):
-    from src.openship.execution.gateway import MAINTAINED_TOOL_HANDLERS
+    from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
     from src.openship.runs.worker import Worker
 
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
@@ -488,7 +488,7 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
             await asyncio.sleep(0.01)
             control.raise_if_stopped()
 
-    monkeypatch.setitem(MAINTAINED_TOOL_HANDLERS, "brave_web_search", waiting_search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", waiting_search)
     worker = Worker(
         worker_id=claim.worker_id,
         session_factory=SessionLocal,
@@ -545,7 +545,7 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
 def test_pre_dispatch_worker_restart_reuses_deadline_and_executes_once(
     monkeypatch, tmp_path
 ):
-    from src.openship.execution.gateway import MAINTAINED_TOOL_HANDLERS
+    from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
     from src.openship.runs.worker import Worker
 
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
@@ -593,7 +593,7 @@ def test_pre_dispatch_worker_restart_reuses_deadline_and_executes_once(
             provider_metadata={},
         )
 
-    monkeypatch.setitem(MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     worker = Worker(
         worker_id=replacement_claim.worker_id,
         session_factory=SessionLocal,

@@ -3,9 +3,11 @@ import json
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from src.openship.artifacts.contracts import ArtifactRef
@@ -16,9 +18,18 @@ from src.openship.auth.models import User
 from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
+    CapabilityManifestV2,
     CapabilityRef,
     ExecutionConfig,
     ToolInvocationContext,
+    canonical_digest,
+)
+from src.openship.capabilities.definitions import (
+    TOOL_HANDLER_OVERRIDES,
+    ToolDefinitionEntry,
+    implementation_digest_for,
+    register_tool_definition,
+    unregister_tool_definition,
 )
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
@@ -65,7 +76,7 @@ def _running_tool(db, *, tool_id="brave_web_search", worker_id="gateway-worker")
     local = manifest.effect == "read_only_local"
     refs = (ref,)
     if local:
-        refs = tuple(
+        refs = (ref,) + tuple(
             CapabilityRef(
                 id=item.id,
                 version=item.version,
@@ -73,13 +84,14 @@ def _running_tool(db, *, tool_id="brave_web_search", worker_id="gateway-worker")
             )
             for item in list_capability_manifests()
             if item.id in {"workspace_list_files", "workspace_read_file"}
+            and item.id != ref.id
         )
     execution = ExecutionConfig(
         graph_kind="chat" if local else "tool",
         graph_version=2 if local else 1,
         allowed_capabilities=refs,
         credential_binding_refs=(manifest.credential_binding_ref,)
-        if manifest.credential_binding_ref
+        if getattr(manifest, "credential_binding_ref", None)
         else (),
     )
     run = Run(
@@ -145,6 +157,101 @@ def _observation(ref, query="gateway test"):
         truncated=False,
         provider_metadata={},
     )
+
+
+class RegistryArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    count: int = Field(ge=1, le=3)
+
+
+class RegistryHandlerResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    private_label: str
+    object_id: uuid.UUID
+
+
+class RegistryPublicResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    label: str
+    result_id: uuid.UUID
+
+
+def _registry_manifest() -> CapabilityManifestV2:
+    implementation_files = ("tests/execution/test_gateway.py",)
+    fields: dict[str, Any] = {
+        "schema_version": 2,
+        "id": "registry_gateway_tool",
+        "version": "1.0.0",
+        "implementation_digest": implementation_digest_for(implementation_files),
+        "description": "Return a safe summary for one bounded count.",
+        "input_schema": RegistryArguments.model_json_schema(),
+        "output_schema": RegistryPublicResult.model_json_schema(),
+        "effect": "read_only_local",
+        "enablement_requirements": (),
+        "limits": {"max_model_result_bytes": 1024},
+        "outputs": (),
+        "connector_kinds": (),
+        "operations": (),
+        "target_kinds": (),
+        "execution_kind": "maintained",
+    }
+    return CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
+
+
+@pytest.mark.asyncio
+async def test_registered_definition_runs_through_generic_gateway_and_projects_safe_result(
+    monkeypatch, tmp_path
+):
+    manifest = _registry_manifest()
+    object_id = uuid.uuid4()
+
+    async def handler(arguments, _context, _control):
+        return RegistryHandlerResult(
+            private_label=f"result-{arguments.count}", object_id=object_id
+        )
+
+    entry = ToolDefinitionEntry(
+        manifest=manifest,
+        description="Return a safe summary for one bounded count.",
+        argument_model=RegistryArguments,
+        result_model=RegistryPublicResult,
+        handler=handler,
+        handler_result_model=RegistryHandlerResult,
+        implementation_files=("tests/execution/test_gateway.py",),
+        result_projector=lambda value: {
+            "label": value["private_label"],
+            "result_id": value["object_id"],
+        },
+    )
+    register_tool_definition(entry)
+    monkeypatch.setattr(settings, "tool_enabled_ids", manifest.id)
+    db = SessionLocal()
+    try:
+        _user, _project, _conversation, _run, claim, ref, context = _running_tool(
+            db, tool_id=manifest.id
+        )
+        context.artifact_store = LocalArtifactStore(tmp_path / "registry-store", uuid.uuid4())
+        context.artifact_store.initialize()
+
+        result = await ToolGateway(SessionLocal).execute_tool(
+            claim=claim,
+            context=context,
+            logical_call_id="model:0:registry",
+            ref=ref,
+            arguments={"count": 2},
+            control=InvocationControl(),
+        )
+
+        assert result.status == "succeeded", result.error
+        assert result.result == {"label": "result-2", "result_id": str(object_id)}
+        operation = db.query(ToolOperation).filter_by(run_id=claim.run_id).one()
+        assert project_operation(db, operation).result == result.result
+    finally:
+        db.close()
+        unregister_tool_definition(manifest.id)
 
 
 def _write_workspace_artifact(db, store, project, conversation, content: bytes):
@@ -293,7 +400,7 @@ async def test_gateway_dispatches_once_and_publishes_artifact_result_event_atomi
         return _observation(ref, arguments.query)
 
     monkeypatch.setitem(
-        __import__("src.openship.execution.gateway", fromlist=["x"]).MAINTAINED_TOOL_HANDLERS,
+        TOOL_HANDLER_OVERRIDES,
         "brave_web_search",
         search,
     )
@@ -359,8 +466,7 @@ async def test_completed_logical_call_replay_returns_recorded_result_without_dis
         calls.append(arguments.query)
         return _observation(ref, arguments.query)
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     gateway = ToolGateway(SessionLocal)
     command = {
         "claim": claim,
@@ -394,8 +500,7 @@ async def test_uncertain_provider_timeout_is_recorded_and_never_retried(
         calls.append("sent")
         raise SearchToolError("provider_timeout")
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     gateway = ToolGateway(SessionLocal)
     command = {
         "claim": claim,
@@ -454,8 +559,7 @@ async def test_stale_fence_during_file_publication_cannot_mark_output_ready(
 
     monkeypatch.setattr(store, "publish_file", publish_then_replace_owner)
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     gateway = ToolGateway(SessionLocal)
     command = {
         "claim": claim,
@@ -510,8 +614,7 @@ async def test_uncertain_publication_commit_keeps_only_unready_hidden_output(
         calls.append(arguments.query)
         return _observation(ref, arguments.query)
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     original_commit = Session.commit
     commit_count = 0
 
@@ -603,8 +706,7 @@ async def test_invalid_admission_never_dispatches_or_reserves_artifacts(
         called.append(True)
         return _observation(ref)
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     gateway = ToolGateway(SessionLocal)
 
     with pytest.raises(HTTPException):
@@ -640,8 +742,7 @@ async def test_missing_credential_fails_before_attempt_or_provider_dispatch(monk
         called.append(True)
         return _observation(ref)
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
 
     result = await ToolGateway(SessionLocal).execute_tool(
         claim=claim,
@@ -688,8 +789,7 @@ async def test_capacity_wait_is_not_a_provider_failure(monkeypatch, tmp_path):
         called.append(True)
         return _observation(ref)
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
 
     result = await ToolGateway(SessionLocal, capacity_poll_interval=0.005).execute_tool(
         claim=claim,
@@ -751,8 +851,7 @@ async def test_capacity_wait_retries_after_shared_slot_is_released(monkeypatch, 
         finally:
             release_db.close()
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     result = await ToolGateway(
         SessionLocal, capacity_poll_interval=0.005, sleep=release_then_yield
     ).execute_tool(
@@ -786,8 +885,7 @@ async def test_chat_run_cannot_admit_a_model_free_tool_call(monkeypatch, tmp_pat
         called.append(True)
         return _observation(ref)
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
 
     with pytest.raises(HTTPException):
         await ToolGateway(SessionLocal).execute_tool(
@@ -820,8 +918,7 @@ async def test_pinned_non_tool_graph_fails_without_creating_attempt(monkeypatch,
         called.append(True)
         return _observation(ref)
 
-    gateway_module = __import__("src.openship.execution.gateway", fromlist=["x"])
-    monkeypatch.setitem(gateway_module.MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
 
     result = await ToolGateway(SessionLocal).execute_tool(
         claim=claim,

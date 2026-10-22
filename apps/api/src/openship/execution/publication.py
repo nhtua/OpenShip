@@ -23,6 +23,10 @@ from src.openship.capabilities.contracts import (
     ToolFailure,
     canonical_json,
 )
+from src.openship.capabilities.definitions import (
+    ToolDefinitionEntry,
+    get_tool_definition_by_id,
+)
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.events.service import Event
@@ -458,9 +462,11 @@ def project_published_result(db: Session, operation: ToolOperation) -> Published
     """Read a completed operation without ever re-dispatching its external effect."""
     if operation.status == "succeeded":
         try:
-            result = json.loads(operation.result_json)
+            result = get_tool_definition_by_id(operation.capability_id).validate_public_result(
+                json.loads(operation.result_json)
+            )
             artifact_ids = json.loads(operation.output_artifact_ids or "[]")
-        except (TypeError, json.JSONDecodeError):
+        except (LookupError, TypeError, ValueError, json.JSONDecodeError):
             return PublishedToolResult(
                 operation_id=operation.id,
                 status="interrupted",
@@ -616,70 +622,24 @@ def publish_local_tool_result(
     claim: Claim,
     attempt_id: uuid.UUID,
     result,
+    definition: ToolDefinitionEntry,
 ) -> PublishedToolResult:
-    """Persist one bounded local read result without reserving an output artifact."""
+    """Persist one bounded local result through its registered projection hook."""
     conversation, operation, attempt = _attempt_and_operation(db, claim, attempt_id)
     if operation.status != "running" or attempt.outcome != "started":
         raise ToolPublicationError("lease_lost")
     try:
-        if operation.capability_id == "workspace_list_files":
-            normalized = WorkspaceListResult.model_validate(result)
-            expected_workspace = (
-                db.query(ConversationWorkspace)
-                .filter(ConversationWorkspace.conversation_id == operation.conversation_id)
-                .first()
-            )
-            if (
-                expected_workspace is None
-                or normalized.workspace_id != expected_workspace.id
-                or any(
-                    db.query(Artifact.id)
-                    .filter(
-                        Artifact.id == item.id,
-                        Artifact.conversation_id == operation.conversation_id,
-                        Artifact.project_id == operation.project_id,
-                        Artifact.status == "ready",
-                        Artifact.sha256 == item.sha256,
-                        Artifact.size_bytes == item.size_bytes,
-                    )
-                    .first()
-                    is None
-                    for item in normalized.items
-                )
-            ):
-                raise ValueError("workspace list result changed its pinned scope")
-        elif operation.capability_id == "workspace_read_file":
-            normalized = WorkspaceReadResult.model_validate(result)
-            expected_workspace = (
-                db.query(ConversationWorkspace)
-                .filter(ConversationWorkspace.conversation_id == operation.conversation_id)
-                .first()
-            )
-            artifact = (
-                db.query(Artifact)
-                .filter(
-                    Artifact.id == normalized.artifact_id,
-                    Artifact.conversation_id == operation.conversation_id,
-                    Artifact.project_id == operation.project_id,
-                    Artifact.status == "ready",
-                )
-                .first()
-            )
-            if (
-                expected_workspace is None
-                or normalized.workspace_id != expected_workspace.id
-                or normalized.version_id != normalized.artifact_id
-                or artifact is None
-                or normalized.sha256 != artifact.sha256
-                or normalized.size_bytes != artifact.size_bytes
-                or len(normalized.content.encode("utf-8")) > 16 * 1024
-            ):
-                raise ValueError("workspace read result changed its pinned scope")
-        else:
-            raise ValueError("local result capability is unsupported")
-        result_data = normalized.model_dump(mode="json")
+        validated = (
+            definition.publication_hook(db, operation, result)
+            if definition.publication_hook is not None
+            else result
+        )
+        result_data = definition.project_result(validated)
         result_bytes = canonical_json(result_data)
-        if len(result_bytes) > 16 * 1024:
+        max_result_bytes = int(
+            definition.manifest.limits.get("max_model_result_bytes", 16 * 1024)
+        )
+        if len(result_bytes) > max_result_bytes:
             raise ToolPublicationError("output_limit_exceeded")
     except ToolPublicationError:
         raise
@@ -722,6 +682,69 @@ def publish_local_tool_result(
         status="succeeded",
         result=result_data,
     )
+
+
+def validate_workspace_result(db: Session, operation: ToolOperation, result):
+    """Check workspace results still point to artifacts in the active conversation."""
+    try:
+        if operation.capability_id == "workspace_list_files":
+            normalized = WorkspaceListResult.model_validate(result)
+            expected_workspace = (
+                db.query(ConversationWorkspace)
+                .filter(ConversationWorkspace.conversation_id == operation.conversation_id)
+                .first()
+            )
+            if (
+                expected_workspace is None
+                or normalized.workspace_id != expected_workspace.id
+                or any(
+                    db.query(Artifact.id)
+                    .filter(
+                        Artifact.id == item.id,
+                        Artifact.conversation_id == operation.conversation_id,
+                        Artifact.project_id == operation.project_id,
+                        Artifact.status == "ready",
+                        Artifact.sha256 == item.sha256,
+                        Artifact.size_bytes == item.size_bytes,
+                    )
+                    .first()
+                    is None
+                    for item in normalized.items
+                )
+            ):
+                raise ValueError("workspace list result changed its pinned scope")
+            return normalized
+        if operation.capability_id == "workspace_read_file":
+            normalized = WorkspaceReadResult.model_validate(result)
+            expected_workspace = (
+                db.query(ConversationWorkspace)
+                .filter(ConversationWorkspace.conversation_id == operation.conversation_id)
+                .first()
+            )
+            artifact = (
+                db.query(Artifact)
+                .filter(
+                    Artifact.id == normalized.artifact_id,
+                    Artifact.conversation_id == operation.conversation_id,
+                    Artifact.project_id == operation.project_id,
+                    Artifact.status == "ready",
+                )
+                .first()
+            )
+            if (
+                expected_workspace is None
+                or normalized.workspace_id != expected_workspace.id
+                or normalized.version_id != normalized.artifact_id
+                or artifact is None
+                or normalized.sha256 != artifact.sha256
+                or normalized.size_bytes != artifact.size_bytes
+                or len(normalized.content.encode("utf-8")) > 16 * 1024
+            ):
+                raise ValueError("workspace read result changed its pinned scope")
+            return normalized
+        raise ValueError("workspace publication hook received an unrelated operation")
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ToolPublicationError("invalid_tool_output") from exc
 
 
 def _slot_id_for_operation(db: Session, operation_id: uuid.UUID, claim: Claim) -> uuid.UUID:

@@ -17,9 +17,9 @@ from src.openship.artifacts.models import Artifact
 from src.openship.auth.models import User
 from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import CapabilityRef, ToolCommandRequest
+from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
 from src.openship.chat.models import Conversation, Message
 from src.openship.config import settings
-from src.openship.execution.gateway import MAINTAINED_TOOL_HANDLERS
 from src.openship.execution.models import ToolAttempt, ToolOperation
 from src.openship.runs.models import ProviderAttempt, Run
 from src.openship.runs.queue import claim_next
@@ -176,7 +176,7 @@ def test_postgres_worker_completes_manual_search_without_model_or_chat_message(
             provider_metadata={},
         )
 
-    monkeypatch.setitem(MAINTAINED_TOOL_HANDLERS, "brave_web_search", synthetic_search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", synthetic_search)
     worker = Worker(
         worker_id=claim.worker_id,
         session_factory=pg_sessions,

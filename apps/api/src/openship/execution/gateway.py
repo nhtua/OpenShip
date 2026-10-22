@@ -17,26 +17,18 @@ from src.openship.artifacts.models import Artifact
 from src.openship.capabilities.catalog import resolve_capability
 from src.openship.capabilities.contracts import (
     CapabilityRef,
-    ExecutionConfig,
     PublishedToolResult,
     ToolInvocationContext,
     canonical_json,
+    decode_execution_config,
 )
+from src.openship.capabilities.definitions import get_tool_definition
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.providers.control import InvocationControl
 from src.openship.providers.errors import ProviderError
 from src.openship.runs.models import Run
 from src.openship.runs.queue import Claim
-from src.openship.tools.search.brave import search_brave
-from src.openship.tools.search.contracts import SearchArguments
-from src.openship.tools.search.http import SearchToolError
-from src.openship.tools.search.tavily import search_tavily
-from src.openship.workspace.tools import (
-    WorkspaceToolError,
-    list_workspace_files,
-    read_workspace_file,
-)
 
 from .admission import (
     acquire_execution_slot,
@@ -53,15 +45,8 @@ from .publication import (
     project_published_result,
     publish_local_tool_result,
     publish_tool_result,
-    validate_search_observation,
 )
 
-MAINTAINED_TOOL_HANDLERS = {
-    "brave_web_search": search_brave,
-    "tavily_web_search": search_tavily,
-    "workspace_list_files": list_workspace_files,
-    "workspace_read_file": read_workspace_file,
-}
 logger = logging.getLogger(__name__)
 
 _PRE_DISPATCH_MESSAGES = {
@@ -145,7 +130,7 @@ class ToolGateway:
                 return project_published_result(db, operation)
 
         try:
-            pinned_config, manifest, handler = self._resolve_dispatch(
+            pinned_config, manifest, definition = self._resolve_dispatch(
                 claim, context, operation_id, ref
             )
         except ToolPublicationError as refused:
@@ -175,7 +160,7 @@ class ToolGateway:
                 else "artifact_storage_unavailable",
             )
 
-        binding = manifest.credential_binding_ref
+        binding = getattr(manifest, "credential_binding_ref", None)
         credential = None
         if binding:
             try:
@@ -186,7 +171,9 @@ class ToolGateway:
                 return self._finish_before_dispatch(
                     claim, operation_id, "missing_credentials"
                 )
-        if binding and binding not in pinned_config.credential_binding_refs:
+        if binding and binding not in getattr(
+            pinned_config, "credential_binding_refs", ()
+        ):
             return self._finish_before_dispatch(
                 claim, operation_id, "changed"
             )
@@ -235,23 +222,27 @@ class ToolGateway:
             local_result = None
             local_failure = None
             try:
-                local_result = await handler(arguments, runtime_context, dispatch_control)
+                validated_arguments = definition.validate_arguments(arguments)
+                local_result = await definition.handler(
+                    validated_arguments, runtime_context, dispatch_control
+                )
                 dispatch_control.raise_if_stopped()
+                local_result = definition.validate_handler_result(
+                    self._operation_for_validation(operation_id), local_result
+                )
                 local_data = local_result.model_dump(mode="json")
                 if len(canonical_json(local_data)) > int(
                     manifest.limits.get("max_model_result_bytes", 16 * 1024)
                 ):
                     raise ToolPublicationError("output_limit_exceeded")
-            except WorkspaceToolError as failure:
-                local_failure = failure.code
             except ProviderError as failure:
                 local_failure = (
                     "cancelled" if failure.code == "cancelled" else "execution_interrupted"
                 )
             except ToolPublicationError as failure:
                 local_failure = failure.code
-            except Exception:  # noqa: BLE001 - local tool details never cross the gateway.
-                local_failure = "workspace_unavailable"
+            except Exception as failure:  # noqa: BLE001 - local tool details stay private.
+                local_failure = definition.map_error(failure)
             finally:
                 renewal.cancel()
                 try:
@@ -266,28 +257,29 @@ class ToolGateway:
                 claim=claim,
                 operation_id=operation_id,
                 attempt_id=attempt_id,
+                definition=definition,
                 result=local_result,
             )
 
         dispatch_failure = None
         observation = None
         try:
-            search_arguments = SearchArguments.model_validate(arguments)
-            observation = await handler(search_arguments, runtime_context, dispatch_control)
+            validated_arguments = definition.validate_arguments(arguments)
+            observation = await definition.handler(
+                validated_arguments, runtime_context, dispatch_control
+            )
             dispatch_control.raise_if_stopped()
-            observation = validate_search_observation(
+            observation = definition.validate_handler_result(
                 self._operation_for_validation(operation_id), observation
             )
-        except SearchToolError as failure:
-            dispatch_failure = failure.code
         except ProviderError as failure:
             dispatch_failure = (
                 "cancelled" if failure.code == "cancelled" else "provider_unavailable"
             )
         except ToolPublicationError as failure:
             dispatch_failure = failure.code
-        except Exception:  # noqa: BLE001 - maintained adapter failures must not expose internals.
-            dispatch_failure = "provider_unavailable"
+        except Exception as failure:  # noqa: BLE001 - adapter details stay private.
+            dispatch_failure = definition.map_error(failure)
         finally:
             renewal.cancel()
             try:
@@ -380,10 +372,10 @@ class ToolGateway:
             if operation is None or run is None:
                 raise ToolPublicationError("execution_interrupted")
             try:
-                pinned = ExecutionConfig.model_validate_json(
+                pinned = decode_execution_config(
                     run.execution_configuration or "{}"
                 )
-            except ValidationError as exc:
+            except (ValidationError, TypeError, ValueError) as exc:
                 raise ToolPublicationError("changed") from exc
             is_manual_tool = run.kind == "tool" and run.graph_version == 1
             is_chat_tool = run.kind == "chat" and run.graph_version == 2
@@ -405,10 +397,11 @@ class ToolGateway:
                 if code not in ("disabled", "changed"):
                     code = "changed"
                 raise ToolPublicationError(code) from None
-            handler = MAINTAINED_TOOL_HANDLERS.get(manifest.id)
-            if handler is None:
+            try:
+                definition = get_tool_definition(manifest)
+            except LookupError:
                 raise ToolPublicationError("changed")
-            return pinned, manifest, handler
+            return pinned, manifest, definition
 
     async def _acquire_and_mark(
         self, *, claim, operation_id, control, max_output_bytes, reserve_output=True
@@ -628,10 +621,12 @@ class ToolGateway:
         finally:
             db.close()
 
-    def _publish_local(self, *, claim, operation_id, attempt_id, result):
+    def _publish_local(self, *, claim, operation_id, attempt_id, result, definition):
         db = self._session_factory()
         try:
-            published = publish_local_tool_result(db, claim, attempt_id, result)
+            published = publish_local_tool_result(
+                db, claim, attempt_id, result, definition
+            )
             try:
                 db.commit()
             except Exception:  # noqa: BLE001 - resolve the durable state before returning.

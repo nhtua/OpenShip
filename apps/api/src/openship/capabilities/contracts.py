@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 from uuid import UUID
 
 from pydantic import (
@@ -78,6 +78,74 @@ class CapabilityManifest(FrozenModel):
         return self
 
 
+class CapabilityManifestV2(FrozenModel):
+    """Version 2 replaces installation variable names with connector kinds."""
+
+    schema_version: Literal[2] = 2
+    id: str = Field(pattern=TOOL_ID_PATTERN)
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    implementation_digest: str = Field(pattern=SHA256_PATTERN)
+    manifest_digest: str = Field(pattern=SHA256_PATTERN)
+    description: str = Field(min_length=1, max_length=1024)
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    effect: Literal["read_only_external", "read_only_local"]
+    enablement_requirements: tuple[str, ...] = ()
+    limits: dict[str, int | float | str]
+    outputs: tuple[OutputPolicy, ...]
+    connector_kinds: tuple[str, ...] = ()
+    operations: tuple[str, ...] = ()
+    target_kinds: tuple[str, ...] = ()
+    execution_kind: Literal["maintained"] = "maintained"
+
+    @field_validator("connector_kinds", "operations", "target_kinds")
+    @classmethod
+    def _unique_nonempty_names(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value or value.strip() != value for value in values):
+            raise ValueError("manifest names must be nonempty and trimmed")
+        if len(values) != len(set(values)):
+            raise ValueError("manifest names must be unique")
+        return values
+
+    @model_validator(mode="after")
+    def _digest_matches_manifest(self) -> CapabilityManifestV2:
+        if self.effect == "read_only_external" and not self.connector_kinds:
+            raise ValueError("external v2 capabilities require a connector kind")
+        unsigned = self.model_dump(mode="json", exclude={"manifest_digest"})
+        if canonical_digest(unsigned) != self.manifest_digest:
+            raise ValueError("manifest_digest does not match the canonical manifest")
+        return self
+
+
+CapabilityManifestLike: TypeAlias = CapabilityManifest | CapabilityManifestV2
+
+
+def _json_object(payload: str | bytes | dict[str, Any], *, label: str) -> dict[str, Any]:
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError(f"{label} is invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise TypeError(f"{label} must be a JSON object")
+    return payload
+
+
+def decode_capability_manifest(
+    payload: str | bytes | dict[str, Any],
+) -> CapabilityManifestLike:
+    raw = _json_object(payload, label="capability manifest")
+    encoded = payload if isinstance(payload, (str, bytes)) else canonical_json(raw)
+    version = raw.get("schema_version")
+    if version == 1:
+        return CapabilityManifest.model_validate_json(encoded)
+    if version == 2:
+        return CapabilityManifestV2.model_validate_json(encoded)
+    raise ValueError("unsupported capability manifest version")
+
+
 class CapabilitySummary(FrozenModel):
     id: str = Field(pattern=TOOL_ID_PATTERN)
     version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
@@ -119,6 +187,55 @@ class ExecutionConfig(FrozenModel):
     limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
     loop_limits: LoopLimits = Field(default_factory=LoopLimits)
     settings: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+
+class ConnectorRef(FrozenModel):
+    """A pinned connector configuration and its write-only credential version."""
+
+    id: UUID
+    configuration_revision: int = Field(ge=1)
+    visibility: Literal["global", "project"]
+    credential_version_id: UUID
+
+
+class ResourceBindingRef(FrozenModel):
+    """An immutable owned target and the connector revision authorized for it."""
+
+    id: UUID
+    revision: int = Field(ge=1)
+    connector_id: UUID
+    connector_revision: int = Field(ge=1)
+
+
+class ExecutionConfigV2(FrozenModel):
+    schema_version: Literal[2] = 2
+    graph_kind: Literal["chat", "tool"]
+    graph_version: int = Field(ge=1)
+    allowed_capabilities: tuple[CapabilityRef, ...] = ()
+    selected_artifacts: tuple[ArtifactRef, ...] = ()
+    connector_refs: tuple[ConnectorRef, ...] = ()
+    resource_binding_refs: tuple[ResourceBindingRef, ...] = ()
+    selected_resource_binding_refs: tuple[ResourceBindingRef, ...] = ()
+    admitted_context_message_ids: tuple[UUID, ...] = ()
+    limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
+    loop_limits: LoopLimits = Field(default_factory=LoopLimits)
+
+
+ExecutionConfigLike: TypeAlias = ExecutionConfig | ExecutionConfigV2
+
+
+def decode_execution_config(
+    payload: str | bytes | dict[str, Any],
+) -> ExecutionConfigLike:
+    """Decode only the exact persisted configuration versions this runtime supports."""
+    raw = _json_object(payload, label="execution configuration")
+    encoded = payload if isinstance(payload, (str, bytes)) else canonical_json(raw)
+    version = raw.get("schema_version")
+    if version == 1:
+        return ExecutionConfig.model_validate_json(encoded)
+    if version == 2:
+        return ExecutionConfigV2.model_validate_json(encoded)
+    raise ValueError("unsupported execution configuration version")
 
 
 class AuthorizationContext(FrozenModel):
