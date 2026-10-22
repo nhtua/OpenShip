@@ -191,7 +191,7 @@ jobs:
         run: |
           cd apps/api
           set -o pipefail
-          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/full-stack.xml -m full_stack tests/full_stack/test_manual_search.py
+          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/full-stack.xml -m full_stack tests/full_stack/test_manual_search.py tests/full_stack/test_managed_connectors.py
           python - /tmp/full-stack.xml <<'PY'
           import sys
           import xml.etree.ElementTree as ET

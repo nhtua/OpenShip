@@ -189,12 +189,13 @@ Each condition must have an explicit owning test:
 
 **Files:** Synthetic stack fixtures, connector integration/browser tests, CI selectors and acceptance record.
 
-- [ ] Exercise real API, worker, PostgreSQL and artifact storage with synthetic search credentials.
-- [ ] Test restart before dispatch, during dispatch and after evidence publication. Only pre-dispatch work may execute after recovery.
-- [ ] Exercise global revocation from one session while another project dispatches or publishes.
-- [ ] Scan database records, captured HTTP responses, logs, events, checkpoints and artifacts for synthetic secret sentinels.
-- [ ] Extend CI selectors so connector integration/full-stack tests actually run; required lanes must have nonzero tests and zero required skips.
-- [ ] Demonstrate global reuse, project isolation, replacement/revocation and reopening retained evidence. Record the user’s accept/revise/stop decision.
+- [x] Exercise real API, worker, PostgreSQL and artifact storage with synthetic search credentials.
+- [x] Test restart before dispatch, during dispatch and after evidence publication. Only pre-dispatch work may execute after recovery.
+- [x] Exercise global revocation from one session while another project dispatches or publishes.
+- [x] Scan database records, captured HTTP responses, logs, events, checkpoints and artifacts for synthetic secret sentinels.
+- [x] Extend CI selectors so connector integration/full-stack tests actually run; required lanes must have nonzero tests and zero required skips.
+- [x] Demonstrate global reuse, project isolation, replacement/revocation and reopening retained evidence.
+- [ ] Record the user's accept/revise/stop decision in the qualification record.
 
 **Gate:** Do not admit real AWS credentials or begin 5A.2 before 5A.1 acceptance.
 

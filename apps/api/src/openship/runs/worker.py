@@ -1021,7 +1021,7 @@ class Worker:
         """Main worker loop with automatic reconciliation."""
         logger.info(f"[{self.worker_id}] Starting worker loop")
         last_reconcile = time.time()
-        reconcile_interval = getattr(settings, "worker_reconcile_interval", 60)  # 60 seconds
+        reconcile_interval = settings.reconciler_interval
         last_availability = 0.0
 
         while self.running:
