@@ -1,6 +1,7 @@
 import json
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -30,6 +31,9 @@ class TurnSubmitRequest(BaseModel):
     fallback_profile_ids: list[str] | None = None
     enable_tools: StrictBool = False
     artifact_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
+    connector_selections: dict[Literal["brave", "tavily"], uuid.UUID] = Field(
+        default_factory=dict, max_length=2
+    )
 
     @field_validator("artifact_ids")
     @classmethod

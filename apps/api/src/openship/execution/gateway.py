@@ -14,7 +14,10 @@ from sqlalchemy.orm import Session
 from src.openship.artifacts.contracts import ArtifactRef, StagedArtifact
 from src.openship.artifacts.filesystem import ArtifactStorageError
 from src.openship.artifacts.models import Artifact
-from src.openship.capabilities.catalog import resolve_capability
+from src.openship.capabilities.catalog import (
+    legacy_credential_binding,
+    resolve_capability,
+)
 from src.openship.capabilities.contracts import (
     CapabilityRef,
     PublishedToolResult,
@@ -25,6 +28,10 @@ from src.openship.capabilities.contracts import (
 from src.openship.capabilities.definitions import get_tool_definition
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
+from src.openship.connectors.credentials.broker import (
+    ConnectorCredentialError,
+    SearchCredentialBroker,
+)
 from src.openship.providers.control import InvocationControl
 from src.openship.providers.errors import ProviderError
 from src.openship.runs.models import Run
@@ -51,6 +58,13 @@ logger = logging.getLogger(__name__)
 
 _PRE_DISPATCH_MESSAGES = {
     "missing_credentials": "The selected search tool is missing its operator credential.",
+    "connector_required": "Choose a search Connector before using this service.",
+    "connector_ambiguous": "Choose one eligible search Connector explicitly.",
+    "connector_scope_denied": "The selected search Connector is not available in this project.",
+    "connector_expired": "The selected search Connector credential has expired.",
+    "connector_revoked": "The selected search Connector has been revoked.",
+    "connector_unavailable": "The selected search Connector is currently unavailable.",
+    "credential_store_unavailable": "Search credential storage is unavailable.",
     "authentication_error": "The search service rejected the configured credential.",
     "rate_limited": "The search service is rate limiting this request.",
     "quota_exhausted": "The search service account has exhausted its configured quota.",
@@ -161,8 +175,41 @@ class ToolGateway:
             )
 
         binding = getattr(manifest, "credential_binding_ref", None)
+        if binding is None:
+            binding = legacy_credential_binding(manifest.id)
+        managed_reference = None
+        managed_kind = None
+        broker = None
         credential = None
-        if binding:
+        if manifest.schema_version == 2 and getattr(manifest, "connector_kinds", ()):
+            expected_kinds = set(manifest.connector_kinds)
+            references = [
+                item
+                for item in getattr(pinned_config, "connector_refs", ())
+                if item.kind in expected_kinds
+            ]
+            if len(references) != 1:
+                return self._finish_before_dispatch(
+                    claim, operation_id, "connector_required"
+                )
+            managed_reference = references[0]
+            managed_kind = managed_reference.kind
+            broker = SearchCredentialBroker(self._session_factory)
+            try:
+                broker.validate(
+                    project_id=context.authorization.project_id,
+                    kind=managed_kind,
+                    reference=managed_reference,
+                )
+            except ConnectorCredentialError as refused:
+                return self._finish_before_dispatch(
+                    claim, operation_id, refused.code
+                )
+            except Exception:  # noqa: BLE001 - database/key details stay private.
+                return self._finish_before_dispatch(
+                    claim, operation_id, "credential_store_unavailable"
+                )
+        elif binding:
             try:
                 credential = context.credential_resolver(binding)
             except Exception:  # noqa: BLE001 - resolver failures may contain secret details.
@@ -171,7 +218,7 @@ class ToolGateway:
                 return self._finish_before_dispatch(
                     claim, operation_id, "missing_credentials"
                 )
-        if binding and binding not in getattr(
+        if binding and managed_reference is None and binding not in getattr(
             pinned_config, "credential_binding_refs", ()
         ):
             return self._finish_before_dispatch(
@@ -209,7 +256,15 @@ class ToolGateway:
         runtime_context = ToolInvocationContext(
             authorization=context.authorization,
             execution=pinned_config,
-            credential_resolver=lambda requested: credential if requested == binding else None,
+            credential_resolver=lambda requested: (
+                broker.acquire(
+                    project_id=context.authorization.project_id,
+                    kind=managed_kind,
+                    reference=managed_reference,
+                )
+                if managed_reference is not None and requested == binding
+                else credential if requested == binding else None
+            ),
             artifact_store=store,
             session_factory=self._session_factory,
         )
@@ -377,8 +432,8 @@ class ToolGateway:
                 )
             except (ValidationError, TypeError, ValueError) as exc:
                 raise ToolPublicationError("changed") from exc
-            is_manual_tool = run.kind == "tool" and run.graph_version == 1
-            is_chat_tool = run.kind == "chat" and run.graph_version == 2
+            is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2)
+            is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3)
             if (
                 context.execution != pinned
                 or not (is_manual_tool or is_chat_tool)
@@ -598,6 +653,43 @@ class ToolGateway:
     ):
         db = self._session_factory()
         try:
+            operation = db.query(ToolOperation).filter(
+                ToolOperation.id == operation_id
+            ).first()
+            if operation is None:
+                raise ToolPublicationError("execution_interrupted")
+            pinned_ref = next(
+                (
+                    item
+                    for item in context.execution.allowed_capabilities
+                    if item.id == operation.capability_id
+                    and item.version == operation.capability_version
+                    and item.manifest_digest == operation.manifest_digest
+                ),
+                None,
+            )
+            if pinned_ref is None:
+                raise ToolPublicationError("changed")
+            try:
+                manifest = resolve_capability(pinned_ref, settings.enabled_tool_ids)
+            except CapabilityError as refused:
+                code = refused.code if refused.code in ("disabled", "changed") else "changed"
+                raise ToolPublicationError(code) from None
+            if manifest.schema_version == 2 and manifest.connector_kinds:
+                references = [
+                    item
+                    for item in getattr(context.execution, "connector_refs", ())
+                    if item.kind in manifest.connector_kinds
+                ]
+                if len(references) != 1:
+                    raise ToolPublicationError("connector_required")
+                SearchCredentialBroker(self._session_factory).validate_in_session(
+                    db,
+                    project_id=context.authorization.project_id,
+                    kind=references[0].kind,
+                    reference=references[0],
+                    lock=True,
+                )
             result = publish_tool_result(db, claim, attempt_id, observation, (staged,))
             try:
                 db.commit()
@@ -610,6 +702,10 @@ class ToolGateway:
             self._cleanup_uncommitted(staged, store, context)
             if failure.code == "lease_lost":
                 return self._interrupted(operation_id, failure.code)
+            return self._finish_failure(claim, operation_id, attempt_id, failure.code)
+        except ConnectorCredentialError as failure:
+            db.rollback()
+            self._cleanup_uncommitted(staged, store, context)
             return self._finish_failure(claim, operation_id, attempt_id, failure.code)
         except HTTPException:
             db.rollback()

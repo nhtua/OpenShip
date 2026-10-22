@@ -4,7 +4,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import list_legacy_search_manifests
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
@@ -19,7 +19,9 @@ from src.openship.runs.tool_graph import build_tool_graph
 
 def test_manual_graph_calls_gateway_once_with_the_pinned_tool_and_no_runtime_state():
     manifest = next(
-        item for item in list_capability_manifests() if item.id == "tavily_web_search"
+        item
+        for item in list_legacy_search_manifests()
+        if item.id == "tavily_web_search"
     )
     ref = CapabilityRef(
         id=manifest.id,

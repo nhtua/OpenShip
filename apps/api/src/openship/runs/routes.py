@@ -86,6 +86,7 @@ async def submit_chat_turn(
             fallback_profile_ids=req.fallback_profile_ids,
             enable_tools=req.enable_tools,
             artifact_ids=req.artifact_ids,
+            connector_selections=req.connector_selections,
         )
         logger.info(f"submit_chat_turn success: run={run.id}")
         return project_run_response(run)

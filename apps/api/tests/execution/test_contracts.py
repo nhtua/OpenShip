@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from src.openship.capabilities.catalog import (
     list_capability_manifests,
+    list_legacy_search_manifests,
     require_phase4_dispatchable,
     resolve_capability,
 )
@@ -18,8 +19,9 @@ from src.openship.execution.errors import CapabilityError
 from src.openship.tools.search.contracts import SearchArguments, SearchItem
 
 
-def test_tool_ids_and_bindings_are_independent():
+def test_tool_ids_and_connector_kinds_are_independent():
     manifests = {item.id: item for item in list_capability_manifests()}
+    legacy = {item.id: item for item in list_legacy_search_manifests()}
 
     assert set(manifests) == {
         "brave_web_search",
@@ -27,10 +29,10 @@ def test_tool_ids_and_bindings_are_independent():
         "workspace_list_files",
         "workspace_read_file",
     }
-    assert (
-        manifests["brave_web_search"].credential_binding_ref == "BRAVE_SEARCH_API_KEY"
-    )
-    assert manifests["tavily_web_search"].credential_binding_ref == "TAVILY_API_KEY"
+    assert manifests["brave_web_search"].connector_kinds == ("brave",)
+    assert manifests["tavily_web_search"].connector_kinds == ("tavily",)
+    assert legacy["brave_web_search"].credential_binding_ref == "BRAVE_SEARCH_API_KEY"
+    assert legacy["tavily_web_search"].credential_binding_ref == "TAVILY_API_KEY"
     assert manifests["brave_web_search"].id != manifests["tavily_web_search"].id
     assert "provider" not in manifests["brave_web_search"].input_schema["properties"]
     assert "provider" not in manifests["tavily_web_search"].input_schema["properties"]
@@ -114,7 +116,7 @@ def test_changed_disabled_unknown_capability_refused():
 
 def test_mutable_output_policy_not_dispatchable_in_phase4():
     manifest = next(
-        item for item in list_capability_manifests() if item.id == "brave_web_search"
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
     )
     unsigned = manifest.model_dump(mode="json", exclude={"manifest_digest"})
     unsigned["outputs"] = ({"name": "search-results.json", "mutability": "mutable"},)

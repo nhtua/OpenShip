@@ -14,7 +14,9 @@ from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
+    ConnectorRef,
     ExecutionConfig,
+    ExecutionConfigV2,
     LoopLimits,
     PublishedToolResult,
     ToolFailure,
@@ -74,6 +76,33 @@ def _execution(*, loop_limits=None):
     )
 
 
+def _managed_execution(*, loop_limits=None):
+    manifest = next(
+        item
+        for item in list_capability_manifests()
+        if item.id == "brave_web_search"
+    )
+    ref = CapabilityRef(
+        id=manifest.id,
+        version=manifest.version,
+        manifest_digest=manifest.manifest_digest,
+    )
+    connector_ref = ConnectorRef(
+        id=uuid.uuid4(),
+        kind="brave",
+        configuration_revision=1,
+        visibility="project",
+        credential_version_id=uuid.uuid4(),
+    )
+    return ExecutionConfigV2(
+        graph_kind="chat",
+        graph_version=3,
+        allowed_capabilities=(ref,),
+        connector_refs=(connector_ref,),
+        loop_limits=loop_limits or LoopLimits(),
+    )
+
+
 def _running_chat_tool_run(execution):
     suffix = uuid.uuid4().hex
     with TestSessionLocal() as db:
@@ -96,7 +125,7 @@ def _running_chat_tool_run(execution):
             client_request_id=str(uuid.uuid4()),
             status="running",
             kind="chat",
-            graph_version=2,
+            graph_version=execution.graph_version,
             fence=1,
             execution_configuration=execution.model_dump_json(),
         )
@@ -234,7 +263,7 @@ def _agent_case(
         profile,
         control=control,
     )
-    graph = resolve_graph("chat", 2)(
+    graph = resolve_graph("chat", execution.graph_version)(
         checkpointer=None,
         gateway_factory=lambda: selected_gateway,
         invocation_factory=lambda _state: invocation,
@@ -336,8 +365,70 @@ def test_chat_v2_runs_two_sequential_tool_calls_and_publishes_only_final_text(mo
     assert [attempt.reserved_output_tokens for attempt in attempts] == [4000, 4000, 4000]
 
 
-def test_chat_v2_graph_is_registered_before_worker_dispatch():
+def test_chat_tool_graph_versions_are_registered_before_worker_dispatch():
     assert callable(resolve_graph("chat", 2))
+    assert callable(resolve_graph("chat", 3))
+
+
+def test_chat_v3_managed_graph_runs_search_inside_the_bounded_tool_loop(monkeypatch):
+    execution = _managed_execution()
+    graph, state, transport, gateway, run_id = _agent_case(
+        monkeypatch,
+        [
+            {"chunks": [_tool_turn("managed-call-1", "managed query")]},
+            {
+                "chunks": [
+                    sdk_chunk(content="Managed search completed.", finish_reason="stop")
+                ]
+            },
+        ],
+        execution=execution,
+        enabled_tools="brave_web_search",
+    )
+
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+
+    assert result["assistant_response"] == "Managed search completed."
+    assert transport.requests == 2
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0]["ref"].id == "brave_web_search"
+    with TestSessionLocal() as db:
+        run = db.get(Run, run_id)
+        transcript = (
+            db.query(RunTranscriptRecord)
+            .filter_by(run_id=run_id)
+            .order_by(RunTranscriptRecord.ordinal)
+            .all()
+        )
+        attempts = db.query(ProviderAttempt).filter_by(run_id=run_id).all()
+    assert run.graph_version == 3
+    assert [json.loads(row.message_json)["role"] for row in transcript] == [
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert [attempt.model_turn_ordinal for attempt in attempts] == [0, 1]
+
+
+def test_chat_v3_uses_a_persisted_execution_deadline():
+    execution = _managed_execution()
+    run_id, user_id, _project_id, _conversation_id, lease_until = (
+        _running_chat_tool_run(execution)
+    )
+    claim = Claim(run_id, 1, lease_until, "loop-worker", user_id)
+
+    with TestSessionLocal() as db:
+        window = begin_execution_window(
+            db,
+            claim,
+            deadline_seconds=240,
+            graph_thread_id=f"{run_id}-attempt-1",
+        )
+        run = db.get(Run, run_id)
+
+    assert window is not None
+    assert window[1] - window[0] == timedelta(seconds=240)
+    assert run.graph_thread_id == f"{run_id}-attempt-1"
 
 
 def test_chat_v2_can_choose_a_workspace_read_tool_without_search_credentials(monkeypatch):

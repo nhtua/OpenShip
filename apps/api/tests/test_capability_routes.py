@@ -1,15 +1,19 @@
+import uuid
+
 import pytest
 from fastapi import HTTPException, Request
 
 from src.openship.auth.models import User
 from src.openship.auth.routes import require_jwt
 from src.openship.capabilities.catalog import list_capabilities
-from src.openship.capabilities.routes import get_capabilities
+from src.openship.capabilities.routes import get_capabilities, get_project_capabilities
 from src.openship.capabilities.routes import router as capabilities_router
 from src.openship.config import settings
+from src.openship.connectors.selection import ConnectorSelectionError
 from src.openship.database.session import SessionLocal
 from src.openship.execution.models import ToolAvailability
 from src.openship.main import app
+from src.openship.workspace.models import Project
 
 
 def test_capability_catalog_requires_authentication():
@@ -81,3 +85,42 @@ def test_catalog_only_checks_presence_not_key_values(monkeypatch):
     assert catalog["tavily_web_search"].unavailable_reason == "disabled"
     assert catalog["workspace_list_files"].unavailable_reason == "disabled"
     assert catalog["workspace_read_file"].unavailable_reason == "disabled"
+
+
+def test_project_catalog_reports_permission_separately_from_connector_readiness(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
+    def missing(*_args, **_kwargs):
+        raise ConnectorSelectionError("connector_required")
+
+    monkeypatch.setattr("src.openship.capabilities.routes.resolve_connector", missing)
+    db = SessionLocal()
+    user = User(
+        username=f"project-catalog-{uuid.uuid4().hex[:12]}",
+        email=f"project-catalog-{uuid.uuid4().hex}@example.test",
+        password_hash="test-only",
+    )
+    db.add(user)
+    db.flush()
+    project = Project(owner_user_id=user.id, name=f"Catalog {user.id}")
+    db.add(project)
+    db.commit()
+    try:
+        summary = {
+            item.id: item
+            for item in get_project_capabilities(project.id, user, db)
+        }["brave_web_search"]
+        assert summary.permitted is True
+        assert summary.required_connector_kinds == ("brave",)
+        assert summary.connector_readiness == {"brave": "required"}
+
+        monkeypatch.setattr(settings, "tool_enabled_ids", "")
+        disabled = {
+            item.id: item
+            for item in get_project_capabilities(project.id, user, db)
+        }["brave_web_search"]
+        assert disabled.permitted is False
+        assert disabled.connector_readiness == {"brave": "required"}
+    finally:
+        db.close()

@@ -18,6 +18,7 @@ from src.openship.capabilities.contracts import (
 )
 from src.openship.chat.models import Conversation, Message
 from src.openship.config import settings
+from src.openship.connectors.selection import ConnectorSelectionError
 from src.openship.database.session import SessionLocal
 from src.openship.execution.admission import (
     acquire_execution_slot,
@@ -71,7 +72,19 @@ def _command(client_request_id=None, *, capability=None, arguments=None):
     )
 
 
+def _no_managed_search_connectors(monkeypatch):
+    def missing(*_args, **_kwargs):
+        raise ConnectorSelectionError("connector_required")
+
+    monkeypatch.setattr("src.openship.runs.service.resolve_connector", missing)
+    monkeypatch.setattr(
+        "src.openship.runs.service._connector_rows_for_project",
+        lambda *_args, **_kwargs: 0,
+    )
+
+
 def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     monkeypatch.setattr(settings, "workflow_run_timeout_seconds", 900)
     db = SessionLocal()

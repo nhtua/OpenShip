@@ -46,6 +46,13 @@ from .models import ExecutionSlot, ToolAttempt, ToolOperation
 
 _ERROR_MESSAGES = {
     "missing_credentials": "The selected search tool is missing its operator credential.",
+    "connector_required": "Choose a search Connector before using this service.",
+    "connector_ambiguous": "Choose one eligible search Connector explicitly.",
+    "connector_scope_denied": "The selected search Connector is not available in this project.",
+    "connector_expired": "The selected search Connector credential has expired.",
+    "connector_revoked": "The selected search Connector has been revoked.",
+    "connector_unavailable": "The selected search Connector is currently unavailable.",
+    "credential_store_unavailable": "Search credential storage is unavailable.",
     "disabled": "The requested tool is disabled for this installation.",
     "changed": "The requested tool definition changed after this request was admitted.",
     "authentication_error": "The search service rejected the configured credential.",

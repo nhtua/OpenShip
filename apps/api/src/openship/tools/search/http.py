@@ -32,6 +32,13 @@ _CHUNK_BYTES = 64 * 1024
 
 _SAFE_MESSAGES = {
     "missing_credentials": "The selected search tool is missing its operator credential.",
+    "connector_required": "Choose a search Connector before using this service.",
+    "connector_ambiguous": "Choose one eligible search Connector explicitly.",
+    "connector_scope_denied": "The selected search Connector is not available in this project.",
+    "connector_expired": "The selected search Connector credential has expired.",
+    "connector_revoked": "The selected search Connector has been revoked.",
+    "connector_unavailable": "The selected search Connector is currently unavailable.",
+    "credential_store_unavailable": "Search credential storage is unavailable.",
     "authentication_error": "The search service rejected the configured credential.",
     "rate_limited": "The search service is rate limiting this request.",
     "quota_exhausted": "The search service account has exhausted its configured quota.",

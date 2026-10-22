@@ -8,10 +8,11 @@ from fastapi import HTTPException
 
 from src.openship.artifacts.models import Artifact
 from src.openship.auth.models import User
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import list_legacy_search_manifests
 from src.openship.capabilities.contracts import ExecutionConfig
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
+from src.openship.connectors.selection import ConnectorSelectionError
 from src.openship.database.session import SessionLocal
 from src.openship.runs.models import Run
 from src.openship.runs.schemas import TurnSubmitRequest
@@ -29,6 +30,17 @@ def _tool_profiles(monkeypatch, *, fallback_tools=True, adapter="openai"):
         spec["capabilities"]["tool_calls"] = supports_tools
     configure_profiles(monkeypatch, [primary, fallback], "primary-fixture")
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search,tavily_web_search")
+
+
+def _no_managed_search_connectors(monkeypatch):
+    def missing(*_args, **_kwargs):
+        raise ConnectorSelectionError("connector_required")
+
+    monkeypatch.setattr("src.openship.runs.service.resolve_connector", missing)
+    monkeypatch.setattr(
+        "src.openship.runs.service._connector_rows_for_project",
+        lambda *_args, **_kwargs: 0,
+    )
 
 
 def _owned_conversation(db):
@@ -65,6 +77,7 @@ def test_turn_request_carries_only_tool_enablement_and_selected_artifact_ids():
 
 def test_tool_chat_pins_exact_enabled_refs_and_ready_artifacts(monkeypatch):
     _tool_profiles(monkeypatch)
+    _no_managed_search_connectors(monkeypatch)
     db = SessionLocal()
     try:
         user, project, conversation = _owned_conversation(db)
@@ -96,7 +109,7 @@ def test_tool_chat_pins_exact_enabled_refs_and_ready_artifacts(monkeypatch):
         )
         db.commit()
         config = ExecutionConfig.model_validate_json(run.execution_configuration)
-        expected = {manifest.id: manifest for manifest in list_capability_manifests()}
+        expected = {manifest.id: manifest for manifest in list_legacy_search_manifests()}
 
         assert run.kind == "chat"
         assert run.graph_version == 2

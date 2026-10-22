@@ -100,8 +100,8 @@ def admit_operation(
     if conversation is None:
         raise _refused(409, "lease_lost", "This worker no longer owns the active run")
     run = require_live_claim(db, claim, lock=True)
-    is_manual_tool = run.kind == "tool" and run.graph_version == 1
-    is_chat_tool = run.kind == "chat" and run.graph_version == 2
+    is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2)
+    is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3)
     if not (is_manual_tool or is_chat_tool):
         raise _refused(
             409,
@@ -112,7 +112,11 @@ def admit_operation(
         pinned = decode_execution_config(run.execution_configuration or "{}")
     except (TypeError, ValueError):
         raise _refused(409, "changed", "The pinned tool execution settings are unavailable") from None
-    if ref not in pinned.allowed_capabilities:
+    if (
+        pinned.graph_kind != run.kind
+        or pinned.graph_version != run.graph_version
+        or ref not in pinned.allowed_capabilities
+    ):
         raise _refused(403, "unsupported_capability", "This tool is not authorized for this run")
     if (
         conversation is None

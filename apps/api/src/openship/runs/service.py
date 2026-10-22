@@ -13,10 +13,17 @@ from sqlalchemy.orm import Session
 
 from ..artifacts.contracts import ArtifactRef
 from ..artifacts.models import Artifact
-from ..capabilities.catalog import list_capability_manifests, resolve_capability
+from ..capabilities.catalog import (
+    legacy_credential_binding,
+    list_capability_manifests,
+    list_legacy_search_manifests,
+    resolve_capability,
+)
 from ..capabilities.contracts import (
     CapabilityRef,
+    ConnectorRef,
     ExecutionConfig,
+    ExecutionConfigV2,
     LoopLimits,
     ToolCommandRequest,
     canonical_digest,
@@ -24,6 +31,8 @@ from ..capabilities.contracts import (
 from ..capabilities.definitions import get_tool_definition
 from ..chat.models import Conversation, Message
 from ..config import settings
+from ..connectors.models import Connector, ProjectConnectorDefault
+from ..connectors.selection import ConnectorSelectionError, resolve_connector
 from ..execution.errors import CapabilityError
 from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
@@ -89,13 +98,19 @@ def _resolve_selection(provider_profile_id: str | None, fallback_profile_ids) ->
         ) from refused
 
 
-def _turn_submission_digest(content: str, enable_tools: bool, artifact_ids) -> str:
+def _turn_submission_digest(
+    content: str, enable_tools: bool, artifact_ids, connector_selections=None
+) -> str:
     """Hash only client-controlled chat semantics, never current configuration."""
     return canonical_digest(
         {
             "content": content,
             "enable_tools": enable_tools,
             "artifact_ids": [str(item) for item in artifact_ids],
+            "connector_selections": {
+                kind: str(connector_id)
+                for kind, connector_id in sorted((connector_selections or {}).items())
+            },
         }
     )
 
@@ -134,7 +149,52 @@ def _owned_artifact_refs(db: Session, conversation: Conversation, artifact_ids) 
     )
 
 
-def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[ArtifactRef, ...]) -> ExecutionConfig:
+def _connector_rows_for_project(db: Session, project_id: uuid.UUID, service: str) -> int:
+    return (
+        db.query(Connector)
+        .filter(
+            Connector.kind == service,
+            (
+                (Connector.visibility == "global")
+                & Connector.project_id.is_(None)
+            )
+            | (
+                (Connector.visibility == "project")
+                & (Connector.project_id == project_id)
+            ),
+        )
+        .count()
+    )
+
+
+def _connector_reference(resolved) -> ConnectorRef:
+    return ConnectorRef(
+        id=resolved.connector_id,
+        kind=resolved.kind,
+        configuration_revision=resolved.revision,
+        visibility=resolved.visibility,
+        credential_version_id=resolved.credential_version_id,
+    )
+
+
+def _legacy_search_ref(capability_id: str) -> CapabilityRef:
+    manifest = next(
+        item for item in list_legacy_search_manifests() if item.id == capability_id
+    )
+    return CapabilityRef(
+        id=manifest.id,
+        version=manifest.version,
+        manifest_digest=manifest.manifest_digest,
+    )
+
+
+def _tool_chat_execution(
+    db: Session,
+    project_id: uuid.UUID,
+    model_config: RunModelConfig,
+    artifact_refs: tuple[ArtifactRef, ...],
+    connector_selections: dict[str, uuid.UUID],
+):
     if model_config.fallbacks:
         raise HTTPException(
             status_code=422,
@@ -156,8 +216,59 @@ def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[Arti
     enabled_ids = settings.enabled_tool_ids
     refs: list[CapabilityRef] = []
     binding_refs: list[str] = []
+    connector_refs: list[ConnectorRef] = []
+    explicit_services = set(connector_selections)
+    managed_services: set[str] = set()
     for manifest in list_capability_manifests():
         if manifest.id not in enabled_ids:
+            continue
+        if manifest.id in {"brave_web_search", "tavily_web_search"}:
+            service = "brave" if manifest.id == "brave_web_search" else "tavily"
+            selected_id = connector_selections.get(service)
+            try:
+                resolved = resolve_connector(
+                    db,
+                    project_id=project_id,
+                    service=service,
+                    selected_id=selected_id,
+                )
+            except ConnectorSelectionError as refused:
+                if service in explicit_services:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": {
+                                "code": refused.code,
+                                "message": "The selected search Connector is not available for this project",
+                            }
+                        },
+                    ) from refused
+                if (
+                    refused.code == "connector_required"
+                    and _connector_rows_for_project(db, project_id, service) == 0
+                    and db.query(ProjectConnectorDefault)
+                    .filter(
+                        ProjectConnectorDefault.project_id == project_id,
+                        ProjectConnectorDefault.service == service,
+                    )
+                    .first()
+                    is None
+                    and not managed_services
+                ):
+                    refs.append(_legacy_search_ref(manifest.id))
+                    binding = legacy_credential_binding(manifest.id)
+                    if binding:
+                        binding_refs.append(binding)
+                continue
+            refs.append(
+                CapabilityRef(
+                    id=manifest.id,
+                    version=manifest.version,
+                    manifest_digest=manifest.manifest_digest,
+                )
+            )
+            connector_refs.append(_connector_reference(resolved))
+            managed_services.add(service)
             continue
         ref = CapabilityRef(
             id=manifest.id,
@@ -179,6 +290,29 @@ def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[Arti
         raise HTTPException(
             status_code=422,
             detail={"error": {"code": "unsupported_capability", "message": "Enable at least one maintained tool before using tool-enabled chat"}},
+        )
+
+    if connector_refs:
+        managed_capability_ids = {
+            "brave_web_search" if ref.kind == "brave" else "tavily_web_search"
+            for ref in connector_refs
+        }
+        refs = [
+            ref
+            for ref in refs
+            if ref.id not in {"brave_web_search", "tavily_web_search"}
+            or ref.id in managed_capability_ids
+        ]
+        return ExecutionConfigV2(
+            graph_kind="chat",
+            graph_version=3,
+            allowed_capabilities=tuple(refs),
+            selected_artifacts=artifact_refs,
+            connector_refs=tuple(connector_refs),
+            loop_limits=LoopLimits(deadline_seconds=min(
+                settings.workflow_run_timeout_seconds,
+                int(model_config.limits.run_timeout_seconds),
+            )),
         )
 
     return ExecutionConfig(
@@ -204,6 +338,7 @@ def submit_turn(
     fallback_profile_ids=None,
     enable_tools: bool = False,
     artifact_ids=(),
+    connector_selections: dict[str, uuid.UUID] | None = None,
 ) -> Run:
     """Submit a chat turn as a durable, queued run.
 
@@ -224,7 +359,9 @@ def submit_turn(
         )
 
     try:
-        submission_digest = _turn_submission_digest(content, enable_tools, artifact_ids)
+        submission_digest = _turn_submission_digest(
+            content, enable_tools, artifact_ids, connector_selections
+        )
     except (TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=422,
@@ -293,7 +430,17 @@ def submit_turn(
             status_code=422,
             detail={"error": {"code": "unsupported_capability", "message": "Selected artifacts require tool-enabled chat in this phase"}},
         )
-    execution = _tool_chat_execution(config, artifact_refs) if enable_tools else None
+    execution = (
+        _tool_chat_execution(
+            db,
+            conv.project_id,
+            config,
+            artifact_refs,
+            connector_selections or {},
+        )
+        if enable_tools
+        else None
+    )
     selection = json.dumps(
         {
             "profile_id": provider_profile_id,
@@ -312,7 +459,7 @@ def submit_turn(
         fence=0,
         model_selection=selection,
         model_configuration=config.model_dump_json(),
-        graph_version=2 if execution is not None else 1,
+        graph_version=execution.graph_version if execution is not None else 1,
         execution_configuration=execution.model_dump_json() if execution is not None else None,
         submission_digest=submission_digest,
     )
@@ -377,6 +524,10 @@ def _tool_command_digest(command: ToolCommandRequest) -> str:
         {
             "capability": command.capability.model_dump(mode="json"),
             "arguments": command.arguments,
+            "connector_selections": {
+                kind: str(connector_id)
+                for kind, connector_id in sorted(command.connector_selections.items())
+            },
         }
     )
 
@@ -468,15 +619,75 @@ def submit_tool_run(
     except ValueError as invalid:
         raise _tool_command_error(422, "invalid_tool_arguments", "Tool arguments are invalid") from invalid
 
-    execution = ExecutionConfig(
-        graph_kind="tool",
-        graph_version=1,
-        loop_limits=LoopLimits(deadline_seconds=settings.workflow_run_timeout_seconds),
-        allowed_capabilities=(command.capability,),
-        credential_binding_refs=(manifest.credential_binding_ref,)
-        if getattr(manifest, "credential_binding_ref", None)
-        else (),
-    )
+    execution_ref = command.capability
+    connector_refs: tuple[ConnectorRef, ...] = ()
+    binding_refs: tuple[str, ...] = ()
+    if (
+        manifest.schema_version == 2
+        and command.capability.id in {"brave_web_search", "tavily_web_search"}
+    ):
+        service = "brave" if command.capability.id == "brave_web_search" else "tavily"
+        selected_id = command.connector_selections.get(service)
+        try:
+            selected = resolve_connector(
+                db,
+                project_id=conversation.project_id,
+                service=service,
+                selected_id=selected_id,
+            )
+        except ConnectorSelectionError as refused:
+            if selected_id is not None:
+                raise _tool_command_error(
+                    422,
+                    refused.code,
+                    "The selected search Connector is not available for this project",
+                ) from refused
+            legacy_fallback = (
+                refused.code == "connector_required"
+                and _connector_rows_for_project(db, conversation.project_id, service) == 0
+                and db.query(ProjectConnectorDefault)
+                .filter(
+                    ProjectConnectorDefault.project_id == conversation.project_id,
+                    ProjectConnectorDefault.service == service,
+                )
+                .first()
+                is None
+            )
+            if not legacy_fallback:
+                raise _tool_command_error(
+                    422,
+                    refused.code,
+                    "Choose an eligible search Connector before using this tool",
+                ) from refused
+            execution_ref = _legacy_search_ref(command.capability.id)
+            binding = legacy_credential_binding(command.capability.id)
+            binding_refs = (binding,) if binding else ()
+        else:
+            connector_refs = (_connector_reference(selected),)
+
+    if connector_refs:
+        execution = ExecutionConfigV2(
+            graph_kind="tool",
+            graph_version=2,
+            loop_limits=LoopLimits(deadline_seconds=settings.workflow_run_timeout_seconds),
+            allowed_capabilities=(execution_ref,),
+            connector_refs=connector_refs,
+        )
+        graph_version = 2
+    else:
+        execution = ExecutionConfig(
+            graph_kind="tool",
+            graph_version=1,
+            loop_limits=LoopLimits(deadline_seconds=settings.workflow_run_timeout_seconds),
+            allowed_capabilities=(execution_ref,),
+            credential_binding_refs=binding_refs
+            or (
+                (manifest.credential_binding_ref,)
+                if getattr(manifest, "credential_binding_ref", None)
+                else ()
+            ),
+        )
+        graph_version = 1
     run = Run(
         conversation_id=conversation.id,
         project_id=conversation.project_id,
@@ -484,14 +695,14 @@ def submit_tool_run(
         command_digest=command_digest,
         tool_command_json=json.dumps(
             {
-                "capability": command.capability.model_dump(mode="json"),
+                "capability": execution_ref.model_dump(mode="json"),
                 "arguments": normalized_arguments.model_dump(mode="json"),
             },
             sort_keys=True,
             separators=(",", ":"),
         ),
         kind="tool",
-        graph_version=1,
+        graph_version=graph_version,
         execution_configuration=execution.model_dump_json(),
         status="queued",
         attempt=0,
@@ -509,7 +720,7 @@ def submit_tool_run(
             "schema_version": 1,
             "run_id": str(run.id),
             "client_request_id": request_id,
-            "capability": command.capability.model_dump(mode="json"),
+            "capability": execution_ref.model_dump(mode="json"),
         },
         sort_keys=True,
         separators=(",", ":"),

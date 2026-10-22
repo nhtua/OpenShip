@@ -109,6 +109,7 @@ def test_execution_config_decoder_preserves_v1_and_round_trips_v2_references():
 
     connector = ConnectorRef(
         id=uuid.uuid4(),
+        kind="aws",
         configuration_revision=3,
         visibility="global",
         credential_version_id=uuid.uuid4(),

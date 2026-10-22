@@ -651,7 +651,7 @@ class Worker:
             agent_execution = None
             try:
                 snapshot = bind_run_model_config(job, run, fence)
-                if run.kind == "chat" and run.graph_version == 2:
+                if run.kind == "chat" and run.graph_version in (2, 3):
                     try:
                         agent_execution = decode_execution_config(
                             run.execution_configuration or ""
@@ -664,7 +664,7 @@ class Worker:
                         ) from invalid
                     if (
                         agent_execution.graph_kind != "chat"
-                        or agent_execution.graph_version != 2
+                        or agent_execution.graph_version != run.graph_version
                     ):
                         raise ProviderError("configuration_error")
             except ProviderError as refused:

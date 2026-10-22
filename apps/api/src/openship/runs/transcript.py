@@ -95,7 +95,7 @@ def append_transcript(
     from ..execution.admission import require_live_claim
 
     run = require_live_claim(db, claim, lock=True)
-    if run.kind != "chat" or run.graph_version != 2:
+    if run.kind != "chat" or run.graph_version not in (2, 3):
         raise ProviderError(
             "unsupported_capability",
             safe_message="This run does not support a tool conversation transcript.",

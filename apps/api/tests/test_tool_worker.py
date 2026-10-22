@@ -12,7 +12,10 @@ import pytest
 from src.openship.artifacts.filesystem import LocalArtifactStore
 from src.openship.artifacts.models import Artifact, ArtifactQuota
 from src.openship.auth.models import User
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import (
+    list_capability_manifests,
+    list_legacy_search_manifests,
+)
 from src.openship.capabilities.contracts import (
     CapabilityRef,
     ExecutionConfig,
@@ -37,7 +40,7 @@ from src.openship.workspace.models import Project
 
 def _tool_run(db, *, operation_status="admitted", dispatched=False, expired=True):
     manifest = next(
-        item for item in list_capability_manifests() if item.id == "brave_web_search"
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
     )
     ref = CapabilityRef(
         id=manifest.id,
@@ -151,7 +154,15 @@ def _submit_search_run(db):
         ),
     )
     db.commit()
-    return user, project, conversation, run, ref
+    legacy_manifest = next(
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
+    )
+    legacy_ref = CapabilityRef(
+        id=legacy_manifest.id,
+        version=legacy_manifest.version,
+        manifest_digest=legacy_manifest.manifest_digest,
+    )
+    return user, project, conversation, run, legacy_ref
 
 
 def test_expired_tool_run_without_dispatch_requeues_safely():

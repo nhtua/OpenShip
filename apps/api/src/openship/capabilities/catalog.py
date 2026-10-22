@@ -7,6 +7,7 @@ from pathlib import Path
 from src.openship.capabilities.contracts import (
     CapabilityManifest,
     CapabilityManifestLike,
+    CapabilityManifestV2,
     CapabilityRef,
     CapabilitySummary,
     OutputPolicy,
@@ -48,6 +49,22 @@ _WORKSPACE_SOURCE_FILES = (
     "workspace/tools.py",
 )
 
+# These exact v1 manifests were admitted before managed Connectors. Keep them
+# readable for pending graph-v1/chat-v2/tool-v1 work; never derive their old
+# implementation digests from replacement code.
+_LEGACY_SEARCH_SNAPSHOTS = {
+    "brave_web_search": {
+        "binding": "BRAVE_SEARCH_API_KEY",
+        "implementation_digest": "4308e73db688a745e1af56f8af3d91bf4ce7c8be7444d9de5cc4d8bb82d1a624",
+        "manifest_digest": "e311db3b10b71dee9dd8fae79c0bbb2c3ff3d56abeb21aadb431d8ff268cf94d",
+    },
+    "tavily_web_search": {
+        "binding": "TAVILY_API_KEY",
+        "implementation_digest": "2fc2c6a964b6ba34123f5d89a0f1a2f555482342ba30bb066cce1f8076d38ae0",
+        "manifest_digest": "909e3698378f2334f0b3e108a59f2027bb95eea812dde6840f8f1db24f258680",
+    },
+}
+
 
 def _implementation_digest(capability_id: str) -> str:
     root = Path(__file__).resolve().parents[1]
@@ -69,39 +86,86 @@ def _implementation_digest(capability_id: str) -> str:
     return digest.hexdigest()
 
 
-def _search_manifest(capability_id: str, binding: str) -> CapabilityManifest:
+def _search_schemas():
     arguments_schema = SearchArguments.model_json_schema()
     item_schema = SearchItem.model_json_schema()
     outputs = (OutputPolicy(name="{query_slug}.json", mutability="immutable"),)
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "items": {"type": "array", "items": item_schema, "maxItems": 10},
+            "truncated": {"type": "boolean"},
+        },
+        "required": ["items", "truncated"],
+        "additionalProperties": False,
+    }
+    limits = {
+        "timeout_seconds": 30,
+        "max_results": 10,
+        "max_http_response_bytes": 2 * 1024 * 1024,
+        "max_observation_bytes": 64 * 1024,
+        "max_model_result_bytes": 16 * 1024,
+    }
+    return arguments_schema, item_schema, output_schema, outputs, limits
+
+
+def _legacy_search_manifest(capability_id: str) -> CapabilityManifest:
+    snapshot = _LEGACY_SEARCH_SNAPSHOTS[capability_id]
+    arguments_schema, _item_schema, output_schema, outputs, limits = _search_schemas()
     fields = {
         "schema_version": 1,
         "id": capability_id,
         "version": "1.0.0",
-        "implementation_digest": _implementation_digest(capability_id),
+        "implementation_digest": snapshot["implementation_digest"],
         "input_schema": arguments_schema,
-        "output_schema": {
-            "type": "object",
-            "properties": {
-                "items": {"type": "array", "items": item_schema, "maxItems": 10},
-                "truncated": {"type": "boolean"},
-            },
-            "required": ["items", "truncated"],
-            "additionalProperties": False,
-        },
+        "output_schema": output_schema,
         "effect": "read_only_external",
         "enablement_requirements": ("operator_enabled", "credential_configured"),
-        "limits": {
-            "timeout_seconds": 30,
-            "max_results": 10,
-            "max_http_response_bytes": 2 * 1024 * 1024,
-            "max_observation_bytes": 64 * 1024,
-            "max_model_result_bytes": 16 * 1024,
-        },
+        "limits": limits,
         "outputs": tuple(output.model_dump(mode="json") for output in outputs),
         "execution_kind": "maintained",
-        "credential_binding_ref": binding,
+        "credential_binding_ref": snapshot["binding"],
     }
-    return CapabilityManifest(**fields, manifest_digest=canonical_digest(fields))
+    return CapabilityManifest(
+        **fields,
+        manifest_digest=snapshot["manifest_digest"],
+    )
+
+
+def _search_manifest(capability_id: str, connector_kind: str) -> CapabilityManifestV2:
+    arguments_schema, _item_schema, output_schema, outputs, limits = _search_schemas()
+    description = (
+        "Search the web with Brave."
+        if connector_kind == "brave"
+        else "Search the web with Tavily."
+    )
+    fields = {
+        "schema_version": 2,
+        "id": capability_id,
+        "version": "2.0.0",
+        "implementation_digest": _implementation_digest(capability_id),
+        "description": description,
+        "input_schema": arguments_schema,
+        "output_schema": output_schema,
+        "effect": "read_only_external",
+        "enablement_requirements": ("operator_enabled", "connector_configured"),
+        "limits": limits,
+        "outputs": tuple(output.model_dump(mode="json") for output in outputs),
+        "connector_kinds": (connector_kind,),
+        "operations": ("web_search",),
+        "target_kinds": (),
+        "execution_kind": "maintained",
+    }
+    return CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
+
+
+def legacy_credential_binding(capability_id: str) -> str | None:
+    snapshot = _LEGACY_SEARCH_SNAPSHOTS.get(capability_id)
+    return snapshot["binding"] if snapshot is not None else None
+
+
+def list_legacy_search_manifests() -> tuple[CapabilityManifest, ...]:
+    return tuple(_legacy_search_manifest(capability_id) for capability_id in _LEGACY_SEARCH_SNAPSHOTS)
 
 
 def _local_implementation_digest() -> str:
@@ -160,8 +224,8 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
     from src.openship.capabilities.definitions import registered_tool_definitions
 
     builtins: tuple[CapabilityManifestLike, ...] = (
-        _search_manifest("brave_web_search", "BRAVE_SEARCH_API_KEY"),
-        _search_manifest("tavily_web_search", "TAVILY_API_KEY"),
+        _search_manifest("brave_web_search", "brave"),
+        _search_manifest("tavily_web_search", "tavily"),
         *_workspace_manifests(),
     )
     registered = tuple(
@@ -198,8 +262,12 @@ def list_capabilities(
                 "disabled", "missing_credentials", "runtime_unavailable"
             ):
                 reason = "runtime_unavailable"
-        elif getattr(manifest, "credential_binding_ref", None) and not credential_check(
-            manifest.credential_binding_ref
+        elif (
+            getattr(manifest, "credential_binding_ref", None)
+            or legacy_credential_binding(manifest.id)
+        ) and not credential_check(
+            getattr(manifest, "credential_binding_ref", None)
+            or legacy_credential_binding(manifest.id)
         ):
             available, reason = False, "missing_credentials"
         else:
@@ -223,16 +291,26 @@ def list_capabilities(
 def resolve_capability(
     ref: CapabilityRef, enabled_ids: frozenset[str]
 ) -> CapabilityManifestLike:
-    manifest = next(
+    current = next(
         (item for item in list_capability_manifests() if item.id == ref.id), None
     )
-    if manifest is None:
+    if current is None:
         raise CapabilityError("unknown")
-    if (
-        manifest.version != ref.version
-        or manifest.manifest_digest != ref.manifest_digest
-    ):
-        raise CapabilityError("changed")
+    manifest = current
+    if current.version != ref.version or current.manifest_digest != ref.manifest_digest:
+        legacy = next(
+            (
+                item
+                for item in list_legacy_search_manifests()
+                if item.id == ref.id
+                and item.version == ref.version
+                and item.manifest_digest == ref.manifest_digest
+            ),
+            None,
+        )
+        if legacy is None:
+            raise CapabilityError("changed")
+        manifest = legacy
     if manifest.id not in enabled_ids:
         raise CapabilityError("disabled")
     require_phase4_dispatchable(manifest)

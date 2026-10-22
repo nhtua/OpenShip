@@ -160,6 +160,22 @@ class CapabilitySummary(FrozenModel):
     ) = None
 
 
+class ProjectCapabilitySummary(FrozenModel):
+    """Project permission and Connector readiness are separate projections."""
+
+    id: str = Field(pattern=TOOL_ID_PATTERN)
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    manifest_digest: str = Field(pattern=SHA256_PATTERN)
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    effect: Literal["read_only_external", "read_only_local"]
+    permitted: StrictBool
+    required_connector_kinds: tuple[str, ...] = ()
+    connector_readiness: dict[
+        str, Literal["ready", "required", "ambiguous", "unavailable"]
+    ] = Field(default_factory=dict)
+
+
 class ExecutionLimits(FrozenModel):
     operation_timeout_seconds: int = Field(default=30, ge=1, le=120)
     max_http_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
@@ -193,6 +209,7 @@ class ConnectorRef(FrozenModel):
     """A pinned connector configuration and its write-only credential version."""
 
     id: UUID
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
     configuration_revision: int = Field(ge=1)
     visibility: Literal["global", "project"]
     credential_version_id: UUID
@@ -250,6 +267,9 @@ class ToolCommandRequest(FrozenModel):
     client_request_id: UUID
     capability: CapabilityRef
     arguments: dict[str, Any]
+    connector_selections: dict[Literal["brave", "tavily"], UUID] = Field(
+        default_factory=dict, max_length=2
+    )
 
     @field_validator("client_request_id", mode="before")
     @classmethod
@@ -262,6 +282,23 @@ class ToolCommandRequest(FrozenModel):
             except ValueError as exc:
                 raise ValueError("client_request_id must be a UUID") from exc
         return value
+
+    @field_validator("connector_selections", mode="before")
+    @classmethod
+    def _parse_connector_selections(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        parsed = {}
+        for kind, connector_id in value.items():
+            if not isinstance(kind, str) or kind not in {"brave", "tavily"}:
+                raise ValueError("connector selection kind is invalid")
+            if isinstance(connector_id, str):
+                try:
+                    connector_id = UUID(connector_id)
+                except ValueError as exc:
+                    raise ValueError("connector selection ID must be a UUID") from exc
+            parsed[kind] = connector_id
+        return parsed
 
 
 class ToolInvocationContext:
