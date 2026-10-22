@@ -1,12 +1,14 @@
 """Installation settings reach pinned model and tool execution budgets."""
 
 import json
+import uuid
 
 import pytest
 from pydantic import ValidationError
 
 from src.openship.capabilities.contracts import ExecutionConfig, LoopLimits
 from src.openship.config import Settings
+from src.openship.database.session import SessionLocal
 from src.openship.providers.contracts import RunLimits
 from src.openship.providers.registry import load_profiles
 from src.openship.runs.service import _tool_chat_execution
@@ -24,6 +26,14 @@ def _settings(**overrides):
         model_default_profile_id="primary",
         **overrides,
     )
+
+
+def _build_tool_execution(model_config):
+    db = SessionLocal()
+    try:
+        return _tool_chat_execution(db, uuid.uuid4(), model_config, (), {})
+    finally:
+        db.close()
 
 
 def test_default_runtime_budgets_are_thirty_minutes_and_128k():
@@ -93,13 +103,13 @@ def test_tool_chat_pins_configured_deadline_and_preserves_saved_run(monkeypatch)
     installed.tool_enabled_ids = "brave_web_search"
     monkeypatch.setattr(service, "settings", installed)
     pinned = load_profiles(installed).pin_selection(None)
-    execution = _tool_chat_execution(pinned, ())
+    execution = _build_tool_execution(pinned)
     saved = execution.model_dump_json()
     assert execution.loop_limits.deadline_seconds == 900
     installed.workflow_run_timeout_seconds = 1800
     assert ExecutionConfig.model_validate_json(saved).loop_limits.deadline_seconds == 900
     repinned = load_profiles(installed).pin_selection(None)
-    assert _tool_chat_execution(repinned, ()).loop_limits.deadline_seconds == 1800
+    assert _build_tool_execution(repinned).loop_limits.deadline_seconds == 1800
 
 
 def test_tool_chat_honors_a_shorter_profile_deadline(monkeypatch):
@@ -112,7 +122,7 @@ def test_tool_chat_honors_a_shorter_profile_deadline(monkeypatch):
     installed.tool_enabled_ids = "brave_web_search"
     monkeypatch.setattr(service, "settings", installed)
     pinned = load_profiles(installed).pin_selection(None)
-    assert _tool_chat_execution(pinned, ()).loop_limits.deadline_seconds == 300
+    assert _build_tool_execution(pinned).loop_limits.deadline_seconds == 300
 
 
 @pytest.mark.asyncio

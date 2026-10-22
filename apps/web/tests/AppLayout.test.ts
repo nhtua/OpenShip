@@ -36,7 +36,10 @@ describe('AppLayout', () => {
   })
 
   it('opens a project dropdown with the current workspace selected', async () => {
-    const { wrapper } = await mountWithRouter(AppLayout, '/')
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Personal Workspace' }],
+      currentProjectId: 'project-1',
+    })
     const trigger = wrapper.get('[data-testid="project-selector-trigger"]')
 
     expect(trigger.attributes('aria-expanded')).toBe('false')
@@ -49,8 +52,25 @@ describe('AppLayout', () => {
     expect(menu.find('[aria-checked="true"]').text()).toContain('Personal Workspace')
   })
 
+  it('emits an owned project selection from the project menu', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [
+        { id: 'project-1', name: 'Production' },
+        { id: 'project-2', name: 'Sandbox' },
+      ],
+      currentProjectId: 'project-1',
+    })
+    await wrapper.get('[data-testid="project-selector-trigger"]').trigger('click')
+    await wrapper.findAll('[role="menuitemradio"]')[1].trigger('click')
+
+    expect(wrapper.emitted('selectProject')).toEqual([['project-2']])
+  })
+
   it('closes the project dropdown on outside click and Escape', async () => {
-    const { wrapper } = await mountWithRouter(AppLayout, '/')
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Personal Workspace' }],
+      currentProjectId: 'project-1',
+    })
     const trigger = wrapper.get('[data-testid="project-selector-trigger"]')
 
     await trigger.trigger('click')

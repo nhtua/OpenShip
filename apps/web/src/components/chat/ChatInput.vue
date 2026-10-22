@@ -3,7 +3,16 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Button, Icon, Label, Textarea } from '@/components/ui'
 import ProviderSelector from '@/components/ProviderSelector.vue'
 import ToolAttachmentMenu from './ToolAttachmentMenu.vue'
-import type { CapabilityRef, CapabilitySummary, ModelProfileItem, ToolCommandRequest } from '@/types'
+import type {
+  CapabilityRef,
+  CapabilitySummary,
+  ConnectorKind,
+  ConnectorSelections,
+  ConnectorUsage,
+  ModelProfileItem,
+  ProjectCapabilitySummary,
+  ToolCommandRequest,
+} from '@/types'
 
 interface Props {
   disabled?: boolean
@@ -13,10 +22,12 @@ interface Props {
   fallbackIds: string[]
   catalogError: string | null
   selectionDisabled: boolean
-  capabilities: CapabilitySummary[]
+  capabilities: Array<CapabilitySummary | ProjectCapabilitySummary>
   capabilityError?: string | null
   toolSubmissionDisabled?: boolean
   submissionError?: string | null
+  connectors?: ConnectorUsage[]
+  defaultConnectorIds?: ConnectorSelections
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -31,10 +42,11 @@ const props = withDefaults(defineProps<Props>(), {
   capabilityError: null,
   toolSubmissionDisabled: false,
   submissionError: null,
+  defaultConnectorIds: () => ({}),
 })
 
 const emit = defineEmits<{
-  send: [content: string, options?: { enableTools: boolean }]
+  send: [content: string, options?: { enableTools: boolean; connectorSelections?: ConnectorSelections }]
   search: [command: Omit<ToolCommandRequest, 'client_request_id'>]
   select: [profileId: string | null, fallbackIds: string[]]
 }>()
@@ -56,7 +68,9 @@ let pendingDraft: {
   capability: CapabilityRef | null
   maxResults: number
   automaticToolMode: boolean
+  connectorId: string | null
 } | null = null
+const selectedConnectorId = ref<string | null>(null)
 
 const inputPlaceholder = computed(() =>
   showKeyboardHint.value
@@ -73,11 +87,20 @@ const automaticToolDisabledReason = computed(() => {
   if (attachedCapability.value) return 'Remove the attached tool to let the model choose automatically.'
   if (props.capabilityError) return 'The search tool catalog is unavailable.'
   if (props.catalogError) return 'The model profile catalog is unavailable.'
-  if (!props.capabilities.some((capability) => capability.enabled && capability.available)) {
+  if (!props.capabilities.some((capability) =>
+    capability.permitted !== false && capability.enabled !== false && capability.available !== false,
+  )) {
     return props.capabilities.length
       ? 'Configure at least one available search tool.'
       : 'No search tools are configured.'
   }
+  const connectorNotReady = props.capabilities.some((capability) =>
+    capability.permitted !== false &&
+    capability.required_connector_kinds?.some((kind) =>
+      capability.connector_readiness?.[kind] !== 'ready' || !props.defaultConnectorIds[kind],
+    ),
+  )
+  if (connectorNotReady) return 'Set a project default for each enabled search provider.'
   if (
     !effectiveProfile.value?.available ||
     effectiveProfile.value.adapter !== 'openai' ||
@@ -110,11 +133,30 @@ const attachedLabel = computed(() => {
   return attachedCapability.value?.id ?? ''
 })
 const toolUnavailable = computed(() => Boolean(
-  attachedCapability.value && (!attachedSummary.value?.available || !attachedSummary.value.enabled),
+  attachedCapability.value && (
+    attachedSummary.value?.available === false || attachedSummary.value?.enabled === false ||
+    attachedSummary.value?.permitted === false
+  ),
+))
+const attachedConnectorKind = computed<ConnectorKind | null>(() => {
+  if (attachedCapability.value?.id === 'brave_web_search') return 'brave'
+  if (attachedCapability.value?.id === 'tavily_web_search') return 'tavily'
+  return null
+})
+const attachedConnectorChoices = computed(() => {
+  const kind = attachedConnectorKind.value
+  if (!kind) return []
+  return (props.connectors ?? []).filter(
+    (connector) => connector.kind === kind && connector.status === 'configured',
+  )
+})
+const connectorSelectionMissing = computed(() => Boolean(
+  attachedConnectorKind.value && props.connectors !== undefined &&
+  !attachedConnectorChoices.value.some((connector) => connector.id === selectedConnectorId.value),
 ))
 const submitDisabled = computed(() =>
   props.disabled || !content.value.trim() ||
-  (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value)) ||
+  (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value || connectorSelectionMissing.value)) ||
   (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value),
 )
 
@@ -126,11 +168,26 @@ function attachTool(capability: CapabilityRef) {
   attachedCapability.value = capability
   automaticToolMode.value = false
   maxResults.value = 5
+  const kind = capability.id === 'brave_web_search'
+    ? 'brave'
+    : capability.id === 'tavily_web_search'
+      ? 'tavily'
+      : null
+  const choices = kind
+    ? (props.connectors ?? []).filter((connector) => connector.kind === kind && connector.status === 'configured')
+    : []
+  const defaultId = kind ? props.defaultConnectorIds[kind] : undefined
+  selectedConnectorId.value = choices.some((connector) => connector.id === defaultId)
+    ? defaultId ?? null
+    : choices.length === 1
+      ? choices[0].id
+      : null
 }
 
 function removeTool() {
   attachedCapability.value = null
   maxResults.value = 5
+  selectedConnectorId.value = null
 }
 
 function toggleAutomaticToolMode() {
@@ -167,14 +224,34 @@ async function handleSubmit() {
     capability: attachedCapability.value ? { ...attachedCapability.value } : null,
     maxResults: maxResults.value,
     automaticToolMode: automaticToolMode.value,
+    connectorId: selectedConnectorId.value,
   }
   if (attachedCapability.value) {
-    emit('search', {
+    const connectorSelections: ConnectorSelections = {}
+    if (attachedConnectorKind.value && selectedConnectorId.value) {
+      connectorSelections[attachedConnectorKind.value] = selectedConnectorId.value
+    }
+    const command: Omit<ToolCommandRequest, 'client_request_id'> = {
       capability: { ...attachedCapability.value },
       arguments: { query: text, max_results: maxResults.value },
-    })
+    }
+    if (props.connectors !== undefined) command.connector_selections = connectorSelections
+    emit('search', command)
   } else {
-    if (automaticToolMode.value) emit('send', text, { enableTools: true })
+    if (automaticToolMode.value) {
+      const connectorSelections: ConnectorSelections = {}
+      for (const kind of ['brave', 'tavily'] as const) {
+        const connectorId = props.defaultConnectorIds[kind]
+        if (connectorId) connectorSelections[kind] = connectorId
+      }
+      const options: { enableTools: boolean; connectorSelections?: ConnectorSelections } = {
+        enableTools: true,
+      }
+      if (props.connectors !== undefined || Object.keys(connectorSelections).length) {
+        options.connectorSelections = connectorSelections
+      }
+      emit('send', text, options)
+    }
     else emit('send', text)
   }
   content.value = ''
@@ -190,6 +267,7 @@ watch(
     attachedCapability.value = pendingDraft.capability
     maxResults.value = pendingDraft.maxResults
     automaticToolMode.value = pendingDraft.automaticToolMode
+    selectedConnectorId.value = pendingDraft.connectorId
     pendingDraft = null
     void nextTick(grow)
   },
@@ -283,6 +361,23 @@ onBeforeUnmount(() => {
       >
         <span>{{ attachedLabel }}</span>
         <label class="sr-only" for="search-result-count">Number of results</label>
+        <select
+          v-if="attachedConnectorKind && props.connectors !== undefined"
+          v-model="selectedConnectorId"
+          data-testid="connector-selection"
+          aria-label="Search connector"
+          class="h-6 max-w-40 rounded-full border-0 bg-transparent px-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :disabled="props.disabled"
+        >
+          <option :value="null">Choose a connector</option>
+          <option
+            v-for="connector in attachedConnectorChoices"
+            :key="connector.id"
+            :value="connector.id"
+          >
+            {{ connector.name }} · {{ connector.visibility === 'global' ? 'Global' : 'Project' }}{{ connector.is_default ? ' · Default' : '' }}
+          </option>
+        </select>
         <select
           id="search-result-count"
           v-model.number="maxResults"

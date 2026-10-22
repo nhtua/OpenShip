@@ -29,6 +29,12 @@ export async function mountWithRouter(
       component: { template: '<div>Chat</div>' },
       meta: { requiresAuth: true },
     },
+    {
+      path: '/settings/connectors',
+      name: 'connectors-settings',
+      component: { template: '<div>Connectors</div>' },
+      meta: { requiresAuth: true },
+    },
     { path: '/login', name: 'login', component: { template: '<div>Login</div>' } },
     {
       path: '/register',

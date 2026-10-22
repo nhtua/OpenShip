@@ -1,6 +1,9 @@
 """Fail-closed selectors shared by opt-in provider qualification tests."""
 
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import (
+    legacy_credential_binding,
+    list_capability_manifests,
+)
 
 SEARCH_TOOL_IDS = frozenset({"brave_web_search", "tavily_web_search"})
 
@@ -28,9 +31,8 @@ def require_search_tool(tool_id, *, enabled_ids, credential_check):
         raise AssertionError("live qualification capability is not installed")
     if tool_id not in enabled_ids:
         raise AssertionError("selected live search capability is not operator-enabled")
-    if not manifest.credential_binding_ref or not credential_check(
-        manifest.credential_binding_ref
-    ):
+    credential_binding = legacy_credential_binding(tool_id)
+    if not credential_binding or not credential_check(credential_binding):
         raise AssertionError("selected live search capability has no configured credential")
     return manifest
 

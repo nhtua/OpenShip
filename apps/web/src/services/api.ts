@@ -1,9 +1,13 @@
 import axios from 'axios'
+import { generateRequestId } from '@/lib/requestId'
 import type {
   ArtifactPage,
   ArtifactSummary,
   AuthResponse,
   CapabilitySummary,
+  ConnectorKind,
+  ConnectorRequestStatus,
+  ConnectorUsage,
   ConversationWorkspacePage,
   OperationPage,
   Run,
@@ -11,6 +15,9 @@ import type {
   ToolCommandRequest,
   TurnSubmitRequest,
   ModelProfileCatalog,
+  ProjectCapabilitySummary,
+  ProjectConnectorDefault,
+  ProjectSummary,
   WorkspaceFileRead,
 } from '@/types'
 
@@ -90,6 +97,104 @@ export const modelProfilesApi = {
 
 export const capabilitiesApi = {
   list: (): Promise<{ data: CapabilitySummary[] }> => api.get('/capabilities'),
+}
+
+export const connectorsApi = {
+  listProjects: (): Promise<{ data: ProjectSummary[] }> => api.get('/projects'),
+
+  listProjectConnectors: (
+    projectId: string,
+    service?: ConnectorKind,
+  ): Promise<{ data: ConnectorUsage[] }> =>
+    api.get(`/projects/${encodeURIComponent(projectId)}/connectors`, {
+      params: service ? { service } : undefined,
+    }),
+
+  getProjectDefault: (
+    projectId: string,
+    service: ConnectorKind,
+  ): Promise<{ data: ProjectConnectorDefault }> =>
+    api.get(`/projects/${encodeURIComponent(projectId)}/connector-defaults/${service}`),
+
+  setProjectDefault: (
+    projectId: string,
+    service: ConnectorKind,
+    payload: { expected_revision: number; connector_id: string | null },
+  ): Promise<{ data: ProjectConnectorDefault }> =>
+    api.put(
+      `/projects/${encodeURIComponent(projectId)}/connector-defaults/${service}`,
+      payload,
+      { headers: { 'Idempotency-Key': generateRequestId() } },
+    ),
+
+  getProjectCapabilities: (
+    projectId: string,
+  ): Promise<{ data: ProjectCapabilitySummary[] }> =>
+    api.get(`/projects/${encodeURIComponent(projectId)}/capabilities`),
+
+  createProjectConnector: (
+    projectId: string,
+    requestId: string,
+    payload: { kind: ConnectorKind; name: string; configuration: Record<string, unknown>; api_key: string },
+  ) => api.post(`/projects/${encodeURIComponent(projectId)}/connectors`, payload, {
+    headers: { 'Idempotency-Key': requestId },
+  }),
+
+  updateProjectConnector: (
+    projectId: string,
+    connectorId: string,
+    requestId: string,
+    payload: { expected_revision: number; enabled?: boolean; revoke?: boolean; name?: string },
+  ) => api.patch(
+    `/projects/${encodeURIComponent(projectId)}/connectors/${encodeURIComponent(connectorId)}`,
+    payload,
+    { headers: { 'Idempotency-Key': requestId } },
+  ),
+
+  replaceProjectCredential: (
+    projectId: string,
+    connectorId: string,
+    requestId: string,
+    payload: { expected_revision: number; api_key: string },
+  ) => api.post(
+    `/projects/${encodeURIComponent(projectId)}/connectors/${encodeURIComponent(connectorId)}/credentials`,
+    payload,
+    { headers: { 'Idempotency-Key': requestId } },
+  ),
+
+  projectRequestStatus: (
+    projectId: string,
+    requestId: string,
+  ): Promise<{ data: ConnectorRequestStatus }> =>
+    api.get(`/projects/${encodeURIComponent(projectId)}/connector-requests/${encodeURIComponent(requestId)}`),
+
+  listGlobalConnectors: (): Promise<{ data: ConnectorUsage[] }> => api.get('/global-connectors'),
+
+  createGlobalConnector: (
+    requestId: string,
+    payload: { kind: ConnectorKind; name: string; configuration: Record<string, unknown>; api_key: string },
+  ) => api.post('/global-connectors', payload, { headers: { 'Idempotency-Key': requestId } }),
+
+  updateGlobalConnector: (
+    connectorId: string,
+    requestId: string,
+    payload: { expected_revision: number; enabled?: boolean; revoke?: boolean; name?: string },
+  ) => api.patch(`/global-connectors/${encodeURIComponent(connectorId)}`, payload, {
+    headers: { 'Idempotency-Key': requestId },
+  }),
+
+  replaceGlobalCredential: (
+    connectorId: string,
+    requestId: string,
+    payload: { expected_revision: number; api_key: string },
+  ) => api.post(
+    `/global-connectors/${encodeURIComponent(connectorId)}/credentials`,
+    payload,
+    { headers: { 'Idempotency-Key': requestId } },
+  ),
+
+  globalRequestStatus: (requestId: string): Promise<{ data: ConnectorRequestStatus }> =>
+    api.get(`/global-connectors/requests/${encodeURIComponent(requestId)}`),
 }
 
 export const artifactsApi = {

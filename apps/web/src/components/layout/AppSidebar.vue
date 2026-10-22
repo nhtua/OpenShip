@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { Conversation } from '@/types'
+import type { Conversation, ProjectSummary } from '@/types'
 import { Button, Icon } from '@/components/ui'
 import {
   Sidebar,
@@ -12,6 +12,7 @@ import {
   SidebarMenuItem,
 } from '@/components/ui'
 import { useSidebar } from '@/components/ui/sidebar/utils'
+import { RouterLink } from 'vue-router'
 
 const props = withDefaults(
   defineProps<{
@@ -19,12 +20,16 @@ const props = withDefaults(
     currentConversationId?: string | null
     busy?: boolean
     username?: string | null
+    projects?: ProjectSummary[]
+    currentProjectId?: string | null
   }>(),
   {
     conversations: () => [],
     currentConversationId: null,
     busy: false,
     username: null,
+    projects: () => [],
+    currentProjectId: null,
   },
 )
 
@@ -32,6 +37,7 @@ const emit = defineEmits<{
   createConversation: [title: string]
   selectConversation: [id: string]
   signOut: []
+  selectProject: [id: string]
 }>()
 
 const { setOpen, state } = useSidebar()
@@ -41,7 +47,9 @@ const showAllConversations = ref(false)
 const showProjectMenu = ref(false)
 const projectTrigger = ref<HTMLButtonElement | null>(null)
 const projectMenu = ref<HTMLElement | null>(null)
-const currentProjectOption = ref<HTMLButtonElement | null>(null)
+const currentProject = computed(() =>
+  props.projects.find((project) => project.id === props.currentProjectId) ?? props.projects[0] ?? null,
+)
 
 function expandSidebar() {
   setOpen(true)
@@ -59,7 +67,7 @@ async function toggleProjectMenu() {
   showProjectMenu.value = !showProjectMenu.value
   if (showProjectMenu.value) {
     await nextTick()
-    currentProjectOption.value?.focus()
+    projectMenu.value?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus()
   }
 }
 
@@ -117,7 +125,6 @@ const extraCount = computed(() => {
       </span>
     </SidebarHeader>
 
-    <!-- The project menu currently has one option; project switching follows multi-project support. -->
     <div
       class="relative shrink-0 border-b border-sidebar-border px-3 py-2 group-data-[collapsible=icon]:hidden"
       @keydown="onProjectMenuKeydown"
@@ -135,7 +142,7 @@ const extraCount = computed(() => {
         @click="toggleProjectMenu"
       >
         <Icon name="box" class="size-3 shrink-0" />
-        <span class="min-w-0 flex-1 truncate">Personal Workspace</span>
+        <span class="min-w-0 flex-1 truncate">{{ currentProject?.name ?? 'No project available' }}</span>
         <Icon name="chevron-down" class="size-3 shrink-0 text-sidebar-foreground/60" />
       </button>
       <div
@@ -148,17 +155,20 @@ const extraCount = computed(() => {
         class="absolute left-2 right-2 top-full z-40 mt-1 rounded-lg border border-sidebar-border bg-popover p-1 text-popover-foreground shadow-lg"
       >
         <button
-          ref="currentProjectOption"
+          v-for="project in props.projects"
+          :key="project.id"
           type="button"
           role="menuitemradio"
-          aria-checked="true"
-          class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium text-primary hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          @click="closeProjectMenu(true)"
+          :aria-checked="project.id === currentProject?.id"
+          :class="project.id === currentProject?.id ? 'text-primary' : 'text-popover-foreground'"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @click="emit('selectProject', project.id); closeProjectMenu(true)"
         >
           <Icon name="box" class="size-3 shrink-0" />
-          <span class="min-w-0 flex-1 truncate">Personal Workspace</span>
-          <Icon name="check" class="size-3 shrink-0" />
+          <span class="min-w-0 flex-1 truncate">{{ project.name }}</span>
+          <Icon v-if="project.id === currentProject?.id" name="check" class="size-3 shrink-0" />
         </button>
+        <p v-if="!props.projects.length" class="px-2 py-2 text-xs text-muted-foreground">No owned projects are available.</p>
       </div>
     </div>
 
@@ -312,14 +322,13 @@ const extraCount = computed(() => {
           </button>
         </SidebarMenuItem>
         <SidebarMenuItem>
-          <button
-            type="button"
-            disabled
+          <RouterLink
+            to="/settings/connectors"
             class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
           >
             <Icon name="link" />
             <span>Connectors</span>
-          </button>
+          </RouterLink>
         </SidebarMenuItem>
         <SidebarMenuItem>
           <button

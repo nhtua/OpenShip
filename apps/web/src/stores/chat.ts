@@ -72,9 +72,12 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function createConversation(title: string): Promise<Conversation | null> {
+  async function createConversation(title: string, projectId?: string | null): Promise<Conversation | null> {
     try {
-      const res = await api.post('/conversations', { title })
+      const res = await api.post('/conversations', {
+        title,
+        ...(projectId ? { project_id: projectId } : {}),
+      })
       const conv = res.data as unknown as Conversation
       conversations.value.unshift(conv)
       return conv
@@ -146,12 +149,14 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadConversation(conversationId: string) {
     const loadGeneration = ++conversationLoadGeneration
+    let snapshotProjectId: string | undefined
     try {
       // Load snapshot first to rebuild durable state
       try {
         const snapRes = await runsApi.getSnapshot(conversationId)
         if (loadGeneration !== conversationLoadGeneration) return
         const snapshot = snapRes.data as unknown as Snapshot
+        snapshotProjectId = snapshot.project_id
         // Replay retained events for message and title reconstruction.
         for (const event of snapshot.events) {
           processDurableEvent(event)
@@ -195,6 +200,7 @@ export const useChatStore = defineStore('chat', () => {
       const known = conversations.value.find((c) => c.id === conversationId)
       currentConversation.value = {
         id: conversationId,
+        project_id: known?.project_id ?? snapshotProjectId,
         title: known?.title || 'Conversation',
         created_at: known?.created_at ?? '',
         updated_at: known?.updated_at ?? '',
@@ -713,7 +719,7 @@ export const useChatStore = defineStore('chat', () => {
   async function sendMessage(
     content: string,
     conversationId: string | null = null,
-    options: { enableTools?: boolean } = {},
+    options: { enableTools?: boolean; connectorSelections?: TurnSubmitRequest['connector_selections'] } = {},
   ) {
     error.value = null
     isStreaming.value = true
@@ -730,6 +736,9 @@ export const useChatStore = defineStore('chat', () => {
         provider_profile_id: selectedProfileId.value,
         fallback_profile_ids: [...selectedFallbackIds.value],
         enable_tools: options.enableTools ?? false,
+        ...(options.connectorSelections
+          ? { connector_selections: { ...options.connectorSelections } }
+          : {}),
       }
 
       // Store pending request (local draft)

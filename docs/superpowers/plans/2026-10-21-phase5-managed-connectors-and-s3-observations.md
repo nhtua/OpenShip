@@ -157,13 +157,13 @@ Each condition must have an explicit owning test:
 
 **Tests:** `ConnectorStore.test.ts`, `ConnectorSetup.test.ts`, `ConnectorSelection.test.ts`, fixture Playwright connector tests.
 
-- [ ] Add authenticated connector settings with separate Brave/Tavily forms, visible scope and configured readiness.
-- [ ] Add an owned project-list read API so the browser can resolve the existing personal project before a conversation exists. Include project identity in conversation/snapshot responses.
-- [ ] Show global management controls only to the configured operator; enforce the same rules on the server.
-- [ ] Add explicit connector selection and project defaults. Preserve immutable submitted selections during uncertain retries.
-- [ ] Keep secrets in component-local memory only. Clear them after successful submission or navigation; never place them in Pinia, storage, chat drafts, retry payload stores or URLs.
-- [ ] After an uncertain secret submission, query its owned request status before asking for re-entry. Never automatically resend a cleared form.
-- [ ] Show ambiguity and global rotation/revocation impact clearly. Preserve keyboard access, mobile layout and current chat/file controls.
+- [x] Add authenticated connector settings with separate Brave/Tavily forms, visible scope and configured readiness.
+- [x] Add an owned project-list read API so the browser can resolve the existing personal project before a conversation exists. Include project identity in conversation/snapshot responses.
+- [x] Show global management controls only to the configured operator; enforce the same rules on the server.
+- [x] Add explicit connector selection and project defaults. Preserve immutable submitted selections during uncertain retries.
+- [x] Keep secrets in component-local memory only. Clear them after successful submission or navigation; never place them in Pinia, storage, chat drafts, retry payload stores or URLs.
+- [x] After an uncertain secret submission, query its owned request status before asking for re-entry. Never automatically resend a cleared form.
+- [x] Show ambiguity and global rotation/revocation impact clearly. Preserve keyboard access, mobile layout and current chat/file controls.
 
 **Verification:** Component tests, typecheck, browser fixtures and production build.
 

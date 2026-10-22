@@ -172,6 +172,21 @@ describe('chat store', () => {
     expect(chat.error).toBeNull()
   })
 
+  it('creates a conversation under the selected project identity', async () => {
+    mockApi.post.mockResolvedValue({
+      data: { id: 'project-conversation', project_id: 'project-1', title: 'Selected project', created_at: '', updated_at: '' },
+    } as never)
+    const chat = useChatStore()
+
+    await chat.createConversation('Selected project', 'project-1')
+
+    expect(mockApi.post).toHaveBeenCalledWith('/conversations', {
+      title: 'Selected project',
+      project_id: 'project-1',
+    })
+    expect(chat.conversations[0].project_id).toBe('project-1')
+  })
+
   it('updates the conversation list and header when a title event arrives', () => {
     const chat = useChatStore()
     chat.conversations = [
@@ -1265,12 +1280,16 @@ describe('chat store', () => {
         },
       } as never)
 
-    await chat.sendMessage('Find current search results', 'c1', { enableTools: true })
+    await chat.sendMessage('Find current search results', 'c1', {
+      enableTools: true,
+      connectorSelections: { brave: 'global-brave', tavily: 'project-tavily' },
+    })
     const originalPayload = mockRunsApi.submitTurn.mock.calls[0][1]
     expect(originalPayload).toMatchObject({
       content: 'Find current search results',
       client_request_id: 'stable-tool-request',
       enable_tools: true,
+      connector_selections: { brave: 'global-brave', tavily: 'project-tavily' },
       provider_profile_id: 'primary-fixture',
       fallback_profile_ids: [],
     })

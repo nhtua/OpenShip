@@ -7,6 +7,7 @@ import type { Page, Route } from '@playwright/test'
 
 export interface E2EConversation {
   id: string
+  project_id?: string
   title: string
   created_at: string
   updated_at: string
@@ -31,12 +32,14 @@ export const E2E_TOKEN = 'e2e-test-token-not-a-real-credential'
 export const E2E_CONVERSATIONS: E2EConversation[] = [
   {
     id: 'c1',
+    project_id: 'project-e2e',
     title: 'Deploy pipeline',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T10:00:00Z',
   },
   {
     id: 'c2',
+    project_id: 'project-e2e',
     title: 'Scale up web',
     created_at: '2026-01-02T00:00:00Z',
     updated_at: '2026-01-02T10:00:00Z',
@@ -170,6 +173,40 @@ export async function mockApi(
       : json(route, 200, conversations),
   )
 
+  await page.route('**/api/projects', (route) =>
+    route.request().method() === 'GET'
+      ? json(route, 200, [{ id: 'project-e2e', name: 'Personal project' }])
+      : json(route, 405, { detail: 'Method not allowed' }),
+  )
+  await page.route('**/api/projects/project-e2e/connectors', (route) =>
+    route.request().method() === 'GET'
+      ? json(route, 200, [
+          { id: 'global-brave', kind: 'brave', visibility: 'global', name: 'Shared Brave', status: 'configured', revision: 1, is_default: true },
+          { id: 'project-tavily', kind: 'tavily', visibility: 'project', name: 'Project Tavily', status: 'configured', revision: 1, is_default: true },
+        ])
+      : json(route, 201, { id: 'created-connector', status: 'configured', revision: 1 }),
+  )
+  await page.route('**/api/projects/project-e2e/connector-defaults/*', (route) => {
+    const kind = new URL(route.request().url()).pathname.split('/').at(-1) ?? 'brave'
+    return route.request().method() === 'GET'
+      ? json(route, 200, { service: kind, connector_id: kind === 'brave' ? 'global-brave' : 'project-tavily', revision: 1 })
+      : json(route, 200, { service: kind, connector_id: route.request().postDataJSON()?.connector_id ?? null, revision: 2 })
+  })
+  await page.route('**/api/projects/project-e2e/capabilities', (route) =>
+    json(route, 200, E2E_SEARCH_CAPABILITIES.map((capability) => ({
+      ...capability,
+      permitted: true,
+      required_connector_kinds: [capability.id.startsWith('brave') ? 'brave' : 'tavily'],
+      connector_readiness: { [capability.id.startsWith('brave') ? 'brave' : 'tavily']: 'ready' },
+    }))),
+  )
+  await page.route('**/api/global-connectors', (route) =>
+    json(route, 403, { error: { code: 'global_management_forbidden', message: 'Global Connector management is not available to this account' } }),
+  )
+  await page.route('**/api/projects/project-e2e/connector-requests/*', (route) =>
+    json(route, 404, { error: { code: 'connector_not_found', message: 'Connector or request not found' } }),
+  )
+
   // ChatView loads the persistent-files panel for the selected conversation.
   // Keep that request successful in unrelated fixture journeys so a files
   // service stub does not masquerade as a chat/provider error.
@@ -202,9 +239,10 @@ export async function mockApi(
     if (route.request().method() !== 'POST') {
       return json(route, 405, { detail: 'Method not allowed' })
     }
-    const body = (route.request().postDataJSON() ?? {}) as { title?: string }
+    const body = (route.request().postDataJSON() ?? {}) as { title?: string; project_id?: string }
     return json(route, 201, {
       id: 'c-new',
+      project_id: body.project_id ?? 'project-e2e',
       title: body.title || 'New Conversation',
       created_at: '2026-01-03T00:00:00Z',
       updated_at: '2026-01-03T00:00:00Z',
@@ -849,6 +887,19 @@ export async function mockDurableApi(
     capabilitiesStatus !== 200
       ? json(route, capabilitiesStatus, { detail: 'Search tools unavailable' })
       : json(route, 200, capabilities),
+  )
+  await page.route('**/api/projects/project-e2e/capabilities', (route) =>
+    capabilitiesStatus !== 200
+      ? json(route, capabilitiesStatus, { detail: 'Project search tools unavailable' })
+      : json(route, 200, capabilities.map((capability) => {
+          const kind = capability.id.startsWith('brave') ? 'brave' : 'tavily'
+          return {
+            ...capability,
+            permitted: capability.enabled,
+            required_connector_kinds: [kind],
+            connector_readiness: { [kind]: 'ready' },
+          }
+        })),
   )
 
   // The run read. Registered before the command routes below, which is what

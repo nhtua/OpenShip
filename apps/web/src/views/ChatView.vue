@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useArtifactsStore } from '@/stores/artifacts'
+import { useConnectorsStore } from '@/stores/connectors'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
@@ -27,6 +28,7 @@ const route = useRoute()
 const auth = useAuthStore()
 const chat = useChatStore()
 const artifacts = useArtifactsStore()
+const connectors = useConnectorsStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
@@ -60,6 +62,9 @@ const busy = computed(
 const title = computed(
   () => chat.currentConversation?.title || 'New Conversation',
 )
+const projectConversations = computed(() => chat.conversations.filter(
+  (conversation) => !conversation.project_id || conversation.project_id === connectors.currentProjectId,
+))
 
 const conversationOperations = computed(() => {
   const conversationId = chat.currentConversation?.id
@@ -128,6 +133,10 @@ async function loadConversationFromRoute() {
   try {
     await chat.loadConversation(id)
     if (generation !== routeLoadGeneration) return
+    const projectId = chat.currentConversation?.project_id
+    if (projectId && projectId !== connectors.currentProjectId) {
+      await connectors.selectProject(projectId)
+    }
     if (chat.currentConversation?.id === id) await artifacts.loadConversation(id)
   } finally {
     if (generation === routeLoadGeneration) isLoadingConversation.value = false
@@ -144,7 +153,7 @@ async function createAndOpenConversation(newTitle: string): Promise<string | nul
   isCreatingConversation.value = true
   chat.error = null
   try {
-    const conv = await chat.createConversation(newTitle)
+    const conv = await chat.createConversation(newTitle, connectors.currentProjectId)
     // A pending creation must not navigate away from a newer browser location.
     if (!conv || disposed || route.fullPath !== origin || generation !== routeLoadGeneration) return null
     await router.push({ name: 'conversation', params: { conversationId: conv.id } })
@@ -173,7 +182,7 @@ async function handleSelectConversation(id: string) {
   }
 }
 
-async function handleSend(content: string, options?: { enableTools: boolean }) {
+async function handleSend(content: string, options?: { enableTools: boolean; connectorSelections?: Partial<Record<'brave' | 'tavily', string>> }) {
   if (busy.value) return
   chat.error = null
 
@@ -217,7 +226,7 @@ async function handleRetrySubmission() {
   else await chat.retryToolSubmission(requestId)
 }
 
-async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: { query: string; max_results: number } }) {
+async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: { query: string; max_results: number }; connector_selections?: Partial<Record<'brave' | 'tavily', string>> }) {
   if (busy.value || hasActiveRun.value) return
   isToolSubmitting.value = true
   try {
@@ -265,6 +274,7 @@ async function handleSignOut() {
   auth.logout()
   chat.clearMessages()
   artifacts.clear()
+  connectors.clear()
   chat.conversations = []
   chat.error = null
   historyLoadFailed.value = false
@@ -272,12 +282,23 @@ async function handleSignOut() {
   await router.replace({ name: 'login' })
 }
 
+async function handleSelectProject(projectId: string) {
+  if (busy.value || projectId === connectors.currentProjectId) return
+  await connectors.selectProject(projectId)
+  if (
+    chat.currentConversation?.project_id &&
+    chat.currentConversation.project_id !== projectId
+  ) {
+    await router.replace({ name: 'chat' })
+  }
+}
+
 onMounted(async () => {
   // What this installation offers is part of being able to answer at all, so
   // it is loaded when the page is. A missing catalog is stated by the store
   // rather than guessed at here, and the next turn simply names no profile.
   await chat.loadModelProfiles()
-  await chat.loadCapabilities()
+  await connectors.initialize()
   await loadHistory()
   if (disposed) return
   routeReady.value = true
@@ -300,14 +321,17 @@ onBeforeUnmount(() => {
     :title="title"
     :is-streaming="chat.isStreaming && !isToolSubmitting"
     :username="auth.user?.username ?? null"
-    :conversations="chat.conversations"
+    :conversations="projectConversations"
     :current-conversation-id="chat.currentConversation?.id ?? null"
     :show-conversation-files="Boolean(chat.currentConversation)"
     :conversation-files-open="conversationFilesOpen"
     :conversation-file-count="conversationFileCount"
     :busy="busy"
+    :projects="connectors.projects"
+    :current-project-id="connectors.currentProjectId"
     @create-conversation="handleCreateConversation"
     @select-conversation="handleSelectConversation"
+    @select-project="handleSelectProject"
     @sign-out="handleSignOut"
     @toggle-conversation-files="toggleConversationFiles"
   >
@@ -381,7 +405,12 @@ onBeforeUnmount(() => {
         :selected-profile-id="chat.selectedProfileId"
         :fallback-ids="chat.selectedFallbackIds"
         :catalog-error="chat.profileError"
-        :capabilities="chat.searchCapabilities"
+        :capabilities="connectors.capabilities"
+        :connectors="connectors.connectors"
+        :default-connector-ids="{
+          brave: connectors.defaults.brave?.connector_id ?? undefined,
+          tavily: connectors.defaults.tavily?.connector_id ?? undefined,
+        }"
         :tool-submission-disabled="hasActiveRun"
         :submission-error="chat.error"
         @send="handleSend"

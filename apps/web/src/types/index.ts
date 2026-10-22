@@ -33,6 +33,7 @@ export interface ChatMessage {
 
 export interface Conversation {
   id: string
+  project_id?: string
   title: string
   created_at: string
   updated_at: string
@@ -87,6 +88,52 @@ export interface TurnSubmitRequest {
   // Automatic tool selection is an opt-in for this submitted turn. The
   // server resolves and pins the exact enabled capability versions.
   enable_tools?: boolean
+  connector_selections?: ConnectorSelections
+}
+
+export type ConnectorKind = 'brave' | 'tavily'
+export type ConnectorVisibility = 'global' | 'project'
+export type ConnectorSelections = Partial<Record<ConnectorKind, string>>
+
+export interface ProjectSummary {
+  id: string
+  name: string
+}
+
+export interface ConnectorUsage {
+  id: string
+  kind: ConnectorKind | 'aws'
+  visibility: ConnectorVisibility
+  name: string
+  status: 'configured' | 'disabled' | 'expired' | 'revoked' | 'unavailable'
+  revision: number
+  is_default: boolean
+}
+
+export interface ProjectConnectorDefault {
+  service: ConnectorKind
+  connector_id: string | null
+  revision: number
+}
+
+export interface ProjectCapabilitySummary {
+  id: string
+  version: string
+  manifest_digest: string
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
+  effect: 'read_only_external' | 'read_only_local'
+  permitted: boolean
+  required_connector_kinds: ConnectorKind[]
+  connector_readiness: Partial<Record<ConnectorKind, 'ready' | 'required' | 'ambiguous' | 'unavailable'>>
+  enabled?: boolean
+  available?: boolean
+  unavailable_reason?: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
+}
+
+export interface ConnectorRequestStatus {
+  status: 'processing' | 'complete'
+  result?: Record<string, unknown>
 }
 
 // What an installation offers. Deliberately contains no credential value,
@@ -171,6 +218,7 @@ export interface DurableEvent {
 
 export interface Snapshot {
   conversation_id: string
+  project_id?: string
   sequence: number
   events: DurableEvent[]
   runs?: SnapshotRun[]
@@ -208,12 +256,16 @@ export interface CapabilitySummary extends CapabilityRef {
   enabled: boolean
   available: boolean
   unavailable_reason: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
+  permitted?: boolean
+  required_connector_kinds?: ConnectorKind[]
+  connector_readiness?: Partial<Record<ConnectorKind, 'ready' | 'required' | 'ambiguous' | 'unavailable'>>
 }
 
 export interface ToolCommandRequest {
   client_request_id: string
   capability: CapabilityRef
   arguments: { query: string; max_results: number }
+  connector_selections?: ConnectorSelections
 }
 
 export interface ArtifactSummary {

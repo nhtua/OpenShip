@@ -57,6 +57,7 @@ class RunSummary(BaseModel):
 class SnapshotResponse(BaseModel):
     """Complete state snapshot for a conversation."""
     conversation_id: str
+    project_id: str
     sequence: int  # Max committed sequence; -1 means empty
     events: list[EventRead]
     messages: list[MessageSummary]

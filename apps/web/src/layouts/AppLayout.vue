@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Conversation } from '@/types'
+import type { Conversation, ProjectSummary } from '@/types'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { SidebarInset, SidebarProvider } from '@/components/ui'
@@ -23,6 +23,8 @@ const props = withDefaults(
     showConversationFiles?: boolean
     conversationFilesOpen?: boolean
     conversationFileCount?: number
+    projects?: ProjectSummary[]
+    currentProjectId?: string | null
   }>(),
   {
     title: 'New Conversation',
@@ -34,6 +36,8 @@ const props = withDefaults(
     showConversationFiles: false,
     conversationFilesOpen: false,
     conversationFileCount: 0,
+    projects: () => [],
+    currentProjectId: null,
   },
 )
 
@@ -42,6 +46,7 @@ const emit = defineEmits<{
   selectConversation: [id: string]
   signOut: []
   toggleConversationFiles: []
+  selectProject: [id: string]
 }>()
 </script>
 
@@ -53,9 +58,12 @@ const emit = defineEmits<{
         :current-conversation-id="props.currentConversationId"
         :busy="props.busy"
         :username="props.username"
+        :projects="props.projects"
+        :current-project-id="props.currentProjectId"
         @create-conversation="emit('createConversation', $event)"
         @select-conversation="emit('selectConversation', $event)"
         @sign-out="emit('signOut')"
+        @select-project="emit('selectProject', $event)"
       />
       <SidebarInset class="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <AppHeader

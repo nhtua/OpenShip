@@ -16,11 +16,27 @@ from ..auth.models import User
 from ..auth.routes import require_jwt
 from ..chat.models import Conversation, Message
 from ..database.session import get_db
+from .models import Project
 from .schemas import WorkspaceReadArguments
 from .service import WorkspaceServiceError, ensure_workspace
 from .tools import WorkspaceToolError, read_workspace_file
 
 router = APIRouter(prefix="/api", tags=["workspace"])
+
+
+@router.get("/projects")
+async def list_projects(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """List projects owned by the current user."""
+    projects = (
+        db.query(Project)
+        .filter(Project.owner_user_id == user.id)
+        .order_by(Project.created_at.asc(), Project.id.asc())
+        .all()
+    )
+    return [{"id": str(project.id), "name": project.name} for project in projects]
 
 
 class _ReadControl:
@@ -269,6 +285,7 @@ async def list_conversations(
     return [
         {
             "id": str(conv.id),
+            "project_id": str(conv.project_id),
             "title": conv.title,
             "created_at": conv.created_at.isoformat(),
             "updated_at": conv.updated_at.isoformat(),

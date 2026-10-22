@@ -280,6 +280,7 @@ def read_snapshot(
 
     return SnapshotResponse(
         conversation_id=str(conv_id),
+        project_id=str(conv.project_id),
         sequence=max_sequence,
         events=[_event_to_read(ev) for ev in events],
         messages=[_message_to_summary(msg) for msg in messages],

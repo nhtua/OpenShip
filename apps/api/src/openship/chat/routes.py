@@ -1,8 +1,8 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing_extensions import TypedDict
 
 from ..auth.models import User
 from ..auth.routes import require_jwt
@@ -14,8 +14,9 @@ from ..workspace.models import Project
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
-class ConversationCreateRequest(TypedDict):
-    title: str
+class ConversationCreateRequest(BaseModel):
+    title: str = "New Conversation"
+    project_id: uuid.UUID | None = None
 
 
 @router.get("/conversations")
@@ -33,6 +34,7 @@ async def list_conversations(
     return [
         ConversationResponse(
             id=str(conv.id),
+            project_id=str(conv.project_id),
             title=conv.title,
             created_at=conv.created_at.isoformat(),
             updated_at=conv.updated_at.isoformat(),
@@ -47,17 +49,25 @@ async def create_conversation(
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
-    # Find user's default project
-    project = db.query(Project).filter(
-        Project.owner_user_id == user.id
-    ).first()
+    project_query = db.query(Project).filter(Project.owner_user_id == user.id)
+    if req.project_id is not None:
+        project_query = project_query.filter(Project.id == req.project_id)
+    project = project_query.first()
     if not project:
-        return {"error": {"code": "project_not_found", "message": f"No project found for user {user.id}"}}
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "project_not_found",
+                    "message": "Project not found",
+                }
+            },
+        )
 
     conv = Conversation(
         user_id=user.id,
         project_id=project.id,
-        title=req.get("title", "New Conversation"),
+        title=req.title,
     )
     db.add(conv)
     db.commit()
@@ -65,6 +75,7 @@ async def create_conversation(
 
     return ConversationResponse(
         id=str(conv.id),
+        project_id=str(conv.project_id),
         title=conv.title,
         created_at=conv.created_at.isoformat(),
         updated_at=conv.updated_at.isoformat(),
