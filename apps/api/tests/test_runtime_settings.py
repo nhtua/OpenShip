@@ -8,10 +8,10 @@ from pydantic import ValidationError
 
 from src.openship.capabilities.contracts import ExecutionConfig, LoopLimits
 from src.openship.config import Settings
+from src.openship.connectors.selection import ConnectorSelectionError
 from src.openship.database.session import SessionLocal
 from src.openship.providers.contracts import RunLimits
 from src.openship.providers.registry import load_profiles
-from src.openship.runs.service import _tool_chat_execution
 from tests.conftest import profile_spec
 
 
@@ -28,10 +28,17 @@ def _settings(**overrides):
     )
 
 
-def _build_tool_execution(model_config):
+def _build_tool_execution(model_config, monkeypatch):
+    from src.openship.runs import service
+
+    def no_configured_connector(*_args, **_kwargs):
+        raise ConnectorSelectionError("connector_required")
+
+    monkeypatch.setattr(service, "resolve_connector", no_configured_connector)
+    monkeypatch.setattr(service, "_connector_rows_for_project", lambda *_args: 0)
     db = SessionLocal()
     try:
-        return _tool_chat_execution(db, uuid.uuid4(), model_config, (), {})
+        return service._tool_chat_execution(db, uuid.uuid4(), model_config, (), {})
     finally:
         db.close()
 
@@ -60,6 +67,16 @@ def test_environment_settings_override_defaults_and_change_registry_cache(monkey
     # Existing runs retain their original configuration.
     assert initial.limits.run_timeout_seconds == 1800
     assert initial.primary.capabilities.context_tokens == 128000
+
+
+def test_empty_optional_connector_environment_values_remain_unconfigured(monkeypatch):
+    monkeypatch.setenv("CONNECTOR_INSTALLATION_ID", "")
+    monkeypatch.setenv("CONNECTOR_OPERATOR_USER_ID", "")
+
+    installed = Settings(_env_file=None)
+
+    assert installed.connector_installation_id is None
+    assert installed.connector_operator_user_id is None
 
 
 def test_explicit_profile_limits_remain_stricter_than_installation():
@@ -103,13 +120,13 @@ def test_tool_chat_pins_configured_deadline_and_preserves_saved_run(monkeypatch)
     installed.tool_enabled_ids = "brave_web_search"
     monkeypatch.setattr(service, "settings", installed)
     pinned = load_profiles(installed).pin_selection(None)
-    execution = _build_tool_execution(pinned)
+    execution = _build_tool_execution(pinned, monkeypatch)
     saved = execution.model_dump_json()
     assert execution.loop_limits.deadline_seconds == 900
     installed.workflow_run_timeout_seconds = 1800
     assert ExecutionConfig.model_validate_json(saved).loop_limits.deadline_seconds == 900
     repinned = load_profiles(installed).pin_selection(None)
-    assert _build_tool_execution(repinned).loop_limits.deadline_seconds == 1800
+    assert _build_tool_execution(repinned, monkeypatch).loop_limits.deadline_seconds == 1800
 
 
 def test_tool_chat_honors_a_shorter_profile_deadline(monkeypatch):
@@ -122,7 +139,7 @@ def test_tool_chat_honors_a_shorter_profile_deadline(monkeypatch):
     installed.tool_enabled_ids = "brave_web_search"
     monkeypatch.setattr(service, "settings", installed)
     pinned = load_profiles(installed).pin_selection(None)
-    assert _build_tool_execution(pinned).loop_limits.deadline_seconds == 300
+    assert _build_tool_execution(pinned, monkeypatch).loop_limits.deadline_seconds == 300
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", env_ignore_empty=True
+    )
 
     # Model profiles (non-secret). Credentials stay in their own named bindings.
     model_profiles_json: str = ""
@@ -30,6 +32,9 @@ class Settings(BaseSettings):
     )
     connector_idempotency_hmac_key_file: Path = Path(
         "/run/secrets/openship-connector-idempotency-hmac-keys.json"
+    )
+    connector_dispatch_lock_file: Path = Path(
+        "/run/secrets/openship-managed-dispatch.lock"
     )
     connector_operator_user_id: UUID | None = None
     connector_browser_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

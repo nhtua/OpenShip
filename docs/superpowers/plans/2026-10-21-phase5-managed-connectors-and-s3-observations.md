@@ -175,13 +175,13 @@ Each condition must have an explicit owning test:
 
 **Tests:** `tests/connectors/test_operations.py`, `tests/integration/test_connector_rotation_postgres.py`.
 
-- [ ] Provide explicit operator commands for key initialization, batched re-encryption, managed-dispatch locking/unlocking and operator-search migration.
-- [ ] Key initialization creates protected files exclusively and refuses overwrites. Never print generated keys.
-- [ ] Re-encryption uses fresh nonces while retaining logical credential versions. It must resume after interruption and verify retained ciphertext before retiring an old key.
-- [ ] Migration previews service, visibility and project-default effects. Import only explicitly selected Brave/Tavily bindings; global import requires operator authority.
-- [ ] Document and test the supported restore sequence: stop workers, restore database/artifacts/configuration, lock managed dispatch, restore keys separately, verify bindings/external access/evidence, then explicitly unlock.
-- [ ] Mount keys read-only into API and worker services only. Missing keys must leave plain chat usable.
-- [ ] Keep secret-write HMAC key versions available through their 24-hour retry windows.
+- [x] Provide explicit operator commands for key initialization, batched re-encryption, managed-dispatch locking/unlocking and operator-search migration.
+- [x] Key initialization creates protected files exclusively and refuses overwrites. Never print generated keys.
+- [x] Re-encryption uses fresh nonces while retaining logical credential versions. It must resume after interruption and verify retained ciphertext before retiring an old key.
+- [x] Migration previews service, visibility and project-default effects. Import only explicitly selected Brave/Tavily bindings; global import requires operator authority.
+- [x] Document and test the supported restore sequence: stop workers, restore database/artifacts/configuration, lock managed dispatch, restore keys separately, verify bindings/external access/evidence, then explicitly unlock.
+- [x] Mount keys read-only into API and worker services only. Missing keys must leave plain chat usable.
+- [x] Keep secret-write HMAC key versions available through their 24-hour retry windows.
 
 **Commit deliverable:** Operable credential lifecycle with recoverable rotation and a dispatch-disabled restore procedure.
 

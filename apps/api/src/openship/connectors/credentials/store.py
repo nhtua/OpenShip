@@ -87,6 +87,14 @@ class CredentialStore:
     def __repr__(self) -> str:
         return f"CredentialStore(key_ids={self._keyring.key_ids!r})"
 
+    @property
+    def active_key_id(self) -> str:
+        return self._keyring.active_key_id
+
+    @property
+    def key_ids(self) -> tuple[str, ...]:
+        return self._keyring.key_ids
+
     def encrypt(self, context: CredentialContext, payload: dict[str, Any]) -> CredentialEnvelope:
         try:
             if not isinstance(context, CredentialContext):

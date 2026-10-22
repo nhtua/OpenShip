@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ...capabilities.contracts import ConnectorRef
 from ...config import settings
 from ..credentials.dependencies import get_credential_store
+from ..credentials.recovery import managed_dispatch_is_locked
 from ..credentials.store import CredentialContext, CredentialEnvelope
 from ..errors import CredentialStoreUnavailable
 from ..models import Connector, ConnectorRevision, CredentialVersion
@@ -125,6 +126,8 @@ class SearchCredentialBroker:
         kind: str,
         reference: ConnectorRef,
     ) -> None:
+        if managed_dispatch_is_locked():
+            raise ConnectorCredentialError("connector_unavailable")
         with self._session_factory() as db:
             _connector_bundle(
                 db,
@@ -158,6 +161,8 @@ class SearchCredentialBroker:
         kind: str,
         reference: ConnectorRef,
     ) -> str:
+        if managed_dispatch_is_locked():
+            raise ConnectorCredentialError("connector_unavailable")
         with self._session_factory() as db:
             connector, _revision, credential = _connector_bundle(
                 db,
