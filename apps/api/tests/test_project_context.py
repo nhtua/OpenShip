@@ -53,7 +53,7 @@ def test_project_list_is_authenticated_and_contains_only_owned_projects(owned_co
 
     assert response.status_code == 200
     assert response.json() == [
-        {"id": str(own_project.id), "name": own_project.name}
+        {"id": str(own_project.id), "name": own_project.name, "archived_at": None}
     ]
     assert str(foreign_project.id) not in response.text
 
@@ -84,10 +84,15 @@ def test_conversation_and_snapshot_responses_include_project_identity(owned_cont
 
     assert snapshot.status_code == 200
     assert snapshot.json()["project_id"] == str(project.id)
+    assert snapshot.json()["archived_at"] is None
+    assert snapshot.json()["project_archived_at"] is None
     listed_conversation = next(
         item for item in listed.json() if item["id"] == conversation_id
     )
     assert listed_conversation["project_id"] == str(project.id)
+    assert listed_conversation["archived_at"] is None
+    assert listed_conversation["project_archived_at"] is None
+    assert listed_conversation["project_name"] == project.name
 
 
 def test_conversation_creation_rejects_a_foreign_project(owned_context):

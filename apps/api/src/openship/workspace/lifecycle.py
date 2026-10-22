@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import HTTPException
@@ -18,6 +19,14 @@ class ArchiveStateError(RuntimeError):
     def __init__(self, code: ArchiveErrorCode):
         self.code = code
         super().__init__(code)
+
+
+def format_archive_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
 
 
 def assert_active_project(project: Project) -> None:

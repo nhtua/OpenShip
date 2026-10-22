@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -172,3 +173,24 @@ async def test_conversation_workspace_route_returns_safe_association_and_file_pa
         assert len(next_page["files"]["items"]) == 1
         assert next_page["files"]["items"][0]["id"] != response["files"]["items"][0]["id"]
         assert response["files"]["items"][0]["name"] == "duplicate-name.txt"
+
+
+@pytest.mark.asyncio
+async def test_archived_conversation_workspace_remains_readable(monkeypatch, tmp_path):
+    with TestSessionLocal() as db:
+        user, project, conversation = _conversation(db)
+        project.archived_at = datetime.now(UTC)
+        conversation.archived_at = datetime.now(UTC)
+        db.commit()
+        storage_id = uuid.uuid4()
+        store_root = tmp_path / "archived-workspace"
+        LocalArtifactStore(store_root, storage_id).initialize()
+        monkeypatch.setattr("src.openship.workspace.routes.configured_store", lambda: LocalArtifactStore(store_root, storage_id))
+
+        response = await get_conversation_workspace(
+            str(conversation.id), limit=20, cursor=None, db=db, user=user
+        )
+
+        assert response["workspace"]["conversation_id"] == str(conversation.id)
+        assert response["workspace"]["project_id"] == str(project.id)
+        assert response["workspace"]["status"] == "available"

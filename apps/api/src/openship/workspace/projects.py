@@ -1,52 +1,23 @@
-"""Owner-scoped Project lifecycle commands and safe deletion checks."""
+"""Owner-scoped Project lifecycle commands."""
 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..artifacts.models import Artifact, ArtifactQuota
 from ..auth.models import User
-from ..chat.models import Conversation
-from ..connectors.models import (
-    Connector,
-    ConnectorAuditEvent,
-    ConnectorAvailability,
-    ConnectorRequestLedger,
-    ConnectorRevision,
-    CredentialVersion,
-    ProjectConnectorDefault,
-)
-from ..execution.models import ToolOperation
-from ..runs.models import Event, Run
-from .models import ConversationWorkspace, Project
+from .lifecycle import ArchiveStateError, assert_active_project
+from .models import Project
 
 
 class ProjectLifecycleError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
-
-
-_PROJECT_DEPENDENCIES = (
-    (Conversation, Conversation.project_id),
-    (ConversationWorkspace, ConversationWorkspace.project_id),
-    (Run, Run.project_id),
-    (Event, Event.project_id),
-    (ToolOperation, ToolOperation.project_id),
-    (Artifact, Artifact.project_id),
-    (ArtifactQuota, ArtifactQuota.project_id),
-    (Connector, Connector.project_id),
-    (CredentialVersion, CredentialVersion.project_id),
-    (ConnectorRevision, ConnectorRevision.project_id),
-    (ProjectConnectorDefault, ProjectConnectorDefault.project_id),
-    (ConnectorRequestLedger, ConnectorRequestLedger.project_id),
-    (ConnectorAuditEvent, ConnectorAuditEvent.project_id),
-    (ConnectorAuditEvent, ConnectorAuditEvent.consuming_project_id),
-    (ConnectorAvailability, ConnectorAvailability.project_id),
-)
 
 
 def _validated_name(name: str) -> str:
@@ -70,13 +41,18 @@ def _lock_owner(db: Session, owner_id: uuid.UUID) -> User:
     return owner
 
 
-def list_owned_projects(db: Session, owner_id: uuid.UUID) -> list[Project]:
-    return (
-        db.query(Project)
-        .filter(Project.owner_user_id == owner_id)
-        .order_by(Project.created_at.asc(), Project.id.asc())
-        .all()
-    )
+def list_owned_projects(
+    db: Session,
+    owner_id: uuid.UUID,
+    *,
+    state: Literal["active", "archived"] = "active",
+) -> list[Project]:
+    query = db.query(Project).filter(Project.owner_user_id == owner_id)
+    if state == "active":
+        query = query.filter(Project.archived_at.is_(None))
+    else:
+        query = query.filter(Project.archived_at.is_not(None))
+    return query.order_by(Project.created_at.asc(), Project.id.asc()).all()
 
 
 def get_owned_project(
@@ -91,7 +67,7 @@ def get_owned_project(
         Project.owner_user_id == owner_id,
     )
     if for_update:
-        query = query.with_for_update()
+        query = query.with_for_update().populate_existing()
     project = query.first()
     if project is None:
         raise ProjectLifecycleError("project_not_found")
@@ -122,20 +98,15 @@ def rename_project(
         project_id=project_id,
         for_update=True,
     )
+    assert_active_project(project)
     project.name = normalized_name
     project.updated_at = func.now()
     db.flush()
     return project
 
 
-def _has_retained_data(db: Session, project_id: uuid.UUID) -> bool:
-    for model, project_column in _PROJECT_DEPENDENCIES:
-        if db.query(model.id).filter(project_column == project_id).limit(1).first():
-            return True
-    return False
-
-
-def delete_project(db: Session, *, owner_id: uuid.UUID, project_id: uuid.UUID) -> None:
+def archive_project(db: Session, *, owner_id: uuid.UUID, project_id: uuid.UUID) -> Project:
+    """Archive an owned project without changing any retained project data."""
     _lock_owner(db, owner_id)
     project = get_owned_project(
         db,
@@ -143,17 +114,40 @@ def delete_project(db: Session, *, owner_id: uuid.UUID, project_id: uuid.UUID) -
         project_id=project_id,
         for_update=True,
     )
-    project_count = (
+    if project.archived_at is not None:
+        return project
+
+    active_project_count = (
         db.query(func.count(Project.id))
-        .filter(Project.owner_user_id == owner_id)
+        .filter(Project.owner_user_id == owner_id, Project.archived_at.is_(None))
         .scalar()
     )
-    if project_count <= 1:
+    if active_project_count <= 1:
         raise ProjectLifecycleError("last_project_required")
-    if _has_retained_data(db, project.id):
-        raise ProjectLifecycleError("project_not_empty")
-    db.delete(project)
+
+    project.archived_at = datetime.now(UTC)
     db.flush()
+    db.refresh(project, attribute_names=["archived_at"])
+    return project
+
+
+def restore_project(db: Session, *, owner_id: uuid.UUID, project_id: uuid.UUID) -> Project:
+    _lock_owner(db, owner_id)
+    project = get_owned_project(
+        db,
+        owner_id=owner_id,
+        project_id=project_id,
+        for_update=True,
+    )
+    if project.archived_at is not None:
+        project.archived_at = None
+        db.flush()
+    return project
+
+
+def delete_project(db: Session, *, owner_id: uuid.UUID, project_id: uuid.UUID) -> None:
+    """Compatibility alias for project archival; project data is never deleted."""
+    archive_project(db, owner_id=owner_id, project_id=project_id)
 
 
 def select_project_for_conversation(
@@ -162,25 +156,35 @@ def select_project_for_conversation(
     owner_id: uuid.UUID,
     project_id: uuid.UUID | None,
 ) -> Project:
-    """Lock the owner and selected project so creation cannot race deletion."""
+    """Select an active project while serializing creation against archive."""
     _lock_owner(db, owner_id)
     if project_id is not None:
-        return get_owned_project(
+        project = get_owned_project(
             db,
             owner_id=owner_id,
             project_id=project_id,
             for_update=True,
         )
+        assert_active_project(project)
+        return project
 
     candidates = (
         db.query(Project)
-        .filter(Project.owner_user_id == owner_id)
+        .filter(Project.owner_user_id == owner_id, Project.archived_at.is_(None))
         .order_by(Project.created_at.asc(), Project.id.asc())
         .limit(2)
         .with_for_update()
+        .populate_existing()
         .all()
     )
     if not candidates:
+        has_archived_project = (
+            db.query(Project.id)
+            .filter(Project.owner_user_id == owner_id, Project.archived_at.is_not(None))
+            .first()
+        )
+        if has_archived_project:
+            raise ArchiveStateError("project_archived")
         raise ProjectLifecycleError("project_not_found")
     if len(candidates) > 1:
         raise ProjectLifecycleError("project_required")

@@ -9,10 +9,14 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from src.openship.artifacts.models import Artifact, ArtifactQuota
 from src.openship.auth.models import User
-from src.openship.chat.models import Conversation
+from src.openship.auth.routes import require_jwt
+from src.openship.chat.models import Conversation, Message
 from src.openship.chat.routes import ConversationCreateRequest, create_conversation
+from src.openship.connectors.models import ProjectConnectorDefault
 from src.openship.database.session import SessionLocal
+from src.openship.workspace.models import ConversationWorkspace
 from src.openship.workspace.project_routes import (
     _ProjectName,
     project_create,
@@ -26,11 +30,13 @@ from src.openship.workspace.project_routes import (
 )
 from src.openship.workspace.projects import (
     ProjectLifecycleError,
+    archive_project,
     create_project,
     delete_project,
     get_owned_project,
     list_owned_projects,
     rename_project,
+    restore_project,
 )
 
 
@@ -162,77 +168,183 @@ def test_foreign_project_reads_and_mutations_are_hidden(project_owner):
         assert db.get(type(foreign), foreign.id) is not None
 
 
-def test_delete_allows_only_empty_projects_and_preserves_one_owned_project(project_owner):
+def test_project_archive_preserves_populated_scope(project_owner, monkeypatch):
+    import src.openship.workspace.projects as project_services
+
     with SessionLocal() as db:
-        retained = _create_project(db, project_owner.id, "Retained")
-        removable = _create_project(db, project_owner.id, "Empty")
-
-        delete_project(db, owner_id=project_owner.id, project_id=removable.id)
-        db.commit()
-        assert db.get(type(removable), removable.id) is None
-
-        with pytest.raises(ProjectLifecycleError) as last_project:
-            delete_project(db, owner_id=project_owner.id, project_id=retained.id)
-        assert last_project.value.code == "last_project_required"
-        db.rollback()
-        assert db.get(type(retained), retained.id) is not None
-
-
-def test_delete_refuses_projects_with_retained_conversations(project_owner):
-    with SessionLocal() as db:
-        project = _create_project(db, project_owner.id, "Has history")
-        _create_project(db, project_owner.id, "Keep last-project rule separate")
+        project = _create_project(db, project_owner.id, "Has retained scope")
+        _create_project(db, project_owner.id, "Keep one active")
         conversation = Conversation(
             user_id=project_owner.id,
             project_id=project.id,
             title="Retained conversation",
         )
         db.add(conversation)
-        db.commit()
-        conversation_id = conversation.id
-
-        with pytest.raises(ProjectLifecycleError) as retained:
-            delete_project(db, owner_id=project_owner.id, project_id=project.id)
-        assert retained.value.code == "project_not_empty"
-        db.rollback()
-        assert db.get(Conversation, conversation_id) is not None
-
-
-def test_delete_refuses_project_defaults_artifact_quotas_and_audit_records(project_owner):
-    from src.openship.artifacts.models import ArtifactQuota
-    from src.openship.connectors.models import (
-        ConnectorAuditEvent,
-        ProjectConnectorDefault,
-    )
-
-    with SessionLocal() as db:
-        project = _create_project(db, project_owner.id, "Has retained settings")
-        _create_project(db, project_owner.id, "Keep last-project rule separate")
-        db.add_all(
-            [
-                ArtifactQuota(scope="project", project_id=project.id),
-                ProjectConnectorDefault(
-                    project_id=project.id,
-                    service="brave",
-                    updated_by_user_id=project_owner.id,
-                ),
-                ConnectorAuditEvent(
-                    visibility="project",
-                    project_id=project.id,
-                    actor_user_id=project_owner.id,
-                    action="created",
-                    outcome="success",
-                ),
-            ]
+        db.flush()
+        message = Message(
+            conversation_id=conversation.id,
+            role="user",
+            content="Retained message",
         )
+        artifact = Artifact(
+            project_id=project.id,
+            conversation_id=conversation.id,
+            kind="upload",
+            media_type="text/plain",
+            display_name="state.txt",
+            size_bytes=4,
+            sha256="a" * 64,
+            relative_storage_key="projects/retained/conversations/state.txt",
+            status="ready",
+            source="upload",
+            mutability="immutable",
+        )
+        quota = ArtifactQuota(
+            scope="project",
+            project_id=project.id,
+            committed_bytes=4,
+            committed_count=1,
+        )
+        workspace = ConversationWorkspace(
+            conversation_id=conversation.id,
+            project_id=project.id,
+            schema_version=1,
+            relative_root="projects/retained/conversations/existing",
+            storage_id=uuid.uuid4(),
+            status="available",
+        )
+        default = ProjectConnectorDefault(
+            project_id=project.id,
+            service="brave",
+            updated_by_user_id=project_owner.id,
+        )
+        db.add_all([message, artifact, quota, workspace, default])
+        db.commit()
+        project_id = project.id
+        conversation_id = conversation.id
+        message_id = message.id
+        artifact_id = artifact.id
+        quota_id = quota.id
+        workspace_id = workspace.id
+        workspace_storage_id = workspace.storage_id
+        default_id = default.id
+        artifact_key = artifact.relative_storage_key
+        monkeypatch.setattr(
+            project_services,
+            "_has_retained_data",
+            lambda *_args, **_kwargs: pytest.fail("archive must not scan or delete retained scope"),
+            raising=False,
+        )
+
+        actor = db.get(User, project_owner.id)
+        response = project_delete(project.id, db, actor)
+        assert response.status_code == 204
+
+        assert get_owned_project(db, owner_id=project_owner.id, project_id=project.id).archived_at
+        assert db.get(Conversation, conversation_id) is not None
+        assert db.get(Message, message_id).content == "Retained message"
+        retained_artifact = db.get(Artifact, artifact_id)
+        assert retained_artifact.relative_storage_key == artifact_key
+        assert retained_artifact.status == "ready"
+        assert db.get(ArtifactQuota, quota_id).committed_bytes == 4
+        retained_workspace = db.get(ConversationWorkspace, workspace_id)
+        assert retained_workspace.relative_root == "projects/retained/conversations/existing"
+        assert retained_workspace.storage_id == workspace_storage_id
+        retained_default = db.get(ProjectConnectorDefault, default_id)
+        assert retained_default.project_id == project_id
+
+
+def test_archive_restore_idempotency(project_owner):
+    with SessionLocal() as db:
+        project = _create_project(db, project_owner.id, "Archive me")
+        _create_project(db, project_owner.id, "Keep active")
+
+        archived = archive_project(db, owner_id=project_owner.id, project_id=project.id)
+        first_archive_time = archived.archived_at
+        db.commit()
+        repeated = archive_project(db, owner_id=project_owner.id, project_id=project.id)
+        assert repeated.archived_at == first_archive_time
         db.commit()
 
-        with pytest.raises(ProjectLifecycleError) as retained:
-            delete_project(db, owner_id=project_owner.id, project_id=project.id)
+        restored = restore_project(db, owner_id=project_owner.id, project_id=project.id)
+        assert restored.archived_at is None
+        db.commit()
+        assert restore_project(db, owner_id=project_owner.id, project_id=project.id).archived_at is None
 
-        assert retained.value.code == "project_not_empty"
+        conversation = Conversation(
+            user_id=project_owner.id, project_id=project.id, title="Lifecycle"
+        )
+        db.add(conversation)
+        db.commit()
+        from src.openship.chat.lifecycle import (
+            archive_conversation,
+            restore_conversation,
+        )
+
+        archived_conversation, _ = archive_conversation(
+            db, owner_id=project_owner.id, conversation_id=conversation.id
+        )
+        first_conversation_archive_time = archived_conversation.archived_at
+        db.commit()
+        repeated_conversation, _ = archive_conversation(
+            db, owner_id=project_owner.id, conversation_id=conversation.id
+        )
+        assert repeated_conversation.archived_at == first_conversation_archive_time
+        db.commit()
+        restored_conversation, _ = restore_conversation(
+            db, owner_id=project_owner.id, conversation_id=conversation.id
+        )
+        assert restored_conversation.archived_at is None
+        db.commit()
+        restored_again, _ = restore_conversation(
+            db, owner_id=project_owner.id, conversation_id=conversation.id
+        )
+        assert restored_again.archived_at is None
+
+
+def test_final_active_project_cannot_be_archived(project_owner):
+    with SessionLocal() as db:
+        project = _create_project(db, project_owner.id, "Only active project")
+
+        with pytest.raises(ProjectLifecycleError) as last_project:
+            archive_project(db, owner_id=project_owner.id, project_id=project.id)
+
+        assert last_project.value.code == "last_project_required"
         db.rollback()
-        assert get_owned_project(db, owner_id=project_owner.id, project_id=project.id)
+        assert get_owned_project(db, owner_id=project_owner.id, project_id=project.id).archived_at is None
+
+
+def test_project_list_state_filters_and_validates(client, project_owner, monkeypatch):
+    monkeypatch.setitem(
+        client.app.dependency_overrides,
+        require_jwt,
+        lambda: SimpleNamespace(id=project_owner.id),
+    )
+    with SessionLocal() as db:
+        first = _create_project(db, project_owner.id, "Active")
+        archived = _create_project(db, project_owner.id, "Archived")
+        first_id = str(first.id)
+        archived_id = str(archived.id)
+
+    response = client.post(f"/api/projects/{archived_id}/archive")
+    assert response.status_code == 200
+    assert response.json()["archived_at"]
+    assert {item["name"] for item in client.get("/api/projects").json()} == {"Active"}
+    rejected_rename = client.patch(
+        f"/api/projects/{archived_id}", json={"name": "Still archived"}
+    )
+    assert rejected_rename.status_code == 409
+    assert rejected_rename.json()["error"]["code"] == "project_archived"
+    archived_list = client.get("/api/projects?state=archived")
+    assert archived_list.status_code == 200
+    assert archived_list.json()[0]["id"] == archived_id
+    assert archived_list.json()[0]["archived_at"]
+    assert client.get("/api/projects?state=invalid").status_code == 422
+    assert client.post(f"/api/projects/{archived_id}/restore").json()["archived_at"] is None
+    assert {item["id"] for item in client.get("/api/projects").json()} == {
+        first_id,
+        archived_id,
+    }
 
 
 def test_conversation_requires_explicit_project_when_owner_has_multiple(project_owner):

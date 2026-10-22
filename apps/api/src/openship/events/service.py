@@ -10,6 +10,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from ..artifacts.contracts import ArtifactSummary
 from ..artifacts.models import Artifact
+from ..chat.lifecycle import ConversationLifecycleError, get_owned_conversation_scope
 from ..chat.models import Conversation, Message
 from ..execution.pagination import decode_cursor, encode_cursor
 from ..execution.reads import read_operation_page
@@ -20,6 +21,7 @@ from ..runs.schemas import (
     _model_projection,
     _usage_projection,
 )
+from ..workspace.lifecycle import format_archive_timestamp
 from .schemas import (
     EventRead,
     MessageSummary,
@@ -178,15 +180,17 @@ def read_snapshot(
             detail={"error": {"code": "invalid_conversation_id", "message": "Invalid conversation ID format"}},
         )
 
-    conv = db.query(Conversation).filter(
-        Conversation.id == conv_id,
-        Conversation.user_id == user_id,
-    ).first()
-    if not conv:
+    try:
+        conv, project = get_owned_conversation_scope(
+            db,
+            owner_id=user_id,
+            conversation_id=conv_id,
+        )
+    except ConversationLifecycleError:
         raise HTTPException(
             status_code=404,
             detail={"error": {"code": "conversation_not_found", "message": "Conversation not found"}},
-        )
+        ) from None
 
     if not 1 <= artifact_limit <= 100 or not 1 <= operation_limit <= 100:
         raise HTTPException(
@@ -281,6 +285,8 @@ def read_snapshot(
     return SnapshotResponse(
         conversation_id=str(conv_id),
         project_id=str(conv.project_id),
+        archived_at=format_archive_timestamp(conv.archived_at),
+        project_archived_at=format_archive_timestamp(project.archived_at),
         sequence=max_sequence,
         events=[_event_to_read(ev) for ev in events],
         messages=[_message_to_summary(msg) for msg in messages],
