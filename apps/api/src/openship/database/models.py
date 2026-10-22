@@ -3,6 +3,15 @@
 from ..artifacts.models import Artifact, ArtifactQuota
 from ..auth.models import Base, User
 from ..chat.models import Conversation, Message
+from ..connectors.models import (
+    Connector,
+    ConnectorAuditEvent,
+    ConnectorAvailability,
+    ConnectorRequestLedger,
+    ConnectorRevision,
+    CredentialVersion,
+    ProjectConnectorDefault,
+)
 from ..execution.models import (
     ExecutionSlot,
     ToolAttempt,
@@ -23,13 +32,20 @@ __all__ = [
     "Artifact",
     "ArtifactQuota",
     "Base",
+    "Connector",
+    "ConnectorAuditEvent",
+    "ConnectorAvailability",
+    "ConnectorRequestLedger",
+    "ConnectorRevision",
     "Conversation",
     "ConversationWorkspace",
+    "CredentialVersion",
     "Event",
     "ExecutionSlot",
     "Message",
     "Outbox",
     "Project",
+    "ProjectConnectorDefault",
     "ProviderAttempt",
     "Run",
     "RunJob",

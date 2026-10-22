@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     tool_enabled_ids: str = ""
     tool_concurrency: int = Field(default=1, ge=1, le=128)
 
+    # Managed Connector keys are provisioned separately and read lazily by
+    # credential setup/dispatch. Missing files do not affect plain chat.
+    connector_installation_id: UUID | None = None
+    connector_encryption_key_file: Path = Path(
+        "/run/secrets/openship-connector-encryption-keys.json"
+    )
+    connector_idempotency_hmac_key_file: Path = Path(
+        "/run/secrets/openship-connector-idempotency-hmac-keys.json"
+    )
+
     # Shared persistent local artifact storage. Initialization is an explicit
     # operator action; API requests never create or replace an empty root.
     artifact_root: Path = Path("var/artifacts")

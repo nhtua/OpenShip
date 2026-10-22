@@ -103,11 +103,11 @@ Each condition must have an explicit owning test:
 
 **Tests:** `tests/connectors/test_credentials.py`, `tests/integration/test_connector_migration_postgres.py`.
 
-- [ ] Add connector, immutable revision, credential-version, project-default, request-ledger, scoped audit and availability records.
-- [ ] Enforce global/project ownership shape, project-only AWS, same-connector credential references and immutable configuration revisions. Downgrade must refuse protected retained data.
-- [ ] Implement AES-256-GCM using fresh 96-bit nonces and authenticated associated data binding installation, visibility, owning scope, connector, credential version, schema and kind.
-- [ ] Load versioned encryption keys and the separate idempotency HMAC key from protected files. Require exactly 32 decoded bytes per encryption key. Missing/malformed keys produce fixed unavailable errors; startup must not generate replacements.
-- [ ] Test that changing ciphertext, nonce, connector, scope or credential kind causes decryption failure. Assert bounded 16 KiB secret payloads and secret-safe representations.
+- [x] Add connector, immutable revision, credential-version, project-default, request-ledger, scoped audit and availability records.
+- [x] Enforce global/project ownership shape, project-only AWS, same-connector credential references and immutable configuration revisions. Downgrade must refuse protected retained data.
+- [x] Implement AES-256-GCM using fresh 96-bit nonces and authenticated associated data binding installation, visibility, owning scope, connector, credential version, schema and kind.
+- [x] Load versioned encryption keys and the separate idempotency HMAC key from protected files. Require exactly 32 decoded bytes per encryption key. Missing/malformed keys produce fixed unavailable errors; startup must not generate replacements.
+- [x] Test that changing ciphertext, nonce, connector, scope or credential kind causes decryption failure. Assert bounded 16 KiB secret payloads and secret-safe representations.
 
 **Verification:** Unit crypto tests plus real PostgreSQL upgrade/history/protected-downgrade tests.
 
