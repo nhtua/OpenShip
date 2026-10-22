@@ -26,6 +26,7 @@ class Conversation(Base):
     title = Column(String(255), default="New Conversation")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    archived_at = Column(DateTime(timezone=True), nullable=True)
     next_event_sequence = Column(Integer, nullable=False, server_default="0")
 
 
