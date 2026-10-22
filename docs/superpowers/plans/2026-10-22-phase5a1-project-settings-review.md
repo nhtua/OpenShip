@@ -115,12 +115,12 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 
 **Interfaces:** `GET /api/connectors/setup-context` returns the fixed safe shape above. `connector_origin_forbidden` is a definite pre-acceptance rejection. `readConnectorError(error: unknown)` returns a recognized safe code/message and submission-outcome classification; it accepts flat and FastAPI error envelopes, and does not echo arbitrary server payloads.
 
-- [ ] Write regression tests in `apps/api/tests/connectors/test_routes.py` for origin denial before body consumption, safe setup-context readiness with absent/malformed files, authenticated context access and non-operator management capability. Verify no key metadata or sentinel values appear in responses.
-- [ ] Extend `apps/web/tests/ConnectorSetup.test.ts`: a definite origin rejection triggers no status call and permits corrected re-entry; ambiguous delivery retains the ID; a status 503 displays storage-unavailable guidance while remaining blocked; later complete/404/410 resolves correctly; both envelope shapes behave identically.
-- [ ] Run those tests and observe the intended failures before changing product code.
-- [ ] Implement the safe context route and error normalization/classification. Use context permission before loading operator-only management data; keep server authorization unchanged.
-- [ ] Document explicit local key initialization/configuration, shared API/worker identity/files, operator setup and matching browser origins. Set Vite `server.strictPort: true`. Keep actual local installation IDs, operator IDs, origins and host key paths in untracked `.env` files; never stage `.env` files or key material.
-- [ ] Run the targeted API/browser tests, frontend typecheck and API Ruff. Review and commit the tested fix using the repository's scanned message-file workflow.
+- [x] Write regression tests in `apps/api/tests/connectors/test_routes.py` for origin denial before body consumption, safe setup-context readiness with absent/malformed files, authenticated context access and non-operator management capability. Verify no key metadata or sentinel values appear in responses.
+- [x] Extend `apps/web/tests/ConnectorSetup.test.ts`: a definite origin rejection triggers no status call and permits corrected re-entry; ambiguous delivery retains the ID; a status 503 displays storage-unavailable guidance while remaining blocked; later complete/404/410 resolves correctly; both envelope shapes behave identically.
+- [x] Run those tests and observe the intended failures before changing product code.
+- [x] Implement the safe context route and error normalization/classification. Use context permission before loading operator-only management data; keep server authorization unchanged.
+- [x] Document explicit local key initialization/configuration, shared API/worker identity/files, operator setup and matching browser origins. Set Vite `server.strictPort: true`. Keep actual local installation IDs, operator IDs, origins and host key paths in untracked `.env` files; never stage `.env` files or key material.
+- [x] Run the targeted API/browser tests, frontend typecheck and API Ruff. Review and commit the tested fix using the repository's scanned message-file workflow.
 
 **Deliverable:** The reported rejection no longer becomes an uncertain-write loop, and an unprovisioned installation explains why credential setup is unavailable.
 

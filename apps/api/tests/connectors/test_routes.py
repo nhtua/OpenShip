@@ -21,6 +21,7 @@ from src.openship.connectors.models import (
 )
 from src.openship.connectors.routes import (
     _require_browser_origin,
+    connector_setup_context,
     global_connector_create,
     global_connector_request_status,
     project_connector_create,
@@ -30,6 +31,9 @@ from src.openship.connectors.routes import (
     project_connector_list,
     project_connector_replace_credential,
     project_connector_update,
+)
+from src.openship.connectors.routes import (
+    router as connectors_router,
 )
 from src.openship.connectors.service import (
     ConnectorCommandError,
@@ -410,8 +414,99 @@ def test_authentication_and_origin_checks_precede_secret_body_reads(
     with pytest.raises(HTTPException) as refused:
         _require_browser_origin(refused_origin)
     assert refused.value.status_code == 403
+    assert refused.value.detail["error"]["code"] == "connector_origin_forbidden"
     assert not origin_consumed()
     assert "synthetic-secret-sentinel" not in str(refused.value.detail)
+
+
+def test_global_origin_rejection_is_definite_and_precedes_secret_body_read(
+    connector_identity, monkeypatch, tmp_path
+):
+    actor, _project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    request, consumed = _request(
+        "POST",
+        "/api/global-connectors",
+        headers={"Origin": "https://attacker.example", "Idempotency-Key": str(uuid.uuid4())},
+        content=json.dumps(_create_body("origin-secret-sentinel")).encode(),
+    )
+
+    async def create():
+        with SessionLocal() as db:
+            return await global_connector_create(request, db, actor)
+
+    with pytest.raises(HTTPException) as refused:
+        _invoke(create())
+
+    assert refused.value.status_code == 403
+    assert refused.value.detail["error"]["code"] == "connector_origin_forbidden"
+    assert not consumed()
+    assert "origin-secret-sentinel" not in str(refused.value.detail)
+
+
+@pytest.mark.parametrize(
+    ("unavailable_part", "expected_reason"),
+    [
+        ("installation", "installation_id_missing"),
+        ("encryption", "encryption_key_unavailable"),
+        ("hmac", "idempotency_key_unavailable"),
+    ],
+)
+def test_setup_context_reports_only_fixed_safe_readiness_reasons(
+    connector_identity, monkeypatch, tmp_path, unavailable_part, expected_reason
+):
+    actor, _project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    if unavailable_part == "installation":
+        monkeypatch.setattr(settings, "connector_installation_id", None)
+    elif unavailable_part == "encryption":
+        settings.connector_encryption_key_file.write_text("encryption-secret-sentinel")
+        settings.connector_encryption_key_file.chmod(0o600)
+    else:
+        settings.connector_idempotency_hmac_key_file.write_text("hmac-secret-sentinel")
+        settings.connector_idempotency_hmac_key_file.chmod(0o600)
+    response = connector_setup_context(actor)
+
+    assert response == {
+        "can_manage_global": True,
+        "credential_store_ready": False,
+        "unavailable_reason": expected_reason,
+    }
+    safe_response = json.dumps(response)
+    assert "secret-sentinel" not in safe_response
+    assert str(settings.connector_encryption_key_file) not in safe_response
+    assert str(settings.connector_idempotency_hmac_key_file) not in safe_response
+
+
+def test_setup_context_route_is_authenticated():
+    route = next(
+        route
+        for route in connectors_router.routes
+        if route.path == "/api/connectors/setup-context"
+    )
+
+    assert any(dependency.call is require_jwt for dependency in route.dependant.dependencies)
+
+
+def test_setup_context_exposes_operator_capability_and_readiness_without_key_metadata(
+    connector_identity, monkeypatch, tmp_path
+):
+    actor, _project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", uuid.uuid4())
+    response = connector_setup_context(actor)
+
+    assert response == {
+        "can_manage_global": False,
+        "credential_store_ready": True,
+        "unavailable_reason": None,
+    }
+    safe_response = json.dumps(response)
+    assert "test-v1" not in safe_response
+    assert "connector-encryption.json" not in safe_response
+    assert "connector-idempotency.json" not in safe_response
 
 
 def test_non_operator_global_write_and_foreign_project_write_are_hidden(

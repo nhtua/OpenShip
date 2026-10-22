@@ -136,6 +136,17 @@ export interface ConnectorRequestStatus {
   result?: Record<string, unknown>
 }
 
+export type ConnectorSetupUnavailableReason =
+  | 'installation_id_missing'
+  | 'encryption_key_unavailable'
+  | 'idempotency_key_unavailable'
+
+export interface ConnectorSetupContext {
+  can_manage_global: boolean
+  credential_store_ready: boolean
+  unavailable_reason: ConnectorSetupUnavailableReason | null
+}
+
 // What an installation offers. Deliberately contains no credential value,
 // no name of a credential binding, and no full endpoint URL — only a
 // destination label a person can recognise.

@@ -7,6 +7,7 @@ import type {
   CapabilitySummary,
   ConnectorKind,
   ConnectorRequestStatus,
+  ConnectorSetupContext,
   ConnectorUsage,
   ConversationWorkspacePage,
   OperationPage,
@@ -101,6 +102,9 @@ export const capabilitiesApi = {
 
 export const connectorsApi = {
   listProjects: (): Promise<{ data: ProjectSummary[] }> => api.get('/projects'),
+
+  getSetupContext: (): Promise<{ data: ConnectorSetupContext }> =>
+    api.get('/connectors/setup-context'),
 
   listProjectConnectors: (
     projectId: string,

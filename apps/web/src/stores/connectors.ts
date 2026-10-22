@@ -7,6 +7,7 @@ import type {
   ProjectCapabilitySummary,
   ProjectConnectorDefault,
   ProjectSummary,
+  ConnectorSetupUnavailableReason,
 } from '@/types'
 
 export const useConnectorsStore = defineStore('connectors', () => {
@@ -17,6 +18,8 @@ export const useConnectorsStore = defineStore('connectors', () => {
   const capabilities = ref<ProjectCapabilitySummary[]>([])
   const globalConnectors = ref<ConnectorUsage[]>([])
   const canManageGlobal = ref(false)
+  const credentialStoreReady = ref(false)
+  const setupUnavailableReason = ref<ConnectorSetupUnavailableReason | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
   let projectLoadGeneration = 0
@@ -45,13 +48,32 @@ export const useConnectorsStore = defineStore('connectors', () => {
   }
 
   async function loadGlobalManagement(): Promise<void> {
+    let setup: Awaited<ReturnType<typeof connectorsApi.getSetupContext>>
+    try {
+      setup = await connectorsApi.getSetupContext()
+    } catch {
+      globalConnectors.value = []
+      canManageGlobal.value = false
+      credentialStoreReady.value = false
+      setupUnavailableReason.value = null
+      return
+    }
+
+    credentialStoreReady.value = setup.data.credential_store_ready
+    setupUnavailableReason.value = setup.data.unavailable_reason
+    canManageGlobal.value = setup.data.can_manage_global
+    if (!setup.data.can_manage_global) {
+      globalConnectors.value = []
+      return
+    }
+
     try {
       const response = await connectorsApi.listGlobalConnectors()
       globalConnectors.value = response.data
       canManageGlobal.value = true
     } catch {
-      // This endpoint is the authorization source. A frontend username or a
-      // visible global Connector in a project list never grants management.
+      // Keep the safe readiness result, but require the management endpoint's
+      // existing authorization check to succeed before showing its data.
       globalConnectors.value = []
       canManageGlobal.value = false
     }
@@ -126,6 +148,8 @@ export const useConnectorsStore = defineStore('connectors', () => {
     capabilities.value = []
     globalConnectors.value = []
     canManageGlobal.value = false
+    credentialStoreReady.value = false
+    setupUnavailableReason.value = null
     loading.value = false
     error.value = null
   }
@@ -138,6 +162,8 @@ export const useConnectorsStore = defineStore('connectors', () => {
     capabilities,
     globalConnectors,
     canManageGlobal,
+    credentialStoreReady,
+    setupUnavailableReason,
     loading,
     error,
     initialize,

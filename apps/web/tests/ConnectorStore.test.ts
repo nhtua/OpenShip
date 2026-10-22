@@ -10,6 +10,7 @@ vi.mock('@/services/api', () => ({
     getProjectDefault: vi.fn(),
     setProjectDefault: vi.fn(),
     getProjectCapabilities: vi.fn(),
+    getSetupContext: vi.fn(),
     listGlobalConnectors: vi.fn(),
   },
 }))
@@ -31,6 +32,9 @@ describe('connector store', () => {
       data: { service: kind, connector_id: kind === 'brave' ? 'global-brave' : null, revision: kind === 'brave' ? 3 : 0 },
     } as never))
     api.getProjectCapabilities.mockResolvedValue({ data: [] } as never)
+    api.getSetupContext.mockResolvedValue({
+      data: { can_manage_global: false, credential_store_ready: true, unavailable_reason: null },
+    } as never)
     api.listGlobalConnectors.mockRejectedValue({ response: { status: 403 } })
   })
 
@@ -44,9 +48,15 @@ describe('connector store', () => {
     expect(store.defaults.brave?.connector_id).toBe('global-brave')
     expect(store.canManageGlobal).toBe(false)
     expect(store.globalConnectors).toEqual([])
+    expect(store.credentialStoreReady).toBe(true)
+    expect(api.getSetupContext).toHaveBeenCalledTimes(1)
+    expect(api.listGlobalConnectors).not.toHaveBeenCalled()
   })
 
   it('only enables global controls when the protected operator endpoint succeeds', async () => {
+    api.getSetupContext.mockResolvedValue({
+      data: { can_manage_global: true, credential_store_ready: true, unavailable_reason: null },
+    } as never)
     api.listGlobalConnectors.mockResolvedValue({ data: [{ ...projectConnectors[0], is_default: false }] } as never)
     const store = useConnectorsStore()
     await store.initialize(true)
@@ -54,6 +64,38 @@ describe('connector store', () => {
     expect(store.canManageGlobal).toBe(true)
     expect(store.globalConnectors).toHaveLength(1)
     expect(store.globalConnectors[0].visibility).toBe('global')
+    expect(api.listGlobalConnectors).toHaveBeenCalledTimes(1)
+  })
+
+  it('surfaces fixed readiness state while withholding operator-only catalog data', async () => {
+    api.getSetupContext.mockResolvedValue({
+      data: {
+        can_manage_global: false,
+        credential_store_ready: false,
+        unavailable_reason: 'idempotency_key_unavailable',
+      },
+    } as never)
+    const store = useConnectorsStore()
+    await store.initialize(true)
+
+    expect(store.credentialStoreReady).toBe(false)
+    expect(store.setupUnavailableReason).toBe('idempotency_key_unavailable')
+    expect(store.canManageGlobal).toBe(false)
+    expect(api.listGlobalConnectors).not.toHaveBeenCalled()
+  })
+
+  it('keeps server management authorization authoritative after setup context', async () => {
+    api.getSetupContext.mockResolvedValue({
+      data: { can_manage_global: true, credential_store_ready: true, unavailable_reason: null },
+    } as never)
+    api.listGlobalConnectors.mockRejectedValue({ response: { status: 403 } })
+    const store = useConnectorsStore()
+    await store.initialize(true)
+
+    expect(api.listGlobalConnectors).toHaveBeenCalledTimes(1)
+    expect(store.canManageGlobal).toBe(false)
+    expect(store.globalConnectors).toEqual([])
+    expect(store.credentialStoreReady).toBe(true)
   })
 
   it('updates a project default with the revision it loaded', async () => {

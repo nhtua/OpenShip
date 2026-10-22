@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { generateRequestId } from '@/lib/requestId'
 import { pendingConnectorRequests } from '@/lib/pendingConnectorRequests'
+import { readConnectorError } from '@/lib/connectorErrors'
 import { Button, Label } from '@/components/ui'
 import type { ConnectorRequestStatus } from '@/types'
 
@@ -22,16 +23,17 @@ const emit = defineEmits<{
 
 const apiKey = ref('')
 const requestId = ref<string | null>(null)
+const errorMessage = ref<string | null>(null)
 const state = ref<'idle' | 'checking' | 'processing' | 'uncertain' | 'not-accepted'>('idle')
 const statusMessage = computed(() => {
   if (state.value === 'processing' || state.value === 'checking') {
     return 'The request is still processing. Check its status before entering another key.'
   }
   if (state.value === 'uncertain') {
-    return 'The result is still uncertain. Check request status before entering another key.'
+    return errorMessage.value ?? 'The result is still uncertain. Check request status before entering another key.'
   }
   if (state.value === 'not-accepted') {
-    return 'The request was not accepted or has expired. Enter the key again to submit a new request.'
+    return errorMessage.value ?? 'The request was not accepted or has expired. Enter the key again to submit a new request.'
   }
   return null
 })
@@ -39,16 +41,14 @@ const blocked = computed(() => ['checking', 'processing', 'uncertain'].includes(
 const scopeKey = computed(() => props.requestScopeKey ?? `connector-form:${props.title}`)
 
 function isMissingOrExpired(err: unknown): boolean {
-  const error = err as {
-    response?: { status?: number; data?: { error?: { code?: string } } }
-  }
-  const code = error.response?.data?.error?.code
-  return code === 'connector_not_found' || code === 'connector_request_expired' ||
-    error.response?.status === 404 || error.response?.status === 410
+  const error = readConnectorError(err)
+  return error.code === 'connector_not_found' || error.code === 'connector_request_expired' ||
+    error.status === 404 || error.status === 410
 }
 
 async function reconcileRequest(): Promise<void> {
   if (!requestId.value) return
+  errorMessage.value = null
   state.value = 'checking'
   try {
     const result = await props.readStatus(requestId.value)
@@ -67,6 +67,8 @@ async function reconcileRequest(): Promise<void> {
       state.value = 'not-accepted'
     } else {
       state.value = 'uncertain'
+      const safeError = readConnectorError(err)
+      if (safeError.code === 'credential_store_unavailable') errorMessage.value = safeError.message
     }
   }
 }
@@ -77,6 +79,7 @@ async function handleCredentialSubmit(): Promise<void> {
   const submittedKey = apiKey.value
   const submittedRequestId = generateRequestId()
   apiKey.value = ''
+  errorMessage.value = null
   await nextTick()
   requestId.value = submittedRequestId
   pendingConnectorRequests.set(scopeKey.value, submittedRequestId)
@@ -87,9 +90,17 @@ async function handleCredentialSubmit(): Promise<void> {
     requestId.value = null
     state.value = 'idle'
     emit('complete', result)
-  } catch {
+  } catch (err: unknown) {
     // A lost response may follow a committed write. The component has already
     // cleared the key and now reconciles status; it never resends the payload.
+    const safeError = readConnectorError(err)
+    if (safeError.outcome === 'rejected') {
+      pendingConnectorRequests.delete(scopeKey.value)
+      requestId.value = null
+      state.value = 'not-accepted'
+      errorMessage.value = safeError.message
+      return
+    }
     await reconcileRequest()
   }
 }

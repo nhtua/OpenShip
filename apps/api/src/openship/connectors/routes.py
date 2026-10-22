@@ -58,6 +58,7 @@ _ERROR_MESSAGES = {
     "connector_revoked": "Connector has been revoked",
     "connector_unavailable": "Connector is currently unavailable",
     "credential_store_unavailable": "Connector credential storage is unavailable",
+    "connector_origin_forbidden": "This browser origin is not allowed to configure Connectors",
     "global_management_forbidden": "Global Connector management is not available to this account",
     "connector_visibility_unsupported": "Brave and Tavily Connectors must be configured globally",
     "invalid_connector_request": "Connector request is invalid",
@@ -66,6 +67,16 @@ _ERROR_MESSAGES = {
 
 class _RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class _SetupContext(BaseModel):
+    can_manage_global: bool
+    credential_store_ready: bool
+    unavailable_reason: Literal[
+        "installation_id_missing",
+        "encryption_key_unavailable",
+        "idempotency_key_unavailable",
+    ] | None
 
 
 class _CreateConnector(_RequestModel):
@@ -158,7 +169,7 @@ def _require_browser_origin(request: Request) -> None:
         if (normalized := _normalized_origin(raw.strip())) is not None
     }
     if origin is None or origin not in configured:
-        raise _http_error("invalid_connector_request", 403)
+        raise _http_error("connector_origin_forbidden", 403)
 
 
 async def _read_bounded_json(request: Request) -> dict[str, Any]:
@@ -219,6 +230,36 @@ def _safe_payload(model: BaseModel) -> dict[str, Any]:
     # The returned bytes are immediately keyed-HMACed by reserve_request and
     # are never logged or persisted. This includes secret fields by design.
     return model.model_dump(mode="json", exclude_none=False)
+
+
+@router.get("/api/connectors/setup-context", response_model=_SetupContext)
+def connector_setup_context(user: User = Depends(require_jwt)):
+    """Return only fixed setup readiness and the caller's global authority."""
+    from ..config import settings
+    from .credentials.dependencies import get_credential_store, get_idempotency_keyring
+
+    reason = None
+    if settings.connector_installation_id is None:
+        reason = "installation_id_missing"
+    else:
+        try:
+            get_credential_store()
+        except CredentialStoreUnavailable:
+            reason = "encryption_key_unavailable"
+        if reason is None:
+            try:
+                get_idempotency_keyring()
+            except CredentialStoreUnavailable:
+                reason = "idempotency_key_unavailable"
+
+    return {
+        "can_manage_global": (
+            settings.connector_operator_user_id is not None
+            and user.id == settings.connector_operator_user_id
+        ),
+        "credential_store_ready": reason is None,
+        "unavailable_reason": reason,
+    }
 
 
 def _commit_or_safe_error(db: Session) -> None:

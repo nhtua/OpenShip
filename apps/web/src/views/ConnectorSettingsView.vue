@@ -23,6 +23,19 @@ const createNames = reactive<Record<ConnectorKind, string>>({
 })
 const busyConnectors = ref(new Set<string>())
 const pageError = ref<string | null>(null)
+const setupUnavailableMessage = computed(() => {
+  const reason = connectors.setupUnavailableReason
+  if (reason === 'installation_id_missing') {
+    return 'Managed connector changes are unavailable because the installation identity is not configured.'
+  }
+  if (reason === 'encryption_key_unavailable') {
+    return 'Managed connector changes are unavailable because the encryption key file is missing or invalid.'
+  }
+  if (reason === 'idempotency_key_unavailable') {
+    return 'Managed connector changes and request recovery are unavailable because the idempotency HMAC key file is missing or invalid.'
+  }
+  return null
+})
 const currentProject = computed(() =>
   connectors.projects.find((project) => project.id === connectors.currentProjectId) ?? null,
 )
@@ -198,6 +211,9 @@ onMounted(async () => {
         <p v-if="connectors.error || pageError" role="alert" class="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
           {{ pageError ?? connectors.error }}
         </p>
+        <p v-if="setupUnavailableMessage" role="status" class="rounded-md border border-border p-3 text-sm text-muted-foreground">
+          {{ setupUnavailableMessage }} Restart the API and worker after correcting their shared configuration.
+        </p>
         <p v-if="!currentProject && !connectors.loading" class="rounded-md border border-border p-4 text-sm text-muted-foreground">
           No owned project is available. Connector setup requires a project.
         </p>
@@ -228,7 +244,7 @@ onMounted(async () => {
                 :title="displayName(kind)"
                 :request-scope-key="`project:${connectors.currentProjectId}:create:${kind}`"
                 submit-label="Add project connector"
-                :can-submit="Boolean(createNames[kind].trim())"
+                :can-submit="Boolean(createNames[kind].trim()) && connectors.credentialStoreReady"
                 :submit="createConnector('project', kind)"
                 :read-status="requestStatus('project', connectors.currentProjectId)"
                 @complete="onCredentialComplete"
@@ -240,7 +256,7 @@ onMounted(async () => {
               <select
                 :id="`${kind}-default`"
                 :value="connectors.defaults[kind]?.connector_id ?? ''"
-                :disabled="!defaultChoices(kind).length"
+                :disabled="!defaultChoices(kind).length || !connectors.credentialStoreReady"
                 class="h-9 max-w-xl rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                 @change="setDefault(kind, $event)"
               >
@@ -273,6 +289,7 @@ onMounted(async () => {
                     :title="`${connector.name} (${displayName(kind)})`"
                     :request-scope-key="`project:${connectors.currentProjectId}:credential:${connector.id}`"
                     submit-label="Replace API key"
+                    :can-submit="connectors.credentialStoreReady"
                     :submit="replaceCredential('project', connector)"
                     :read-status="requestStatus('project', connectors.currentProjectId)"
                     @complete="onCredentialComplete"
@@ -283,7 +300,7 @@ onMounted(async () => {
                     v-if="connector.status !== 'revoked'"
                     size="sm"
                     variant="outline"
-                    :disabled="busyConnectors.has(`project:${connector.id}`)"
+                    :disabled="busyConnectors.has(`project:${connector.id}`) || !connectors.credentialStoreReady"
                     @click="updateConnector('project', connector, 'toggle')"
                   >
                     {{ connector.status === 'disabled' ? 'Enable' : 'Disable' }}
@@ -292,7 +309,7 @@ onMounted(async () => {
                     v-if="connector.status !== 'revoked'"
                     size="sm"
                     variant="destructive"
-                    :disabled="busyConnectors.has(`project:${connector.id}`)"
+                    :disabled="busyConnectors.has(`project:${connector.id}`) || !connectors.credentialStoreReady"
                     @click="updateConnector('project', connector, 'revoke')"
                   >
                     Revoke
@@ -329,7 +346,7 @@ onMounted(async () => {
                 :title="displayName(kind)"
                 :request-scope-key="`global:create:${kind}`"
                 submit-label="Add global connector"
-                :can-submit="Boolean(createNames[kind].trim())"
+                :can-submit="Boolean(createNames[kind].trim()) && connectors.credentialStoreReady"
                 :submit="createConnector('global', kind)"
                 :read-status="requestStatus('global', null)"
                 @complete="onCredentialComplete"
@@ -351,6 +368,7 @@ onMounted(async () => {
                     :title="`${connector.name} (${displayName(kind)})`"
                     :request-scope-key="`global:credential:${connector.id}`"
                     submit-label="Rotate global API key"
+                    :can-submit="connectors.credentialStoreReady"
                     :submit="replaceCredential('global', connector)"
                     :read-status="requestStatus('global', null)"
                     @complete="onCredentialComplete"
@@ -360,7 +378,7 @@ onMounted(async () => {
                   v-if="connector.status !== 'revoked'"
                   size="sm"
                   variant="destructive"
-                  :disabled="busyConnectors.has(`global:${connector.id}`)"
+                  :disabled="busyConnectors.has(`global:${connector.id}`) || !connectors.credentialStoreReady"
                   @click="updateConnector('global', connector, 'revoke')"
                 >
                   Revoke globally

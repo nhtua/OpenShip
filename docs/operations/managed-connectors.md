@@ -18,6 +18,25 @@ Provisioning uses a stable, deployment-specific `CONNECTOR_INSTALLATION_ID`.
 Set `CONNECTOR_OPERATOR_USER_ID` to the account that manages installation-wide
 search connectors. The API and worker must receive the same values. Keep the
 operator account under the deployment's normal account recovery controls.
+The browser can call the authenticated `/api/connectors/setup-context` endpoint
+to see whether it is that operator and whether setup keys are ready. It returns
+only fixed readiness codes; it never returns key IDs, paths or key material.
+
+For local development, copy `apps/api/.env.example` to the ignored
+`apps/api/.env`, set a stable installation UUID and operator account UUID, and
+point the encryption and idempotency HMAC file settings at the same protected
+keyrings used by the API and worker. The browser origin must exactly match one
+of `CONNECTOR_BROWSER_ORIGINS`. Vite uses `http://localhost:5173` by default
+and now exits if that port is occupied instead of silently choosing another
+origin. If you intentionally use a different host or port, add that exact
+origin to the API and worker configuration and restart both processes.
+
+If setup context reports `installation_id_missing`, `encryption_key_unavailable`
+or `idempotency_key_unavailable`, correct the corresponding shared
+configuration and restart the API and worker. A browser-origin rejection is a
+definite pre-write rejection; correct the origin and enter the key again. A
+status lookup that returns 503 cannot confirm the write, so keep the request
+blocked and restore key access before checking status again.
 
 ## Initialize keys
 
