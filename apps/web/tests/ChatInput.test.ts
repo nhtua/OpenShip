@@ -278,6 +278,40 @@ describe('ChatInput', () => {
     expect(wrapper.text()).toContain('choose a project default when a provider has multiple eligible Connectors')
   })
 
+  it('keeps automatic mode available when one permitted provider is ready and another is not', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [
+          {
+            id: 'brave_web_search', version: '2.0.0', manifest_digest: 'a'.repeat(64),
+            input_schema: {}, output_schema: {}, effect: 'read_only_external', permitted: true,
+            required_connector_kinds: ['brave'], connector_readiness: { brave: 'required' },
+          },
+          {
+            id: 'tavily_web_search', version: '2.0.0', manifest_digest: 'b'.repeat(64),
+            input_schema: {}, output_schema: {}, effect: 'read_only_external', permitted: true,
+            required_connector_kinds: ['tavily'], connector_readiness: { tavily: 'ready' },
+          },
+        ],
+        connectors: [{
+          id: 'tavily-global', kind: 'tavily', visibility: 'global', name: 'Tavily',
+          status: 'configured', revision: 1, is_default: false,
+        }],
+        defaultConnectorIds: {},
+        submissionError: null,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    expect(wrapper.get('[data-testid="automatic-tool-mode"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('lets the user turn off default automatic tool use for subsequent messages', async () => {
     const wrapper = mount(ChatInput, {
       props: {

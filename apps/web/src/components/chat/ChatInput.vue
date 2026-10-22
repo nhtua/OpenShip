@@ -94,13 +94,13 @@ const automaticToolDisabledReason = computed(() => {
       ? 'Configure at least one available search tool.'
       : 'No search tools are configured.'
   }
-  const connectorNotReady = props.capabilities.some((capability) =>
-    capability.permitted !== false &&
-    capability.required_connector_kinds?.some((kind) =>
-      capability.connector_readiness?.[kind] !== 'ready',
+  const hasReadyCapability = props.capabilities.some((capability) =>
+    capability.permitted !== false && capability.enabled !== false && capability.available !== false &&
+    (capability.required_connector_kinds ?? []).every((kind) =>
+      capability.connector_readiness?.[kind] === 'ready',
     ),
   )
-  if (connectorNotReady) {
+  if (!hasReadyCapability) {
     return 'Configure a Connector, or choose a project default when a provider has multiple eligible Connectors.'
   }
   if (
