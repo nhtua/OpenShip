@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.openship.artifacts.filesystem import LocalArtifactStore
+from src.openship.artifacts.filesystem import ArtifactStorageError, LocalArtifactStore
 from src.openship.artifacts.models import Artifact, ArtifactQuota
 from src.openship.auth.models import User
 from src.openship.capabilities.catalog import (
@@ -119,6 +119,32 @@ def _tool_run(db, *, operation_status="admitted", dispatched=False, expired=True
         db.add(attempt)
     db.commit()
     return user, project, conversation, run, job, operation, attempt
+
+
+def test_worker_logs_artifact_storage_readiness_failure(caplog, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.openship.runs import worker as worker_module
+    from src.openship.runs.worker import Worker
+
+    class UnavailableStore:
+        def verify(self):
+            raise ArtifactStorageError("artifact storage identity marker is unavailable")
+
+    monkeypatch.setattr(worker_module, "configured_store", lambda: UnavailableStore())
+    worker = Worker.__new__(Worker)
+    worker.Session = SessionLocal
+    project_id, conversation_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    context = worker._tool_context(
+        claim=None,
+        run=SimpleNamespace(id=uuid.uuid4(), project_id=project_id),
+        conversation=SimpleNamespace(id=conversation_id, user_id=user_id),
+        execution=ExecutionConfig(graph_kind="tool", graph_version=1),
+    )
+
+    assert context.artifact_store is None
+    assert "Conversation artifact storage is unavailable" in caplog.text
+    assert "identity marker is unavailable" in caplog.text
 
 
 def _submit_search_run(db):

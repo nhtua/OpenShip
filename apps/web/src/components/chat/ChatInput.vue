@@ -97,10 +97,12 @@ const automaticToolDisabledReason = computed(() => {
   const connectorNotReady = props.capabilities.some((capability) =>
     capability.permitted !== false &&
     capability.required_connector_kinds?.some((kind) =>
-      capability.connector_readiness?.[kind] !== 'ready' || !props.defaultConnectorIds[kind],
+      capability.connector_readiness?.[kind] !== 'ready',
     ),
   )
-  if (connectorNotReady) return 'Set a project default for each enabled search provider.'
+  if (connectorNotReady) {
+    return 'Configure a Connector, or choose a project default when a provider has multiple eligible Connectors.'
+  }
   if (
     !effectiveProfile.value?.available ||
     effectiveProfile.value.adapter !== 'openai' ||

@@ -287,7 +287,9 @@ class Worker:
     def _tool_context(self, claim, run, conversation, execution):
         try:
             store = configured_store()
-        except ArtifactStorageError:
+            store.verify()
+        except ArtifactStorageError as exc:
+            logger.warning("Conversation artifact storage is unavailable: %s", exc)
             store = None
         return ToolInvocationContext(
             authorization=AuthorizationContext(
