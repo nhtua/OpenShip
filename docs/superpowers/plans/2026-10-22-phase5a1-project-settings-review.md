@@ -130,11 +130,11 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 
 **Interfaces:** `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/{project_id}`. Summaries retain `{id, name}`. Create/rename accept `{name}`; create returns 201, delete returns 204. Foreign IDs return 404. Unsafe deletion returns `project_not_empty`/409 or `last_project_required`/409. Missing conversation project selection with multiple candidates returns `project_required`/409.
 
-- [ ] Add `apps/api/tests/test_project_lifecycle.py` and `tests/integration/test_project_lifecycle_postgres.py` covering two projects for one owner, name validation, foreign reads/writes, empty deletion, final-project refusal, retained-data refusal, and explicit versus omitted conversation project selection.
-- [ ] Add real PostgreSQL migration/concurrency cases: preserve existing IDs/defaults/artifact references; simultaneous deletion of the last two projects cannot delete both; concurrent child creation cannot leave an orphan; downgrade refuses multiple projects per owner rather than deleting or merging them.
-- [ ] Run the new tests to establish failure, then remove only the one-project-per-owner uniqueness constraint while retaining the owner index.
-- [ ] Implement lifecycle commands with consistent owner/project locking and dependency checks. Retain registration's initial project creation. Move the existing listing route without duplicating it. Preserve existing data and require explicit selection when multiple projects exist.
-- [ ] Run lifecycle, project-context, auth, workspace and connector-selection tests plus the disposable PostgreSQL lane. Review and commit the tested increment.
+- [x] Add `apps/api/tests/test_project_lifecycle.py` and `tests/integration/test_project_lifecycle_postgres.py` covering two projects for one owner, name validation, foreign reads/writes, empty deletion, final-project refusal, retained-data refusal, and explicit versus omitted conversation project selection.
+- [x] Add real PostgreSQL migration/concurrency cases: preserve existing IDs/defaults/artifact references; simultaneous deletion of the last two projects cannot delete both; concurrent child creation cannot leave an orphan; downgrade refuses multiple projects per owner rather than deleting or merging them.
+- [x] Run the new tests to establish failure, then remove only the one-project-per-owner uniqueness constraint while retaining the owner index.
+- [x] Implement lifecycle commands with consistent owner/project locking and dependency checks. Retain registration's initial project creation. Move the existing listing route without duplicating it. Preserve existing data and require explicit selection when multiple projects exist.
+- [x] Run lifecycle, project-context, auth, workspace and connector-selection tests plus the disposable PostgreSQL lane. Review and commit the tested increment.
 
 **Deliverable:** One owner can safely manage multiple projects without moving or deleting retained history.
 

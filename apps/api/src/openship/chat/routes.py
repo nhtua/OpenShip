@@ -9,7 +9,7 @@ from ..auth.routes import require_jwt
 from ..chat.models import Conversation, Message
 from ..chat.schemas import ConversationResponse
 from ..database.session import get_db
-from ..workspace.models import Project
+from ..workspace.projects import ProjectLifecycleError, select_project_for_conversation
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -49,20 +49,29 @@ async def create_conversation(
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
-    project_query = db.query(Project).filter(Project.owner_user_id == user.id)
-    if req.project_id is not None:
-        project_query = project_query.filter(Project.id == req.project_id)
-    project = project_query.first()
-    if not project:
+    try:
+        project = select_project_for_conversation(
+            db,
+            owner_id=user.id,
+            project_id=req.project_id,
+        )
+    except ProjectLifecycleError as exc:
+        db.rollback()
+        status_code = 409 if exc.code == "project_required" else 404
+        message = (
+            "Choose a project before creating a conversation"
+            if exc.code == "project_required"
+            else "Project not found"
+        )
         raise HTTPException(
-            status_code=404,
+            status_code=status_code,
             detail={
                 "error": {
-                    "code": "project_not_found",
-                    "message": "Project not found",
+                    "code": exc.code,
+                    "message": message,
                 }
             },
-        )
+        ) from None
 
     conv = Conversation(
         user_id=user.id,
