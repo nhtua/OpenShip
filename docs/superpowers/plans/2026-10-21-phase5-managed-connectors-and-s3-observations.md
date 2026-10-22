@@ -208,6 +208,12 @@ and an explicit cutover for existing private connectors. The addendum records
 this policy change. The 5A.1 revision plan is approved for implementation;
 renewed 5A.1 acceptance is still pending and Task 8 remains gated.
 
+**Requalification follow-up (2026-10-22):** The approved 5A.1 revisions have
+passed the real-stack/browser and PostgreSQL migration/lifecycle lanes with
+synthetic credentials. See the [requalification record](../testing/phase5a1-managed-connector-qualification.md)
+for commands, evidence and limits. Renewed user acceptance remains pending;
+Task 8 and AWS implementation have not started.
+
 ## 3. Tasks 8–16: AWS, observations and gated expansion
 
 ### Task 8 — Native SDK runner with bounded transport

@@ -169,11 +169,14 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 
 **Files:** Extend `apps/web/tests/e2e/connectors.spec.ts`, real-stack browser fixtures and `apps/api/tests/full_stack/test_managed_connectors.py`; update CI selectors if adding a file. Update `docs/testing/phase5a1-managed-connector-qualification.md` and the parent Phase 5 plan.
 
-- [ ] Add a real API/PostgreSQL browser path: create two projects under one owner; configure global Brave and Tavily instances as the operator; select shared instances as each project's defaults independently; switch projects and verify Global badges persist. Confirm non-operator management and new private-search creation are denied, while runs/evidence remain project-owned. Exercise an explicitly seeded legacy private connector's cutover without copying or exposing its key.
-- [ ] Add an unprovisioned-installation path and an origin-rejection path. Verify actionable messages, no automatic key resubmission, no misleading status polling after definite rejection and eventual resolution after an actually uncertain write. Use synthetic keys/transports only.
-- [ ] Run the focused regression cases, the existing managed/legacy full-stack CI selector, frontend typecheck/tests/build and relevant PostgreSQL migration/lifecycle tests. Required selected lanes must have nonzero tests and zero required skips. Record actual commands/results and any incomplete lane.
-- [ ] Review changed request/response, storage, logs and artifacts for secret sentinels; review the diff and commit verified changes with scanned messages.
-- [ ] Update the qualification record with this browser journey and remaining limits, then request accept/revise/stop for 5A.1. Keep Task 8 unstarted until acceptance.
+- [x] Add a real API/PostgreSQL browser path: create two projects under one owner; configure global Brave and Tavily instances as the operator; select shared instances as each project's defaults independently; switch projects and verify Global badges persist. Confirm non-operator management and new private-search creation are denied, while runs/evidence remain project-owned. Exercise an explicitly seeded legacy private connector's cutover without copying or exposing its key.
+- [x] Add an unprovisioned-installation path and an origin-rejection path. Verify actionable messages, no automatic key resubmission, no misleading status polling after definite rejection and eventual resolution after an actually uncertain write. Use synthetic keys/transports only.
+- [x] Run the focused regression cases, the existing managed/legacy full-stack CI selector, frontend typecheck/tests/build and relevant PostgreSQL migration/lifecycle tests. Required selected lanes must have nonzero tests and zero required skips. Record actual commands/results and any incomplete lane.
+- [x] Review changed request/response, storage, logs and artifacts for secret sentinels; review the diff and commit verified changes with scanned messages.
+- [x] Update the qualification record with this browser journey and remaining limits, then request accept/revise/stop for 5A.1. Keep Task 8 unstarted until acceptance.
+
+**R5 status:** Technical implementation, review and requalification are
+complete. Renewed 5A.1 acceptance is pending, and Task 8 remains unstarted.
 
 **Deliverable:** Reviewable evidence for the revised 5A.1 experience, with the AWS boundary intact.
 

@@ -227,7 +227,7 @@ const extraCount = computed(() => {
           role="menuitem"
           data-testid="create-project-trigger"
           class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          @click="openCreateProject"
+          @click.stop="openCreateProject"
         >
           <Icon name="plus" class="size-3 shrink-0" />
           <span>Create project</span>

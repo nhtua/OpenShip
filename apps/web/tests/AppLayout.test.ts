@@ -79,6 +79,18 @@ describe('AppLayout', () => {
     expect(wrapper.emitted('createProject')).toEqual([['Sandbox']])
   })
 
+  it('keeps the project creation form open after selecting Create project', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Production' }],
+      currentProjectId: 'project-1',
+    })
+    await wrapper.get('[data-testid="project-selector-trigger"]').trigger('click')
+    await wrapper.get('[data-testid="create-project-trigger"]').trigger('click')
+
+    expect(wrapper.get('[role="dialog"][aria-label="Create project"]').exists()).toBe(true)
+    expect(wrapper.get('input[aria-label="New project name"]').exists()).toBe(true)
+  })
+
   it('links Settings to the currently selected project', async () => {
     const { wrapper } = await mountWithRouter(AppLayout, '/', {
       projects: [{ id: 'project-1', name: 'Production' }],

@@ -1,58 +1,78 @@
 ---
 type: testing
-summary: Synthetic full-stack qualification evidence and user acceptance gate for Phase 5A.1 managed search Connectors.
+summary: Synthetic full-stack evidence and user acceptance gate for Phase 5A.1 managed search Connectors.
 status: review
 date: 2026-10-22
 ---
 
 # Phase 5A.1 Managed Connector Qualification
 
-**Original technical qualification: passed. User acceptance: revisions requested.** Task 7 exercised
-the real API and worker against a disposable PostgreSQL database and filesystem
-artifact store. Every search credential was synthetic. No live search provider,
-AWS service, or local `.env` value was used. The 5A.1 acceptance decision is a
-separate user gate; do not begin Task 8 or admit AWS credentials before it.
+**Technical requalification: passed. User acceptance: pending.** The revised
+Project Settings, Global search catalog, legacy cutover and failure-recovery
+journeys were exercised against the real API, worker, PostgreSQL and local
+artifact store. Search keys and transports were synthetic. No provider or AWS
+request was made. Do not start Task 8 or admit AWS credentials before the user
+records an acceptance decision.
 
-## Qualification evidence
+## Requalification evidence
 
 | Check | Evidence | Limit |
 | --- | --- | --- |
-| CI-selected full-stack lane | 2 passed, 0 skipped in 48.37s: legacy search restart/cancellation and managed Connector lifecycle; Python 3.13.7, pytest 9.1.1, disposable PostgreSQL 15 | Local run of the same file selector used by CI; the CI JUnit guard rejects zero tests or skips. |
-| Scope and reuse | One operator-managed global Brave Connector was used by two different owners in separate projects. Each project listed the global Connector; only the owning user could list project Connectors. The project Brave Connector dispatched only for its owner; foreign selection was rejected before provider dispatch. | Synthetic transport; no external provider request. |
-| Defaults and replacement | A project Tavily default was resolved when selection was omitted. Replacing its credential kept the Connector identity and changed the synthetic transport's recorded safe label from v1 to v2. | The transport records labels only, never credential bytes. |
-| Revocation and recovery | Global revocation during a delayed request prevented late publication and blocked later dispatch. A queued command survived an API restart before dispatch. Killing the worker during a provider request and starting another worker produced a terminal run with one upstream call. | Delays and provider responses are deterministic synthetic fixtures. |
-| Retained evidence | Published artifacts and the conversation snapshot remained readable after API restart by their owning users. A different project owner received 404 for the retained artifact. | Artifact storage is a temporary local filesystem root. |
-| Secret sentinel scan | Synthetic provider-key sentinels were absent from all reflected PostgreSQL table values, captured HTTP response bodies and headers, API/worker logs, synthetic call records, and artifact files. Call records contained only safe credential labels. | Scans the disposable test database and artifact root created by the test. |
-| Static checks | Ruff and `git diff --check` passed. | — |
+| Managed and legacy full-stack selector | 2 passed, 0 skipped in 57.88s: legacy search restart/cancellation and managed Connector lifecycle; Python 3.13.7, pytest 9.1.1. The JUnit guard verified a nonzero test count and zero skips. | The local lane used two uniquely named disposable PostgreSQL databases. The GitHub lane also covers Python 3.11. |
+| Real-stack browser journey | Two Playwright browser tests passed in the managed Connector test: the operator configured Brave/Tavily from the Global catalog, created a second project, chose each shared default independently in both projects, switched projects and reopened the Global cards; a second test submitted an actual origin-rejected write and verified a definite rejection, no key resubmission and no status poll. A separate one-test Playwright invocation passed the missing-HMAC setup journey. The harness enforces exactly 2 and 1 passing tests respectively, with zero skips. | Chromium against local Vite and the test API; synthetic keys only. The uncertain Brave write was committed by the real API before Playwright replaced its response with a synthetic 503. |
+| Legacy private connector cutover | A historical Project Tavily record and active default were inserted directly as encrypted legacy fixtures. The browser changed that project's default to the shared Global Tavily connector. PostgreSQL checks confirmed the old private connector, credential ID and ciphertext remained unchanged; no key was copied or returned. | The fixture represents a pre-policy record; no production connector was migrated. |
+| Scope, authority and evidence ownership | Non-operator Global list/create/update requests were denied; new private Brave creation returned `connector_visibility_unsupported`. Two projects owned by one user independently saved the same Global Brave/Tavily IDs. Synthetic runs and artifacts in both projects were checked against their stored `project_id` and conversation IDs. Existing cross-owner denial and retained-evidence checks also passed. | Deterministic synthetic provider and worker; artifact files were temporary. |
+| Uncertain and rejected writes | The Brave create committed in PostgreSQL, its response was replaced with 503, and the UI reconciled the request to completion without resending the key. The origin-rejection browser path received the real API's 403, cleared the key and made no status request. | The lost response was simulated at the browser proxy; the request and subsequent status read used the real API. |
+| Unprovisioned installation | Restarted the API with an unavailable HMAC-key path. The page showed an actionable setup message, the rotate action was disabled and the browser observed no write. | The temporary key path was isolated under the test directory; no local keyring or `.env` value was changed. |
+| PostgreSQL migration and lifecycle lane | 5 selected tests passed, 0 skipped in 27.78s: Connector migration/data-retention constraints, Project migration and deletion races, and Connector command/idempotency behavior. One non-PostgreSQL parameter case was deselected by `-m postgres`. | Ran on a separate uniquely named disposable database; it was dropped after the lane. |
+| Frontend and static checks | `pnpm test:run` — 268 passed; `pnpm typecheck`, `pnpm build`, and Ruff passed. `git diff --check` is recorded with the final review. | Build and test runs were local on the PR worktree. |
+| Secret sentinel checks | Synthetic key values were absent from PostgreSQL table values, captured API response bodies/headers, API and worker logs, call records, artifacts, and the browser's create/status/rejection responses. The synthetic transport call log contained safe labels only. | Checks covered the disposable database and artifact directory produced by the tests. |
 
-The worker restart case exposed a configuration-name mismatch: the worker read
-an undeclared `worker_reconcile_interval` and silently used 60 seconds instead
-of the declared `reconciler_interval`. The worker now reads the declared
-setting, allowing expired in-flight work to be reconciled on the configured
-interval. The end-to-end no-replay assertion passes with that fix.
+The browser suite exposed and fixed one project-creation event bug: after the
+menu closed, the same document click closed the newly opened Create Project
+form. The create-menu action now stops propagation, with AppLayout regression
+coverage and the real browser project-creation path.
 
-The additional focused command
-`pytest tests/test_tool_worker.py tests/test_provider_worker.py` emitted ten
-passing-test dots and then stopped making progress for over a minute; it was
-interrupted without a completion summary. The full-stack worker-recovery case,
-including the modified reconciliation setting, passed. This partial unit run
-is not counted as a pass or failure.
+## Commands and lane selection
+
+The managed/legacy CI selector was run from `apps/api` with the API connection
+setting used only to create disposable databases:
+
+```bash
+uv run pytest -vv -ra -o faulthandler_timeout=180 \
+  --junitxml=/tmp/openship-phase5a1-full-stack.xml \
+  -m full_stack \
+  tests/full_stack/test_manual_search.py \
+  tests/full_stack/test_managed_connectors.py
+```
+
+The PostgreSQL migration/lifecycle selector was run against another disposable
+database:
+
+```bash
+uv run pytest -vv -ra -o faulthandler_timeout=180 \
+  --junitxml=/tmp/openship-phase5a1-postgres.xml \
+  -m postgres \
+  tests/integration/test_connector_migration_postgres.py \
+  tests/integration/test_project_lifecycle_postgres.py \
+  tests/integration/test_connector_commands_postgres.py
+```
+
+The ignored API `.env` supplies `TEST_POSTGRES_URL` from the existing
+`DATABASE_URL` only as the service connection used to create and drop uniquely
+named disposable test databases; tests did not target the named development
+database. Provider keys, temporary encryption/HMAC keys and transports were
+synthetic. No provider credential from `.env` was used.
 
 ## Acceptance decision
 
-**Decision: revisions requested on 2026-10-22.** The user identified missing
-project lifecycle/settings ownership, a rejected credential submission becoming
-an uncertain status-check loop, and the need for a connector-card catalog with
-configuration dialogs. The [proposed review revision plan](../superpowers/plans/2026-10-22-phase5a1-project-settings-review.md)
-records the findings and scoped follow-up. Its implementation and renewed
-qualification remain pending; the original test pass does not establish that
-these browser behaviors work.
-
-After the revisions are reviewed and qualified, choose one:
+**Decision: pending.** The user requested the 5A.1 revisions before accepting.
+Those revisions are implemented and technically requalified. Choose one:
 
 - **Accept 5A.1:** authorize starting Task 8 (AWS SDK runner), still using
   synthetic tests until any separate live-service authorization.
 - **Revise:** identify the 5A.1 behavior or evidence that needs more work.
 - **Stop:** leave the managed search implementation as the current scope.
 
-No Task 8 implementation or AWS credential setup has started.
+Task 8 and AWS implementation remain unstarted. Live provider/AWS qualification
+and real AWS credentials remain outside this revision.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -13,8 +14,18 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import MetaData, Table, create_engine, inspect, select
+from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
+from sqlalchemy.orm import sessionmaker
 
+from src.openship.auth.models import User
+from src.openship.config import settings
+from src.openship.connectors.contracts import ConnectorConfiguration
+from src.openship.connectors.models import (
+    Connector,
+    ConnectorRevision,
+    ProjectConnectorDefault,
+)
+from src.openship.connectors.service import _audit, _new_credential, detail
 from tests.full_stack.test_manual_search import (
     _create_database,
     _drop_database,
@@ -27,17 +38,19 @@ from tests.full_stack.test_manual_search import (
 
 pytestmark = [pytest.mark.full_stack]
 
-GLOBAL_BRAVE_V1 = "synthetic-global-brave-key-v1-sentinel"  # rayloc:ignore
-PROJECT_BRAVE = "synthetic-project-brave-key-sentinel"  # rayloc:ignore
-PROJECT_TAVILY_V1 = "synthetic-project-tavily-key-v1-sentinel"  # rayloc:ignore
-PROJECT_TAVILY_V2 = "synthetic-project-tavily-key-v2-sentinel"  # rayloc:ignore
-PROJECT_TAVILY_ALTERNATE = "synthetic-project-tavily-alternate-key-sentinel"  # rayloc:ignore
+GLOBAL_BRAVE_V1 = "sample-brave"
+GLOBAL_TAVILY_V1 = "sample-tavily"
+GLOBAL_TAVILY_V2 = "sample-tavily-v2"
+fixture_brave = "sample-legacy-brave"
+fixture_tavily = "sample-legacy-tavily"
+fixture_tavily_alt = "sample-legacy-tavily-alt"
 GLOBAL_KEYS = {
     "global-brave-v1": GLOBAL_BRAVE_V1,
-    "project-brave": PROJECT_BRAVE,
-    "project-tavily-v1": PROJECT_TAVILY_V1,
-    "project-tavily-v2": PROJECT_TAVILY_V2,
-    "project-tavily-alternate": PROJECT_TAVILY_ALTERNATE,
+    "global-tavily-v1": GLOBAL_TAVILY_V1,
+    "global-tavily-v2": GLOBAL_TAVILY_V2,
+    "project-brave": fixture_brave,
+    "project-tavily-v1": fixture_tavily,
+    "project-tavily-alternate": fixture_tavily_alt,
 }
 
 
@@ -125,33 +138,164 @@ def _owned_project(client: httpx.Client, responses: list[bytes]) -> str:
     return projects[0]["id"]
 
 
-def _create_connector(
-    client: httpx.Client,
-    responses: list[bytes],
+def _seed_legacy_project_connector(
+    database_url: str,
     *,
-    path: str,
+    actor_id: str,
+    project_id: str,
     kind: str,
     name: str,
     api_key: str,
+    make_default: bool = False,
 ) -> dict:
-    response = _remember(
-        responses,
-        client.post(
-            path,
-            headers={
-                "Origin": "http://localhost:5173",
-                "Idempotency-Key": str(uuid.uuid4()),
-            },
-            json={
-                "kind": kind,
-                "name": name,
-                "configuration": {"schema_version": 1, "kind": kind},
-                "api_key": api_key,
-            },
-        ),
+    """Insert an encrypted pre-Global-only record without using the create API."""
+    engine = create_engine(database_url)
+    session_factory = sessionmaker(bind=engine)
+    try:
+        with session_factory() as db:
+            actor = db.get(User, uuid.UUID(actor_id))
+            assert actor is not None
+            connector = Connector(
+                id=uuid.uuid4(),
+                kind=kind,
+                visibility="project",
+                project_id=uuid.UUID(project_id),
+                name=name,
+                current_revision=1,
+                enabled=True,
+                managed_by_user_id=actor.id,
+                created_by_user_id=actor.id,
+            )
+            db.add(connector)
+            db.flush()
+            credential = _new_credential(
+                db,
+                connector=connector,
+                project_id=uuid.UUID(project_id),
+                api_key=api_key,
+            )
+            db.flush()
+            configuration = ConnectorConfiguration(kind=kind)
+            db.add(
+                ConnectorRevision(
+                    id=uuid.uuid4(),
+                    connector_id=connector.id,
+                    revision=1,
+                    schema_version=1,
+                    visibility="project",
+                    project_id=uuid.UUID(project_id),
+                    configuration_json=configuration.canonical_bytes().decode("utf-8"),
+                    configuration_digest=configuration.digest(),
+                    credential_version_id=credential.id,
+                    created_by_user_id=actor.id,
+                )
+            )
+            if make_default:
+                db.add(
+                    ProjectConnectorDefault(
+                        id=uuid.uuid4(),
+                        project_id=uuid.UUID(project_id),
+                        service=kind,
+                        connector_id=connector.id,
+                        connector_revision=1,
+                        settings_revision=1,
+                        updated_by_user_id=actor.id,
+                    )
+                )
+            _audit(db, connector=connector, actor_user_id=actor.id, action="created", revision=1)
+            db.commit()
+            return {
+                "connector": detail(db, connector),
+                "credential_id": str(credential.id),
+                "credential_ciphertext": bytes(credential.ciphertext),
+            }
+    finally:
+        engine.dispose()
+
+
+def _assert_run_and_artifact_scope(
+    database_url: str,
+    *,
+    run_id: str,
+    artifact_id: str,
+    project_id: str,
+    conversation_id: str,
+) -> None:
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            run = connection.execute(
+                text("SELECT project_id, conversation_id FROM runs WHERE id=:id"),
+                {"id": uuid.UUID(run_id)},
+            ).one()
+            artifact = connection.execute(
+                text(
+                    "SELECT project_id, conversation_id, originating_run_id "
+                    "FROM artifacts WHERE id=:id"
+                ),
+                {"id": uuid.UUID(artifact_id)},
+            ).one()
+        assert str(run.project_id) == project_id
+        assert str(run.conversation_id) == conversation_id
+        assert str(artifact.project_id) == project_id
+        assert str(artifact.conversation_id) == conversation_id
+        assert str(artifact.originating_run_id) == run_id
+    finally:
+        engine.dispose()
+
+
+def _run_browser_qualification(
+    *,
+    api_root: Path,
+    base_url: str,
+    operator_token: str,
+    project_id: str,
+    test_filter: str | None = None,
+    excluded_filter: str | None = None,
+) -> None:
+    browser_env = os.environ.copy()
+    browser_env.update(
+        {
+            "OPENSHIP_FULL_STACK_API_URL": base_url,
+            "CONNECTOR_TEST_OPERATOR_TOKEN": operator_token,
+            "CONNECTOR_TEST_PROJECT_ID": project_id,
+        }
     )
-    assert response.status_code == 201, response.text
-    return response.json()
+    command = [
+        "pnpm",
+        "exec",
+        "playwright",
+        "test",
+        "--config",
+        "playwright.full-stack.config.ts",
+        "tests/full-stack/managed-connectors.spec.ts",
+        "--reporter=line",
+    ]
+    if test_filter:
+        command.extend(["--grep", test_filter])
+    if excluded_filter:
+        command.extend(["--grep-invert", excluded_filter])
+    result = subprocess.run(
+        command,
+        cwd=api_root.parent / "web",
+        env=browser_env,
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+    output = f"{result.stdout}\n{result.stderr}"
+    for secret in (*GLOBAL_KEYS.values(), operator_token):
+        if secret:
+            output = output.replace(secret, "[redacted]")
+    if result.returncode != 0:
+        pytest.fail(f"real-stack connector browser qualification failed:\n{output[-8000:]}")
+    summary = re.search(r"(?m)^\s*(\d+) passed(?:\s+\([^)]+\))?\s*$", output)
+    skipped = re.search(r"(?m)^\s*(\d+) skipped(?:\s+\([^)]+\))?\s*$", output)
+    expected = 1 if test_filter else 2
+    assert summary is not None, "Playwright browser result did not report a passing test count"
+    assert int(summary.group(1)) == expected, "Playwright browser lane ran an unexpected test count"
+    assert skipped is None or int(skipped.group(1)) == 0, "Playwright browser lane skipped a required test"
 
 
 def _submit_managed(
@@ -252,7 +396,9 @@ def _assert_no_sentinels_in_files(paths: tuple[Path, ...], sentinels: tuple[str,
                 )
 
 
-def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(tmp_path):
+def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
+    tmp_path, monkeypatch
+):
     service_url = os.environ.get("TEST_POSTGRES_URL")
     if not service_url:
         pytest.skip("TEST_POSTGRES_URL is required for managed Connector full-stack tests")
@@ -260,6 +406,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
     api_root = Path(__file__).parents[2]
     database = f"phase5_managed_{uuid.uuid4().hex[:12]}"
     database_url = _create_database(service_url, database)
+    installation_id = str(uuid.uuid4())
     workdir = tmp_path / "process"
     workdir.mkdir()
     secrets_dir = tmp_path / "secrets"
@@ -281,12 +428,15 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
         )
         path.chmod(0o600)
 
+    monkeypatch.setattr(settings, "connector_installation_id", uuid.UUID(installation_id))
+    monkeypatch.setattr(settings, "connector_encryption_key_file", encryption_path)
+    monkeypatch.setattr(settings, "connector_idempotency_hmac_key_file", hmac_path)
+
     artifact_root = tmp_path / "artifacts"
     call_log = tmp_path / "search-calls.jsonl"
     api_log = tmp_path / "api.log"
     worker_log = tmp_path / "worker.log"
     artifact_storage_id = str(uuid.uuid4())
-    installation_id = str(uuid.uuid4())
     expected_keys = json.dumps(GLOBAL_KEYS, sort_keys=True)
     port = _free_port()
     env = {
@@ -301,7 +451,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
         "CONNECTOR_ENCRYPTION_KEY_FILE": str(encryption_path),
         "CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE": str(hmac_path),
         "CONNECTOR_DISPATCH_LOCK_FILE": str(secrets_dir / "managed-dispatch.lock"),
-        "CONNECTOR_BROWSER_ORIGINS": "http://localhost:5173",
+        "CONNECTOR_BROWSER_ORIGINS": "http://127.0.0.1:5174",
         "CONNECTOR_OPERATOR_USER_ID": "",
         "ARTIFACT_ROOT": str(artifact_root),
         "ARTIFACT_STORAGE_ID": artifact_storage_id,
@@ -349,53 +499,136 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
         _owner_b_id, _owner_b_token = _register(owner_b, responses, label="consumer")
         project_b = _owned_project(owner_b, responses)
 
-        global_connector = _create_connector(
-            operator,
-            responses,
-            path="/api/global-connectors",
+        legacy_brave = _seed_legacy_project_connector(
+            database_url,
+            actor_id=operator_id,
+            project_id=project_a,
             kind="brave",
-            name="Shared Brave",
-            api_key=GLOBAL_BRAVE_V1,
+            name="Legacy Project Brave",
+            api_key=fixture_brave,
         )
-        project_brave = _create_connector(
-            operator,
-            responses,
-            path=f"/api/projects/{project_a}/connectors",
-            kind="brave",
-            name="Project Brave",
-            api_key=PROJECT_BRAVE,
-        )
-        project_tavily = _create_connector(
-            operator,
-            responses,
-            path=f"/api/projects/{project_a}/connectors",
+        legacy_tavily = _seed_legacy_project_connector(
+            database_url,
+            actor_id=operator_id,
+            project_id=project_a,
             kind="tavily",
-            name="Project Tavily",
-            api_key=PROJECT_TAVILY_V1,  # rayloc:ignore
+            name="Legacy Project Tavily",
+            api_key=fixture_tavily,
+            make_default=True,
         )
-        project_tavily_alternate = _create_connector(
-            operator,
-            responses,
-            path=f"/api/projects/{project_a}/connectors",
+        legacy_tavily_alternate = _seed_legacy_project_connector(
+            database_url,
+            actor_id=operator_id,
+            project_id=project_a,
             kind="tavily",
-            name="Alternate Project Tavily",
-            api_key=PROJECT_TAVILY_ALTERNATE,  # rayloc:ignore
+            name="Alternate Legacy Project Tavily",
+            api_key=fixture_tavily_alt,
         )
-        default_response = _remember(
+        project_brave = legacy_brave["connector"]
+        project_tavily = legacy_tavily["connector"]
+        project_tavily_alternate = legacy_tavily_alternate["connector"]
+
+        _run_browser_qualification(
+            api_root=api_root,
+            base_url=base_url,
+            operator_token=operator_token,
+            project_id=project_a,
+            excluded_filter="unprovisioned connector setup",
+        )
+        global_list = _remember(responses, operator.get("/api/global-connectors"))
+        assert global_list.status_code == 200, global_list.text
+        global_connectors = global_list.json()
+        global_brave = next(
+            item for item in global_connectors if item["name"] == "Shared Brave from browser"
+        )
+        global_tavily = next(
+            item for item in global_connectors if item["name"] == "Shared Tavily from browser"
+        )
+        assert global_brave["visibility"] == global_tavily["visibility"] == "global"
+
+        operator_projects_response = _remember(responses, operator.get("/api/projects"))
+        assert operator_projects_response.status_code == 200
+        peer_project = next(
+            project
+            for project in operator_projects_response.json()
+            if project["name"] == "Shared Search Peer"
+        )
+        project_a_peer = peer_project["id"]
+
+        # The UI switched project A from its historical private Tavily default
+        # to the shared instance. The old record and encrypted credential are
+        # retained, unchanged and still scoped to project A.
+        saved_legacy_cutover = _remember(
             responses,
-            operator.put(
-                f"/api/projects/{project_a}/connector-defaults/tavily",
+            operator.get(f"/api/projects/{project_a}/connector-defaults/tavily"),
+        )
+        assert saved_legacy_cutover.status_code == 200
+        assert saved_legacy_cutover.json()["connector_id"] == global_tavily["id"]
+        legacy_listing = _remember(
+            responses, operator.get(f"/api/projects/{project_a}/connectors")
+        )
+        legacy_after_cutover = next(
+            item
+            for item in legacy_listing.json()
+            if item["id"] == project_tavily["id"]
+        )
+        assert legacy_after_cutover["visibility"] == "project"
+        assert legacy_after_cutover["is_default"] is False
+        engine = create_engine(database_url)
+        try:
+            with engine.connect() as connection:
+                credential_after_cutover = connection.execute(
+                    text(
+                        "SELECT connector_id, ciphertext FROM connector_credentials "
+                        "WHERE id=:id"
+                    ),
+                    {"id": uuid.UUID(legacy_tavily["credential_id"])},
+                ).one()
+            assert str(credential_after_cutover.connector_id) == project_tavily["id"]
+            assert bytes(credential_after_cutover.ciphertext) == legacy_tavily[
+                "credential_ciphertext"
+            ]
+        finally:
+            engine.dispose()
+
+        private_create = _remember(
+            responses,
+            operator.post(
+                f"/api/projects/{project_a}/connectors",
                 headers={
-                    "Origin": "http://localhost:5173",
+                    "Origin": "http://127.0.0.1:5174",
                     "Idempotency-Key": str(uuid.uuid4()),
                 },
                 json={
-                    "expected_revision": 0,
-                    "connector_id": project_tavily["id"],
+                    "kind": "brave",
+                    "name": "Rejected private Brave",
+                    "configuration": {"schema_version": 1, "kind": "brave"},
+                    "api_key": "sample-rejected",
                 },
             ),
         )
-        assert default_response.status_code == 200, default_response.text
+        assert private_create.status_code == 422
+        assert private_create.json()["error"]["code"] == "connector_visibility_unsupported"
+        assert "sample-rejected" not in private_create.text
+
+        denied_global_create = _remember(
+            responses,
+            owner_b.post(
+                "/api/global-connectors",
+                headers={
+                    "Origin": "http://127.0.0.1:5174",
+                    "Idempotency-Key": str(uuid.uuid4()),
+                },
+                json={
+                    "kind": "brave",
+                    "name": "Rejected non-operator global connector",
+                    "configuration": {},
+                    "api_key": "sample-rejected",
+                },
+            ),
+        )
+        assert denied_global_create.status_code == 403
+        assert denied_global_create.json()["error"]["code"] == "global_management_forbidden"
 
         caps_response = _remember(responses, operator.get("/api/capabilities"))
         assert caps_response.status_code == 200, caps_response.text
@@ -420,6 +653,15 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
         assert conversation_b_response.status_code == 201
         conversation_a = conversation_a_response.json()["id"]
         conversation_b = conversation_b_response.json()["id"]
+        peer_conversation_response = _remember(
+            responses,
+            operator.post(
+                "/api/conversations",
+                json={"title": "Managed same-owner peer", "project_id": project_a_peer},
+            ),
+        )
+        assert peer_conversation_response.status_code == 201
+        peer_conversation = peer_conversation_response.json()["id"]
 
         # The queued run survives an API restart before the worker sees it.
         status, queued = _submit_managed(
@@ -429,7 +671,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
             capability=brave,
             query="global reuse project B after API restart",
             service="brave",
-            connector_id=global_connector["id"],
+            connector_id=global_brave["id"],
         )
         assert status == 202, queued
         queued_run = _remember(responses, owner_b.get(f"/api/runs/{queued['id']}"))
@@ -448,11 +690,19 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
             owner_b, responses, run_id=queued["id"]
         )
         retained_artifacts[artifact_b_id] = ("owner_b", artifact_b)
+        _assert_run_and_artifact_scope(
+            database_url,
+            run_id=queued["id"],
+            artifact_id=artifact_b_id,
+            project_id=project_b,
+            conversation_id=conversation_b,
+        )
         queued_result = run_b["operations"][0]["result"]
         assert queued_result["query"] == "global reuse project B after API restart"
         assert queued_result["items"][0]["title"] == "Synthetic Brave result"
 
-        # One global credential is reused in both owners' distinct projects.
+        # One Global credential is reused across owners and across two projects
+        # owned by the same user, with each run and artifact pinned to its project.
         status, run_a = _submit_managed(
             operator,
             responses,
@@ -460,29 +710,72 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
             capability=brave,
             query="global reuse project A",
             service="brave",
-            connector_id=global_connector["id"],
+            connector_id=global_brave["id"],
         )
         assert status == 202, run_a
         _completed_a, artifact_a_id, artifact_a = _run_and_artifact(
             operator, responses, run_id=run_a["id"]
         )
         retained_artifacts[artifact_a_id] = ("operator", artifact_a)
+        _assert_run_and_artifact_scope(
+            database_url,
+            run_id=run_a["id"],
+            artifact_id=artifact_a_id,
+            project_id=project_a,
+            conversation_id=conversation_a,
+        )
+
+        peer_brave_status, peer_brave_run = _submit_managed(
+            operator,
+            responses,
+            conversation_id=peer_conversation,
+            capability=brave,
+            query="same-owner peer project Brave default",
+            service="brave",
+        )
+        assert peer_brave_status == 202, peer_brave_run
+        _peer_brave, peer_brave_artifact_id, peer_brave_artifact = _run_and_artifact(
+            operator, responses, run_id=peer_brave_run["id"]
+        )
+        retained_artifacts[peer_brave_artifact_id] = ("operator", peer_brave_artifact)
+        _assert_run_and_artifact_scope(
+            database_url,
+            run_id=peer_brave_run["id"],
+            artifact_id=peer_brave_artifact_id,
+            project_id=project_a_peer,
+            conversation_id=peer_conversation,
+        )
 
         owner_b_global_list = _remember(responses, owner_b.get("/api/global-connectors"))
         assert owner_b_global_list.status_code == 403
+        denied_global_update = _remember(
+            responses,
+            owner_b.patch(
+                f"/api/global-connectors/{global_brave['id']}",
+                headers={
+                    "Origin": "http://127.0.0.1:5174",
+                    "Idempotency-Key": str(uuid.uuid4()),
+                },
+                json={"expected_revision": 1, "enabled": False},
+            ),
+        )
+        assert denied_global_update.status_code == 403
+        assert denied_global_update.json()["error"]["code"] == "global_management_forbidden"
         owner_b_project_list = _remember(
             responses, owner_b.get(f"/api/projects/{project_b}/connectors")
         )
         assert owner_b_project_list.status_code == 200
         assert {item["id"] for item in owner_b_project_list.json()} == {
-            global_connector["id"]
+            global_brave["id"],
+            global_tavily["id"],
         }
         owner_a_project_list = _remember(
             responses, operator.get(f"/api/projects/{project_a}/connectors")
         )
         assert owner_a_project_list.status_code == 200
         assert {item["id"] for item in owner_a_project_list.json()} == {
-            global_connector["id"],
+            global_brave["id"],
+            global_tavily["id"],
             project_brave["id"],
             project_tavily["id"],
             project_tavily_alternate["id"],
@@ -532,10 +825,9 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
             item for item in project_caps.json() if item["id"] == "brave_web_search"
         )
         assert project_brave_status["permitted"] is True
-        assert project_brave_status["connector_readiness"]["brave"] == "ambiguous"
+        assert project_brave_status["connector_readiness"]["brave"] == "ready"
 
-        # The saved project default selects Tavily without a manual ID. A
-        # replacement changes the active credential while preserving Connector ID.
+        # The project's Global default selects Tavily without a manual ID.
         status, tavily_run = _submit_managed(
             operator,
             responses,
@@ -549,21 +841,24 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
             operator, responses, run_id=tavily_run["id"]
         )
         retained_artifacts[artifact_v1_id] = ("operator", artifact_v1)
+        assert next(
+            call for call in _read_calls(call_log) if call["query"] == "project default tavily v1"
+        )["credential_label"] == "global-tavily-v1"
 
         replacement = _remember(
             responses,
             operator.post(
-                f"/api/projects/{project_a}/connectors/{project_tavily['id']}/credentials",
+                f"/api/global-connectors/{global_tavily['id']}/credentials",
                 headers={
-                    "Origin": "http://localhost:5173",
+                    "Origin": "http://127.0.0.1:5174",
                     "Idempotency-Key": str(uuid.uuid4()),
                 },
-                json={"expected_revision": 1, "api_key": PROJECT_TAVILY_V2},  # rayloc:ignore
+                json={"expected_revision": 1, "api_key": GLOBAL_TAVILY_V2},
             ),
         )
         assert replacement.status_code == 200, replacement.text
         assert replacement.json()["revision"] == 2
-        assert PROJECT_TAVILY_V2.encode() not in replacement.content
+        assert GLOBAL_TAVILY_V2.encode() not in replacement.content
         status, tavily_v2_run = _submit_managed(
             operator,
             responses,
@@ -577,6 +872,30 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
             operator, responses, run_id=tavily_v2_run["id"]
         )
         retained_artifacts[artifact_v2_id] = ("operator", artifact_v2)
+        assert next(
+            call for call in _read_calls(call_log) if call["query"] == "project default tavily v2"
+        )["credential_label"] == "global-tavily-v2"
+
+        peer_tavily_status, peer_tavily_run = _submit_managed(
+            operator,
+            responses,
+            conversation_id=peer_conversation,
+            capability=tavily,
+            query="same-owner peer project Tavily default",
+            service="tavily",
+        )
+        assert peer_tavily_status == 202, peer_tavily_run
+        _peer_tavily, peer_tavily_artifact_id, peer_tavily_artifact = _run_and_artifact(
+            operator, responses, run_id=peer_tavily_run["id"]
+        )
+        retained_artifacts[peer_tavily_artifact_id] = ("operator", peer_tavily_artifact)
+        _assert_run_and_artifact_scope(
+            database_url,
+            run_id=peer_tavily_run["id"],
+            artifact_id=peer_tavily_artifact_id,
+            project_id=project_a_peer,
+            conversation_id=peer_conversation,
+        )
 
         # Revoke globally while another owner's selected request is in flight.
         status, delayed = _submit_managed(
@@ -586,7 +905,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
             capability=brave,
             query="hold: revoke global connector during dispatch",
             service="brave",
-            connector_id=global_connector["id"],
+            connector_id=global_brave["id"],
         )
         assert status == 202, delayed
         wait_deadline = time.monotonic() + 15
@@ -602,9 +921,9 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
         revoked = _remember(
             responses,
             operator.patch(
-                f"/api/global-connectors/{global_connector['id']}",
+                f"/api/global-connectors/{global_brave['id']}",
                 headers={
-                    "Origin": "http://localhost:5173",
+                    "Origin": "http://127.0.0.1:5174",
                     "Idempotency-Key": str(uuid.uuid4()),
                 },
                 json={"expected_revision": 1, "revoke": True},
@@ -631,7 +950,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
             capability=brave,
             query="revoked global connector must not dispatch again",
             service="brave",
-            connector_id=global_connector["id"],
+            connector_id=global_brave["id"],
         )
         assert retry_status == 422
         assert retry["error"]["code"] == "connector_revoked"
@@ -710,10 +1029,16 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
         ]
         assert next(call for call in calls if call["query"] == "project default tavily v1")[
             "credential_label"
-        ] == "project-tavily-v1"
+        ] == "global-tavily-v1"
         assert next(call for call in calls if call["query"] == "project default tavily v2")[
             "credential_label"
-        ] == "project-tavily-v2"
+        ] == "global-tavily-v2"
+        assert next(
+            call for call in calls if call["query"] == "same-owner peer project Brave default"
+        )["credential_label"] == "global-brave-v1"
+        assert next(
+            call for call in calls if call["query"] == "same-owner peer project Tavily default"
+        )["credential_label"] == "global-tavily-v2"
         assert next(call for call in calls if call["query"] == "global reuse project B after API restart")[
             "credential_label"
         ] == "global-brave-v1"
@@ -725,12 +1050,25 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
         worker_process = None
         _stop(api_process)
         api_process = None
+        env["CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE"] = str(secrets_dir / "missing-hmac.json")
+        api_process, base_url = _start_logged_api(api_root, workdir, env, port, api_log)
+        _run_browser_qualification(
+            api_root=api_root,
+            base_url=base_url,
+            operator_token=operator_token,
+            project_id=project_a,
+            test_filter="unprovisioned connector setup",
+        )
+        _stop(api_process)
+        api_process = None
+
         sentinel_values = (
             GLOBAL_BRAVE_V1,
-            PROJECT_BRAVE,
-            PROJECT_TAVILY_V1,
-            PROJECT_TAVILY_V2,
-            PROJECT_TAVILY_ALTERNATE,
+            GLOBAL_TAVILY_V1,
+            GLOBAL_TAVILY_V2,
+            fixture_brave,
+            fixture_tavily,
+            fixture_tavily_alt,
         )
         assert all(
             sentinel.encode() not in body
@@ -743,8 +1081,9 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(t
         )
         call_log_bytes = call_log.read_bytes()
         assert b"global-brave-v1" in call_log_bytes
+        assert b"global-tavily-v1" in call_log_bytes
+        assert b"global-tavily-v2" in call_log_bytes
         assert b"project-tavily-v1" in call_log_bytes
-        assert b"project-tavily-v2" in call_log_bytes
         assert b"project-brave" in call_log_bytes
     finally:
         _stop(worker_process)
