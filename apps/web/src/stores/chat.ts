@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { generateRequestId } from '@/lib/requestId'
-import api, { runsApi, modelProfilesApi, capabilitiesApi } from '@/services/api'
+import { lifecycleConflictCode } from '@/lib/lifecycleErrors'
+import api, { runsApi, modelProfilesApi, capabilitiesApi, conversationsApi } from '@/services/api'
 import type {
   CapabilitySummary,
   ChatMessage,
@@ -20,7 +21,16 @@ import type {
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([])
+  const archivedConversations = ref<Conversation[]>([])
   const currentConversation = ref<Conversation | null>(null)
+  const conversationMetadataReady = ref(false)
+  const currentConversationReadOnly = computed(() => Boolean(
+    currentConversation.value && (
+      !conversationMetadataReady.value ||
+      currentConversation.value.archived_at ||
+      currentConversation.value.project_archived_at
+    ),
+  ))
   const messages = ref<ChatMessage[]>([])
   const isStreaming = ref(false)
   const error = ref<string | null>(null)
@@ -60,15 +70,137 @@ export const useChatStore = defineStore('chat', () => {
   // regardless of what is selected next.
   const isSubmitting = ref(false)
   let conversationLoadGeneration = 0
+  let activeListGeneration = 0
+  let archivedListGeneration = 0
+  let lifecycleIdentityGeneration = 0
+  const conversationOperationGenerations = new Map<string, number>()
 
   async function getConversations() {
+    const generation = ++activeListGeneration
+    const identity = lifecycleIdentityGeneration
     try {
-      const res = await api.get('/workspace/conversations')
-      conversations.value = res.data as unknown as Conversation[]
+      const response = await conversationsApi.list('active')
+      if (generation !== activeListGeneration || identity !== lifecycleIdentityGeneration) return
+      conversations.value = response.data
     } catch (err: unknown) {
+      if (generation !== activeListGeneration || identity !== lifecycleIdentityGeneration) return
       const axiosErr = err as { response?: { data?: { detail?: string } } }
       error.value =
         axiosErr.response?.data?.detail ?? 'Failed to load conversations'
+    }
+  }
+
+  async function loadArchivedConversations(): Promise<void> {
+    const generation = ++archivedListGeneration
+    const identity = lifecycleIdentityGeneration
+    try {
+      const response = await conversationsApi.list('archived')
+      if (generation !== archivedListGeneration || identity !== lifecycleIdentityGeneration) return
+      archivedConversations.value = response.data
+    } catch (err: unknown) {
+      if (generation !== archivedListGeneration || identity !== lifecycleIdentityGeneration) return
+      error.value = safeMessage(err, 'Failed to load archived conversations')
+    }
+  }
+
+  function applyConversationMetadata(conversation: Conversation): void {
+    const activeIndex = conversations.value.findIndex(
+      (item) => item.id === conversation.id,
+    )
+    const archivedIndex = archivedConversations.value.findIndex(
+      (item) => item.id === conversation.id,
+    )
+    const active = conversations.value.filter((item) => item.id !== conversation.id)
+    const archived = archivedConversations.value.filter((item) => item.id !== conversation.id)
+    if (conversation.archived_at) {
+      archived.splice(
+        archivedIndex < 0 ? 0 : Math.min(archivedIndex, archived.length),
+        0,
+        conversation,
+      )
+    } else if (!conversation.project_archived_at) {
+      active.splice(
+        activeIndex < 0 ? 0 : Math.min(activeIndex, active.length),
+        0,
+        conversation,
+      )
+    }
+    conversations.value = active
+    archivedConversations.value = archived
+  }
+
+  async function refreshLifecycleAfterConflict(conversationId: string): Promise<void> {
+    const identity = lifecycleIdentityGeneration
+    const message = error.value
+    await Promise.all([getConversations(), loadArchivedConversations()])
+    if (identity !== lifecycleIdentityGeneration) return
+    try {
+      const response = await conversationsApi.get(conversationId)
+      if (identity !== lifecycleIdentityGeneration) return
+      const conversation = response.data
+      applyConversationMetadata(conversation)
+      if (currentConversation.value?.id === conversationId) {
+        currentConversation.value = conversation
+        conversationMetadataReady.value = true
+      }
+    } catch {
+      // The caller retains the safe conflict message; a removed scope may no
+      // longer be available to refresh as metadata.
+    }
+    if (identity === lifecycleIdentityGeneration) error.value = message
+  }
+
+  async function archiveConversation(conversationId: string): Promise<void> {
+    activeListGeneration += 1
+    archivedListGeneration += 1
+    const identity = lifecycleIdentityGeneration
+    const operation = (conversationOperationGenerations.get(conversationId) ?? 0) + 1
+    conversationOperationGenerations.set(conversationId, operation)
+    try {
+      const response = await conversationsApi.archive(conversationId)
+      if (identity !== lifecycleIdentityGeneration || conversationOperationGenerations.get(conversationId) !== operation) return
+      applyConversationMetadata(response.data)
+      if (currentConversation.value?.id === conversationId) {
+        currentConversation.value = response.data
+        conversationMetadataReady.value = true
+      }
+    } catch (err: unknown) {
+      const currentOperation = conversationOperationGenerations.get(conversationId) === operation
+      if (identity === lifecycleIdentityGeneration && currentOperation) {
+        error.value = safeMessage(err, 'The conversation could not be archived. Reload and try again.')
+      }
+      if (statusCode(err) === 409 && identity === lifecycleIdentityGeneration && currentOperation) {
+        await refreshLifecycleAfterConflict(conversationId)
+      }
+      throw err
+    }
+  }
+
+  async function restoreConversation(conversationId: string): Promise<Conversation> {
+    activeListGeneration += 1
+    archivedListGeneration += 1
+    const identity = lifecycleIdentityGeneration
+    const operation = (conversationOperationGenerations.get(conversationId) ?? 0) + 1
+    conversationOperationGenerations.set(conversationId, operation)
+    try {
+      const response = await conversationsApi.restore(conversationId)
+      if (identity === lifecycleIdentityGeneration && conversationOperationGenerations.get(conversationId) === operation) {
+        applyConversationMetadata(response.data)
+        if (currentConversation.value?.id === conversationId) {
+          currentConversation.value = response.data
+          conversationMetadataReady.value = true
+        }
+      }
+      return response.data
+    } catch (err: unknown) {
+      const currentOperation = conversationOperationGenerations.get(conversationId) === operation
+      if (identity === lifecycleIdentityGeneration && currentOperation) {
+        error.value = safeMessage(err, 'The conversation could not be restored. Reload and try again.')
+      }
+      if (statusCode(err) === 409 && identity === lifecycleIdentityGeneration && currentOperation) {
+        await refreshLifecycleAfterConflict(conversationId)
+      }
+      throw err
     }
   }
 
@@ -149,7 +281,20 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadConversation(conversationId: string) {
     const loadGeneration = ++conversationLoadGeneration
+    const priorMetadataReady = conversationMetadataReady.value
+    conversationMetadataReady.value = false
     let snapshotProjectId: string | undefined
+    let loadedMetadata: Conversation | undefined
+    try {
+      const metadataResponse = await conversationsApi.get(conversationId)
+      if (loadGeneration !== conversationLoadGeneration) return
+      loadedMetadata = metadataResponse.data
+      conversationMetadataReady.value = true
+      applyConversationMetadata(loadedMetadata)
+    } catch (metadataError: unknown) {
+      if (loadGeneration !== conversationLoadGeneration) return
+      error.value = safeMessage(metadataError, 'Conversation status could not be verified. History is read-only.')
+    }
     try {
       // Load snapshot first to rebuild durable state
       try {
@@ -197,14 +342,20 @@ export const useChatStore = defineStore('chat', () => {
       // Fetch messages (authoritative for message content)
       const res = await api.get(`/conversations/${encodeURIComponent(conversationId)}/messages`)
       if (loadGeneration !== conversationLoadGeneration) return
-      const known = conversations.value.find((c) => c.id === conversationId)
+      const known = loadedMetadata ?? conversations.value.find((c) => c.id === conversationId)
+        ?? archivedConversations.value.find((c) => c.id === conversationId)
       currentConversation.value = {
+        ...known,
         id: conversationId,
         project_id: known?.project_id ?? snapshotProjectId,
+        project_name: known?.project_name ?? '',
+        project_archived_at: known?.project_archived_at ?? null,
         title: known?.title || 'Conversation',
         created_at: known?.created_at ?? '',
         updated_at: known?.updated_at ?? '',
+        archived_at: known?.archived_at ?? null,
       }
+      conversationMetadataReady.value = Boolean(loadedMetadata)
       messages.value = res.data as unknown as ChatMessage[]
 
       // If there's an active run for this conversation, subscribe to events
@@ -239,6 +390,9 @@ export const useChatStore = defineStore('chat', () => {
       }
     } catch (err: unknown) {
       if (loadGeneration !== conversationLoadGeneration) return
+      if (currentConversation.value?.id !== conversationId) {
+        conversationMetadataReady.value = priorMetadataReady
+      }
       const axiosErr = err as { response?: { data?: { detail?: string } } }
       error.value =
         axiosErr.response?.data?.detail ?? 'Failed to load conversation'
@@ -840,7 +994,8 @@ export const useChatStore = defineStore('chat', () => {
       pendingRequests.value.delete(requestId)
     } catch (err) {
       console.error('STORE: Failed to submit durable run', err)
-      error.value = 'Failed to submit message. Please try again.'
+      error.value = safeMessage(err, 'Failed to submit message. Please try again.')
+      if (lifecycleConflictCode(err)) await refreshLifecycleAfterConflict(convId)
     } finally {
       isSubmitting.value = false
     }
@@ -910,7 +1065,8 @@ export const useChatStore = defineStore('chat', () => {
       }).catch((streamError) => console.warn('Tool event stream failed', streamError))
     } catch (err) {
       console.error('Failed to submit search command', err)
-      error.value = 'Failed to submit search. Please retry the same command.'
+      error.value = safeMessage(err, 'Failed to submit search. Please retry the same command.')
+      if (lifecycleConflictCode(err)) await refreshLifecycleAfterConflict(convId)
     } finally {
       isSubmitting.value = false
     }
@@ -974,10 +1130,17 @@ export const useChatStore = defineStore('chat', () => {
     conversationLoadGeneration += 1
     messages.value = []
     currentConversation.value = null
+    conversationMetadataReady.value = false
     error.value = null
   }
 
   function clearMessages() {
+    lifecycleIdentityGeneration += 1
+    activeListGeneration += 1
+    archivedListGeneration += 1
+    conversationOperationGenerations.clear()
+    conversations.value = []
+    archivedConversations.value = []
     deselectConversation()
     runCards.value.clear()
     toolOperationsByConversation.value.clear()
@@ -988,7 +1151,10 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     conversations,
+    archivedConversations,
     currentConversation,
+    conversationMetadataReady,
+    currentConversationReadOnly,
     messages,
     isStreaming,
     isSubmitting,
@@ -1003,6 +1169,10 @@ export const useChatStore = defineStore('chat', () => {
     selectedProfileId,
     selectedFallbackIds,
     getConversations,
+    loadArchivedConversations,
+    archiveConversation,
+    restoreConversation,
+    refreshLifecycleAfterConflict,
     createConversation,
     loadModelProfiles,
     loadCapabilities,
@@ -1023,3 +1193,22 @@ export const useChatStore = defineStore('chat', () => {
     clearMessages,
   }
 })
+
+function statusCode(err: unknown): number | undefined {
+  return (err as { response?: { status?: number } }).response?.status
+}
+
+function safeMessage(err: unknown, fallback: string): string {
+  const response = err as {
+    response?: {
+      data?: {
+        error?: { message?: string }
+        detail?: string | { error?: { message?: string } }
+      }
+    }
+  }
+  const data = response.response?.data
+  const detail = data?.detail
+  if (typeof detail === 'string') return detail
+  return data?.error?.message ?? (detail ? detail.error?.message : undefined) ?? fallback
+}

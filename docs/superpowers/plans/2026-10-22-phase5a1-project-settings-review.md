@@ -1,6 +1,6 @@
 ---
 type: plan
-summary: Approved 5A.1 revisions for global Brave/Tavily search, basic Projects, scoped settings, connector cards and setup failures.
+summary: Approved 5A.1 revisions for global Brave/Tavily search, one project default with automatic fallback, basic Projects, scoped settings, connector cards, provider checks and connector removal.
 status: approved
 date: 2026-10-22
 ---
@@ -11,17 +11,17 @@ date: 2026-10-22
 >
 > **Review boundary:** Approved by the user on 2026-10-22 for implementation of Tasks 1–6. It does not record 5A.1 acceptance or authorize Task 8/AWS.
 
-**Goal:** Make managed search setup usable through real project selection, settings owned by the correct scope, discoverable connector cards and clear failure recovery.
+**Goal:** Make managed search setup usable through real project selection, settings owned by the correct scope, discoverable connector cards, explicit provider-key checks and clear failure recovery.
 
-**Architecture:** Configure Brave and Tavily as installation-global search connectors while retaining project-scoped defaults and execution evidence. Extend the existing owner-only Project model, separate project selection from connector state in the browser, introduce Project Settings and Global Settings tabs, and open write-only credential forms only in connector dialogs. Preserve the existing credential broker and historical execution contracts.
+**Architecture:** Configure Brave and Tavily as installation-global search connectors while retaining one project-wide search default and project-owned execution evidence. Automatic mode prioritizes that default and can retry another available search provider after a tool error; manual selections remain available and override the default. Extend the existing owner-only Project model, separate project selection from connector state in the browser, introduce Project Settings and Global Settings tabs, and open write-only credential forms only in connector dialogs. Preserve the existing credential broker and historical execution contracts.
 
 **Tech stack:** Existing FastAPI, SQLAlchemy/Alembic, PostgreSQL 15, Vue, Pinia, TypeScript, pytest, Vitest and Playwright; no new product dependencies.
 
-**Spec:** [Approved Phase 5 specification](../specs/2026-10-21-phase5-managed-connectors-and-s3-observations-design.md). This approved addendum adds basic multiple-project lifecycle and replaces the setup-page presentation in section 9. The user's subsequent visibility decision below supersedes section 4.1's Brave/Tavily support for both scopes; Task 1 aligns that contract. Owner-only project authorization and the 5A.1 acceptance gate remain.
+**Spec:** [Approved Phase 5 specification](../specs/2026-10-21-phase5-managed-connectors-and-s3-observations-design.md). This approved addendum adds basic multiple-project lifecycle and replaces the setup-page presentation in section 9. The user's subsequent visibility decision below supersedes section 4.1's Brave/Tavily support for both scopes; Task 1 aligns that contract. The user's 2026-10-22 default-selection clarification supersedes the earlier per-service default decision. Owner-only project authorization and the 5A.1 acceptance gate remain.
 
 ## Findings from review investigation
 
-- Defaults already belong to `ProjectConnectorDefault`, keyed by project and service. Two projects can independently choose one global connector without copying its credential. The current view places that setting inside connector configuration and obscures its ownership.
+- Defaults already belong to `ProjectConnectorDefault`, keyed by project and service. The user's 2026-10-22 clarification changes this to one project-wide default; two projects can independently choose a global connector without copying its credential. The current view places that setting inside connector configuration and obscures its ownership.
 - Project storage and authenticated listing already exist. Registration creates a project, but `uq_projects_owner_user` permits only one project per owner. Multiple projects require a migration, not only a selector change. Conversation creation also currently chooses `.first()` when no project is supplied.
 - The project setup POST's 403 path is its browser-origin check, before reading the credential or reserving a request. The global listing 403 is a separate, expected operator-authorization denial.
 - `ConnectorCredentialForm.vue` reconciles every rejected submission, including known pre-acceptance failures. This turns an actionable origin rejection into an uncertain-write loop.
@@ -35,7 +35,11 @@ date: 2026-10-22
 
 Brave Search and Tavily Search are **Global** integrations. New connectors for either service are installation-global, configured once by the existing designated operator and reusable by every eligible project. Their supported-service cards and creation dialogs show **Global** visibility; do not offer a Project visibility selector or project-scoped search creation. Global configuration does not grant users access to credentials or other projects' execution data. AWS remains project-scoped in its later phase.
 
-Projects choose their own default global Brave instance and default global Tavily instance in Project Settings. Project selection changes these preferences and conversation/evidence ownership, never a search connector's visibility. The same global instance can be the default in multiple projects without duplicating its secret. Global replacement/revocation retains the existing all-project impact disclosure and server authorization.
+Projects choose one default global search connector across Brave and Tavily in Project Settings. Automatic mode uses that provider first; after a search tool error, the model can retry another available provider. Manual connector selections remain available and override the default. Project selection changes this preference and conversation/evidence ownership, never a search connector's visibility. The same global instance can be the default in multiple projects without duplicating its secret. Global replacement/revocation retains the existing all-project impact disclosure and server authorization.
+
+### Connector instance actions — user decision, 2026-10-22
+
+Multiple credentials are represented as separate named connector instances. The Connectors page contains only those cards; it has no inline **Add another** actions. An operator opens one provider card and starts **Add another** from that card's dialog. Existing instances expose **Check status** and **Revoke** actions. Check status sends one fixed, one-result search request to the selected provider with a short timeout, discards the result, and reports valid/rejected/unavailable without returning secret material. It runs only after an explicit click; it is not a background check and can count toward provider quota. Revoke physically removes the connector and encrypted credential/revision rows, clears project defaults that target it and advances those settings revisions. Secret-free audit events remain; the revoked connector is not retained as a visible or reusable setup.
 
 Existing project-scoped search connectors require an explicit cutover, not an in-place visibility change or a relabeled badge. Keep their immutable records and admitted references readable, and preserve authorized existing execution/default behavior during cutover. Show existing private defaults as legacy with migration guidance; offer only global instances for new default selections. The operator creates a new global connector through the existing write-only setup flow, project owners explicitly switch defaults, and legacy connectors can be revoked after admitted work drains. Do not automatically read back, copy or publish a project credential. Keep legacy scope visible in migration information outside the supported-service card list so private credentials are never presented as shared globals.
 
@@ -47,7 +51,7 @@ Deletion is deliberately limited: reject the last owned project and any project 
 
 The sidebar Settings link opens `/projects/:projectId/settings`, with **Project Settings** selected. A second tab opens `/settings/global`. Project Settings contains the project name/lifecycle controls and search defaults. Global Settings shows installation setup readiness, global-management authority and a link to the global connector catalog; it introduces no new global-default semantics or editable deployment-secret settings. Other users see an operator-managed explanation. Keep **Connectors** as a separate sidebar page at `/connectors`, with `/settings/connectors` redirecting there for compatibility. Credential configuration lives in its dialogs, not in either Settings tab.
 
-Keep defaults in a distinct **Search defaults** section of Project Settings, outside connector dialogs. New choices include eligible global search connectors only; legacy project defaults show the cutover guidance above. Each project writes only its own revisioned settings. Keep one independent default per existing service (`brave`, `tavily`); choosing a preferred service for all search is not added here.
+Keep one **Search default** dropdown in Project Settings, outside connector dialogs. It lists eligible global Brave and Tavily instances together; a project can select only one. Existing legacy project defaults remain visible with cutover guidance until replaced. A new Alembic revision changes the settings invariant to one row per project and resolves already-existing dual defaults by retaining the row with the most recent `updated_at` (including a cleared row, so a recent clear remains effective; ties use the highest settings revision, then Brave before Tavily). The selected connector and its revision are preserved, and audit rows are left untouched. Automatic chat admission pins the project default provider as preferred, includes other uniquely resolvable enabled search providers for fallback, and tells the model to retry an alternate only after a tool error. Explicit client selections override the default; direct/manual tool calls continue resolving the chosen Connector explicitly.
 
 The project selector supports creating another project and switching among owned projects. New conversations always submit the selected ID. Opening an existing conversation selects its actual project. Switching does not move conversations or cancel runs. An omitted API `project_id` remains compatible for a sole owned project; with multiple projects return `project_required`/409 rather than choosing an arbitrary project.
 
@@ -55,17 +59,17 @@ The project selector supports creating another project and switching among owned
 
 Show Brave Search and Tavily Search as small **Global** cards on the Connectors page before any configuration form. For each configured instance show its name, service, publisher **OpenShip**, local logo or initials fallback, immutable Global visibility and a status dot with text. If no global connector exists for a supported service, show its unconfigured Global card. Allow another global instance through its dialog. The selected project determines eligible usage and defaults; ordinary consumers get read-only global usage details and operator guidance. The operator gets global management controls. Links from Settings enter this catalog; neither a project selection nor a URL parameter may turn Brave/Tavily configuration into Project scope.
 
-Selecting a card opens an accessible dialog containing its relevant create/configuration or credential replacement, disable and revoke controls. Global consumers see usage details only. Do not show forms or secret inputs on the catalog itself. Keep the dialog bound to the original project/scope/connector; close and clear it on project changes or navigation. Retain only non-secret pending request identifiers under their original scope for later reconciliation.
+Selecting a card opens an accessible dialog containing credential replacement, **Check status**, **Revoke**, and—when managed by the operator—**Add another** for that provider. The new credential form stays inside the same dialog. Global consumers see usage details only. Do not show forms or secret inputs or add-another controls on the catalog itself. Keep the dialog bound to the original project/scope/connector; close and clear it on project changes or navigation. Retain only non-secret pending request identifiers under their original scope for later reconciliation.
 
 Status semantics are explicit and never depend on card ordering:
 
 | Dot | Label/state | Meaning |
 | --- | --- | --- |
-| Green | Configured | Stored configuration is eligible according to the API; no live provider validation is implied. |
+| Green | Configured | Stored configuration is eligible according to the API; this card state alone does not imply a live provider check. |
 | Grey | Not configured / Disabled | No instance exists for this service/scope, or the instance is deliberately disabled. |
 | Red | Needs attention, with reason | Expired, revoked or unavailable according to known API state. A failed list request is a page error, not evidence that every connector is outdated. |
 
-Do not invent expiry, infer invalid keys without evidence, or perform background provider calls to color a dot. The built-in integration publisher is OpenShip; Brave/Tavily remain the service names. Use bundled assets if suitable assets already exist, otherwise use initials. No remote logo requests are required.
+Do not invent expiry, infer invalid keys without evidence, or perform background provider calls to color a dot. An explicit **Check status** result is shown in the dialog as valid, rejected, or unavailable; it does not trigger hidden searches or alter connector state. The built-in integration publisher is OpenShip; Brave/Tavily remain the service names. Use bundled assets if suitable assets already exist, otherwise use initials. No remote logo requests are required.
 
 ### Setup errors and installation readiness
 
@@ -83,7 +87,7 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 - Brave/Tavily new configuration is Global only; defaults, runs and evidence remain project-owned. Retain legacy private references through explicit cutover without silently sharing their keys.
 - Preserve existing Connector IDs, immutable visibility/revisions, request idempotency, worker admission, revocation and retained evidence.
 - No secrets in browser stores, URLs, persistent drafts, request retry payloads, read responses, logs or artifacts.
-- No automatic secret resubmission, key generation, credential migration or live-provider health checks.
+- No automatic secret resubmission, key generation, credential migration, background health probes or automatic provider calls for status display. A bounded live key check is permitted only after the operator selects **Check status** in the dialog.
 - Keep Project CRUD limited to the lifecycle above; no teams, membership, conversation moves or cascading history deletion.
 - Finish and requalify this revision inside 5A.1 before asking for acceptance. Task 8/AWS remains gated.
 
@@ -142,9 +146,9 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 
 **Files:** Create `apps/web/src/stores/projects.ts` and `views/SettingsView.vue`. Modify `stores/connectors.ts`, `services/api.ts`, `types/index.ts`, `router.ts`, `views/ChatView.vue`, `views/ConnectorSettingsView.vue`, `layouts/AppLayout.vue` and `components/layout/AppSidebar.vue`. Add `components/settings/ProjectSettings.vue` and `GlobalSettings.vue`.
 
-**Interfaces:** `useProjectsStore()` owns `projects`, `currentProjectId`, initialization, create, rename, delete, select and clear. Connector state consumes an explicit owned project ID; it does not maintain a second project list. Settings routes are `/projects/:projectId/settings` and `/settings/global`; `/connectors` keeps the independent connector page, and `/settings/connectors` redirects there. Existing project-default APIs remain unchanged.
+**Interfaces:** `useProjectsStore()` owns `projects`, `currentProjectId`, initialization, create, rename, delete, select and clear. Connector state consumes an explicit owned project ID; it does not maintain a second project list. Settings routes are `/projects/:projectId/settings` and `/settings/global`; `/connectors` keeps the independent connector page, and `/settings/connectors` redirects there. Existing project-default APIs remain unchanged for compatibility; Task 7 updates their shared-revision behavior.
 
-- [x] Add `apps/web/tests/ProjectStore.test.ts` and `ProjectSettings.test.ts`: CRUD, two-project switching, foreign/stale selection, independent defaults using one global Brave instance, empty/default-disabled explanations, settings tabs and compatibility navigation.
+- [x] Add `apps/web/tests/ProjectStore.test.ts` and `ProjectSettings.test.ts`: CRUD, two-project switching, foreign/stale selection, project-scoped defaults using one global Brave instance, empty/default-disabled explanations, settings tabs and compatibility navigation.
 - [x] Extend chat/sidebar tests for selected-project creation, switching conversation history, deep-linking a conversation in another owned project and logout clearing all project/connector state. Add a late-response test proving project A cannot overwrite B after switching.
 - [x] Run the tests to observe failure, then separate project lifecycle state from connector state. Capture mutation project IDs at submission and guard asynchronous results against current-scope changes.
 - [x] Implement the sidebar selector's create action and the two settings tabs. Put name/lifecycle controls and search defaults in Project Settings. Global Settings shows safe readiness/authority and links to the Global catalog context. Keep the separate Connectors sidebar entry; do not duplicate its credential forms in Settings.
@@ -154,13 +158,13 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 
 ## Task 5 (R4) — Connector cards and scoped configuration dialogs
 
-**Files:** Create `apps/web/src/components/connectors/ConnectorCard.vue`, `ConnectorConfigurationDialog.vue` and `apps/web/src/lib/connectorCatalog.ts`. Modify `apps/web/src/views/ConnectorSettingsView.vue`, the catalog links in the settings components from R3 and `ConnectorCredentialForm.vue`; replace the old all-forms connector presentation after compatibility routing is covered.
+**Files:** Create `apps/web/src/components/connectors/ConnectorCard.vue`, `ConnectorConfigurationDialog.vue` and `apps/web/src/lib/connectorCatalog.ts`. Modify `apps/web/src/views/ConnectorSettingsView.vue`, the catalog links in the settings components from R3 and `ConnectorCredentialForm.vue`; update `apps/api/src/openship/connectors/{routes,service}.py` and add a bounded search credential-check helper. Replace the old all-forms connector presentation after compatibility routing is covered.
 
-**Interfaces:** `connectorCatalog` supplies Brave/Tavily built-in display metadata, publisher, local icon/initials and fixed `visibility: 'global'`. Each card represents a global instance or an unconfigured global service. Search dialog identity includes immutable global scope, `kind` and optional `connectorId`; its request reconciliation is independent of the selected project. Legacy request reconciliation retains its original scope and remains separate from global creation.
+**Interfaces:** `connectorCatalog` supplies Brave/Tavily built-in display metadata, publisher, local icon/initials and fixed `visibility: 'global'`. Each card represents a global instance or an unconfigured global service. Search dialog identity includes immutable global scope, `kind` and optional `connectorId`; its request reconciliation is independent of the selected project. Legacy request reconciliation retains its original scope and remains separate from global creation. Provider checks use fixed Brave/Tavily endpoints, one fixed query/result and a 10-second bound; Revoke deletes setup rows, clears defaults, and preserves secret-free audit history.
 
 - [x] Add `apps/web/tests/ConnectorCatalog.test.ts`: both services have Global cards even with no configurations; project switching never changes their scope; no Project creation/visibility control exists; publisher/status labels, multiple global instances, read-only consumer cards and disabled/attention states work. Failed loading is a page error rather than fabricated red states. Legacy private defaults have truthful migration information outside the global card list.
-- [x] Add dialog tests for click/keyboard opening, focus return, Escape/close cleanup, scope-bound pending reconciliation, project-switch disposal, global mutation authority and creating another instance. Assert no API-key input exists before selection and no credentials enter stores/storage.
-- [x] Run the new tests to observe failure, then replace inline forms with cards/dialogs using the installed Reka UI dialog primitives and current UI styling. Keep create, replace, disable and revoke behavior; keep defaults on Project Settings, outside the connector catalog/dialogs.
+- [x] Add dialog tests for click/keyboard opening, focus return, Escape/close cleanup, scope-bound pending reconciliation, project-switch disposal, global mutation authority, creating another instance inside the selected dialog, provider-check results, and permanent removal. Assert no API-key input exists before selection and no credentials enter stores/storage.
+- [x] Run the new tests to observe failure, then replace inline forms with cards/dialogs using the installed Reka UI dialog primitives and current UI styling. Keep create, replace, and project defaults outside the connector catalog; place add-another in the dialog, add explicit bounded key checks, and make Revoke delete setup and encrypted credentials.
 - [x] Run component tests, typecheck, build and responsive/keyboard Playwright cases. Review and commit the tested increment.
 
 **Deliverable:** A compact supported-connector catalog with details and secret inputs shown only after selection.
@@ -169,7 +173,7 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 
 **Files:** Extend `apps/web/tests/e2e/connectors.spec.ts`, real-stack browser fixtures and `apps/api/tests/full_stack/test_managed_connectors.py`; update CI selectors if adding a file. Update `docs/testing/phase5a1-managed-connector-qualification.md` and the parent Phase 5 plan.
 
-- [x] Add a real API/PostgreSQL browser path: create two projects under one owner; configure global Brave and Tavily instances as the operator; select shared instances as each project's defaults independently; switch projects and verify Global badges persist. Confirm non-operator management and new private-search creation are denied, while runs/evidence remain project-owned. Exercise an explicitly seeded legacy private connector's cutover without copying or exposing its key.
+- [x] Add a real API/PostgreSQL browser path: create two projects under one owner; configure global Brave and Tavily instances as the operator; select one shared instance per project independently; switch projects and verify Global badges persist. Confirm non-operator management and new private-search creation are denied, while runs/evidence remain project-owned. Exercise an explicitly seeded legacy private connector's cutover without copying or exposing its key.
 - [x] Add an unprovisioned-installation path and an origin-rejection path. Verify actionable messages, no automatic key resubmission, no misleading status polling after definite rejection and eventual resolution after an actually uncertain write. Use synthetic keys/transports only.
 - [x] Run the focused regression cases, the existing managed/legacy full-stack CI selector, frontend typecheck/tests/build and relevant PostgreSQL migration/lifecycle tests. Required selected lanes must have nonzero tests and zero required skips. Record actual commands/results and any incomplete lane.
 - [x] Review changed request/response, storage, logs and artifacts for secret sentinels; review the diff and commit verified changes with scanned messages.
@@ -179,6 +183,27 @@ Keep the explicit browser-origin allowlist. Give origin rejection its own fixed 
 complete. Renewed 5A.1 acceptance is pending, and Task 8 remains unstarted.
 
 **Deliverable:** Reviewable evidence for the revised 5A.1 experience, with the AWS boundary intact.
+
+## Task 7 (R6) — One project search default with automatic fallback
+
+**User clarification, 2026-10-22:** Automatic mode uses the project's selected search default first. If that search tool returns an error, the model may retry with another available search tool. Manual selections are always available and take precedence.
+
+**Files:** Update `ProjectSettings.vue`, the connector store and chat input/view, the project-default route/service/model, connector selection in `runs/service.py`, the pinned execution contract and worker prompt. Add Alembic migration `phase5a009d` after `phase5a009c`. Update the managed-connector specification and frontend/API/full-stack tests.
+
+**Interfaces:** Keep the existing per-service read/write routes for compatibility, but expose one selected connector across both services in Project Settings. Both service reads return the project-wide settings revision; only the selected service returns the connector ID. A set/clear increments the shared revision and updates the single project row. Automatic tool execution with a preference uses `ExecutionConfigV3` to pin `preferred_search_kind`; earlier v1/v2 payloads remain unchanged. Other uniquely resolvable enabled search providers are pinned as fallbacks, and the model is told to prefer the default and retry an alternate on tool error. Manual connector selections are not replaced by the project default.
+
+- [x] Add failing tests for one combined dropdown, project-wide optimistic revisioning, migration of dual defaults, automatic preferred-provider pinning, alternative-provider inclusion and manual-selection precedence. Add a worker prompt assertion for default-first/error-fallback instructions.
+- [x] Update `ProjectConnectorDefault` to enforce one row per project. The migration keeps the most recently updated row, including a clear, with deterministic ties by settings revision and service; it preserves the selected connector reference and leaves audit rows untouched.
+- [x] Refactor settings UI to one selector over configured global Brave/Tavily connectors, preserve legacy-current-default visibility, and update only the chosen project default. Stop sending browser-cached defaults as explicit selections in automatic mode; let admission resolve the current project setting.
+- [x] Pin the preferred provider in a new automatic-chat execution-config version and order/instruct the model to try it first. Keep other enabled providers only when their Connector resolves unambiguously; keep direct/manual search selection explicit and unchanged.
+- [x] Update project-default API responses and service logic to serialize the shared revision safely, clear/replace the other service atomically, and preserve retry/idempotency behavior.
+- [x] Run targeted pytest/Vitest, full frontend tests/typecheck/build, and the SQLite migration test. Update the managed-connector browser journey and record the unavailable disposable-PostgreSQL/full-stack execution lane.
+
+**Verification note:** The focused API set passed (61 tests); the full frontend suite passed (274 tests), as did typecheck and production build. Playwright test discovery lists the updated managed-connector journey. PostgreSQL/full-stack execution was not run because no disposable test database was confirmed, and the supplied local database configuration was not used. The broad API suite stopped reporting progress at 59% for more than two minutes and was interrupted; the focused feature suite was rerun separately and passed.
+
+**Connector-actions follow-up:** User review moved all additional-instance creation into the selected connector dialog, requested an explicit provider-key check, and clarified that Revoke removes the setup. The follow-up implementation adds a bounded one-result check, hard deletion with project-default clearing and retained safe audit events, and catalog tests ensuring no add-another action appears outside the dialog. Verification: the focused API set passed (28 tests); the full web suite passed (275 tests), typecheck/build and targeted API Ruff passed, and Playwright discovery lists all four connector browser cases. The broad API suite again stopped producing progress at 59% and was interrupted; the focused affected API tests passed separately. No live provider check was run.
+
+**Deliverable:** A project has one visible and enforced search default; automatic search prefers it, can recover through another available provider after a tool error, and preserves explicit manual selection.
 
 ## Execution and verification notes
 

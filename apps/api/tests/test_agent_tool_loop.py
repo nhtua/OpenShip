@@ -17,6 +17,7 @@ from src.openship.capabilities.contracts import (
     ConnectorRef,
     ExecutionConfig,
     ExecutionConfigV2,
+    ExecutionConfigV3,
     LoopLimits,
     PublishedToolResult,
     ToolFailure,
@@ -76,30 +77,42 @@ def _execution(*, loop_limits=None):
     )
 
 
-def _managed_execution(*, loop_limits=None):
-    manifest = next(
-        item
-        for item in list_capability_manifests()
-        if item.id == "brave_web_search"
+def _managed_execution(*, loop_limits=None, kinds=("brave",), preferred_search_kind=None):
+    manifests = {item.id: item for item in list_capability_manifests()}
+    capability_ids = {
+        "brave": "brave_web_search",
+        "tavily": "tavily_web_search",
+    }
+    refs = tuple(
+        CapabilityRef(
+            id=manifests[capability_ids[kind]].id,
+            version=manifests[capability_ids[kind]].version,
+            manifest_digest=manifests[capability_ids[kind]].manifest_digest,
+        )
+        for kind in kinds
     )
-    ref = CapabilityRef(
-        id=manifest.id,
-        version=manifest.version,
-        manifest_digest=manifest.manifest_digest,
+    connector_refs = tuple(
+        ConnectorRef(
+            id=uuid.uuid4(),
+            kind=kind,
+            configuration_revision=1,
+            visibility="project",
+            credential_version_id=uuid.uuid4(),
+        )
+        for kind in kinds
     )
-    connector_ref = ConnectorRef(
-        id=uuid.uuid4(),
-        kind="brave",
-        configuration_revision=1,
-        visibility="project",
-        credential_version_id=uuid.uuid4(),
-    )
-    return ExecutionConfigV2(
-        graph_kind="chat",
-        graph_version=3,
-        allowed_capabilities=(ref,),
-        connector_refs=(connector_ref,),
-        loop_limits=loop_limits or LoopLimits(),
+    execution_type = ExecutionConfigV3 if preferred_search_kind is not None else ExecutionConfigV2
+    execution_fields = {
+        "graph_kind": "chat",
+        "graph_version": 3,
+        "allowed_capabilities": refs,
+        "connector_refs": connector_refs,
+        "loop_limits": loop_limits or LoopLimits(),
+    }
+    if preferred_search_kind is not None:
+        execution_fields["preferred_search_kind"] = preferred_search_kind
+    return execution_type(
+        **execution_fields,
     )
 
 
@@ -145,14 +158,15 @@ def _running_chat_tool_run(execution):
 
 
 class _CountingGateway:
-    def __init__(self, *, result=None, after_execute=None):
+    def __init__(self, *, result=None, results=None, after_execute=None):
         self.calls = []
         self.result = result
+        self.results = list(results or [])
         self.after_execute = after_execute
 
     async def execute_tool(self, **request):
         self.calls.append(request)
-        result = self.result or PublishedToolResult(
+        result = (self.results.pop(0) if self.results else None) or self.result or PublishedToolResult(
             operation_id=uuid.uuid4(),
             status="succeeded",
             result={
@@ -408,6 +422,68 @@ def test_chat_v3_managed_graph_runs_search_inside_the_bounded_tool_loop(monkeypa
         "assistant",
     ]
     assert [attempt.model_turn_ordinal for attempt in attempts] == [0, 1]
+
+
+def test_chat_v3_can_retry_an_alternate_search_after_the_default_provider_errors(monkeypatch):
+    execution = _managed_execution(
+        kinds=("tavily", "brave"), preferred_search_kind="tavily"
+    )
+    gateway = _CountingGateway(
+        results=[
+            PublishedToolResult(
+                operation_id=uuid.uuid4(),
+                status="failed",
+                error=ToolFailure(
+                    code="provider_unavailable",
+                    message="Search is temporarily unavailable.",
+                ),
+            ),
+            PublishedToolResult(
+                operation_id=uuid.uuid4(),
+                status="succeeded",
+                result={
+                    "query": "fallback query",
+                    "results": [{"title": "Fallback source", "url": "https://example.test/"}],
+                },
+            ),
+        ]
+    )
+    graph, state, transport, _gateway, run_id = _agent_case(
+        monkeypatch,
+        [
+            {"chunks": [_tool_turn("preferred-search", "preferred query", name="tavily_web_search")]},
+            {"chunks": [_tool_turn("fallback-search", "fallback query", name="brave_web_search")]},
+            {"chunks": [sdk_chunk(content="The alternate provider found a source.", finish_reason="stop")]},
+        ],
+        execution=execution,
+        gateway=gateway,
+    )
+
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+
+    assert result["assistant_response"] == "The alternate provider found a source."
+    assert transport.requests == 3
+    assert [call["ref"].id for call in gateway.calls] == [
+        "tavily_web_search",
+        "brave_web_search",
+    ]
+    failure_message = json.loads(transport.seen[1]["messages"][-1]["content"])
+    assert failure_message["status"] == "failed"
+    assert failure_message["error"] == {
+        "code": "provider_unavailable",
+        "message": "Search is temporarily unavailable.",
+    }
+
+
+def test_default_first_chat_prompt_requests_alternate_provider_after_error():
+    from src.openship.runs.worker import _chat_system_prompt
+
+    prompt = _chat_system_prompt(is_first=False, preferred_search_kind="tavily")
+
+    assert "use Tavily Search first" in prompt
+    assert "If that search returns an error" in prompt
+    assert "retry with another available search provider" in prompt
+    assert "Explicit manual connector selections take precedence" in prompt
 
 
 def test_chat_v3_uses_a_persisted_execution_deadline():

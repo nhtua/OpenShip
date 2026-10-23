@@ -16,6 +16,11 @@ from src.openship.artifacts.models import Artifact, ArtifactQuota
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.runs.models import Run
+from src.openship.workspace.lifecycle import (
+    ArchiveStateError,
+    archive_http_error,
+    assert_active_conversation,
+)
 from src.openship.workspace.models import Project
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -85,11 +90,18 @@ def _lock_scopes(db: Session, conversation_id: uuid.UUID, project_id: uuid.UUID)
         db.query(Conversation)
         .filter(Conversation.id == conversation_id, Conversation.project_id == project_id)
         .with_for_update()
+        .populate_existing()
         .first()
     )
     if conversation is None:
         raise _error(404, "conversation_not_found", "Conversation not found")
-    project = db.query(Project).filter(Project.id == project_id).with_for_update().first()
+    project = (
+        db.query(Project)
+        .filter(Project.id == project_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
     if project is None:
         raise _error(404, "project_not_found", "Project not found")
     return conversation, project
@@ -303,9 +315,13 @@ def begin_artifact_delete(db: Session, user_id: uuid.UUID, artifact_id: uuid.UUI
     artifact = db.query(Artifact).filter(Artifact.id == artifact_id).first()
     if artifact is None:
         raise _error(404, "artifact_not_found", "Artifact not found")
-    conversation, _ = _lock_scopes(db, artifact.conversation_id, artifact.project_id)
+    conversation, project = _lock_scopes(db, artifact.conversation_id, artifact.project_id)
     if conversation.user_id != user_id:
         raise _error(404, "artifact_not_found", "Artifact not found")
+    try:
+        assert_active_conversation(conversation, project)
+    except ArchiveStateError as exc:
+        raise archive_http_error(exc) from None
     artifact = db.query(Artifact).filter(Artifact.id == artifact_id).with_for_update().first()
     if artifact.status in ("deleted", "deleting"):
         return artifact

@@ -238,7 +238,14 @@ class ExecutionConfigV2(FrozenModel):
     loop_limits: LoopLimits = Field(default_factory=LoopLimits)
 
 
-ExecutionConfigLike: TypeAlias = ExecutionConfig | ExecutionConfigV2
+class ExecutionConfigV3(ExecutionConfigV2):
+    """Version 3 adds a pinned preferred search provider to managed chat."""
+
+    schema_version: Literal[3] = 3
+    preferred_search_kind: Literal["brave", "tavily"] | None = None
+
+
+ExecutionConfigLike: TypeAlias = ExecutionConfig | ExecutionConfigV2 | ExecutionConfigV3
 
 
 def decode_execution_config(
@@ -252,6 +259,8 @@ def decode_execution_config(
         return ExecutionConfig.model_validate_json(encoded)
     if version == 2:
         return ExecutionConfigV2.model_validate_json(encoded)
+    if version == 3:
+        return ExecutionConfigV3.model_validate_json(encoded)
     raise ValueError("unsupported execution configuration version")
 
 

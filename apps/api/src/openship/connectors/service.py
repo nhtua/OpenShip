@@ -15,11 +15,12 @@ from sqlalchemy.orm import Session
 
 from ..auth.models import User
 from ..config import settings
+from ..workspace.lifecycle import assert_active_project
 from ..workspace.models import Project
 from .audit import record_audit
 from .contracts import ConnectorConfiguration, ConnectorUsage, canonical_json
 from .credentials.dependencies import get_credential_store, get_idempotency_keyring
-from .credentials.store import CredentialContext
+from .credentials.store import CredentialContext, CredentialEnvelope
 from .errors import CredentialStoreUnavailable
 from .models import (
     Connector,
@@ -84,8 +85,37 @@ def owned_project(db: Session, *, project_id: uuid.UUID, user_id: uuid.UUID) -> 
     return project
 
 
+def lock_active_project(
+    db: Session, *, project_id: uuid.UUID, user_id: uuid.UUID
+) -> Project:
+    """Refresh and lock an owned Project before any project-scoped write."""
+    project = (
+        db.query(Project)
+        .filter(Project.id == project_id, Project.owner_user_id == user_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    if project is None:
+        raise ConnectorCommandError("project_not_found")
+    assert_active_project(project)
+    return project
+
+
+def _lock_connector_project(db: Session, connector: Connector, actor: User) -> None:
+    if connector.visibility == "project" and connector.project_id is not None:
+        lock_active_project(
+            db,
+            project_id=connector.project_id,
+            user_id=actor.id,
+        )
+
+
 def require_global_operator(user: User) -> None:
-    if settings.connector_operator_user_id is None or user.id != settings.connector_operator_user_id:
+    if (
+        settings.connector_operator_user_id is None
+        or user.id != settings.connector_operator_user_id
+    ):
         raise ConnectorCommandError("global_management_forbidden")
 
 
@@ -136,12 +166,18 @@ def current_revision(db: Session, connector: Connector) -> ConnectorRevision:
     return revision
 
 
-def usage(db: Session, connector: Connector, *, is_default: bool = False) -> ConnectorUsage:
+def usage(
+    db: Session, connector: Connector, *, is_default: bool = False
+) -> ConnectorUsage:
     revision = current_revision(db, connector)
     credential = db.get(CredentialVersion, revision.credential_version_id)
     if credential is None:
         status = "unavailable"
-    elif connector.revoked_at is not None or credential.revoked_at is not None or credential.state == "revoked":
+    elif (
+        connector.revoked_at is not None
+        or credential.revoked_at is not None
+        or credential.state == "revoked"
+    ):
         status = "revoked"
     elif credential.expires_at is not None:
         expires_at = credential.expires_at
@@ -213,7 +249,9 @@ def list_global_connectors(db: Session) -> list[ConnectorUsage]:
     return [usage(db, connector) for connector in rows]
 
 
-def detail(db: Session, connector: Connector, *, is_default: bool = False) -> dict[str, Any]:
+def detail(
+    db: Session, connector: Connector, *, is_default: bool = False
+) -> dict[str, Any]:
     revision = current_revision(db, connector)
     summary = usage(db, connector, is_default=is_default)
     return {
@@ -223,7 +261,9 @@ def detail(db: Session, connector: Connector, *, is_default: bool = False) -> di
     }
 
 
-def _validate_configuration(kind: str, raw: dict[str, Any] | None) -> ConnectorConfiguration:
+def _validate_configuration(
+    kind: str, raw: dict[str, Any] | None
+) -> ConnectorConfiguration:
     try:
         configuration = ConnectorConfiguration.model_validate(raw or {"kind": kind})
     except (TypeError, ValueError):
@@ -399,7 +439,9 @@ def create_connector(
     )
     db.add(revision)
     db.flush()
-    _audit(db, connector=connector, actor_user_id=actor.id, action="created", revision=1)
+    _audit(
+        db, connector=connector, actor_user_id=actor.id, action="created", revision=1
+    )
     return detail(db, connector)
 
 
@@ -412,17 +454,14 @@ def update_connector(
     name: str | None = None,
     configuration_raw: dict[str, Any] | None = None,
     enabled: bool | None = None,
-    revoke: bool = False,
 ) -> dict[str, Any]:
+    _lock_connector_project(db, connector, actor)
     connector = (
-        db.query(Connector)
-        .filter(Connector.id == connector.id)
-        .with_for_update()
-        .one()
+        db.query(Connector).filter(Connector.id == connector.id).with_for_update().one()
     )
     if connector.current_revision != expected_revision:
         raise ConnectorCommandError("connector_revision_changed")
-    if connector.revoked_at is not None and not revoke:
+    if connector.revoked_at is not None:
         raise ConnectorCommandError("connector_revoked")
     if name is not None:
         if not name.strip() or len(name) > 255:
@@ -432,16 +471,11 @@ def update_connector(
         if connector.revoked_at is not None and enabled:
             raise ConnectorCommandError("connector_revoked")
         connector.enabled = enabled
-    if revoke and connector.revoked_at is None:
-        connector.revoked_at = datetime.now(UTC)
-        revision_before = current_revision(db, connector)
-        credential = db.get(CredentialVersion, revision_before.credential_version_id)
-        if credential is not None:
-            credential.state = "revoked"
-            credential.revoked_at = datetime.now(UTC)
     prior = current_revision(db, connector)
     if configuration_raw is None:
-        configuration = ConnectorConfiguration.model_validate_json(prior.configuration_json)
+        configuration = ConnectorConfiguration.model_validate_json(
+            prior.configuration_json
+        )
     else:
         configuration = _validate_configuration(connector.kind, configuration_raw)
     revision = _new_revision(
@@ -452,15 +486,126 @@ def update_connector(
         actor_user_id=actor.id,
     )
     db.flush()
-    action = "revoked" if revoke else "updated"
     _audit(
         db,
         connector=connector,
         actor_user_id=actor.id,
-        action=action,
+        action="updated",
         revision=revision.revision,
     )
     return detail(db, connector)
+
+
+def delete_connector(
+    db: Session,
+    *,
+    connector: Connector,
+    actor: User,
+    expected_revision: int,
+) -> dict[str, Any]:
+    """Remove a Connector and its encrypted credential history permanently."""
+    _lock_connector_project(db, connector, actor)
+    connector = (
+        db.query(Connector).filter(Connector.id == connector.id).with_for_update().one()
+    )
+    if connector.current_revision != expected_revision:
+        raise ConnectorCommandError("connector_revision_changed")
+    revision = current_revision(db, connector)
+    now = datetime.now(UTC)
+
+    defaults = (
+        db.query(ProjectConnectorDefault)
+        .filter(ProjectConnectorDefault.connector_id == connector.id)
+        .with_for_update()
+        .all()
+    )
+    for row in defaults:
+        old_revision = row.connector_revision
+        row.connector_id = None
+        row.connector_revision = None
+        row.settings_revision += 1
+        row.updated_by_user_id = actor.id
+        row.updated_at = now
+        record_audit(
+            db,
+            visibility="project",
+            project_id=row.project_id,
+            actor_user_id=actor.id,
+            connector_revision=old_revision,
+            action="default_cleared",
+            details={
+                "service": row.service,
+                "settings_revision": row.settings_revision,
+                "reason": "connector_deleted",
+            },
+        )
+
+    record_audit(
+        db,
+        visibility=connector.visibility,
+        project_id=connector.project_id,
+        actor_user_id=actor.id,
+        connector_revision=revision.revision,
+        action="deleted",
+        details={"kind": connector.kind, "revision": revision.revision},
+    )
+    db.flush()
+
+    db.query(ConnectorRevision).filter(
+        ConnectorRevision.connector_id == connector.id
+    ).delete(synchronize_session=False)
+    db.flush()
+    db.query(CredentialVersion).filter(
+        CredentialVersion.connector_id == connector.id
+    ).delete(synchronize_session=False)
+    db.delete(connector)
+    db.flush()
+    return {"id": str(connector.id), "deleted": True}
+
+
+def connector_api_key(db: Session, connector: Connector) -> str:
+    """Decrypt only the selected Connector's active key for a provider status check."""
+    revision = current_revision(db, connector)
+    credential = (
+        db.query(CredentialVersion)
+        .filter(
+            CredentialVersion.id == revision.credential_version_id,
+            CredentialVersion.connector_id == connector.id,
+            CredentialVersion.visibility == connector.visibility,
+            CredentialVersion.project_id == connector.project_id,
+            CredentialVersion.kind == f"{connector.kind}_api_key",
+            CredentialVersion.state == "active",
+            CredentialVersion.revoked_at.is_(None),
+        )
+        .first()
+    )
+    if credential is None or connector.revoked_at is not None:
+        raise ConnectorCommandError("connector_unavailable")
+    context = _credential_context(
+        connector_id=connector.id,
+        credential_version_id=credential.id,
+        visibility=connector.visibility,
+        project_id=connector.project_id,
+        kind=credential.kind,
+    )
+    envelope = CredentialEnvelope(
+        key_id=credential.key_id,
+        nonce=credential.nonce,
+        ciphertext=credential.ciphertext,
+    )
+    try:
+        payload = get_credential_store().decrypt(context, envelope)
+    except CredentialStoreUnavailable:
+        raise ConnectorCommandError("credential_store_unavailable") from None
+    api_key = payload.get("api_key")
+    if (
+        not isinstance(api_key, str)
+        or not api_key
+        or api_key != api_key.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in api_key)
+    ):
+        raise ConnectorCommandError("connector_unavailable")
+    return api_key
 
 
 def replace_credential(
@@ -471,11 +616,9 @@ def replace_credential(
     expected_revision: int,
     api_key: str,
 ) -> dict[str, Any]:
+    _lock_connector_project(db, connector, actor)
     connector = (
-        db.query(Connector)
-        .filter(Connector.id == connector.id)
-        .with_for_update()
-        .one()
+        db.query(Connector).filter(Connector.id == connector.id).with_for_update().one()
     )
     if connector.current_revision != expected_revision:
         raise ConnectorCommandError("connector_revision_changed")
@@ -519,11 +662,11 @@ def set_default(
 ) -> dict[str, Any]:
     if service not in {"brave", "tavily"}:
         raise ConnectorCommandError("invalid_connector_request")
+    lock_active_project(db, project_id=project_id, user_id=actor.id)
     row = (
         db.query(ProjectConnectorDefault)
         .filter(
             ProjectConnectorDefault.project_id == project_id,
-            ProjectConnectorDefault.service == service,
         )
         .with_for_update()
         .first()
@@ -561,6 +704,7 @@ def set_default(
         )
         db.add(row)
     else:
+        row.service = service
         row.connector_id = connector_id
         row.connector_revision = target_revision
         row.settings_revision = next_revision
@@ -584,7 +728,9 @@ def set_default(
     }
 
 
-def _request_key_digest(keyring, *, visibility: str, project_id, request_id, key_id: str):
+def _request_key_digest(
+    keyring, *, visibility: str, project_id, request_id, key_id: str
+):
     request_bytes = canonical_json(
         {
             "visibility": visibility,
@@ -671,13 +817,10 @@ def reserve_request(
 
     now = datetime.now(UTC)
     limit = settings.connector_write_rate_limit_per_minute or WRITE_RATE_DEFAULT
-    recent = (
-        db.query(func.count(ConnectorRequestLedger.id))
-        .filter(
-            ConnectorRequestLedger.actor_user_id == actor_user_id,
-            ConnectorRequestLedger.visibility == visibility,
-            ConnectorRequestLedger.created_at >= now - WRITE_RATE_WINDOW,
-        )
+    recent = db.query(func.count(ConnectorRequestLedger.id)).filter(
+        ConnectorRequestLedger.actor_user_id == actor_user_id,
+        ConnectorRequestLedger.visibility == visibility,
+        ConnectorRequestLedger.created_at >= now - WRITE_RATE_WINDOW,
     )
     if project_id is None:
         recent = recent.filter(ConnectorRequestLedger.project_id.is_(None))

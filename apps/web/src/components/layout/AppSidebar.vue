@@ -13,6 +13,14 @@ import {
 } from '@/components/ui'
 import { useSidebar } from '@/components/ui/sidebar/utils'
 import { RouterLink } from 'vue-router'
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from 'reka-ui'
+import ConversationActionsMenu from '@/components/chat/ConversationActionsMenu.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -40,6 +48,8 @@ const props = withDefaults(
 const emit = defineEmits<{
   createConversation: [title: string]
   selectConversation: [id: string]
+  archiveConversation: [id: string]
+  showArchivedConversations: []
   signOut: []
   selectProject: [id: string]
   createProject: [name: string]
@@ -49,6 +59,8 @@ const { setOpen, state } = useSidebar()
 
 const showUserMenu = ref(false)
 const showAllConversations = ref(false)
+const conversationHistoryTrigger = ref<HTMLButtonElement | null>(null)
+const focusHistoryAfterArchiveId = ref<string | null>(null)
 const showProjectMenu = ref(false)
 const projectTrigger = ref<HTMLButtonElement | null>(null)
 const projectMenu = ref<HTMLElement | null>(null)
@@ -71,6 +83,11 @@ function toggleUserMenu() {
 
 function toggleConversations() {
   showAllConversations.value = !showAllConversations.value
+}
+
+function archiveConversation(id: string): void {
+  focusHistoryAfterArchiveId.value = id
+  emit('archiveConversation', id)
 }
 
 async function toggleProjectMenu() {
@@ -143,6 +160,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
 watch(() => props.currentProjectId, (next, previous) => {
   if (next !== previous && showCreateProject.value) closeCreateProject()
 })
+watch(() => props.conversations.map((conversation) => conversation.id), (ids) => {
+  const removedId = focusHistoryAfterArchiveId.value
+  if (!removedId || ids.includes(removedId)) return
+  focusHistoryAfterArchiveId.value = null
+  void nextTick(() => conversationHistoryTrigger.value?.focus())
+}, { flush: 'post' })
 
 /** Max conversations shown before expand is needed. */
 const COLLAPSED_CONVERSATION_LIMIT = 8
@@ -301,6 +324,37 @@ const extraCount = computed(() => {
 
         <!-- Conversation history (expanded mode only) -->
         <div class="mt-1 px-2 group-data-[collapsible=icon]:px-0">
+          <div class="flex items-center justify-between px-3 py-1 group-data-[collapsible=icon]:hidden">
+            <span class="text-xs font-medium text-sidebar-foreground/60">Conversations</span>
+            <DropdownMenuRoot>
+              <DropdownMenuTrigger as-child>
+                <button
+                  ref="conversationHistoryTrigger"
+                  type="button"
+                  aria-label="Conversation history actions"
+                  title="Conversation history actions"
+                  class="inline-flex size-8 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                >
+                  <Icon name="ellipsis-v" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuPortal>
+                <DropdownMenuContent
+                  align="end"
+                  side="bottom"
+                  :side-offset="4"
+                  class="z-50 min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none"
+                >
+                  <DropdownMenuItem
+                    class="flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-accent"
+                    @select="emit('showArchivedConversations')"
+                  >
+                    Archived conversations
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenuPortal>
+            </DropdownMenuRoot>
+          </div>
           <div
             v-if="props.busy && props.conversations.length === 0"
             class="px-3 py-2 text-xs text-sidebar-foreground/60"
@@ -318,11 +372,12 @@ const extraCount = computed(() => {
               <SidebarMenuItem
                 v-for="conv in visibleConversations"
                 :key="conv.id"
+                class="group/conv flex items-center gap-1"
               >
                 <SidebarMenuButton
                   :is-active="conv.id === props.currentConversationId"
                   :disabled="props.busy"
-                  class="text-[13px]"
+                  class="w-auto min-w-0 flex-1 text-[13px]"
                   :title="conv.title"
                   :aria-label="`Open conversation ${conv.title}`"
                   @click="emit('selectConversation', conv.id)"
@@ -333,6 +388,12 @@ const extraCount = computed(() => {
                     :class="conv.id === props.currentConversationId ? 'font-semibold text-primary' : ''"
                   >{{ conv.title }}</span>
                 </SidebarMenuButton>
+                <ConversationActionsMenu
+                  :conversation-id="conv.id"
+                  :title="conv.title"
+                  :disabled="props.busy"
+                  @archive="archiveConversation"
+                />
               </SidebarMenuItem>
             </SidebarMenu>
 

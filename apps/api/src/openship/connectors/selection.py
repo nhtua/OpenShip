@@ -139,11 +139,14 @@ def resolve_connector(
         db.query(ProjectConnectorDefault)
         .filter(
             ProjectConnectorDefault.project_id == project_id,
-            ProjectConnectorDefault.service == service,
         )
         .first()
     )
-    if default is not None and default.connector_id is not None:
+    if (
+        default is not None
+        and default.service == service
+        and default.connector_id is not None
+    ):
         row = visible.filter(Connector.id == default.connector_id).first()
         if row is None:
             raise ConnectorSelectionError("connector_scope_denied")

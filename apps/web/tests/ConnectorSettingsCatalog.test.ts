@@ -101,6 +101,8 @@ describe('Connectors catalog page', () => {
     expect(wrapper.find('input[type="password"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Project visibility')
     expect(wrapper.text()).not.toContain('Add a project connector')
+    expect(wrapper.findAll('[data-connector-card-grid] button')).toHaveLength(2)
+    expect(wrapper.findAll('[data-connector-card-grid] button[aria-label^="Add"]')).toHaveLength(0)
     wrapper.unmount()
   })
 
@@ -145,7 +147,7 @@ describe('Connectors catalog page', () => {
     wrapper.unmount()
   })
 
-  it('shows separate cards for multiple Global instances and lets the operator add another', async () => {
+  it('shows separate Global instance cards and puts add-another inside the selected dialog', async () => {
     api.getSetupContext.mockResolvedValue({
       data: { can_manage_global: true, credential_store_ready: true, unavailable_reason: null },
     } as never)
@@ -157,11 +159,37 @@ describe('Connectors catalog page', () => {
     const { wrapper } = await mountCatalog()
 
     expect(wrapper.findAll('[data-kind="brave"][data-visibility="global"]')).toHaveLength(2)
-    await wrapper.get('button[aria-label="Add another Brave Search"]').trigger('click')
+    expect(wrapper.findAll('[data-connector-card-grid] button')).toHaveLength(3)
+    expect(wrapper.findAll('[data-connector-card-grid] button[aria-label^="Add"]')).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('Add another Brave Search')
+    expect(wrapper.text()).not.toContain('Add another Tavily Search')
+    await wrapper.get('button[aria-label="Configure Shared Brave"]').trigger('click')
     await flushPromises()
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Add another Brave Search')
+    await Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Add another Brave Search',
+    )?.click()
+    await flushPromises()
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Add another Brave Search')
     expect(document.body.querySelector('input[type="password"]')).not.toBeNull()
     expect(document.body.textContent).not.toContain('Project visibility')
+    wrapper.unmount()
+  })
+
+  it('opens the create form by selecting an unconfigured connector card', async () => {
+    api.getSetupContext.mockResolvedValue({
+      data: { can_manage_global: true, credential_store_ready: true, unavailable_reason: null },
+    } as never)
+    const { wrapper } = await mountCatalog()
+
+    await wrapper.get('button[aria-label="Configure Brave Search"]').trigger('click')
+    await flushPromises()
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(document.body.querySelector('input[type="password"]')).not.toBeNull()
+    expect(wrapper.findAll('[data-connector-card-grid] button')).toHaveLength(2)
+    expect(wrapper.findAll('[data-connector-card-grid] button[aria-label^="Add"]')).toHaveLength(0)
     wrapper.unmount()
   })
 
@@ -177,7 +205,9 @@ describe('Connectors catalog page', () => {
     await flushPromises()
 
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
-    expect(document.body.textContent).toContain('Revoke globally')
+    expect(document.body.textContent).toContain('Revoke')
+    expect(document.body.textContent).toContain('Check status')
+    expect(document.body.textContent).toContain('Add another Brave Search')
     wrapper.unmount()
   })
 })

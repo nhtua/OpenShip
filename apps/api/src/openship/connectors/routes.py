@@ -20,17 +20,22 @@ from sqlalchemy.orm import Session
 from ..auth.models import User
 from ..auth.routes import require_jwt
 from ..database.session import get_db
+from ..tools.search.health import check_search_api_key
+from ..workspace.lifecycle import ArchiveStateError, archive_http_error
 from .contracts import ConnectorUsage
 from .errors import CredentialStoreUnavailable
 from .selection import ConnectorSelectionError
 from .service import (
     ConnectorCommandError,
+    connector_api_key,
     create_connector,
+    delete_connector,
     detail,
     finalize_request,
     global_connector,
     list_global_connectors,
     list_project_connectors,
+    lock_active_project,
     owned_connector,
     owned_project,
     replace_credential,
@@ -72,11 +77,14 @@ class _RequestModel(BaseModel):
 class _SetupContext(BaseModel):
     can_manage_global: bool
     credential_store_ready: bool
-    unavailable_reason: Literal[
-        "installation_id_missing",
-        "encryption_key_unavailable",
-        "idempotency_key_unavailable",
-    ] | None
+    unavailable_reason: (
+        Literal[
+            "installation_id_missing",
+            "encryption_key_unavailable",
+            "idempotency_key_unavailable",
+        ]
+        | None
+    )
 
 
 class _CreateConnector(_RequestModel):
@@ -100,7 +108,12 @@ class _UpdateConnector(_RequestModel):
 
     @model_validator(mode="after")
     def _has_change(self) -> _UpdateConnector:
-        if self.name is None and self.configuration is None and self.enabled is None and not self.revoke:
+        if (
+            self.name is None
+            and self.configuration is None
+            and self.enabled is None
+            and not self.revoke
+        ):
             raise ValueError("Connector update is empty")
         return self
 
@@ -127,11 +140,18 @@ def _http_error(code: str, status_code: int | None = None) -> HTTPException:
     status = status_code or ConnectorCommandError(code).status_code
     return HTTPException(
         status_code=status,
-        detail={"error": {"code": code, "message": _ERROR_MESSAGES.get(code, "Connector operation failed")}},
+        detail={
+            "error": {
+                "code": code,
+                "message": _ERROR_MESSAGES.get(code, "Connector operation failed"),
+            }
+        },
     )
 
 
 def _translate_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ArchiveStateError):
+        return archive_http_error(exc)
     if isinstance(exc, ConnectorCommandError):
         return _http_error(exc.code, exc.status_code)
     if isinstance(exc, (CredentialStoreUnavailable,)):
@@ -203,7 +223,9 @@ async def _read_bounded_json(request: Request) -> dict[str, Any]:
     return value
 
 
-async def _validated_body(request: Request, model: type[_RequestModel]) -> _RequestModel:
+async def _validated_body(
+    request: Request, model: type[_RequestModel]
+) -> _RequestModel:
     value = await _read_bounded_json(request)
     try:
         return model.model_validate(value)
@@ -295,7 +317,9 @@ def _begin_request(
         raise _translate_error(exc) from None
 
 
-@router.get("/api/projects/{project_id}/connectors", response_model=list[ConnectorUsage])
+@router.get(
+    "/api/projects/{project_id}/connectors", response_model=list[ConnectorUsage]
+)
 def project_connector_list(
     project_id: uuid.UUID,
     service: str | None = Query(default=None, pattern="^(brave|tavily|aws)$"),
@@ -317,7 +341,7 @@ async def project_connector_create(
     user: User = Depends(require_jwt),
 ):
     try:
-        owned_project(db, project_id=project_id, user_id=user.id)
+        lock_active_project(db, project_id=project_id, user_id=user.id)
         _require_browser_origin(request)
         raise ConnectorCommandError("connector_visibility_unsupported")
     except HTTPException:
@@ -337,7 +361,9 @@ def project_connector_detail(
 ):
     try:
         owned_project(db, project_id=project_id, user_id=user.id)
-        connector = owned_connector(db, connector_id=connector_id, project_id=project_id)
+        connector = owned_connector(
+            db, connector_id=connector_id, project_id=project_id
+        )
         return detail(db, connector)
     except Exception as exc:
         raise _translate_error(exc) from None
@@ -352,8 +378,7 @@ async def project_connector_update(
     user: User = Depends(require_jwt),
 ):
     try:
-        owned_project(db, project_id=project_id, user_id=user.id)
-        connector = owned_connector(db, connector_id=connector_id, project_id=project_id)
+        lock_active_project(db, project_id=project_id, user_id=user.id)
         _require_browser_origin(request)
         request_id = _request_id(request)
         body = await _validated_body(request, _UpdateConnector)
@@ -368,17 +393,32 @@ async def project_connector_update(
         )
         if reservation.replay_result is not None:
             return JSONResponse(status_code=200, content=reservation.replay_result)
-        result = update_connector(
-            db,
-            connector=connector,
-            actor=user,
-            expected_revision=body.expected_revision,
-            name=body.name,
-            configuration_raw=body.configuration,
-            enabled=body.enabled,
-            revoke=body.revoke,
+        # reserve_request can roll the transaction back after a concurrent
+        # duplicate key race, so reacquire the Project before changing rows.
+        lock_active_project(db, project_id=project_id, user_id=user.id)
+        connector = owned_connector(
+            db, connector_id=connector_id, project_id=project_id
         )
-        finalize_request(reservation, result, connector_id=connector_id)
+        if body.revoke:
+            result = delete_connector(
+                db,
+                connector=connector,
+                actor=user,
+                expected_revision=body.expected_revision,
+            )
+        else:
+            result = update_connector(
+                db,
+                connector=connector,
+                actor=user,
+                expected_revision=body.expected_revision,
+                name=body.name,
+                configuration_raw=body.configuration,
+                enabled=body.enabled,
+            )
+        finalize_request(
+            reservation, result, connector_id=None if body.revoke else connector_id
+        )
         _commit_or_safe_error(db)
         return result
     except HTTPException:
@@ -398,8 +438,10 @@ async def project_connector_replace_credential(
     user: User = Depends(require_jwt),
 ):
     try:
-        owned_project(db, project_id=project_id, user_id=user.id)
-        connector = owned_connector(db, connector_id=connector_id, project_id=project_id)
+        lock_active_project(db, project_id=project_id, user_id=user.id)
+        connector = owned_connector(
+            db, connector_id=connector_id, project_id=project_id
+        )
         _require_browser_origin(request)
         request_id = _request_id(request)
         body = await _validated_body(request, _ReplaceCredential)
@@ -414,6 +456,7 @@ async def project_connector_replace_credential(
         )
         if reservation.replay_result is not None:
             return JSONResponse(status_code=200, content=reservation.replay_result)
+        lock_active_project(db, project_id=project_id, user_id=user.id)
         result = replace_credential(
             db,
             connector=connector,
@@ -424,6 +467,41 @@ async def project_connector_replace_credential(
         finalize_request(reservation, result, connector_id=connector_id)
         _commit_or_safe_error(db)
         return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise _translate_error(exc) from None
+
+
+@router.post("/api/projects/{project_id}/connectors/{connector_id}/check")
+async def project_connector_check(
+    project_id: uuid.UUID,
+    connector_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    try:
+        owned_project(db, project_id=project_id, user_id=user.id)
+        connector = owned_connector(
+            db, connector_id=connector_id, project_id=project_id
+        )
+        _require_browser_origin(request)
+        api_key = connector_api_key(db, connector)
+        status = await check_search_api_key(connector.kind, api_key)
+        provider = "Brave Search" if connector.kind == "brave" else "Tavily Search"
+        message = {
+            "valid": f"{provider} accepted this API key.",
+            "invalid": f"{provider} rejected this API key.",
+            "unavailable": f"{provider} could not verify this key right now. Try again later.",
+        }[status]
+        return {
+            "status": status,
+            "message": message,
+            "revision": connector.current_revision,
+        }
     except HTTPException:
         db.rollback()
         raise
@@ -467,13 +545,16 @@ def project_connector_default_get(
             db.query(ProjectConnectorDefault)
             .filter(
                 ProjectConnectorDefault.project_id == project_id,
-                ProjectConnectorDefault.service == service,
             )
             .first()
         )
         return {
             "service": service,
-            "connector_id": str(row.connector_id) if row and row.connector_id else None,
+            "connector_id": (
+                str(row.connector_id)
+                if row and row.service == service and row.connector_id
+                else None
+            ),
             "revision": row.settings_revision if row else 0,
         }
     except Exception as exc:
@@ -489,7 +570,7 @@ async def project_connector_default_set(
     user: User = Depends(require_jwt),
 ):
     try:
-        owned_project(db, project_id=project_id, user_id=user.id)
+        lock_active_project(db, project_id=project_id, user_id=user.id)
         _require_browser_origin(request)
         request_id = _request_id(request)
         body = await _validated_body(request, _SetDefault)
@@ -504,6 +585,7 @@ async def project_connector_default_set(
         )
         if reservation.replay_result is not None:
             return JSONResponse(status_code=200, content=reservation.replay_result)
+        lock_active_project(db, project_id=project_id, user_id=user.id)
         result = set_default(
             db,
             project_id=project_id,
@@ -604,7 +686,6 @@ async def global_connector_update(
 ):
     try:
         require_global_operator(user)
-        connector = global_connector(db, connector_id=connector_id)
         _require_browser_origin(request)
         request_id = _request_id(request)
         body = await _validated_body(request, _UpdateConnector)
@@ -619,17 +700,27 @@ async def global_connector_update(
         )
         if reservation.replay_result is not None:
             return JSONResponse(status_code=200, content=reservation.replay_result)
-        result = update_connector(
-            db,
-            connector=connector,
-            actor=user,
-            expected_revision=body.expected_revision,
-            name=body.name,
-            configuration_raw=body.configuration,
-            enabled=body.enabled,
-            revoke=body.revoke,
+        connector = global_connector(db, connector_id=connector_id)
+        if body.revoke:
+            result = delete_connector(
+                db,
+                connector=connector,
+                actor=user,
+                expected_revision=body.expected_revision,
+            )
+        else:
+            result = update_connector(
+                db,
+                connector=connector,
+                actor=user,
+                expected_revision=body.expected_revision,
+                name=body.name,
+                configuration_raw=body.configuration,
+                enabled=body.enabled,
+            )
+        finalize_request(
+            reservation, result, connector_id=None if body.revoke else connector_id
         )
-        finalize_request(reservation, result, connector_id=connector_id)
         _commit_or_safe_error(db)
         return result
     except HTTPException:
@@ -674,6 +765,38 @@ async def global_connector_replace_credential(
         finalize_request(reservation, result, connector_id=connector_id)
         _commit_or_safe_error(db)
         return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise _translate_error(exc) from None
+
+
+@router.post("/api/global-connectors/{connector_id}/check")
+async def global_connector_check(
+    connector_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    try:
+        require_global_operator(user)
+        connector = global_connector(db, connector_id=connector_id)
+        _require_browser_origin(request)
+        api_key = connector_api_key(db, connector)
+        status = await check_search_api_key(connector.kind, api_key)
+        provider = "Brave Search" if connector.kind == "brave" else "Tavily Search"
+        message = {
+            "valid": f"{provider} accepted this API key.",
+            "invalid": f"{provider} rejected this API key.",
+            "unavailable": f"{provider} could not verify this key right now. Try again later.",
+        }[status]
+        return {
+            "status": status,
+            "message": message,
+            "revision": connector.current_revision,
+        }
     except HTTPException:
         db.rollback()
         raise

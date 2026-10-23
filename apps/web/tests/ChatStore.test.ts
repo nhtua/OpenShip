@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi, Mock } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useChatStore } from '@/stores/chat'
-import api, { modelProfilesApi, runsApi } from '@/services/api'
+import api, { conversationsApi, modelProfilesApi, runsApi } from '@/services/api'
 import { buildConversationTimeline } from '@/lib/chatTimeline'
 import {
   apiError,
@@ -15,6 +15,12 @@ vi.mock('@/services/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
   authApi: { login: vi.fn(), register: vi.fn(), logout: vi.fn() },
   modelProfilesApi: { list: vi.fn() },
+  conversationsApi: {
+    list: vi.fn(),
+    get: vi.fn(),
+    archive: vi.fn(),
+    restore: vi.fn(),
+  },
   runsApi: {
     submitTurn: vi.fn(),
     submitTool: vi.fn(),
@@ -27,6 +33,7 @@ vi.mock('@/services/api', () => ({
 
 const mockApi = vi.mocked(api)
 const mockProfiles = vi.mocked(modelProfilesApi)
+const mockConversationsApi = vi.mocked(conversationsApi)
 const mockRunsApi = vi.mocked(runsApi)
 
 // A stream that ends with a terminal event, so snapshot recovery is never
@@ -75,6 +82,20 @@ describe('chat store', () => {
       (async (url: string) => healthyChatApiGet(url)) as never,
     )
     mockApi.post.mockResolvedValue({ data: null })
+    mockConversationsApi.list.mockImplementation(async (state = 'active') => ({
+      data: fixtureConversations.filter((conversation) => state === 'active' || conversation.archived_at).map((conversation) => ({ ...conversation })),
+    } as never))
+    mockConversationsApi.get.mockImplementation(async (id: string) => {
+      const conversation = fixtureConversations.find((item) => item.id === id)
+      if (!conversation) throw apiError('Conversation not found')
+      return { data: { ...conversation } } as never
+    })
+    mockConversationsApi.archive.mockImplementation(async (id: string) => ({
+      data: { ...(fixtureConversations.find((item) => item.id === id) ?? fixtureConversations[0]), archived_at: '2026-10-22T00:00:00Z' },
+    } as never))
+    mockConversationsApi.restore.mockImplementation(async (id: string) => ({
+      data: { ...(fixtureConversations.find((item) => item.id === id) ?? fixtureConversations[0]), archived_at: null },
+    } as never))
     mockRunsApi.getSnapshot.mockImplementation(async (id: string) => ({
       data: { conversation_id: id, sequence: -1, events: [], runs: [] },
     } as never))
@@ -94,6 +115,31 @@ describe('chat store', () => {
     expect(chat.currentConversation?.id).toBe('c1')
     expect(chat.currentConversation?.title).toBe('Deploy pipeline')
     expect(chat.messages).toEqual(messagesByConversation.c1)
+  })
+
+  it('keeps the selected conversation in its current sidebar position while refreshing metadata', async () => {
+    const refreshedConversation = {
+      ...fixtureConversations[1],
+      title: 'Scale up web, refreshed',
+      updated_at: '2026-01-03T10:00:00Z',
+    }
+    mockConversationsApi.get.mockResolvedValueOnce({ data: refreshedConversation } as never)
+    const chat = useChatStore()
+    chat.conversations = [
+      { ...fixtureConversations[0] },
+      { ...fixtureConversations[0], id: 'c3', title: 'Another conversation' },
+      { ...fixtureConversations[1] },
+    ]
+
+    await chat.loadConversation('c2')
+
+    expect(chat.conversations.map(({ id }) => id)).toEqual(['c1', 'c3', 'c2'])
+    expect(chat.conversations[2]).toMatchObject({
+      id: 'c2',
+      title: 'Scale up web, refreshed',
+      updated_at: '2026-01-03T10:00:00Z',
+    })
+    expect(chat.currentConversation?.id).toBe('c2')
   })
 
   it('deselecting a conversation invalidates its pending load', async () => {
@@ -170,6 +216,151 @@ describe('chat store', () => {
     await chat.getConversations()
     expect(chat.conversations).toEqual(fixtureConversations)
     expect(chat.error).toBeNull()
+  })
+
+  it('archives the selected conversation but keeps its readable history selected', async () => {
+    const chat = useChatStore()
+    await chat.getConversations()
+    await chat.loadConversation('c1')
+    const retainedMessages = [...chat.messages]
+
+    await chat.archiveConversation('c1')
+
+    expect(mockConversationsApi.archive).toHaveBeenCalledWith('c1')
+    expect(chat.conversations.some((conversation) => conversation.id === 'c1')).toBe(false)
+    expect(chat.currentConversation?.id).toBe('c1')
+    expect(chat.currentConversationReadOnly).toBe(true)
+    expect(chat.messages).toEqual(retainedMessages)
+  })
+
+  it('does not let an active-list response started before archive reinsert the conversation', async () => {
+    let releaseList: ((value: { data: typeof fixtureConversations }) => void) | undefined
+    mockConversationsApi.list.mockImplementationOnce((async () => new Promise((resolve) => { releaseList = resolve })) as never)
+    const chat = useChatStore()
+    chat.conversations = [{ ...fixtureConversations[0] }]
+    const load = chat.getConversations()
+    await vi.waitFor(() => expect(releaseList).toBeTypeOf('function'))
+
+    await chat.archiveConversation('c1')
+    releaseList?.({ data: fixtureConversations })
+    await load
+
+    expect(chat.conversations.some((conversation) => conversation.id === 'c1')).toBe(false)
+  })
+
+  it('keeps an existing conversation read-only when direct metadata cannot be loaded', async () => {
+    mockConversationsApi.get.mockRejectedValue(apiError('Metadata unavailable'))
+    mockRunsApi.getSnapshot.mockRejectedValueOnce(new Error('Snapshot unavailable'))
+    const chat = useChatStore()
+
+    await chat.loadConversation('c1')
+
+    expect(chat.currentConversation?.id).toBe('c1')
+    expect(chat.conversationMetadataReady).toBe(false)
+    expect(chat.currentConversationReadOnly).toBe(true)
+    expect(chat.messages).toEqual(messagesByConversation.c1)
+  })
+
+  it('refreshes lifecycle metadata after a chat submit conflicts with an archived conversation', async () => {
+    const archived = { ...fixtureConversations[0], archived_at: '2026-10-22T00:00:00Z' }
+    const conflict = {
+      response: {
+        status: 409,
+        data: { detail: { error: { code: 'conversation_archived', message: 'Restore this conversation before continuing.' } } },
+      },
+    }
+    mockRunsApi.submitTurn.mockRejectedValueOnce(conflict)
+    mockConversationsApi.get.mockResolvedValue({ data: archived } as never)
+    const chat = useChatStore()
+    chat.currentConversation = { ...fixtureConversations[0] }
+    chat.conversationMetadataReady = true
+
+    await chat.sendMessage('Keep this draft', 'c1')
+
+    expect(chat.currentConversationReadOnly).toBe(true)
+    expect(chat.currentConversation?.archived_at).toBe(archived.archived_at)
+    expect(chat.error).toBe('Restore this conversation before continuing.')
+    expect(chat.pendingRequests.size).toBe(1)
+    expect(chat.messages.some((message) => message.content === 'Keep this draft')).toBe(true)
+  })
+
+  it('refreshes lifecycle metadata after a tool submit conflicts with an archived project', async () => {
+    const archived = { ...fixtureConversations[0], project_archived_at: '2026-10-22T00:00:00Z' }
+    const conflict = {
+      response: {
+        status: 409,
+        data: { detail: { error: { code: 'project_archived', message: 'Restore this project before making changes.' } } },
+      },
+    }
+    mockRunsApi.submitTool.mockRejectedValueOnce(conflict)
+    mockConversationsApi.get.mockResolvedValue({ data: archived } as never)
+    const chat = useChatStore()
+    chat.currentConversation = { ...fixtureConversations[0] }
+    chat.conversationMetadataReady = true
+
+    await chat.submitToolSearch('c1', { capability_id: 'brave_web_search', query: 'test' } as never)
+
+    expect(chat.currentConversationReadOnly).toBe(true)
+    expect(chat.currentConversation?.project_archived_at).toBe(archived.project_archived_at)
+    expect(chat.error).toBe('Restore this project before making changes.')
+    expect(chat.pendingToolRequests.size).toBe(1)
+  })
+
+  it('does not restore stale lifecycle metadata after logout clears the chat store', async () => {
+    let releaseMetadata!: (value: { data: typeof fixtureConversations[number] }) => void
+    mockConversationsApi.get.mockReturnValueOnce(new Promise((resolve) => {
+      releaseMetadata = resolve
+    }) as never)
+    const chat = useChatStore()
+    chat.conversations = [{ ...fixtureConversations[0] }]
+    chat.currentConversation = { ...fixtureConversations[0] }
+    chat.conversationMetadataReady = true
+    chat.error = 'Restore this conversation before continuing.'
+
+    const refresh = chat.refreshLifecycleAfterConflict('c1')
+    await vi.waitFor(() => expect(mockConversationsApi.get).toHaveBeenCalledWith('c1'))
+    chat.clearMessages()
+    releaseMetadata({
+      data: { ...fixtureConversations[0], archived_at: '2026-10-22T00:00:00Z' },
+    })
+    await refresh
+
+    expect(chat.currentConversation).toBeNull()
+    expect(chat.conversationMetadataReady).toBe(false)
+    expect(chat.conversations).toEqual([])
+    expect(chat.archivedConversations).toEqual([])
+    expect(chat.error).toBeNull()
+  })
+
+  it('restores a selected archived conversation without replacing its identity or messages', async () => {
+    const chat = useChatStore()
+    chat.conversations = []
+    chat.archivedConversations = [{ ...fixtureConversations[0], archived_at: '2026-10-22T00:00:00Z' }]
+    chat.currentConversation = { ...fixtureConversations[0], archived_at: '2026-10-22T00:00:00Z' }
+    chat.conversationMetadataReady = true
+    chat.messages = [...messagesByConversation.c1]
+
+    await chat.restoreConversation('c1')
+
+    expect(chat.currentConversation?.id).toBe('c1')
+    expect(chat.currentConversationReadOnly).toBe(false)
+    expect(chat.messages).toEqual(messagesByConversation.c1)
+    expect(chat.conversations[0].id).toBe('c1')
+  })
+
+  it('clears archived history and invalidates pending list loads on logout', async () => {
+    let releaseList: ((value: { data: typeof fixtureConversations }) => void) | undefined
+    mockConversationsApi.list.mockImplementationOnce((async () => new Promise((resolve) => { releaseList = resolve })) as never)
+    const chat = useChatStore()
+    chat.archivedConversations = [{ ...fixtureConversations[0], archived_at: '2026-10-22T00:00:00Z' }]
+    const load = chat.loadArchivedConversations()
+    await vi.waitFor(() => expect(releaseList).toBeTypeOf('function'))
+
+    chat.clearMessages()
+    releaseList?.({ data: [{ ...fixtureConversations[0], archived_at: '2026-10-22T00:00:00Z' }] })
+    await load
+
+    expect(chat.archivedConversations).toEqual([])
   })
 
   it('creates a conversation under the selected project identity', async () => {

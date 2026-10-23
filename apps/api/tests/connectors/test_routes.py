@@ -16,20 +16,26 @@ from src.openship.config import settings
 from src.openship.connectors.contracts import ConnectorConfiguration
 from src.openship.connectors.models import (
     Connector,
+    ConnectorAuditEvent,
+    ConnectorRequestLedger,
     ConnectorRevision,
     CredentialVersion,
+    ProjectConnectorDefault,
 )
 from src.openship.connectors.routes import (
     _require_browser_origin,
     connector_setup_context,
+    global_connector_check,
     global_connector_create,
     global_connector_request_status,
+    global_connector_update,
     project_connector_create,
     project_connector_default_get,
     project_connector_default_set,
     project_connector_detail,
     project_connector_list,
     project_connector_replace_credential,
+    project_connector_request_status,
     project_connector_update,
 )
 from src.openship.connectors.routes import (
@@ -44,6 +50,7 @@ from src.openship.connectors.service import (
 )
 from src.openship.database.session import SessionLocal
 from src.openship.workspace.models import Project
+from src.openship.workspace.projects import archive_project, create_project
 
 ORIGIN = "http://localhost:5173"
 
@@ -115,11 +122,11 @@ def _install_keys(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "connector_browser_origins", ORIGIN)
 
 
-def _create_body(secret="synthetic-brave-secret-sentinel"):
+def _create_body(secret="synthetic-brave-secret-sentinel", *, kind="brave"):
     return {
-        "kind": "brave",
-        "name": "Primary Brave",
-        "configuration": {"schema_version": 1, "kind": "brave"},
+        "kind": kind,
+        "name": f"Primary {kind.title()}",
+        "configuration": {"schema_version": 1, "kind": kind},
         "api_key": secret,
     }
 
@@ -244,9 +251,11 @@ def test_global_setup_encrypts_secret_once_and_exact_retry_returns_safe_result(
     assert _json_response(retried) == created_result
 
     with SessionLocal() as db:
-        stored = db.query(CredentialVersion).filter(
-            CredentialVersion.connector_id == uuid.UUID(created_result["id"])
-        ).one()
+        stored = (
+            db.query(CredentialVersion)
+            .filter(CredentialVersion.connector_id == uuid.UUID(created_result["id"]))
+            .one()
+        )
         assert b"synthetic-brave-secret-sentinel" not in stored.ciphertext
 
     async def changed_retry():
@@ -299,7 +308,9 @@ def test_new_project_search_credentials_are_refused_before_body_read(
     assert not consumed()
     assert "synthetic-brave-secret-sentinel" not in str(refused.value.detail)
     with SessionLocal() as db:
-        assert db.query(Connector).filter(Connector.project_id == project_id).count() == 0
+        assert (
+            db.query(Connector).filter(Connector.project_id == project_id).count() == 0
+        )
 
 
 def test_shared_service_refuses_new_project_search_credentials(
@@ -321,7 +332,9 @@ def test_shared_service_refuses_new_project_search_credentials(
             )
         assert refused.value.code == "connector_visibility_unsupported"
         db.rollback()
-        assert db.query(Connector).filter(Connector.project_id == project_id).count() == 0
+        assert (
+            db.query(Connector).filter(Connector.project_id == project_id).count() == 0
+        )
 
 
 def test_shared_service_requires_operator_for_global_search_creation(
@@ -388,6 +401,151 @@ def test_credential_replacement_activates_new_revision_without_exposing_secret(
     assert all(b"replacement-secret-sentinel" not in row.ciphertext for row in versions)
 
 
+def test_revoke_deletes_connector_credentials_and_clears_project_defaults(
+    connector_identity, monkeypatch, tmp_path
+):
+    actor, project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    with SessionLocal() as db:
+        created = create_connector(
+            db,
+            actor=actor,
+            visibility="global",
+            project_id=None,
+            kind="brave",
+            name="Shared Brave",
+            configuration_raw={"schema_version": 1, "kind": "brave"},
+            api_key="synthetic-global-secret",  # rayloc:ignore
+        )
+        db.add(
+            ProjectConnectorDefault(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                service="brave",
+                connector_id=uuid.UUID(created["id"]),
+                connector_revision=1,
+                settings_revision=4,
+                updated_by_user_id=actor.id,
+            )
+        )
+        db.commit()
+
+    request_id = uuid.uuid4()
+    headers = {"Origin": ORIGIN, "Idempotency-Key": str(request_id)}
+
+    async def revoke():
+        request, _ = _request(
+            "PATCH",
+            f"/api/global-connectors/{created['id']}",
+            headers=headers,
+            content=json.dumps({"expected_revision": 1, "revoke": True}).encode(),
+        )
+        with SessionLocal() as db:
+            return await global_connector_update(
+                uuid.UUID(created["id"]), request, db, actor
+            )
+
+    result = _invoke(revoke())
+    assert result == {"id": created["id"], "deleted": True}
+    assert _json_response(_invoke(revoke())) == result
+
+    with SessionLocal() as db:
+        connector_id = uuid.UUID(created["id"])
+        assert db.query(Connector).filter(Connector.id == connector_id).count() == 0
+        assert (
+            db.query(ConnectorRevision)
+            .filter(ConnectorRevision.connector_id == connector_id)
+            .count()
+            == 0
+        )
+        assert (
+            db.query(CredentialVersion)
+            .filter(CredentialVersion.connector_id == connector_id)
+            .count()
+            == 0
+        )
+        cleared = (
+            db.query(ProjectConnectorDefault)
+            .filter(ProjectConnectorDefault.project_id == project_id)
+            .one()
+        )
+        assert (
+            cleared.connector_id,
+            cleared.connector_revision,
+            cleared.settings_revision,
+        ) == (None, None, 5)
+        events = (
+            db.query(ConnectorAuditEvent)
+            .filter(ConnectorAuditEvent.action.in_(("deleted", "default_cleared")))
+            .all()
+        )
+        assert {event.action for event in events} == {"deleted", "default_cleared"}
+        assert all(event.connector_id is None for event in events)
+        status = global_connector_request_status(request_id, db, actor)
+        assert status["status"] == "complete"
+        assert status["result"] == result
+        assert (
+            db.query(ConnectorRequestLedger)
+            .filter(ConnectorRequestLedger.connector_id.is_(None))
+            .count()
+            >= 1
+        )
+
+
+@pytest.mark.parametrize(
+    ("check_result", "expected"),
+    [
+        (
+            {"status": "valid", "message": "Brave Search accepted this API key."},
+            "valid",
+        ),
+        (
+            {"status": "invalid", "message": "Brave Search rejected this API key."},
+            "invalid",
+        ),
+    ],
+)
+def test_global_connector_check_returns_only_safe_provider_status(
+    connector_identity, monkeypatch, tmp_path, check_result, expected
+):
+    actor, _project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    with SessionLocal() as db:
+        created = create_connector(
+            db,
+            actor=actor,
+            visibility="global",
+            project_id=None,
+            kind="brave",
+            name="Shared Brave",
+            configuration_raw={"schema_version": 1, "kind": "brave"},
+            api_key="synthetic-global-secret",  # rayloc:ignore
+        )
+        db.commit()
+    from src.openship.connectors import routes
+
+    async def fake_check(_kind, api_key):
+        assert api_key == "synthetic-global-secret"  # rayloc:ignore
+        return check_result["status"]
+
+    monkeypatch.setattr(routes, "check_search_api_key", fake_check)
+    request, _ = _request(
+        "POST",
+        f"/api/global-connectors/{created['id']}/check",
+        headers={"Origin": ORIGIN},
+    )
+    with SessionLocal() as db:
+        result = _invoke(
+            global_connector_check(uuid.UUID(created["id"]), request, db, actor)
+        )
+
+    assert result["status"] == expected
+    assert result["message"] == check_result["message"]
+    assert "synthetic-global-secret" not in json.dumps(result)
+
+
 def test_authentication_and_origin_checks_precede_secret_body_reads(
     connector_identity, monkeypatch, tmp_path
 ):
@@ -428,7 +586,10 @@ def test_global_origin_rejection_is_definite_and_precedes_secret_body_read(
     request, consumed = _request(
         "POST",
         "/api/global-connectors",
-        headers={"Origin": "https://attacker.example", "Idempotency-Key": str(uuid.uuid4())},
+        headers={
+            "Origin": "https://attacker.example",
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
         content=json.dumps(_create_body("origin-secret-sentinel")).encode(),
     )
 
@@ -487,7 +648,9 @@ def test_setup_context_route_is_authenticated():
         if route.path == "/api/connectors/setup-context"
     )
 
-    assert any(dependency.call is require_jwt for dependency in route.dependant.dependencies)
+    assert any(
+        dependency.call is require_jwt for dependency in route.dependant.dependencies
+    )
 
 
 def test_setup_context_exposes_operator_capability_and_readiness_without_key_metadata(
@@ -577,8 +740,13 @@ def test_global_connector_is_visible_to_another_project_without_secret_or_manage
 
     assert created["visibility"] == "global"
     assert "project_id" not in created
-    assert any(item.id == uuid.UUID(created["id"]) and item.visibility == "global" for item in visible)
-    assert "api_key" not in json.dumps([item.model_dump(mode="json") for item in visible])
+    assert any(
+        item.id == uuid.UUID(created["id"]) and item.visibility == "global"
+        for item in visible
+    )
+    assert "api_key" not in json.dumps(
+        [item.model_dump(mode="json") for item in visible]
+    )
     assert operator_project_id != consumer_project_id
 
 
@@ -602,10 +770,26 @@ def test_project_defaults_set_clear_and_advance_revision_monotonically(
     connector = _json_response(_invoke(create()))
     connector_id = uuid.UUID(connector["id"])
 
-    async def set_connector(expected_revision, selected_id):
+    tavily_request, _ = _request(
+        "POST",
+        "/api/global-connectors",
+        headers={"Origin": ORIGIN, "Idempotency-Key": str(uuid.uuid4())},
+        content=json.dumps(
+            _create_body("synthetic-tavily-secret", kind="tavily")
+        ).encode(),
+    )
+
+    async def create_tavily():
+        with SessionLocal() as db:
+            return await global_connector_create(tavily_request, db, actor)
+
+    tavily = _json_response(_invoke(create_tavily()))
+    tavily_id = uuid.UUID(tavily["id"])
+
+    async def set_connector(service, expected_revision, selected_id):
         request, _ = _request(
             "PUT",
-            f"/api/projects/{project_id}/connector-defaults/brave",
+            f"/api/projects/{project_id}/connector-defaults/{service}",
             headers={"Origin": ORIGIN, "Idempotency-Key": str(uuid.uuid4())},
             content=json.dumps(
                 {"expected_revision": expected_revision, "connector_id": selected_id}
@@ -613,24 +797,153 @@ def test_project_defaults_set_clear_and_advance_revision_monotonically(
         )
         with SessionLocal() as db:
             return await project_connector_default_set(
-                project_id, "brave", request, db, actor
+                project_id, service, request, db, actor
             )
 
-    selected = _invoke(set_connector(0, str(connector_id)))
+    selected = _invoke(set_connector("brave", 0, str(connector_id)))
     assert selected == {
         "service": "brave",
         "connector_id": str(connector_id),
         "revision": 1,
     }
-    cleared = _invoke(set_connector(1, None))
-    assert cleared == {"service": "brave", "connector_id": None, "revision": 2}
+    with SessionLocal() as db:
+        inactive_service = project_connector_default_get(
+            project_id, "tavily", db, actor
+        )
+    assert inactive_service == {
+        "service": "tavily",
+        "connector_id": None,
+        "revision": 1,
+    }
+
+    switched = _invoke(set_connector("tavily", 1, str(tavily_id)))
+    assert switched == {
+        "service": "tavily",
+        "connector_id": str(tavily_id),
+        "revision": 2,
+    }
+    with SessionLocal() as db:
+        inactive_service = project_connector_default_get(project_id, "brave", db, actor)
+    assert inactive_service == {"service": "brave", "connector_id": None, "revision": 2}
+    with SessionLocal() as db:
+        current = project_connector_default_get(project_id, "tavily", db, actor)
+    assert current == {
+        "service": "tavily",
+        "connector_id": str(tavily_id),
+        "revision": 2,
+    }
+
+    cleared = _invoke(set_connector("tavily", 2, None))
+    assert cleared == {"service": "tavily", "connector_id": None, "revision": 3}
     with SessionLocal() as db:
         current = project_connector_default_get(project_id, "brave", db, actor)
-    assert current == {"service": "brave", "connector_id": None, "revision": 2}
+    assert current == {"service": "brave", "connector_id": None, "revision": 3}
 
     with pytest.raises(HTTPException) as stale:
-        _invoke(set_connector(1, str(connector_id)))
+        _invoke(set_connector("tavily", 2, str(tavily_id)))
     assert stale.value.status_code == 409
+
+
+@pytest.mark.parametrize("operation", ["default", "update", "credential"])
+def test_archived_project_rejects_settings_mutations(
+    operation, connector_identity, monkeypatch, tmp_path
+):
+    actor, project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    with SessionLocal() as db:
+        create_project(db, owner_id=actor.id, name="Keep active")
+        db.commit()
+    connector = _seed_legacy_project_connector(actor, project_id)
+    connector_id = uuid.UUID(connector["id"])
+
+    prior_request_id = uuid.uuid4()
+    prior_request, _ = _request(
+        "PATCH",
+        f"/api/projects/{project_id}/connectors/{connector_id}",
+        headers={"Origin": ORIGIN, "Idempotency-Key": str(prior_request_id)},
+        content=json.dumps(
+            {"expected_revision": 1, "name": "Before archive"}
+        ).encode(),
+    )
+
+    async def update_before_archive():
+        with SessionLocal() as db:
+            return await project_connector_update(
+                project_id, connector_id, prior_request, db, actor
+            )
+
+    assert _invoke(update_before_archive())["revision"] == 2
+    with SessionLocal() as db:
+        archive_project(db, owner_id=actor.id, project_id=project_id)
+        db.commit()
+
+    with SessionLocal() as db:
+        visible = project_connector_list(project_id, None, db, actor)
+        status = project_connector_request_status(
+            project_id, prior_request_id, db, actor
+        )
+        assert len(visible) == 1 and visible[0].status == "configured"
+        assert status["status"] == "complete"
+        assert status["result"]["name"] == "Before archive"
+
+    if operation == "default":
+        path = f"/api/projects/{project_id}/connector-defaults/brave"
+        payload = {"expected_revision": 0, "connector_id": None}
+        route = project_connector_default_set
+        args = (project_id, "brave")
+    elif operation == "update":
+        path = f"/api/projects/{project_id}/connectors/{connector_id}"
+        payload = {"expected_revision": 2, "name": "Must not change"}
+        route = project_connector_update
+        args = (project_id, connector_id)
+    else:
+        path = f"/api/projects/{project_id}/connectors/{connector_id}/credentials"
+        payload = {"expected_revision": 2, "api_key": "replacement-secret-sentinel"}
+        route = project_connector_replace_credential
+        args = (project_id, connector_id)
+
+    request, _ = _request(
+        "PUT" if operation == "default" else ("PATCH" if operation == "update" else "POST"),
+        path,
+        headers={"Origin": ORIGIN, "Idempotency-Key": str(uuid.uuid4())},
+        content=json.dumps(payload).encode(),
+    )
+
+    async def mutate():
+        with SessionLocal() as db:
+            return await route(*args, request, db, actor)
+
+    with pytest.raises(HTTPException) as refused:
+        _invoke(mutate())
+    assert refused.value.status_code == 409
+    assert refused.value.detail["error"]["code"] == "project_archived"
+    assert "replacement-secret-sentinel" not in str(refused.value.detail)
+
+    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    global_request, _ = _request(
+        "POST",
+        "/api/global-connectors",
+        headers={"Origin": ORIGIN, "Idempotency-Key": str(uuid.uuid4())},
+        content=json.dumps(_create_body()).encode(),
+    )
+
+    async def create_global_while_project_archived():
+        with SessionLocal() as db:
+            return await global_connector_create(global_request, db, actor)
+
+    global_result = _json_response(_invoke(create_global_while_project_archived()))
+    assert global_result["visibility"] == "global"
+
+    with SessionLocal() as db:
+        current = db.query(Connector).filter(Connector.id == connector_id).one()
+        assert current.current_revision == 2
+        assert current.name == "Before archive"
+        assert db.query(ProjectConnectorDefault).filter(
+            ProjectConnectorDefault.project_id == project_id
+        ).count() == 0
+        assert db.query(ConnectorRequestLedger).filter(
+            ConnectorRequestLedger.project_id == project_id
+        ).count() == 1
 
 
 def test_database_backed_write_rate_limit_and_invalid_secret_errors_are_safe(

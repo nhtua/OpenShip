@@ -11,6 +11,7 @@ import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import RunCard from '@/components/chat/RunCard.vue'
 import ConversationFiles from '@/components/chat/ConversationFiles.vue'
+import ArchivedConversationsDialog from '@/components/chat/ArchivedConversationsDialog.vue'
 import Icon from '@/components/common/Icon.vue'
 import {
   Alert,
@@ -38,6 +39,10 @@ const isCreatingConversation = ref(false)
 const isLoadingConversation = ref(false)
 const isToolSubmitting = ref(false)
 const conversationFilesOpen = ref(false)
+const archivedConversationsOpen = ref(false)
+const archivedConversationsLoading = ref(false)
+const restoringConversationId = ref<string | null>(null)
+const archiveDialogError = ref<string | null>(null)
 // Driven from the resulting store error, never inferred from an empty list.
 const historyLoadFailed = ref(false)
 const projectCreationError = ref<string | null>(null)
@@ -60,7 +65,9 @@ const busy = computed(
     !routeReady.value ||
     chat.isStreaming ||
     isCreatingConversation.value ||
-    isLoadingConversation.value,
+    isLoadingConversation.value ||
+    (route.name === 'conversation' && !chat.conversationMetadataReady) ||
+    chat.currentConversationReadOnly,
 )
 
 const title = computed(
@@ -76,6 +83,11 @@ const conversationOperations = computed(() => {
     ? [...(chat.toolOperationsByConversation.get(conversationId)?.values() ?? [])]
     : []
 })
+const completedArtifactSignature = computed(() => conversationOperations.value
+  .filter((operation) => operation.status === 'succeeded')
+  .flatMap((operation) => operation.artifacts.map((artifact) => `${operation.id}:${artifact.id}`))
+  .sort()
+  .join('|'))
 
 const conversationFiles = computed(() => {
   const conversationId = chat.currentConversation?.id
@@ -99,6 +111,30 @@ const selectedFileRead = computed(() =>
 watch(() => chat.currentConversation?.id, () => {
   conversationFilesOpen.value = false
 })
+
+let artifactObservationConversationId: string | null = null
+let observedCompletedArtifactSignature = ''
+watch(
+  () => [chat.currentConversation?.id ?? null, completedArtifactSignature.value] as const,
+  ([conversationId, signature]) => {
+    if (!conversationId) {
+      artifactObservationConversationId = null
+      observedCompletedArtifactSignature = ''
+      return
+    }
+    // The route load fetches the current workspace after hydrating history.
+    // Seed the signature on conversation changes to avoid an extra request for
+    // artifacts that were already present when the page opened.
+    if (conversationId !== artifactObservationConversationId) {
+      artifactObservationConversationId = conversationId
+      observedCompletedArtifactSignature = signature
+      return
+    }
+    if (signature === observedCompletedArtifactSignature) return
+    observedCompletedArtifactSignature = signature
+    if (signature) void artifacts.loadConversation(conversationId)
+  },
+)
 
 const pendingSubmissionId = computed(() => {
   const conversationId = chat.currentConversation?.id
@@ -226,6 +262,7 @@ function dismissError() {
 }
 
 async function handleRetrySubmission() {
+  if (chat.currentConversationReadOnly) return
   const requestId = pendingSubmissionId.value
   if (!requestId) return
   if (chat.pendingRequests.has(requestId)) await chat.retrySubmission(requestId)
@@ -257,6 +294,7 @@ function handleReadMoreFile(conversationId: string, artifactId: string) {
 }
 
 function handleDeleteFile(conversationId: string, artifactId: string) {
+  if (chat.currentConversationReadOnly) return
   const file = artifacts.byConversation.get(conversationId)?.find((item) => item.id === artifactId)
   if (!file || !window.confirm(`Delete saved file “${file.name}”?`)) return
   void artifacts.deleteArtifact(conversationId, artifactId)
@@ -268,6 +306,74 @@ function toggleConversationFiles() {
 
 function handleCancelOperation(runId: string) {
   if (activeRunId.value === runId) void chat.cancelRun(runId)
+}
+
+async function handleArchiveConversation(conversationId: string): Promise<void> {
+  archiveDialogError.value = null
+  chat.error = null
+  try {
+    await chat.archiveConversation(conversationId)
+  } catch {
+    archiveDialogError.value = chat.error ?? 'The conversation could not be archived. Reload and try again.'
+  }
+}
+
+async function handleShowArchivedConversations(): Promise<void> {
+  archiveDialogError.value = null
+  chat.error = null
+  archivedConversationsOpen.value = true
+  archivedConversationsLoading.value = true
+  await chat.loadArchivedConversations()
+  archiveDialogError.value = chat.error
+  archivedConversationsLoading.value = false
+}
+
+async function handleOpenArchivedConversation(conversationId: string): Promise<void> {
+  archivedConversationsOpen.value = false
+  if (route.name === 'conversation' && route.params.conversationId === conversationId) {
+    await chat.loadConversation(conversationId)
+    if (chat.currentConversation?.id === conversationId) await artifacts.loadConversation(conversationId)
+    return
+  }
+  await router.push({ name: 'conversation', params: { conversationId } })
+}
+
+async function handleRestoreConversation(conversationId: string): Promise<void> {
+  restoringConversationId.value = conversationId
+  archiveDialogError.value = null
+  try {
+    await chat.restoreConversation(conversationId)
+  } catch {
+    archiveDialogError.value = chat.error ?? 'The conversation could not be restored. Reload and try again.'
+  } finally {
+    restoringConversationId.value = null
+  }
+}
+
+async function goToProjectRestore(projectId: string | undefined): Promise<void> {
+  if (!projectId) return
+  await projects.loadArchivedProjects()
+  archivedConversationsOpen.value = false
+  await router.push({ name: 'project-settings', params: { projectId } })
+}
+
+async function handleRestoreProject(projectId: string): Promise<void> {
+  restoringConversationId.value = projectId
+  try {
+    await goToProjectRestore(projectId)
+  } finally {
+    restoringConversationId.value = null
+  }
+}
+
+async function handleRestoreCurrentConversation(): Promise<void> {
+  const conversation = chat.currentConversation
+  if (!conversation || chat.currentConversationReadOnly === false) return
+  if (conversation.project_archived_at) {
+    await goToProjectRestore(conversation.project_id)
+    return
+  }
+  if (conversation.archived_at) await handleRestoreConversation(conversation.id)
 }
 
 // The composer's selector names a profile; the store decides what the next
@@ -286,6 +392,7 @@ async function handleSignOut() {
   chat.error = null
   historyLoadFailed.value = false
   conversationFilesOpen.value = false
+  archivedConversationsOpen.value = false
   await router.replace({ name: 'login' })
 }
 
@@ -363,6 +470,8 @@ onBeforeUnmount(() => {
     :project-creating="projectCreating"
     @create-conversation="handleCreateConversation"
     @select-conversation="handleSelectConversation"
+    @archive-conversation="handleArchiveConversation"
+    @show-archived-conversations="handleShowArchivedConversations"
     @select-project="handleSelectProject"
     @create-project="handleCreateProject"
     @sign-out="handleSignOut"
@@ -390,6 +499,40 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col" data-testid="chat-main">
+      <section
+        v-if="chat.currentConversation && chat.currentConversationReadOnly"
+        class="mx-4 mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card p-3 md:mx-6"
+        data-testid="archived-conversation-banner"
+        aria-label="Archived conversation status"
+      >
+        <p class="text-sm text-muted-foreground">
+          <template v-if="chat.currentConversation.project_archived_at">
+            {{ chat.currentConversation.project_name || 'This project' }} is archived. Restore the project before continuing work.
+          </template>
+          <template v-else-if="chat.currentConversation.archived_at">
+            This conversation is archived. Restore it to continue working; its saved resources are unchanged.
+          </template>
+          <template v-else>
+            Conversation status could not be confirmed. This history is read-only until it can be checked.
+          </template>
+        </p>
+        <Button
+          v-if="chat.currentConversation.project_archived_at"
+          type="button"
+          variant="outline"
+          @click="handleRestoreCurrentConversation"
+        >
+          Restore project
+        </Button>
+        <Button
+          v-else-if="chat.currentConversation.archived_at"
+          type="button"
+          variant="outline"
+          @click="handleRestoreCurrentConversation"
+        >
+          Restore conversation
+        </Button>
+      </section>
       <!-- Run card shows durable progress for the current conversation.
            Cancel lives beside the run it names, and only while that run can
            still be stopped - a run that reached an end has nothing left to
@@ -403,6 +546,7 @@ onBeforeUnmount(() => {
             v-if="pendingSubmissionId"
             variant="ghost"
             size="icon-sm"
+            :disabled="chat.currentConversationReadOnly"
             aria-label="Retry submission"
             title="Retry submission"
             @click="handleRetrySubmission"
@@ -470,6 +614,7 @@ onBeforeUnmount(() => {
         <ConversationFiles
           v-if="chat.currentConversation"
           :conversation-id="chat.currentConversation.id"
+          :read-only="chat.currentConversationReadOnly"
           :workspace="conversationWorkspace"
           :files="conversationFiles"
           :loading="artifacts.loadingConversation === chat.currentConversation.id"
@@ -489,5 +634,18 @@ onBeforeUnmount(() => {
         />
       </SheetContent>
     </Sheet>
+
+    <ArchivedConversationsDialog
+      v-if="archivedConversationsOpen"
+      :open="archivedConversationsOpen"
+      :conversations="chat.archivedConversations"
+      :loading="archivedConversationsLoading"
+      :restoring-id="restoringConversationId"
+      :error="archiveDialogError"
+      @update:open="archivedConversationsOpen = $event"
+      @open-conversation="handleOpenArchivedConversation"
+      @restore-conversation="handleRestoreConversation"
+      @restore-project="handleRestoreProject"
+    />
   </AppLayout>
 </template>

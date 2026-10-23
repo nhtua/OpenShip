@@ -175,4 +175,4 @@ def test_capability_manifest_decoder_preserves_v1_and_reads_connector_requiremen
 
 def test_execution_config_decoder_rejects_unknown_versions():
     with pytest.raises(ValueError, match="unsupported execution configuration version"):
-        decode_execution_config({"schema_version": 3, "graph_kind": "tool"})
+        decode_execution_config({"schema_version": 4, "graph_kind": "tool"})

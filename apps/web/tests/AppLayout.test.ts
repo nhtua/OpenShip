@@ -35,6 +35,19 @@ describe('AppLayout', () => {
     expect(wrapper.findAll('[aria-current="page"]').length).toBe(1)
   })
 
+  it('forwards archived conversation recovery from the history menu', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', { conversations: [] })
+    document.body.appendChild(wrapper.element)
+    await wrapper.get('button[aria-label="Conversation history actions"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    const archivedItem = document.body.querySelector('[role="menuitem"]')
+    expect(archivedItem?.textContent).toContain('Archived conversations')
+    archivedItem?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('showArchivedConversations')).toEqual([[]])
+  })
+
   it('opens a project dropdown with the current workspace selected', async () => {
     const { wrapper } = await mountWithRouter(AppLayout, '/', {
       projects: [{ id: 'project-1', name: 'Personal Workspace' }],

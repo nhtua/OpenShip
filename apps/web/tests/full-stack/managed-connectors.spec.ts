@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 const operatorToken = process.env.CONNECTOR_TEST_OPERATOR_TOKEN
 const initialProjectId = process.env.CONNECTOR_TEST_PROJECT_ID
@@ -8,6 +8,15 @@ function requireOperatorSetup(): { token: string; projectId: string } {
     throw new Error('The real-stack connector test requires its disposable API fixture.')
   }
   return { token: operatorToken, projectId: initialProjectId }
+}
+
+async function openConnectorCreation(page: Page, name: string): Promise<void> {
+  const addAnother = page.getByRole('button', { name: `Add another ${name}` })
+  if (await addAnother.count()) {
+    await addAnother.click()
+    return
+  }
+  await page.getByRole('button', { name: `Configure ${name}` }).click()
 }
 
 test('operator configures shared search and chooses project defaults independently', async ({ page, request }) => {
@@ -50,7 +59,7 @@ test('operator configures shared search and chooses project defaults independent
   await page.goto('/connectors')
   await expect(page.getByRole('heading', { name: 'Search connectors' })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Add Brave Search' }).click()
+  await openConnectorCreation(page, 'Brave Search')
   let dialog = page.getByRole('dialog')
   await dialog.getByLabel('Connector name').fill('Shared Brave from browser')
   const braveKey = dialog.getByLabel('Brave Search API key')
@@ -63,7 +72,7 @@ test('operator configures shared search and chooses project defaults independent
   await dialog.getByRole('button', { name: 'Close connector details' }).click()
   await expect(page.getByRole('button', { name: 'Configure Shared Brave from browser' })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Add Tavily Search' }).click()
+  await openConnectorCreation(page, 'Tavily Search')
   dialog = page.getByRole('dialog')
   await dialog.getByLabel('Connector name').fill('Shared Tavily from browser')
   const tavilyKey = dialog.getByLabel('Tavily Search API key')
@@ -108,34 +117,31 @@ test('operator configures shared search and chooses project defaults independent
   await page.goto(`/projects/${projectId}/settings`)
   await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible()
   await expect(page.getByText('Choose a Global connector to replace this legacy Project default. Existing project access remains unchanged until you select one.')).toBeVisible()
-  await page.getByLabel('Brave Search default').selectOption(brave!.id)
-  await page.getByLabel('Tavily Search default').selectOption(tavily!.id)
-  await expect(page.getByLabel('Brave Search default')).toHaveValue(brave!.id)
-  await expect(page.getByLabel('Tavily Search default')).toHaveValue(tavily!.id)
+  await page.getByLabel('Search default').selectOption(tavily!.id)
+  await expect(page.getByLabel('Search default')).toHaveValue(tavily!.id)
 
   await page.getByTestId('project-selector-trigger').click()
   await page.getByRole('menuitemradio', { name: 'Shared Search Peer' }).click()
   await expect(page).toHaveURL(new RegExp(`/projects/${peerProject!.id}/settings$`))
   await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible()
-  await expect(page.getByLabel('Brave Search default')).toHaveValue('')
-  await expect(page.getByLabel('Tavily Search default')).toHaveValue('')
-  await page.getByLabel('Brave Search default').selectOption(brave!.id)
-  await page.getByLabel('Tavily Search default').selectOption(tavily!.id)
-  await expect(page.getByLabel('Brave Search default')).toHaveValue(brave!.id)
-  await expect(page.getByLabel('Tavily Search default')).toHaveValue(tavily!.id)
+  await expect(page.getByLabel('Search default')).toHaveValue('')
+  await page.getByLabel('Search default').selectOption(brave!.id)
+  await expect(page.getByLabel('Search default')).toHaveValue(brave!.id)
 
   await page.getByTestId('project-selector-trigger').click()
   await page.getByRole('menuitemradio', { name: projects.find((project) => project.id === projectId)!.name }).click()
   await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`))
-  await expect(page.getByLabel('Brave Search default')).toHaveValue(brave!.id)
-  await expect(page.getByLabel('Tavily Search default')).toHaveValue(tavily!.id)
+  await expect(page.getByLabel('Search default')).toHaveValue(tavily!.id)
 
-  for (const project of [projectId, peerProject!.id]) {
+  for (const [project, selectedService, selectedConnector] of [
+    [projectId, 'tavily', tavily!.id],
+    [peerProject!.id, 'brave', brave!.id],
+  ] as const) {
     for (const service of ['brave', 'tavily']) {
       const saved = await request.get(`/api/projects/${project}/connector-defaults/${service}`, { headers })
       expect(saved.status()).toBe(200)
       const body = await saved.json() as { connector_id: string; revision: number }
-      expect(body.connector_id).toBe(service === 'brave' ? brave!.id : tavily!.id)
+      expect(body.connector_id).toBe(service === selectedService ? selectedConnector : null)
       expect(body.revision).toBeGreaterThan(0)
     }
   }
@@ -175,7 +181,7 @@ test('a definite origin rejection clears the key without polling or resubmission
   })
 
   await page.goto('/connectors')
-  await page.getByRole('button', { name: 'Add another Tavily Search' }).click()
+  await openConnectorCreation(page, 'Tavily Search')
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Connector name').fill('Rejected origin test')
   const key = dialog.getByLabel('Tavily Search API key')

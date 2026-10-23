@@ -241,18 +241,7 @@ async function handleSubmit() {
     emit('search', command)
   } else {
     if (automaticToolMode.value) {
-      const connectorSelections: ConnectorSelections = {}
-      for (const kind of ['brave', 'tavily'] as const) {
-        const connectorId = props.defaultConnectorIds[kind]
-        if (connectorId) connectorSelections[kind] = connectorId
-      }
-      const options: { enableTools: boolean; connectorSelections?: ConnectorSelections } = {
-        enableTools: true,
-      }
-      if (props.connectors !== undefined || Object.keys(connectorSelections).length) {
-        options.connectorSelections = connectorSelections
-      }
-      emit('send', text, options)
+      emit('send', text, { enableTools: true })
     }
     else emit('send', text)
   }

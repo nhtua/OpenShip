@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { lifecycleConflictCode } from '@/lib/lifecycleErrors'
 import { artifactsApi, workspaceApi } from '@/services/api'
+import { useChatStore } from '@/stores/chat'
 import type {
   ArtifactSummary,
   ConversationWorkspaceSummary,
@@ -190,6 +192,9 @@ export const useArtifactsStore = defineStore('artifacts', () => {
     } catch (err) {
       if (generation === requestGeneration) {
         error.value = requestMessage(err, 'The retained file could not be deleted.')
+        if (lifecycleConflictCode(err)) {
+          await useChatStore().refreshLifecycleAfterConflict(conversationId)
+        }
       }
     } finally {
       if (deletingArtifactId.value === artifactId) deletingArtifactId.value = null

@@ -28,7 +28,10 @@ describe('connector credential setup', () => {
     expect(wrapper.html()).not.toContain('synthetic-secret-sentinel')
 
     readStatus.mockResolvedValueOnce({ status: 'complete', result: { id: 'connector-1' } })
-    await wrapper.get('[data-testid="check-connector-request"]').trigger('click')
+    const checkStatus = wrapper.get('[data-testid="check-connector-request"]')
+    await vi.waitFor(() => expect(checkStatus.attributes('disabled')).toBeUndefined())
+    await checkStatus.trigger('click')
+    await vi.waitFor(() => expect(wrapper.emitted('complete')).toHaveLength(1))
 
     expect(submit).toHaveBeenCalledTimes(1)
     expect(wrapper.emitted('complete')?.[0]).toEqual([{ id: 'connector-1' }])

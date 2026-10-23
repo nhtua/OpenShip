@@ -13,12 +13,13 @@ from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import (
     CapabilityRef,
     ExecutionConfigV2,
+    ExecutionConfigV3,
     ToolCommandRequest,
     decode_execution_config,
 )
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
-from src.openship.connectors.models import ConnectorRevision
+from src.openship.connectors.models import Connector, ConnectorRevision
 from src.openship.connectors.service import create_connector, set_default
 from src.openship.database.session import SessionLocal
 from src.openship.events.service import Event
@@ -68,16 +69,16 @@ def _identity(db, label: str):
     return user, project, conversation
 
 
-def _connector(db, user, monkeypatch):
+def _connector(db, user, monkeypatch, *, kind="brave"):
     monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
     result = create_connector(
         db,
         actor=user,
         visibility="global",
         project_id=None,
-        kind="brave",
-        name="global Brave",
-        configuration_raw={"schema_version": 1, "kind": "brave"},
+        kind=kind,
+        name=f"global {kind.title()}",
+        configuration_raw={"schema_version": 1, "kind": kind},
         api_key=API_KEY,
     )
     connector_id = uuid.UUID(result["id"])
@@ -93,7 +94,7 @@ def _ref(db, connector_id):
     )
     return {
         "id": revision.connector_id,
-        "kind": "brave",
+        "kind": db.get(Connector, connector_id).kind,
         "configuration_revision": revision.revision,
         "visibility": revision.visibility,
         "credential_version_id": revision.credential_version_id,
@@ -233,7 +234,7 @@ def test_tool_chat_pins_selected_connector_and_plain_chat_needs_no_connector_key
         )
         db.commit()
         execution = decode_execution_config(run.execution_configuration)
-        assert isinstance(execution, ExecutionConfigV2)
+        assert isinstance(execution, ExecutionConfigV3)
         assert run.kind == "chat" and run.graph_version == 3
         assert [ref.id for ref in execution.allowed_capabilities] == [
             "brave_web_search",
@@ -266,6 +267,70 @@ def test_tool_chat_pins_selected_connector_and_plain_chat_needs_no_connector_key
         )
         db.commit()
         assert plain.kind == "chat" and plain.graph_version == 1
+    finally:
+        db.close()
+
+
+def test_automatic_tool_chat_prefers_one_project_default_and_pins_fallback_provider(
+    monkeypatch, tmp_path
+):
+    _install_keys(monkeypatch, tmp_path)
+    primary = profile_spec("managed-default-first-primary")
+    primary["capabilities"]["tool_calls"] = True
+    primary["adapter_options"]["adapter"] = "openai"
+    configure_profiles(monkeypatch, [primary], "managed-default-first-primary")
+    monkeypatch.setattr(
+        settings, "tool_enabled_ids", "brave_web_search,tavily_web_search"
+    )
+    db = SessionLocal()
+    try:
+        user, project, conversation = _identity(db, "default-first")
+        brave_id = _connector(db, user, monkeypatch, kind="brave")
+        tavily_id = _connector(db, user, monkeypatch, kind="tavily")
+        set_default(
+            db,
+            project_id=project.id,
+            actor=user,
+            service="tavily",
+            expected_revision=0,
+            connector_id=tavily_id,
+        )
+
+        run = submit_turn(
+            db=db,
+            user_id=user.id,
+            conversation_id=str(conversation.id),
+            content="Search for a relevant source.",
+            client_request_id=str(uuid.uuid4()),
+            enable_tools=True,
+        )
+        execution = decode_execution_config(run.execution_configuration)
+
+        assert isinstance(execution, ExecutionConfigV3)
+        assert execution.preferred_search_kind == "tavily"
+        assert {ref.kind for ref in execution.connector_refs} == {"brave", "tavily"}
+        assert {ref.id for ref in execution.connector_refs} == {brave_id, tavily_id}
+        assert [ref.id for ref in execution.allowed_capabilities[:2]] == [
+            "tavily_web_search",
+            "brave_web_search",
+        ]
+
+        run.status = "completed"
+        db.flush()
+        explicitly_selected = submit_turn(
+            db=db,
+            user_id=user.id,
+            conversation_id=str(conversation.id),
+            content="Use the explicitly selected Brave connector.",
+            client_request_id=str(uuid.uuid4()),
+            enable_tools=True,
+            connector_selections={"brave": brave_id},
+        )
+        explicit_execution = decode_execution_config(
+            explicitly_selected.execution_configuration
+        )
+        assert isinstance(explicit_execution, ExecutionConfigV3)
+        assert explicit_execution.preferred_search_kind == "brave"
     finally:
         db.close()
 
@@ -304,7 +369,7 @@ def test_tool_chat_exact_retry_keeps_pinned_connector_after_default_changes(
         first = submit_turn(**request)
         db.commit()
         first_config = decode_execution_config(first.execution_configuration)
-        assert isinstance(first_config, ExecutionConfigV2)
+        assert isinstance(first_config, ExecutionConfigV3)
         assert first_config.connector_refs[0].id == first_connector
 
         set_default(
@@ -320,7 +385,7 @@ def test_tool_chat_exact_retry_keeps_pinned_connector_after_default_changes(
 
         assert replay.id == first.id
         replay_config = decode_execution_config(replay.execution_configuration)
-        assert isinstance(replay_config, ExecutionConfigV2)
+        assert isinstance(replay_config, ExecutionConfigV3)
         assert replay_config.connector_refs[0].id == first_connector
         assert second_connector != first_connector
         durable_values = " ".join(

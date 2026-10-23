@@ -24,11 +24,13 @@ from ..capabilities.contracts import (
     ConnectorRef,
     ExecutionConfig,
     ExecutionConfigV2,
+    ExecutionConfigV3,
     LoopLimits,
     ToolCommandRequest,
     canonical_digest,
 )
 from ..capabilities.definitions import get_tool_definition
+from ..chat.lifecycle import ConversationLifecycleError, get_owned_conversation_scope
 from ..chat.models import Conversation, Message
 from ..config import settings
 from ..connectors.models import Connector, ProjectConnectorDefault
@@ -38,6 +40,11 @@ from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
 from ..runs.models import Event, Outbox, Run, RunJob
+from ..workspace.lifecycle import (
+    ArchiveStateError,
+    archive_http_error,
+    assert_active_conversation,
+)
 from .queue import fenced_update_run
 
 
@@ -54,13 +61,36 @@ def require_owned_conversation(db: Session, user_id: uuid.UUID, conversation_id:
     conv = db.query(Conversation).filter(
         Conversation.id == conv_id,
         Conversation.user_id == user_id,
-    ).with_for_update().first()
+    ).with_for_update().populate_existing().first()
     if not conv:
         raise HTTPException(
             status_code=404,
             detail={"error": {"code": "conversation_not_found", "message": "Conversation not found"}},
         )
     return conv
+
+
+def _lock_active_conversation_scope(
+    db: Session, *, user_id: uuid.UUID, conversation_id: uuid.UUID
+) -> Conversation:
+    """Refresh and lock conversation → project before admitting fresh work."""
+    try:
+        conversation, project = get_owned_conversation_scope(
+            db,
+            owner_id=user_id,
+            conversation_id=conversation_id,
+            for_update=True,
+        )
+    except ConversationLifecycleError:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "conversation_not_found", "message": "Conversation not found"}},
+        ) from None
+    try:
+        assert_active_conversation(conversation, project)
+    except ArchiveStateError as exc:
+        raise archive_http_error(exc) from None
+    return conversation
 
 
 def _selection_of(run: Run) -> tuple[str | None, list[str]]:
@@ -303,17 +333,46 @@ def _tool_chat_execution(
             if ref.id not in {"brave_web_search", "tavily_web_search"}
             or ref.id in managed_capability_ids
         ]
-        return ExecutionConfigV2(
-            graph_kind="chat",
-            graph_version=3,
-            allowed_capabilities=tuple(refs),
-            selected_artifacts=artifact_refs,
-            connector_refs=tuple(connector_refs),
-            loop_limits=LoopLimits(deadline_seconds=min(
+        active_default = (
+            db.query(ProjectConnectorDefault)
+            .filter(ProjectConnectorDefault.project_id == project_id)
+            .first()
+        )
+        explicit_service = next(iter(explicit_services)) if len(explicit_services) == 1 else None
+        explicit_preference = (
+            explicit_service if explicit_service in managed_services else None
+        )
+        preferred_search_kind = explicit_preference or (
+            active_default.service
+            if active_default is not None
+            and active_default.connector_id is not None
+            and active_default.service in managed_services
+            else None
+        )
+        if preferred_search_kind is not None:
+            preferred_id = (
+                "brave_web_search"
+                if preferred_search_kind == "brave"
+                else "tavily_web_search"
+            )
+            refs.sort(key=lambda ref: ref.id != preferred_id)
+        execution_fields = {
+            "graph_kind": "chat",
+            "graph_version": 3,
+            "allowed_capabilities": tuple(refs),
+            "selected_artifacts": artifact_refs,
+            "connector_refs": tuple(connector_refs),
+            "loop_limits": LoopLimits(deadline_seconds=min(
                 settings.workflow_run_timeout_seconds,
                 int(model_config.limits.run_timeout_seconds),
             )),
-        )
+        }
+        if preferred_search_kind is not None:
+            return ExecutionConfigV3(
+                **execution_fields,
+                preferred_search_kind=preferred_search_kind,
+            )
+        return ExecutionConfigV2(**execution_fields)
 
     return ExecutionConfig(
         graph_kind="chat",
@@ -409,6 +468,13 @@ def submit_turn(
                         "message": "client_request_id already used with a different model selection"}},
             )
         return existing
+
+    # Exact idempotent replays above are reads of the previously accepted run.
+    # Only fresh work needs an active scope, locked in conversation → project
+    # order so an archive and admission serialize on the same rows.
+    conv = _lock_active_conversation_scope(
+        db, user_id=user_id, conversation_id=conv.id
+    )
 
     # Check for an active run on this conversation (one active run per conversation)
     active = db.query(Run).filter(
@@ -572,12 +638,15 @@ def submit_tool_run(
             )
         return existing
 
-    conversation = db.query(Conversation).filter(
-        Conversation.id == conversation_uuid,
-        Conversation.user_id == user_id,
-    ).with_for_update().first()
-    if conversation is None:
-        raise _tool_command_error(404, "conversation_not_found", "Conversation not found")
+    try:
+        conversation, project = get_owned_conversation_scope(
+            db,
+            owner_id=user_id,
+            conversation_id=conversation_uuid,
+            for_update=True,
+        )
+    except ConversationLifecycleError:
+        raise _tool_command_error(404, "conversation_not_found", "Conversation not found") from None
 
     # Recheck after locking the conversation. On PostgreSQL this serializes
     # chat/tool admission for the same conversation across both command paths.
@@ -596,6 +665,11 @@ def submit_tool_run(
                 "client_request_id already used with a different tool command",
             )
         return existing
+
+    try:
+        assert_active_conversation(conversation, project)
+    except ArchiveStateError as exc:
+        raise archive_http_error(exc) from None
 
     active = db.query(Run).filter(
         Run.conversation_id == conversation.id,
@@ -642,16 +716,15 @@ def submit_tool_run(
                     refused.code,
                     "The selected search Connector is not available for this project",
                 ) from refused
+            active_default = (
+                db.query(ProjectConnectorDefault)
+                .filter(ProjectConnectorDefault.project_id == conversation.project_id)
+                .first()
+            )
             legacy_fallback = (
                 refused.code == "connector_required"
                 and _connector_rows_for_project(db, conversation.project_id, service) == 0
-                and db.query(ProjectConnectorDefault)
-                .filter(
-                    ProjectConnectorDefault.project_id == conversation.project_id,
-                    ProjectConnectorDefault.service == service,
-                )
-                .first()
-                is None
+                and (active_default is None or active_default.service != service)
             )
             if not legacy_fallback:
                 raise _tool_command_error(

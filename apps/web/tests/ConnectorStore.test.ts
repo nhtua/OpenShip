@@ -18,6 +18,7 @@ const api = vi.mocked(connectorsApi)
 
 const projectConnectors = [
   { id: 'global-brave', kind: 'brave', visibility: 'global', name: 'Shared Brave', status: 'configured', revision: 4, is_default: true },
+  { id: 'global-tavily', kind: 'tavily', visibility: 'global', name: 'Shared Tavily', status: 'configured', revision: 1, is_default: false },
   { id: 'project-tavily', kind: 'tavily', visibility: 'project', name: 'Project Tavily', status: 'configured', revision: 2, is_default: false },
 ] as const
 
@@ -47,7 +48,7 @@ describe('connector store', () => {
     expect(store.connectors).toEqual([...projectConnectors])
     expect(store.defaults.brave?.connector_id).toBe('global-brave')
     expect(store.canManageGlobal).toBe(false)
-    expect(store.connectors.filter((connector) => connector.visibility === 'global')).toEqual([projectConnectors[0]])
+    expect(store.connectors.filter((connector) => connector.visibility === 'global')).toEqual(projectConnectors.slice(0, 2))
     expect(store.globalConnectors).toEqual([])
     expect(store.credentialStoreReady).toBe(true)
     expect(api.getSetupContext).toHaveBeenCalledTimes(1)
@@ -85,7 +86,7 @@ describe('connector store', () => {
     expect(store.credentialStoreReady).toBe(false)
     expect(store.setupUnavailableReason).toBe('idempotency_key_unavailable')
     expect(store.canManageGlobal).toBe(false)
-    expect(store.connectors.filter((connector) => connector.visibility === 'global')).toEqual([projectConnectors[0]])
+    expect(store.connectors.filter((connector) => connector.visibility === 'global')).toEqual(projectConnectors.slice(0, 2))
     expect(store.globalConnectors).toEqual([])
     expect(api.listGlobalConnectors).not.toHaveBeenCalled()
   })
@@ -100,12 +101,12 @@ describe('connector store', () => {
 
     expect(api.listGlobalConnectors).toHaveBeenCalledTimes(1)
     expect(store.canManageGlobal).toBe(false)
-    expect(store.connectors.filter((connector) => connector.visibility === 'global')).toEqual([projectConnectors[0]])
+    expect(store.connectors.filter((connector) => connector.visibility === 'global')).toEqual(projectConnectors.slice(0, 2))
     expect(store.globalConnectors).toEqual([])
     expect(store.credentialStoreReady).toBe(true)
   })
 
-  it('updates a project default with its loaded revision and captured project ID', async () => {
+  it('switches one shared project default across services using the shared revision', async () => {
     api.getProjectCapabilities.mockResolvedValue({
       data: [{
         id: 'brave_web_search', version: '2.0.0', manifest_digest: 'a'.repeat(64),
@@ -113,11 +114,24 @@ describe('connector store', () => {
         required_connector_kinds: ['brave'], connector_readiness: { brave: 'ambiguous' },
       }],
     } as never)
+    let activeKind = 'brave'
+    let activeId: string | null = 'global-brave'
+    let revision = 3
+    api.getProjectDefault.mockImplementation(async (_projectId, kind) => ({
+      data: {
+        service: kind,
+        connector_id: kind === activeKind ? activeId : null,
+        revision,
+      },
+    } as never))
+    api.setProjectDefault.mockImplementation(async (_projectId, kind, payload) => {
+      activeKind = kind
+      activeId = payload.connector_id
+      revision = payload.expected_revision + 1
+      return { data: { service: kind, connector_id: activeId, revision } } as never
+    })
     const store = useConnectorsStore()
     await store.initialize('project-a')
-    api.setProjectDefault.mockResolvedValue({
-      data: { service: 'brave', connector_id: 'global-brave', revision: 4 },
-    } as never)
     api.getProjectCapabilities.mockResolvedValue({
       data: [{
         id: 'brave_web_search', version: '2.0.0', manifest_digest: 'a'.repeat(64),
@@ -126,13 +140,16 @@ describe('connector store', () => {
       }],
     } as never)
 
-    await store.setDefault('project-a', 'brave', 'global-brave')
+    await store.setDefault('project-a', 'tavily', 'global-tavily')
 
-    expect(api.setProjectDefault).toHaveBeenCalledWith('project-a', 'brave', {
+    expect(api.setProjectDefault).toHaveBeenCalledWith('project-a', 'tavily', {
       expected_revision: 3,
-      connector_id: 'global-brave',
+      connector_id: 'global-tavily',
     })
-    expect(store.defaults.brave?.connector_id).toBe('global-brave')
+    expect(store.defaults.brave?.connector_id).toBeNull()
+    expect(store.defaults.brave?.revision).toBe(4)
+    expect(store.defaults.tavily?.connector_id).toBe('global-tavily')
+    expect(store.defaults.tavily?.revision).toBe(4)
     expect(store.capabilities[0].connector_readiness.brave).toBe('ready')
   })
 

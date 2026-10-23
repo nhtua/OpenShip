@@ -210,6 +210,38 @@ describe('ChatInput', () => {
     ])
   })
 
+  it('keeps manual connector selection explicit when it differs from the project default', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities,
+        connectors: [
+          { id: 'brave-one', kind: 'brave', visibility: 'global', name: 'Brave One', status: 'configured', revision: 1, is_default: false },
+          { id: 'brave-two', kind: 'brave', visibility: 'global', name: 'Brave Two', status: 'configured', revision: 1, is_default: false },
+          { id: 'tavily-default', kind: 'tavily', visibility: 'global', name: 'Tavily Default', status: 'configured', revision: 1, is_default: true },
+        ],
+        defaultConnectorIds: { tavily: 'tavily-default' },
+        submissionError: null,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    await wrapper.get('button[data-testid="tool-choice"]').trigger('click')
+    await wrapper.get('select[aria-label="Search connector"]').setValue('brave-two')
+    await wrapper.get('textarea').setValue('use my selected Brave connector')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('search')?.[0]?.[0]).toMatchObject({
+      capability: { id: 'brave_web_search', version: '1.0.0' },
+      connector_selections: { brave: 'brave-two' },
+    })
+  })
+
   it('allows automatic mode for a sole ready Connector without requiring a project default', async () => {
     const wrapper = mount(ChatInput, {
       props: {
@@ -240,7 +272,7 @@ describe('ChatInput', () => {
 
     expect(wrapper.emitted('send')?.[0]).toEqual([
       'search with the configured Tavily connector',
-      { enableTools: true, connectorSelections: {} },
+      { enableTools: true },
     ])
   })
 

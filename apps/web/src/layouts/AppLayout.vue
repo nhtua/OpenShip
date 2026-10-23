@@ -48,6 +48,8 @@ const props = withDefaults(
 const emit = defineEmits<{
   createConversation: [title: string]
   selectConversation: [id: string]
+  archiveConversation: [id: string]
+  showArchivedConversations: []
   signOut: []
   toggleConversationFiles: []
   selectProject: [id: string]
@@ -69,6 +71,8 @@ const emit = defineEmits<{
         :project-creating="props.projectCreating"
         @create-conversation="emit('createConversation', $event)"
         @select-conversation="emit('selectConversation', $event)"
+        @archive-conversation="emit('archiveConversation', $event)"
+        @show-archived-conversations="emit('showArchivedConversations')"
         @sign-out="emit('signOut')"
         @select-project="emit('selectProject', $event)"
         @create-project="emit('createProject', $event)"

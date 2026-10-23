@@ -34,9 +34,12 @@ export interface ChatMessage {
 export interface Conversation {
   id: string
   project_id?: string
+  project_name: string
+  project_archived_at: string | null
   title: string
   created_at: string
   updated_at: string
+  archived_at: string | null
 }
 
 // Durable run types
@@ -98,7 +101,10 @@ export type ConnectorSelections = Partial<Record<ConnectorKind, string>>
 export interface ProjectSummary {
   id: string
   name: string
+  archived_at: string | null
 }
+
+export type ArchiveListState = 'active' | 'archived'
 
 export interface ConnectorUsage {
   id: string

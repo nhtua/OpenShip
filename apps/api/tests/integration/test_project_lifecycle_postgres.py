@@ -13,15 +13,19 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from src.openship.artifacts.models import ArtifactQuota
 from src.openship.auth.models import User
 from src.openship.chat.models import Conversation
 from src.openship.connectors.models import ProjectConnectorDefault
+from src.openship.workspace.lifecycle import ArchiveStateError
 from src.openship.workspace.models import Project
-from src.openship.workspace.projects import ProjectLifecycleError, delete_project
+from src.openship.workspace.projects import (
+    ProjectLifecycleError,
+    delete_project,
+    select_project_for_conversation,
+)
 from tests.integration.postgres import bounded_postgres_url
 
 pytestmark = [pytest.mark.postgres]
@@ -170,7 +174,7 @@ def test_migration_preserves_existing_project_references_and_refuses_unsafe_down
     assert "refusing to downgrade" in refused.stderr.lower()
     assert "multiple projects" in refused.stderr.lower()
     with project_postgres["engine"].connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "phase5a009c"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "phase5a009f"
 
 
 def test_concurrent_deletion_cannot_remove_both_last_projects(project_postgres):
@@ -201,7 +205,7 @@ def test_concurrent_deletion_cannot_remove_both_last_projects(project_postgres):
             try:
                 delete_project(db, owner_id=user_id, project_id=project_id)
                 db.commit()
-                return "deleted"
+                return "archived"
             except ProjectLifecycleError as exc:
                 db.rollback()
                 return exc.code
@@ -209,10 +213,14 @@ def test_concurrent_deletion_cannot_remove_both_last_projects(project_postgres):
     with ThreadPoolExecutor(max_workers=2) as pool:
         outcomes = tuple(pool.map(remove, project_ids))
 
-    assert outcomes.count("deleted") == 1
+    assert outcomes.count("archived") == 1
     assert outcomes.count("last_project_required") == 1
     with sessions() as db:
-        assert db.query(Project).filter(Project.owner_user_id == user_id).count() == 1
+        assert db.query(Project).filter(Project.owner_user_id == user_id).count() == 2
+        assert db.query(Project).filter(
+            Project.owner_user_id == user_id,
+            Project.archived_at.is_(None),
+        ).count() == 1
 
 
 def test_concurrent_child_creation_and_project_deletion_never_leave_an_orphan(project_postgres):
@@ -237,18 +245,23 @@ def test_concurrent_child_creation_and_project_deletion_never_leave_an_orphan(pr
     def create_child():
         with sessions() as db:
             gate.wait(timeout=10)
+            try:
+                select_project_for_conversation(
+                    db,
+                    owner_id=user_id,
+                    project_id=project_id,
+                )
+            except ArchiveStateError as exc:
+                db.rollback()
+                return exc.code
             conversation = Conversation(
                 user_id=user_id,
                 project_id=project_id,
                 title="Concurrent child",
             )
             db.add(conversation)
-            try:
-                db.commit()
-                return "created"
-            except IntegrityError:
-                db.rollback()
-                return "project_removed"
+            db.commit()
+            return "created"
 
     def remove_project():
         with sessions() as db:
@@ -256,7 +269,7 @@ def test_concurrent_child_creation_and_project_deletion_never_leave_an_orphan(pr
             try:
                 delete_project(db, owner_id=user_id, project_id=project_id)
                 db.commit()
-                return "deleted"
+                return "archived"
             except ProjectLifecycleError as exc:
                 db.rollback()
                 return exc.code
@@ -267,8 +280,11 @@ def test_concurrent_child_creation_and_project_deletion_never_leave_an_orphan(pr
     with sessions() as db:
         project_exists = db.get(Project, project_id) is not None
         child_count = db.query(Conversation).filter(Conversation.project_id == project_id).count()
-        assert (project_exists, child_count) in {(False, 0), (True, 1)}
-        if project_exists:
-            assert (child, deletion) == ("created", "project_not_empty")
+        assert project_exists
+        assert deletion == "archived"
+        assert db.get(Project, project_id).archived_at is not None
+        if child == "created":
+            assert child_count == 1
         else:
-            assert (child, deletion) == ("project_removed", "deleted")
+            assert child == "project_archived"
+            assert child_count == 0

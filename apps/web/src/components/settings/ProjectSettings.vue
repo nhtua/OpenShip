@@ -2,20 +2,29 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Button, Input, Label } from '@/components/ui'
+import { useChatStore } from '@/stores/chat'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
+import { projectsApi } from '@/services/api'
 import type { ConnectorKind, ConnectorUsage } from '@/types'
 
 const props = defineProps<{ projectId: string }>()
 const router = useRouter()
 const projects = useProjectsStore()
+const chat = useChatStore()
 const connectors = useConnectorsStore()
-const project = computed(() => projects.projects.find((item) => item.id === props.projectId) ?? null)
+const activeProject = computed(() => projects.projects.find((item) => item.id === props.projectId) ?? null)
+const project = computed(() => activeProject.value
+  ?? projects.archivedProjects.find((item) => item.id === props.projectId)
+  ?? null)
+const isArchivedProject = computed(() => Boolean(project.value?.archived_at))
 const name = ref('')
 const busy = ref(false)
-const deleting = ref(false)
-const busyDefaults = ref(new Set<ConnectorKind>())
+const archiving = ref(false)
+const busyDefault = ref(false)
 const pageError = ref<string | null>(null)
+const restoreBusyId = ref<string | null>(null)
+const lifecycleErrors = ref<Record<string, string>>({})
 let scopeGeneration = 0
 
 watch(project, (selected) => {
@@ -26,9 +35,27 @@ async function loadProject(): Promise<void> {
   const generation = ++scopeGeneration
   pageError.value = null
   if (!projects.projects.length) await projects.initialize()
+  if (generation !== scopeGeneration) return
+  await projects.loadArchivedProjects()
+  if (generation !== scopeGeneration) return
+  if (!project.value) {
+    try {
+      const response = await projectsApi.get(props.projectId)
+      if (generation !== scopeGeneration) return
+      if (response.data.archived_at) {
+        projects.archivedProjects = [response.data, ...projects.archivedProjects.filter((item) => item.id !== props.projectId)]
+      } else if (!projects.projects.some((item) => item.id === props.projectId)) {
+        projects.projects = [...projects.projects, response.data]
+      }
+    } catch {
+      pageError.value = 'This project is not available to your account.'
+      return
+    }
+  }
   if (generation !== scopeGeneration || !project.value) return
-  projects.selectProject(props.projectId)
-  await connectors.loadProjectContext(props.projectId)
+  if (!isArchivedProject.value && projects.selectProject(props.projectId)) {
+    await connectors.loadProjectContext(props.projectId)
+  }
 }
 
 watch(() => props.projectId, () => {
@@ -40,7 +67,7 @@ onMounted(() => {
 })
 
 async function saveName(): Promise<void> {
-  if (!project.value || busy.value) return
+  if (!project.value || isArchivedProject.value || busy.value) return
   busy.value = true
   pageError.value = null
   try {
@@ -52,13 +79,14 @@ async function saveName(): Promise<void> {
   }
 }
 
-async function deleteCurrentProject(): Promise<void> {
-  if (!project.value || deleting.value || projects.projects.length <= 1) return
-  if (!window.confirm(`Delete ${project.value.name}? Projects with conversations or retained data cannot be deleted.`)) return
-  deleting.value = true
+async function archiveCurrentProject(): Promise<void> {
+  if (!activeProject.value || archiving.value || projects.projects.length <= 1) return
+  if (!window.confirm(`Archive ${activeProject.value.name}? You can restore it later.`)) return
+  archiving.value = true
   pageError.value = null
   try {
-    await projects.deleteProject(props.projectId)
+    await projects.archiveProject(props.projectId)
+    await chat.getConversations()
     const nextProjectId = projects.currentProjectId
     if (nextProjectId) {
       await connectors.loadProjectContext(nextProjectId)
@@ -68,34 +96,76 @@ async function deleteCurrentProject(): Promise<void> {
       await router.replace({ name: 'global-settings' })
     }
   } catch {
-    pageError.value = projects.error ?? 'The project could not be deleted. It may contain retained data.'
+    pageError.value = projects.error ?? 'The project could not be archived. Reload and try again.'
   } finally {
-    deleting.value = false
+    archiving.value = false
   }
 }
 
-function globalChoices(kind: ConnectorKind): ConnectorUsage[] {
+async function restoreProject(projectId: string): Promise<void> {
+  if (restoreBusyId.value) return
+  restoreBusyId.value = projectId
+  delete lifecycleErrors.value[projectId]
+  try {
+    await projects.restoreProject(projectId)
+    if (
+      props.projectId === projectId &&
+      router.currentRoute.value.name === 'project-settings' &&
+      projects.currentProjectId !== projectId
+    ) {
+      if (projects.currentProjectId) {
+        await router.replace({ name: 'project-settings', params: { projectId: projects.currentProjectId } })
+      } else {
+        await router.replace({ name: 'global-settings' })
+      }
+    }
+  } catch {
+    lifecycleErrors.value[projectId] = projects.error ?? 'The project could not be restored. Reload and try again.'
+  } finally {
+    restoreBusyId.value = null
+  }
+}
+
+function globalChoices(): ConnectorUsage[] {
   return connectors.connectors.filter((connector) =>
-    connector.kind === kind &&
+    (connector.kind === 'brave' || connector.kind === 'tavily') &&
     connector.visibility === 'global' &&
     connector.status === 'configured',
   )
 }
 
-function currentDefaultConnector(kind: ConnectorKind): ConnectorUsage | undefined {
-  const id = connectors.defaults[kind]?.connector_id
+function currentDefaultId(): string | null {
+  return connectors.defaults.brave?.connector_id ?? connectors.defaults.tavily?.connector_id ?? null
+}
+
+function currentDefaultConnector(): ConnectorUsage | undefined {
+  const id = currentDefaultId()
   return id ? connectors.connectors.find((connector) => connector.id === id) : undefined
 }
 
-function defaultUnavailable(kind: ConnectorKind): boolean {
-  const id = connectors.defaults[kind]?.connector_id
-  return !globalChoices(kind).length && !id
+function currentDefaultKind(): ConnectorKind | null {
+  const connector = currentDefaultConnector()
+  if (connector?.kind === 'brave' || connector?.kind === 'tavily') return connector.kind
+  if (connectors.defaults.brave?.connector_id) return 'brave'
+  if (connectors.defaults.tavily?.connector_id) return 'tavily'
+  return null
 }
 
-async function updateDefault(kind: ConnectorKind, event: Event): Promise<void> {
-  if (!project.value || busyDefaults.value.has(kind)) return
+function defaultUnavailable(): boolean {
+  return !globalChoices().length && !currentDefaultId()
+}
+
+async function updateDefault(event: Event): Promise<void> {
+  if (!project.value || isArchivedProject.value || busyDefault.value) return
   const connectorId = (event.target as HTMLSelectElement).value || null
-  busyDefaults.value = new Set(busyDefaults.value).add(kind)
+  const selected = connectorId
+    ? connectors.connectors.find((connector) => connector.id === connectorId)
+    : undefined
+  const kind = selected?.kind === 'brave' || selected?.kind === 'tavily'
+    ? selected.kind
+    : currentDefaultKind()
+  if (!kind) return
+  busyDefault.value = true
   pageError.value = null
   try {
     await connectors.setDefault(props.projectId, kind, connectorId)
@@ -103,21 +173,22 @@ async function updateDefault(kind: ConnectorKind, event: Event): Promise<void> {
     pageError.value = 'The project search default could not be updated. Reload and try again.'
     await connectors.loadProjectContext(props.projectId)
   } finally {
-    const next = new Set(busyDefaults.value)
-    next.delete(kind)
-    busyDefaults.value = next
+    busyDefault.value = false
   }
 }
 
-const defaultKinds: ConnectorKind[] = ['brave', 'tavily']
-const displayName = (kind: ConnectorKind) => kind === 'brave' ? 'Brave Search' : 'Tavily Search'
+function displayName(kind: ConnectorUsage['kind']): string {
+  return kind === 'brave' ? 'Brave Search' : kind === 'tavily' ? 'Tavily Search' : 'AWS'
+}
 </script>
 
 <template>
   <section v-if="project" class="grid gap-6" aria-labelledby="project-settings-heading">
     <header class="grid gap-1">
       <h1 id="project-settings-heading" class="text-2xl font-semibold">Project Settings</h1>
-      <p class="text-sm text-muted-foreground">Manage {{ project.name }} and its search defaults.</p>
+      <p class="text-sm text-muted-foreground">
+        {{ isArchivedProject ? `${project.name} is archived. Its conversations and resources are retained.` : `Manage ${project.name} and its search default.` }}
+      </p>
     </header>
 
     <p v-if="pageError || projects.error || connectors.error" role="alert" class="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
@@ -132,36 +203,39 @@ const displayName = (kind: ConnectorKind) => kind === 'brave' ? 'Brave Search' :
       <form class="grid max-w-xl gap-3" @submit.prevent="saveName">
         <div class="grid gap-1.5">
           <Label for="project-name">Project name</Label>
-          <Input id="project-name" v-model="name" aria-label="Project name" maxlength="255" :disabled="busy" />
+          <Input id="project-name" v-model="name" aria-label="Project name" maxlength="255" :disabled="busy || isArchivedProject" />
         </div>
         <div class="flex flex-wrap gap-2">
-          <Button type="submit" :disabled="busy || !name.trim() || name.trim() === project.name">
+          <Button type="submit" :disabled="busy || isArchivedProject || !name.trim() || name.trim() === project.name">
             {{ busy ? 'Saving…' : 'Save name' }}
           </Button>
           <Button
+            v-if="!isArchivedProject"
             type="button"
-            variant="destructive"
-            aria-label="Delete project"
-            :disabled="deleting || projects.projects.length <= 1"
-            @click="deleteCurrentProject"
+            variant="outline"
+            class="border-destructive bg-background text-destructive hover:bg-destructive/10 hover:text-destructive"
+            aria-label="Archive project"
+            :disabled="archiving || projects.projects.length <= 1"
+            @click="archiveCurrentProject"
           >
-            {{ deleting ? 'Deleting…' : 'Delete project' }}
+            {{ archiving ? 'Archiving…' : 'Archive project' }}
+          </Button>
+          <Button v-else type="button" :aria-label="`Restore project ${project.name}`" :disabled="restoreBusyId === project.id" @click="restoreProject(project.id)">
+            {{ restoreBusyId === project.id ? 'Restoring…' : 'Restore project' }}
           </Button>
         </div>
-        <p v-if="projects.projects.length <= 1" class="text-xs text-muted-foreground">
+        <p v-if="!isArchivedProject && projects.projects.length <= 1" class="text-xs text-muted-foreground">
           Keep at least one project in your account.
         </p>
-        <p class="text-xs text-muted-foreground">
-          Projects with conversations, workspace files, connectors, or retained history cannot be deleted.
-        </p>
+        <p v-if="lifecycleErrors[project.id]" role="alert" class="text-xs text-destructive">{{ lifecycleErrors[project.id] }}</p>
       </form>
     </section>
 
-    <section class="grid gap-4 rounded-xl border border-border bg-card p-4 md:p-6" aria-labelledby="search-defaults-heading">
+    <section v-if="!isArchivedProject" class="grid gap-4 rounded-xl border border-border bg-card p-4 md:p-6" aria-labelledby="search-defaults-heading">
       <div>
-        <h2 id="search-defaults-heading" class="text-lg font-semibold">Search defaults</h2>
+        <h2 id="search-defaults-heading" class="text-lg font-semibold">Search default</h2>
         <p class="text-sm text-muted-foreground">
-          Choose which shared connector this project uses for each search service. These choices are independent per project.
+          Choose one shared search connector for this project. Projects can use different defaults while sharing the same connector.
         </p>
         <RouterLink
           to="/connectors"
@@ -171,59 +245,60 @@ const displayName = (kind: ConnectorKind) => kind === 'brave' ? 'Brave Search' :
         </RouterLink>
       </div>
       <div v-if="connectors.loading" role="status" class="text-sm text-muted-foreground">Loading project search settings…</div>
-      <div v-for="kind in defaultKinds" :key="kind" class="grid max-w-xl gap-2">
-        <Label :for="`${kind}-project-default`">{{ displayName(kind) }} default</Label>
+      <div v-else class="grid max-w-xl gap-2">
+        <Label for="project-search-default">Search default</Label>
         <select
-          :id="`${kind}-project-default`"
-          :aria-label="`${displayName(kind)} default`"
-          :value="connectors.defaults[kind]?.connector_id ?? ''"
-          :disabled="connectors.loading || busyDefaults.has(kind) || defaultUnavailable(kind)"
+          id="project-search-default"
+          aria-label="Search default"
+          :value="currentDefaultId() ?? ''"
+          :disabled="busyDefault || defaultUnavailable()"
           class="h-9 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          @change="updateDefault(kind, $event)"
+          @change="updateDefault($event)"
         >
-          <option value="">No default — choose for each search</option>
-          <option
-            v-if="currentDefaultConnector(kind) && currentDefaultConnector(kind)?.visibility === 'project'"
-            :value="connectors.defaults[kind]?.connector_id ?? ''"
-            disabled
-          >
-            {{ currentDefaultConnector(kind)?.name }} · legacy Project connector
+          <option value="">No default — choose when needed</option>
+          <option v-if="currentDefaultConnector() && !globalChoices().some((item) => item.id === currentDefaultId())" :value="currentDefaultId() ?? ''" disabled>
+            {{ currentDefaultConnector()?.name }} · {{ currentDefaultConnector()?.visibility === 'project' ? 'legacy Project connector' : `${currentDefaultConnector()?.status} Global connector` }}
           </option>
-          <option
-            v-else-if="currentDefaultConnector(kind) && currentDefaultConnector(kind)?.status !== 'configured'"
-            :value="connectors.defaults[kind]?.connector_id ?? ''"
-            disabled
-          >
-            {{ currentDefaultConnector(kind)?.name }} · {{ currentDefaultConnector(kind)?.status }} Global connector
-          </option>
-          <option
-            v-else-if="connectors.defaults[kind]?.connector_id && !currentDefaultConnector(kind)"
-            :value="connectors.defaults[kind]?.connector_id ?? ''"
-            disabled
-          >
+          <option v-else-if="currentDefaultId() && !currentDefaultConnector()" :value="currentDefaultId() ?? ''" disabled>
             Current default unavailable
           </option>
           <option
-            v-for="connector in globalChoices(kind)"
+            v-for="connector in globalChoices()"
             :key="connector.id"
             :value="connector.id"
           >
-            {{ connector.name }} · Global
+            {{ displayName(connector.kind) }} · {{ connector.name }} · Global
           </option>
         </select>
-        <p v-if="currentDefaultConnector(kind)?.visibility === 'project'" class="text-xs text-amber-700 dark:text-amber-300">
+        <p v-if="currentDefaultConnector()?.visibility === 'project'" class="text-xs text-amber-700 dark:text-amber-300">
           Choose a Global connector to replace this legacy Project default. Existing project access remains unchanged until you select one.
         </p>
-        <p v-else-if="currentDefaultConnector(kind)?.status === 'disabled'" class="text-xs text-muted-foreground">
+        <p v-else-if="currentDefaultConnector() && currentDefaultConnector()?.status !== 'configured'" class="text-xs text-muted-foreground">
           The current Global connector is disabled. Select another connector or clear this default.
         </p>
-        <p v-else-if="defaultUnavailable(kind)" class="text-xs text-muted-foreground">
-          No global {{ displayName(kind) }} connector is available. Ask the installation operator to configure one.
+        <p v-else-if="defaultUnavailable()" class="text-xs text-muted-foreground">
+          No configured global search connector is available. Ask the installation operator to configure one.
         </p>
         <p v-else class="text-xs text-muted-foreground">
-          If this project has no default, the search asks you to choose when more than one connector is eligible.
+          Automatic mode starts with this connector. If it returns an error, the model can try another available search connector. Manual connector selections remain available. With no default, a connector is chosen automatically when only one is eligible; otherwise you can choose manually.
         </p>
       </div>
+    </section>
+
+    <section v-if="projects.archivedProjects.length" class="grid gap-3 rounded-xl border border-border bg-card p-4 md:p-6" aria-labelledby="archived-projects-heading">
+      <div>
+        <h2 id="archived-projects-heading" class="text-lg font-semibold">Archived Projects</h2>
+        <p class="text-sm text-muted-foreground">Restore a project to continue working with its conversations and resources.</p>
+      </div>
+      <ul class="grid gap-2">
+        <li v-for="archived in projects.archivedProjects" :key="archived.id" class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-3">
+          <RouterLink :to="{ name: 'project-settings', params: { projectId: archived.id } }" class="font-medium hover:underline">{{ archived.name }}</RouterLink>
+          <Button type="button" variant="outline" :aria-label="`Restore ${archived.name}`" :disabled="restoreBusyId === archived.id" @click="restoreProject(archived.id)">
+            {{ restoreBusyId === archived.id ? 'Restoring…' : 'Restore' }}
+          </Button>
+          <p v-if="lifecycleErrors[archived.id]" role="alert" class="w-full text-sm text-destructive">{{ lifecycleErrors[archived.id] }}</p>
+        </li>
+      </ul>
     </section>
   </section>
 

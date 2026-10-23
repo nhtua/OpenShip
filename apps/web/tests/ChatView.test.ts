@@ -5,7 +5,7 @@ import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useConnectorsStore } from '@/stores/connectors'
-import api, { connectorsApi, projectsApi, runsApi, workspaceApi } from '@/services/api'
+import api, { connectorsApi, conversationsApi, projectsApi, runsApi, workspaceApi } from '@/services/api'
 import type { Conversation, RunCard as RunCardType, ToolOperationSummary } from '@/types'
 import { useProjectsStore } from '@/stores/projects'
 import {
@@ -19,8 +19,9 @@ vi.mock('@/services/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
   authApi: { login: vi.fn(), register: vi.fn(), logout: vi.fn() },
   projectsApi: {
-    list: vi.fn(), create: vi.fn(), rename: vi.fn(), delete: vi.fn(),
+    list: vi.fn(), create: vi.fn(), rename: vi.fn(), archive: vi.fn(), restore: vi.fn(),
   },
+  conversationsApi: { list: vi.fn(), get: vi.fn(), archive: vi.fn(), restore: vi.fn() },
   connectorsApi: {
     listProjectConnectors: vi.fn(),
     getProjectDefault: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock('@/services/api', () => ({
 
 const mockApi = vi.mocked(api)
 const mockProjectsApi = vi.mocked(projectsApi)
+const mockConversationsApi = vi.mocked(conversationsApi)
 const mockConnectorsApi = vi.mocked(connectorsApi)
 const mockRunsApi = vi.mocked(runsApi)
 const mockWorkspaceApi = vi.mocked(workspaceApi)
@@ -113,6 +115,22 @@ describe('ChatView', () => {
     mockApi.get.mockImplementation(
       (async (url: string) => healthyChatApiGet(url)) as never,
     )
+    mockConversationsApi.list.mockImplementation(async (state = 'active') => ({
+      data: fixtureConversations
+        .filter((conversation) => state === 'active' || conversation.archived_at)
+        .map((conversation) => ({ ...conversation })),
+    } as never))
+    mockConversationsApi.get.mockImplementation(async (id: string) => {
+      const conversation = fixtureConversations.find((item) => item.id === id)
+      if (!conversation) throw apiError('Conversation not found')
+      return { data: { ...conversation } } as never
+    })
+    mockConversationsApi.archive.mockImplementation(async (id: string) => ({
+      data: { ...(fixtureConversations.find((item) => item.id === id) ?? fixtureConversations[0]), archived_at: '2026-10-22T00:00:00Z' },
+    } as never))
+    mockConversationsApi.restore.mockImplementation(async (id: string) => ({
+      data: { ...(fixtureConversations.find((item) => item.id === id) ?? fixtureConversations[0]), archived_at: null },
+    } as never))
     mockApi.post.mockResolvedValue({ data: null })
     mockRunsApi.getSnapshot.mockReset().mockImplementation(async (id: string) => ({
       data: { conversation_id: id, sequence: -1, events: [], runs: [] },
@@ -174,17 +192,12 @@ describe('ChatView', () => {
         { id: 'project-2', name: 'Staging' },
       ],
     } as never)
-    mockApi.get.mockImplementation((async (url: string) => {
-      if (url === '/workspace/conversations') {
-        return {
-          data: [
-            { ...fixtureConversations[0], project_id: 'project-1' },
-            { ...fixtureConversations[1], project_id: 'project-2' },
-          ],
-        }
-      }
-      return healthyChatApiGet(url)
-    }) as never)
+    mockConversationsApi.list.mockResolvedValue({
+      data: [
+        { ...fixtureConversations[0], project_id: 'project-1' },
+        { ...fixtureConversations[1], project_id: 'project-2' },
+      ],
+    } as never)
     mockApi.post.mockResolvedValue({
       data: {
         id: 'c3', project_id: 'project-2', title: 'New Conversation',
@@ -205,6 +218,7 @@ describe('ChatView', () => {
       title: 'New Conversation',
       project_id: 'project-2',
     }), { timeout: wait })
+    await vi.waitFor(() => expect(useChatStore().currentConversation?.id).toBe('c3'), { timeout: wait })
   })
 
   it('selects the owning project when opened from a conversation deep link', async () => {
@@ -214,17 +228,15 @@ describe('ChatView', () => {
         { id: 'project-2', name: 'Staging' },
       ],
     } as never)
-    mockApi.get.mockImplementation((async (url: string) => {
-      if (url === '/workspace/conversations') {
-        return {
-          data: [
-            { ...fixtureConversations[0], project_id: 'project-1' },
-            { ...fixtureConversations[1], project_id: 'project-2' },
-          ],
-        }
-      }
-      return healthyChatApiGet(url)
-    }) as never)
+    mockConversationsApi.list.mockResolvedValue({
+      data: [
+        { ...fixtureConversations[0], project_id: 'project-1' },
+        { ...fixtureConversations[1], project_id: 'project-2' },
+      ],
+    } as never)
+    mockConversationsApi.get.mockImplementation(async (id: string) => ({
+      data: { ...fixtureConversations.find((item) => item.id === id)!, project_id: id === 'c2' ? 'project-2' : 'project-1' },
+    } as never))
     mockRunsApi.getSnapshot.mockResolvedValue({
       data: { conversation_id: 'c2', project_id: 'project-2', sequence: -1, events: [], runs: [] },
     } as never)
@@ -236,6 +248,58 @@ describe('ChatView', () => {
     expect(mockConnectorsApi.listProjectConnectors).toHaveBeenLastCalledWith('project-2')
   })
 
+  it('keeps archived conversation history readable, disables work and restores without submitting', async () => {
+    const archived = { ...fixtureConversations[0], project_id: 'project-1', archived_at: '2026-10-22T12:00:00Z' }
+    mockConversationsApi.list.mockResolvedValue({ data: [] } as never)
+    mockConversationsApi.get.mockResolvedValue({ data: archived } as never)
+    mockConversationsApi.restore.mockResolvedValue({ data: { ...archived, archived_at: null } } as never)
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    const chat = useChatStore()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Staging deployed successfully.'), { timeout: wait })
+
+    expect(chat.currentConversationReadOnly).toBe(true)
+    expect(wrapper.get('[data-testid="archived-conversation-banner"]').text()).toContain('This conversation is archived')
+    expect((wrapper.get('textarea#message').element as HTMLTextAreaElement).disabled).toBe(true)
+    const retainedMessages = [...chat.messages]
+
+    await wrapper.get('[data-testid="archived-conversation-banner"] button').trigger('click')
+    await vi.waitFor(() => expect(chat.currentConversationReadOnly).toBe(false), { timeout: wait })
+
+    expect((wrapper.get('textarea#message').element as HTMLTextAreaElement).disabled).toBe(false)
+    expect(chat.messages).toEqual(retainedMessages)
+    expect(mockRunsApi.submitTurn).not.toHaveBeenCalled()
+    expect(mockApi.post).not.toHaveBeenCalled()
+  })
+
+  it('does not switch to or load tools from an archived parent project on a deep link', async () => {
+    mockProjectsApi.list.mockResolvedValue({
+      data: [{ id: 'project-1', name: 'Production', archived_at: null }],
+    } as never)
+    mockConversationsApi.list.mockResolvedValue({ data: [] } as never)
+    mockConversationsApi.get.mockResolvedValue({
+      data: {
+        ...fixtureConversations[1],
+        project_id: 'project-2',
+        project_name: 'Staging',
+        project_archived_at: '2026-10-22T11:00:00Z',
+      },
+    } as never)
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: { conversation_id: 'c2', project_id: 'project-2', sequence: -1, events: [], runs: [] },
+    } as never)
+
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c2')
+    const chat = useChatStore()
+    const projects = useProjectsStore()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Scale web to 3 replicas'), { timeout: wait })
+
+    expect(chat.currentConversationReadOnly).toBe(true)
+    expect(chat.currentConversation?.project_archived_at).toBeTruthy()
+    expect(projects.currentProjectId).toBe('project-1')
+    expect(mockConnectorsApi.listProjectConnectors).not.toHaveBeenCalledWith('project-2')
+    expect((wrapper.get('textarea#message').element as HTMLTextAreaElement).disabled).toBe(true)
+  })
+
   it('switches projects without cancelling a run in the previous project', async () => {
     mockProjectsApi.list.mockResolvedValue({
       data: [
@@ -243,17 +307,12 @@ describe('ChatView', () => {
         { id: 'project-2', name: 'Staging' },
       ],
     } as never)
-    mockApi.get.mockImplementation((async (url: string) => {
-      if (url === '/workspace/conversations') {
-        return {
-          data: [
-            { ...fixtureConversations[0], project_id: 'project-1' },
-            { ...fixtureConversations[1], project_id: 'project-2' },
-          ],
-        }
-      }
-      return healthyChatApiGet(url)
-    }) as never)
+    mockConversationsApi.list.mockResolvedValue({
+      data: [
+        { ...fixtureConversations[0], project_id: 'project-1' },
+        { ...fixtureConversations[1], project_id: 'project-2' },
+      ],
+    } as never)
     const { wrapper, router } = await mountWithRouter(ChatView, '/conversation/c1')
     const chat = useChatStore()
     await vi.waitFor(() => expect(chat.currentConversation?.id).toBe('c1'), { timeout: wait })
@@ -297,12 +356,9 @@ describe('ChatView', () => {
     mockApi.post.mockResolvedValue({ data: {
       id: 'unexpected', title: 'New Conversation', created_at: '', updated_at: '',
     } })
-    mockApi.get.mockImplementation((async (url: string) => {
-      if (url === '/workspace/conversations') return { data: [] }
-      return healthyChatApiGet(url)
-    }) as never)
+    mockConversationsApi.list.mockResolvedValue({ data: [] } as never)
     const { wrapper, router } = await mountWithRouter(ChatView, '/')
-    await vi.waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/workspace/conversations'))
+    await vi.waitFor(() => expect(mockConversationsApi.list).toHaveBeenCalledWith('active'))
     await nextTick()
 
     expect(router.currentRoute.value.path).toBe('/')
@@ -497,6 +553,47 @@ describe('ChatView', () => {
     expect(wrapper.text()).not.toContain('/home/')
   })
 
+  it('refreshes conversation files when a completed search publishes an artifact', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    await vi.waitFor(() => expect(mockWorkspaceApi.get).toHaveBeenCalledTimes(1), { timeout: wait })
+    await wrapper.get('[data-testid="conversation-files-trigger"]').trigger('click')
+
+    const savedFile: ToolOperationSummary['artifacts'][number] = {
+      id: 'search-artifact-1',
+      sha256: 'a'.repeat(64),
+      size_bytes: 128,
+      media_type: 'application/json',
+      conversation_id: 'c1',
+      project_id: 'project-1',
+      name: 'search-results.json',
+      source: 'brave_web_search',
+      status: 'ready',
+      created_at: '2026-10-20T12:00:00Z',
+      mutability: 'immutable',
+    }
+    mockWorkspaceApi.get.mockResolvedValueOnce({
+      data: {
+        workspace: {
+          id: 'workspace-c1', conversation_id: 'c1', project_id: 'project-1',
+          schema_version: 1, relative_root: 'projects/p/conversations/c1',
+          storage_id: 'storage-1', status: 'available', created_at: '',
+          quota: { committed_bytes: 128, committed_count: 1, reserved_bytes: 0, reserved_count: 0, max_bytes: 1000, max_count: 10 },
+        },
+        files: { items: [savedFile], next_cursor: null },
+      },
+    } as never)
+    const operation = {
+      ...searchOperation('search-with-artifact', 'run-search', '2026-10-20T12:00:00Z'),
+      artifacts: [savedFile],
+    }
+    useChatStore().toolOperationsByConversation.set('c1', new Map([[operation.id, operation]]))
+
+    await vi.waitFor(() => expect(mockWorkspaceApi.get).toHaveBeenCalledTimes(2), { timeout: wait })
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-artifact-id="search-artifact-1"]')).toBeTruthy()
+    }, { timeout: wait })
+  })
+
   it('shows the persisted operation failure even when the assistant claims the search succeeded', async () => {
     const { wrapper } = await mountWithRouter(ChatView, '/')
     const chat = useChatStore()
@@ -567,13 +664,13 @@ describe('ChatView', () => {
 
   it('shows an actionable error with Retry when history loading fails', async () => {
     let failHistory = true
-    mockApi.get.mockImplementation((async (url: string) => {
-      if (url === '/workspace/conversations' && failHistory) {
+    mockConversationsApi.list.mockImplementation(async () => {
+      if (failHistory) {
         failHistory = false
         throw apiError('Server exploded')
       }
-      return healthyChatApiGet(url)
-    }) as never)
+      return { data: fixtureConversations } as never
+    })
     const { wrapper } = await mountWithRouter(ChatView, '/')
 
     await vi.waitFor(
@@ -594,7 +691,7 @@ describe('ChatView', () => {
       { timeout: wait },
     )
     // Retry hit the history endpoint again, not a message resend.
-    expect(mockApi.get).toHaveBeenCalledWith('/workspace/conversations')
+    expect(mockConversationsApi.list).toHaveBeenCalledWith('active')
     expect(mockApi.post).not.toHaveBeenCalled()
   })
 
@@ -723,6 +820,7 @@ describe('ChatView', () => {
       created_at: '',
       updated_at: '',
     } as Conversation
+    chat.conversationMetadataReady = true
     chat.runCards = new Map([
       [
         'c1',
@@ -810,6 +908,7 @@ describe('ChatView', () => {
       created_at: '',
       updated_at: '',
     } as Conversation
+    chat.conversationMetadataReady = true
     chat.runCards = new Map([
       ['c1', {
         run_id: 'tool-run-1',
@@ -839,6 +938,8 @@ describe('ChatView', () => {
     await nextTick()
     const retryAction = vi.spyOn(chat, 'retryToolSubmission').mockResolvedValue()
     const retry = wrapper.get('[aria-label="Retry submission"]')
+    expect(chat.currentConversationReadOnly).toBe(false)
+    expect(retry.attributes('disabled')).toBeUndefined()
     expect(retry.element.closest('[data-testid="run-card"]')).toBeTruthy()
     await retry.trigger('click')
     expect(retryAction).toHaveBeenCalledWith('retry-search-1')

@@ -94,8 +94,10 @@ test('the operator sees global instance controls only after setup context allows
   await expect(page.getByRole('heading', { name: 'Global search connectors' })).toBeVisible()
   await page.getByRole('button', { name: 'Configure Shared Brave' }).click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog.getByRole('button', { name: 'Revoke globally' })).toBeVisible()
-  await expect(dialog.getByRole('button', { name: 'Disable' })).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Revoke' })).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Check status' })).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Add another Brave Search' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add another Brave Search' })).toHaveCount(1)
   await expect(dialog.getByText('Shared by eligible projects.')).toBeVisible()
 })
 

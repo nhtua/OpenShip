@@ -121,6 +121,51 @@ def test_explicit_selection_overrides_default_and_returns_immutable_revision_ref
         assert resolved.credential_version_id is not None
 
 
+def test_project_default_is_shared_across_search_services_and_can_be_switched():
+    with SessionLocal() as db:
+        owner, project = _scope(db)
+        brave = _connector(
+            db, owner=owner, project=None, visibility="global", kind="brave"
+        )
+        tavily = _connector(
+            db, owner=owner, project=None, visibility="global", kind="tavily"
+        )
+
+        set_default(
+            db,
+            project_id=project.id,
+            actor=owner,
+            service="brave",
+            expected_revision=0,
+            connector_id=brave.id,
+        )
+        set_default(
+            db,
+            project_id=project.id,
+            actor=owner,
+            service="tavily",
+            expected_revision=1,
+            connector_id=tavily.id,
+        )
+
+        defaults = (
+            db.query(ProjectConnectorDefault)
+            .filter(ProjectConnectorDefault.project_id == project.id)
+            .all()
+        )
+        assert len(defaults) == 1
+        assert defaults[0].service == "tavily"
+        assert defaults[0].connector_id == tavily.id
+        assert defaults[0].settings_revision == 2
+        assert resolve_connector(
+            db, project_id=project.id, service="tavily"
+        ).connector_id == tavily.id
+        # The non-default provider remains eligible as an automatic fallback.
+        assert resolve_connector(
+            db, project_id=project.id, service="brave"
+        ).connector_id == brave.id
+
+
 def test_historical_project_default_remains_executable_but_cannot_be_reassigned():
     with SessionLocal() as db:
         owner, project = _scope(db)

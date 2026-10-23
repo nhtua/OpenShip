@@ -8,7 +8,8 @@ vi.mock('@/services/api', () => ({
     list: vi.fn(),
     create: vi.fn(),
     rename: vi.fn(),
-    delete: vi.fn(),
+    archive: vi.fn(),
+    restore: vi.fn(),
   },
 }))
 
@@ -61,17 +62,89 @@ describe('projects store', () => {
     expect(store.currentProjectId).toBe('project-b')
   })
 
-  it('deletes the selected project and falls back to another owned project', async () => {
-    api.delete.mockResolvedValue({ data: undefined } as never)
+  it('archives the selected project and falls back to another active project', async () => {
+    api.archive.mockResolvedValue({ data: { id: 'project-b', name: 'Staging', archived_at: '2026-10-22T00:00:00Z' } } as never)
     const store = useProjectsStore()
     await store.initialize()
     store.selectProject('project-b')
 
-    await store.deleteProject('project-b')
+    await store.archiveProject('project-b')
 
-    expect(api.delete).toHaveBeenCalledWith('project-b')
+    expect(api.archive).toHaveBeenCalledWith('project-b')
     expect(store.projects).toEqual([{ id: 'project-a', name: 'Production' }])
+    expect(store.archivedProjects).toEqual([{ id: 'project-b', name: 'Staging', archived_at: '2026-10-22T00:00:00Z' }])
     expect(store.currentProjectId).toBe('project-a')
+  })
+
+  it('keeps selection and lists unchanged when archive fails', async () => {
+    api.archive.mockRejectedValue(new Error('Archive failed'))
+    const store = useProjectsStore()
+    await store.initialize()
+    store.selectProject('project-b')
+
+    await expect(store.archiveProject('project-b')).rejects.toThrow('Archive failed')
+
+    expect(store.projects.map(({ id }) => id)).toEqual(['project-a', 'project-b'])
+    expect(store.archivedProjects).toEqual([])
+    expect(store.currentProjectId).toBe('project-b')
+  })
+
+  it('does not let an active list started before archive reinsert the project', async () => {
+    let releaseList: ((value: { data: { id: string; name: string }[] }) => void) | undefined
+    api.list.mockImplementationOnce((async () => new Promise((resolve) => { releaseList = resolve })) as never)
+    const store = useProjectsStore()
+    const load = store.initialize()
+    await vi.waitFor(() => expect(releaseList).toBeTypeOf('function'))
+    store.projects = [{ id: 'project-a', name: 'Production' }, { id: 'project-b', name: 'Staging' }]
+    api.archive.mockResolvedValue({ data: { id: 'project-b', name: 'Staging', archived_at: '2026-10-22T00:00:00Z' } } as never)
+
+    await store.archiveProject('project-b')
+    releaseList?.({ data: [{ id: 'project-a', name: 'Production' }, { id: 'project-b', name: 'Staging' }] })
+    await load
+
+    expect(store.projects.map(({ id }) => id)).toEqual(['project-a'])
+    expect(store.archivedProjects.map(({ id }) => id)).toEqual(['project-b'])
+  })
+
+  it('restores an archived project without selecting it', async () => {
+    api.list.mockImplementation(async (state?: string) => ({
+      data: state === 'archived' ? [{ id: 'project-b', name: 'Staging', archived_at: '2026-10-22T00:00:00Z' }] : [{ id: 'project-a', name: 'Production' }],
+    } as never))
+    api.restore.mockResolvedValue({ data: { id: 'project-b', name: 'Staging', archived_at: null } } as never)
+    const store = useProjectsStore()
+    await store.initialize()
+    await store.loadArchivedProjects()
+
+    await store.restoreProject('project-b')
+
+    expect(api.list).toHaveBeenNthCalledWith(2, 'archived')
+    expect(store.projects.map(({ id }) => id)).toEqual(['project-a', 'project-b'])
+    expect(store.archivedProjects).toEqual([])
+    expect(store.currentProjectId).toBe('project-a')
+  })
+
+  it('does not repopulate active or archived projects after logout', async () => {
+    let releaseActive: ((value: { data: { id: string; name: string }[] }) => void) | undefined
+    let releaseArchived: ((value: { data: { id: string; name: string; archived_at: string }[] }) => void) | undefined
+    api.list
+      .mockImplementationOnce((async () => new Promise((resolve) => { releaseActive = resolve })) as never)
+      .mockImplementationOnce((async () => new Promise((resolve) => { releaseArchived = resolve })) as never)
+    const store = useProjectsStore()
+    const activeLoad = store.initialize()
+    const archivedLoad = store.loadArchivedProjects()
+    await vi.waitFor(() => {
+      expect(releaseActive).toBeTypeOf('function')
+      expect(releaseArchived).toBeTypeOf('function')
+    })
+
+    store.clear()
+    releaseActive?.({ data: [{ id: 'project-a', name: 'Production' }] })
+    releaseArchived?.({ data: [{ id: 'project-b', name: 'Staging', archived_at: '2026-10-22T00:00:00Z' }] })
+    await Promise.all([activeLoad, archivedLoad])
+
+    expect(store.projects).toEqual([])
+    expect(store.archivedProjects).toEqual([])
+    expect(store.currentProjectId).toBeNull()
   })
 
   it('ignores project selection outside the owned project list', async () => {
@@ -89,6 +162,7 @@ describe('projects store', () => {
     store.clear()
 
     expect(store.projects).toEqual([])
+    expect(store.archivedProjects).toEqual([])
     expect(store.currentProjectId).toBeNull()
     expect(store.loading).toBe(false)
     expect(store.error).toBeNull()

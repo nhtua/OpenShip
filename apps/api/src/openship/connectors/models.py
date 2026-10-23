@@ -163,7 +163,7 @@ class ConnectorRevision(Base):
 
 
 class ProjectConnectorDefault(Base):
-    """One project/service default with optimistic configuration revisioning."""
+    """One project-wide search default with optimistic configuration revisioning."""
 
     __tablename__ = "project_connector_defaults"
 
@@ -187,7 +187,7 @@ class ProjectConnectorDefault(Base):
             ondelete="RESTRICT",
             name="fk_project_connector_defaults_revision",
         ),
-        UniqueConstraint("project_id", "service", name="uq_project_connector_defaults_service"),
+        UniqueConstraint("project_id", name="uq_project_connector_defaults_project"),
         CheckConstraint("service IN ('brave', 'tavily')", name="ck_project_connector_defaults_service"),
         CheckConstraint("connector_revision >= 1", name="ck_project_connector_defaults_connector_revision"),
         CheckConstraint("settings_revision >= 1", name="ck_project_connector_defaults_settings_revision"),

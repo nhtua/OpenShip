@@ -120,17 +120,19 @@ export const useConnectorsStore = defineStore('connectors', () => {
     if (loadedProjectId !== projectId) return
     const generation = projectLoadGeneration
     const current = defaults.value[kind]
-    const response = await connectorsApi.setProjectDefault(projectId, kind, {
+    await connectorsApi.setProjectDefault(projectId, kind, {
       expected_revision: current?.revision ?? 0,
       connector_id: connectorId,
     })
     if (generation !== projectLoadGeneration || loadedProjectId !== projectId) return
-    const [connectorResponse, capabilityResponse] = await Promise.all([
+    const [connectorResponse, braveDefault, tavilyDefault, capabilityResponse] = await Promise.all([
       connectorsApi.listProjectConnectors(projectId),
+      connectorsApi.getProjectDefault(projectId, 'brave'),
+      connectorsApi.getProjectDefault(projectId, 'tavily'),
       connectorsApi.getProjectCapabilities(projectId),
     ])
     if (generation !== projectLoadGeneration || loadedProjectId !== projectId) return
-    defaults.value = { ...defaults.value, [kind]: response.data }
+    defaults.value = { brave: braveDefault.data, tavily: tavilyDefault.data }
     connectors.value = connectorResponse.data
     capabilities.value = capabilityResponse.data
   }

@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test'
 
 const externalApp = process.env.OPENSHIP_FULL_STACK_URL
-const localWebURL = 'http://127.0.0.1:5174'
+const localWebURL = 'http://127.0.0.1:4173'
 
 export default defineConfig({
   testDir: './tests/full-stack',
@@ -22,7 +22,7 @@ export default defineConfig({
     ? {}
     : {
         webServer: {
-          command: 'pnpm dev --host 127.0.0.1 --port 5174 --strictPort',
+          command: 'E2E=1 pnpm dev --host 127.0.0.1 --port 4173 --strictPort',
           url: localWebURL,
           reuseExistingServer: false,
           timeout: 180_000,

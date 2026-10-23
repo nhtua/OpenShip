@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ConnectorUsage } from '@/types'
-import { connectorStatusPresentation, type ConnectorCatalogEntry } from '@/lib/connectorCatalog'
+import { connectorStatusDotClass, connectorStatusPresentation, type ConnectorCatalogEntry } from '@/lib/connectorCatalog'
 
 const props = defineProps<{
   entry: ConnectorCatalogEntry
@@ -14,14 +14,7 @@ const emit = defineEmits<{
 
 const presentation = computed(() => connectorStatusPresentation(props.connector))
 const title = computed(() => props.connector?.name ?? props.entry.name)
-const dotClass = computed(() => {
-  switch (presentation.value.status) {
-    case 'configured': return 'bg-emerald-500'
-    case 'not-configured':
-    case 'disabled': return 'bg-muted-foreground'
-    case 'needs-attention': return 'bg-destructive'
-  }
-})
+const dotClass = computed(() => connectorStatusDotClass(presentation.value.status))
 </script>
 
 <template>

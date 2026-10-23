@@ -11,19 +11,23 @@ const props = withDefaults(defineProps<{
   submitLabel: string
   requestScopeKey?: string
   canSubmit?: boolean
+  disabled?: boolean
   submit: (apiKey: string, requestId: string) => Promise<Record<string, unknown>>
   readStatus: (requestId: string) => Promise<ConnectorRequestStatus>
 }>(), {
   canSubmit: true,
+  disabled: false,
 })
 
 const emit = defineEmits<{
   complete: [result: Record<string, unknown>]
+  busyChange: [busy: boolean]
 }>()
 
 const apiKey = ref('')
 const requestId = ref<string | null>(null)
 const errorMessage = ref<string | null>(null)
+const submitting = ref(false)
 const state = ref<'idle' | 'checking' | 'processing' | 'uncertain' | 'not-accepted'>('idle')
 const statusMessage = computed(() => {
   if (state.value === 'processing' || state.value === 'checking') {
@@ -37,8 +41,14 @@ const statusMessage = computed(() => {
   }
   return null
 })
-const blocked = computed(() => ['checking', 'processing', 'uncertain'].includes(state.value))
+const blocked = computed(() => props.disabled || ['checking', 'processing', 'uncertain'].includes(state.value))
 const scopeKey = computed(() => props.requestScopeKey ?? `connector-form:${props.title}`)
+
+function setSubmitting(value: boolean): void {
+  if (submitting.value === value) return
+  submitting.value = value
+  emit('busyChange', value)
+}
 
 function isMissingOrExpired(err: unknown): boolean {
   const error = readConnectorError(err)
@@ -46,8 +56,10 @@ function isMissingOrExpired(err: unknown): boolean {
     error.status === 404 || error.status === 410
 }
 
-async function reconcileRequest(): Promise<void> {
+async function reconcileRequest(manageBusy = true): Promise<void> {
   if (!requestId.value) return
+  if (manageBusy && submitting.value) return
+  if (manageBusy) setSubmitting(true)
   errorMessage.value = null
   state.value = 'checking'
   try {
@@ -70,11 +82,13 @@ async function reconcileRequest(): Promise<void> {
       const safeError = readConnectorError(err)
       if (safeError.code === 'credential_store_unavailable') errorMessage.value = safeError.message
     }
+  } finally {
+    if (manageBusy) setSubmitting(false)
   }
 }
 
 async function handleCredentialSubmit(): Promise<void> {
-  if (!apiKey.value || blocked.value) return
+  if (!apiKey.value || blocked.value || submitting.value) return
   if (props.canSubmit === false) return
   const submittedKey = apiKey.value
   const submittedRequestId = generateRequestId()
@@ -84,6 +98,7 @@ async function handleCredentialSubmit(): Promise<void> {
   requestId.value = submittedRequestId
   pendingConnectorRequests.set(scopeKey.value, submittedRequestId)
   state.value = 'checking'
+  setSubmitting(true)
   try {
     const result = await props.submit(submittedKey, submittedRequestId)
     pendingConnectorRequests.delete(scopeKey.value)
@@ -101,7 +116,9 @@ async function handleCredentialSubmit(): Promise<void> {
       errorMessage.value = safeError.message
       return
     }
-    await reconcileRequest()
+    await reconcileRequest(false)
+  } finally {
+    setSubmitting(false)
   }
 }
 
@@ -127,7 +144,7 @@ onMounted(() => {
         @input="updateApiKey"
         type="password"
         autocomplete="new-password"
-        :disabled="blocked"
+        :disabled="blocked || submitting"
         data-testid="connector-api-key"
         class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
       />
@@ -136,7 +153,7 @@ onMounted(() => {
       {{ statusMessage }}
     </p>
     <div class="flex flex-wrap gap-2">
-      <Button type="submit" size="sm" :disabled="!apiKey || blocked || props.canSubmit === false">
+      <Button type="submit" size="sm" :disabled="!apiKey || blocked || submitting || props.canSubmit === false">
         {{ props.submitLabel }}
       </Button>
       <Button
@@ -145,10 +162,12 @@ onMounted(() => {
         size="sm"
         variant="outline"
         data-testid="check-connector-request"
+        :disabled="submitting"
         @click="reconcileRequest"
       >
         Check request status
       </Button>
+      <slot name="actions" :blocked="blocked || submitting" :submitting="submitting" />
     </div>
   </form>
 </template>

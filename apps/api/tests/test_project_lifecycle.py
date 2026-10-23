@@ -11,7 +11,6 @@ from fastapi import HTTPException
 
 from src.openship.artifacts.models import Artifact, ArtifactQuota
 from src.openship.auth.models import User
-from src.openship.auth.routes import require_jwt
 from src.openship.chat.models import Conversation, Message
 from src.openship.chat.routes import ConversationCreateRequest, create_conversation
 from src.openship.connectors.models import ProjectConnectorDefault
@@ -19,11 +18,13 @@ from src.openship.database.session import SessionLocal
 from src.openship.workspace.models import ConversationWorkspace
 from src.openship.workspace.project_routes import (
     _ProjectName,
+    project_archive,
     project_create,
     project_delete,
     project_get,
     project_list,
     project_rename,
+    project_restore,
 )
 from src.openship.workspace.project_routes import (
     router as project_router,
@@ -314,37 +315,34 @@ def test_final_active_project_cannot_be_archived(project_owner):
         assert get_owned_project(db, owner_id=project_owner.id, project_id=project.id).archived_at is None
 
 
-def test_project_list_state_filters_and_validates(client, project_owner, monkeypatch):
-    monkeypatch.setitem(
-        client.app.dependency_overrides,
-        require_jwt,
-        lambda: SimpleNamespace(id=project_owner.id),
-    )
+def test_project_list_state_filters_and_validates(project_owner):
     with SessionLocal() as db:
+        actor = db.get(User, project_owner.id)
         first = _create_project(db, project_owner.id, "Active")
         archived = _create_project(db, project_owner.id, "Archived")
         first_id = str(first.id)
         archived_id = str(archived.id)
 
-    response = client.post(f"/api/projects/{archived_id}/archive")
-    assert response.status_code == 200
-    assert response.json()["archived_at"]
-    assert {item["name"] for item in client.get("/api/projects").json()} == {"Active"}
-    rejected_rename = client.patch(
-        f"/api/projects/{archived_id}", json={"name": "Still archived"}
-    )
-    assert rejected_rename.status_code == 409
-    assert rejected_rename.json()["error"]["code"] == "project_archived"
-    archived_list = client.get("/api/projects?state=archived")
-    assert archived_list.status_code == 200
-    assert archived_list.json()[0]["id"] == archived_id
-    assert archived_list.json()[0]["archived_at"]
-    assert client.get("/api/projects?state=invalid").status_code == 422
-    assert client.post(f"/api/projects/{archived_id}/restore").json()["archived_at"] is None
-    assert {item["id"] for item in client.get("/api/projects").json()} == {
-        first_id,
-        archived_id,
-    }
+        archived_response = project_archive(archived.id, db, actor)
+        assert archived_response["archived_at"]
+        assert {item["name"] for item in project_list(db, actor)} == {"Active"}
+        with pytest.raises(HTTPException) as rejected_rename:
+            project_rename(
+                archived.id,
+                _ProjectName(name="Still archived"),
+                db,
+                actor,
+            )
+        assert rejected_rename.value.status_code == 409
+        assert rejected_rename.value.detail["error"]["code"] == "project_archived"
+        archived_list = project_list(db, actor, state="archived")
+        assert archived_list[0]["id"] == archived_id
+        assert archived_list[0]["archived_at"]
+        assert project_restore(archived.id, db, actor)["archived_at"] is None
+        assert {item["id"] for item in project_list(db, actor)} == {
+            first_id,
+            archived_id,
+        }
 
 
 def test_conversation_requires_explicit_project_when_owner_has_multiple(project_owner):

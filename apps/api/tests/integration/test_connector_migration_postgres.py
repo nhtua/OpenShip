@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.pool import NullPool
 
@@ -309,4 +309,114 @@ def test_phase5_connector_migration_preserves_history_and_refuses_data_loss(
     assert downgraded.returncode == 0, downgraded.stderr
     upgraded_again = _run_alembic(ini, "upgrade", "head")
     assert upgraded_again.returncode == 0, upgraded_again.stderr
+    engine.dispose()
+
+
+def test_connector_delete_clears_audit_reference_without_mutating_history(
+    database_url, tmp_path
+):
+    """The FK unlink on connector deletion is the only permitted audit update."""
+    ini = _alembic_ini(tmp_path, database_url)
+    engine = _engine(database_url)
+    if engine.dialect.name == "sqlite":
+        event.listen(
+            engine,
+            "connect",
+            lambda connection, _record: connection.execute("PRAGMA foreign_keys=ON"),
+        )
+    upgraded = _run_alembic(ini, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    user_id = uuid.uuid4()
+    connector_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    revision_id = uuid.uuid4()
+    audit_id = uuid.uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, email, password_hash) "
+                "VALUES (:id, :username, :email, 'hash')"
+            ),
+            {
+                "id": str(user_id),
+                "username": f"audit-unlink-{user_id.hex}",
+                "email": f"audit-unlink-{user_id.hex}@example.test",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO connectors "
+                "(id, kind, visibility, project_id, name, current_revision, enabled, "
+                "managed_by_user_id, created_by_user_id) "
+                "VALUES (:id, 'brave', 'global', NULL, 'audit-unlink', 1, TRUE, :actor, :actor)"
+            ),
+            {"id": str(connector_id), "actor": str(user_id)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO connector_credentials "
+                "(id, connector_id, visibility, project_id, kind, schema_version, key_id, nonce, ciphertext) "
+                "VALUES (:id, :connector, 'global', NULL, 'brave_api_key', 1, 'synthetic', :nonce, :ciphertext)"
+            ),
+            {
+                "id": str(credential_id),
+                "connector": str(connector_id),
+                "nonce": b"n" * 12,
+                "ciphertext": b"c" * 16,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO connector_revisions "
+                "(id, connector_id, revision, schema_version, visibility, project_id, configuration_json, "
+                "configuration_digest, credential_version_id, created_by_user_id) "
+                "VALUES (:id, :connector, 1, 1, 'global', NULL, '{}', :digest, :credential, :actor)"
+            ),
+            {
+                "id": str(revision_id),
+                "connector": str(connector_id),
+                "digest": "a" * 64,
+                "credential": str(credential_id),
+                "actor": str(user_id),
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO connector_audit_events "
+                "(id, visibility, project_id, connector_id, connector_revision, actor_user_id, action, outcome) "
+                "VALUES (:id, 'global', NULL, :connector, 1, NULL, 'created', 'accepted')"
+            ),
+            {"id": str(audit_id), "connector": str(connector_id)},
+        )
+
+        connection.execute(
+            text("DELETE FROM connector_revisions WHERE id=:id"),
+            {"id": str(revision_id)},
+        )
+        connection.execute(
+            text("DELETE FROM connector_credentials WHERE id=:id"),
+            {"id": str(credential_id)},
+        )
+        connection.execute(
+            text("DELETE FROM connectors WHERE id=:id"),
+            {"id": str(connector_id)},
+        )
+        audit = connection.execute(
+            text(
+                "SELECT connector_id, action FROM connector_audit_events WHERE id=:id"
+            ),
+            {"id": str(audit_id)},
+        ).one()
+        assert audit.connector_id is None
+        assert audit.action == "created"
+
+    with pytest.raises(DBAPIError), engine.begin() as connection:
+        connection.execute(
+            text("UPDATE connector_audit_events SET action='changed' WHERE id=:id"),
+            {"id": str(audit_id)},
+        )
+
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM users WHERE id=:id"), {"id": str(user_id)})
     engine.dispose()

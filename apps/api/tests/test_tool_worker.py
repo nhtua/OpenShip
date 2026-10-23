@@ -57,7 +57,9 @@ def _tool_run(db, *, operation_status="admitted", dispatched=False, expired=True
     project = Project(owner_user_id=user.id, name="Tool recovery")
     db.add(project)
     db.flush()
-    conversation = Conversation(user_id=user.id, project_id=project.id, title="Untitled")
+    conversation = Conversation(
+        user_id=user.id, project_id=project.id, title="Untitled"
+    )
     db.add(conversation)
     db.flush()
     run = Run(
@@ -77,7 +79,11 @@ def _tool_run(db, *, operation_status="admitted", dispatched=False, expired=True
     )
     db.add(run)
     db.flush()
-    lease_until = datetime.now(UTC) - timedelta(seconds=1) if expired else datetime.now(UTC) + timedelta(minutes=1)
+    lease_until = (
+        datetime.now(UTC) - timedelta(seconds=1)
+        if expired
+        else datetime.now(UTC) + timedelta(minutes=1)
+    )
     job = RunJob(
         run_id=run.id,
         fence=7,
@@ -129,7 +135,9 @@ def test_worker_logs_artifact_storage_readiness_failure(caplog, monkeypatch):
 
     class UnavailableStore:
         def verify(self):
-            raise ArtifactStorageError("artifact storage identity marker is unavailable")
+            raise ArtifactStorageError(
+                "artifact storage identity marker is unavailable"
+            )
 
     monkeypatch.setattr(worker_module, "configured_store", lambda: UnavailableStore())
     worker = Worker.__new__(Worker)
@@ -166,7 +174,9 @@ def _submit_search_run(db):
     project = Project(owner_user_id=user.id, name="Tool runtime")
     db.add(project)
     db.flush()
-    conversation = Conversation(user_id=user.id, project_id=project.id, title="Untitled")
+    conversation = Conversation(
+        user_id=user.id, project_id=project.id, title="Untitled"
+    )
     db.add(conversation)
     db.flush()
     run = submit_tool_run(
@@ -235,14 +245,21 @@ def test_expired_dispatched_tool_is_interrupted_and_never_requeued():
         assert attempt.error_code == "execution_interrupted"
         assert job.owner_id is None
         assert job.lease_until is None
-        event = db.query(Event).filter(
-            Event.run_id == run.id, Event.type == "tool.failed"
-        ).one()
+        event = (
+            db.query(Event)
+            .filter(Event.run_id == run.id, Event.type == "tool.failed")
+            .one()
+        )
         assert json.loads(event.payload)["error_code"] == "execution_interrupted"
-        assert db.query(Outbox).filter(
-            Outbox.conversation_id == conversation.id,
-            Outbox.event_id == event.id,
-        ).count() == 1
+        assert (
+            db.query(Outbox)
+            .filter(
+                Outbox.conversation_id == conversation.id,
+                Outbox.event_id == event.id,
+            )
+            .count()
+            == 1
+        )
     finally:
         db.close()
 
@@ -301,16 +318,25 @@ def test_cancel_fences_run_and_tool_operation_with_one_outbox_transaction(
             assert attempt.error_code == "execution_interrupted"
             slot = db.query(ExecutionSlot).filter(ExecutionSlot.id == slot_id).one()
             assert slot.operation_id is None
-        run_event = db.query(Event).filter(
-            Event.run_id == run.id, Event.type == "run_cancelled"
-        ).one()
-        tool_event = db.query(Event).filter(
-            Event.run_id == run.id, Event.type == "tool.cancelled"
-        ).one()
-        assert db.query(Outbox).filter(
-            Outbox.conversation_id == conversation.id,
-            Outbox.event_id.in_((run_event.id, tool_event.id)),
-        ).count() == 2
+        run_event = (
+            db.query(Event)
+            .filter(Event.run_id == run.id, Event.type == "run_cancelled")
+            .one()
+        )
+        tool_event = (
+            db.query(Event)
+            .filter(Event.run_id == run.id, Event.type == "tool.cancelled")
+            .one()
+        )
+        assert (
+            db.query(Outbox)
+            .filter(
+                Outbox.conversation_id == conversation.id,
+                Outbox.event_id.in_((run_event.id, tool_event.id)),
+            )
+            .count()
+            == 2
+        )
         assert db.query(Message).filter(Message.run_id == run.id).count() == 0
     finally:
         db.close()
@@ -376,7 +402,9 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     user, _project, conversation, tool_run, ref = _submit_search_run(db)
-    db.query(RunJob).filter(RunJob.run_id != tool_run.id).delete(synchronize_session=False)
+    db.query(RunJob).filter(RunJob.run_id != tool_run.id).delete(
+        synchronize_session=False
+    )
     db.commit()
     claim = claim_next(db, worker_id="manual-tool-worker", lease_seconds=30)
     assert claim is not None and claim.run_id == tool_run.id
@@ -419,12 +447,12 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
         assert worker.process_job(claim)
         db.expire_all()
         stored_tool_run = db.get(Run, tool_run.id)
-        operation = db.query(ToolOperation).filter(
-            ToolOperation.run_id == tool_run.id
-        ).one()
-        attempt = db.query(ToolAttempt).filter(
-            ToolAttempt.operation_id == operation.id
-        ).one()
+        operation = (
+            db.query(ToolOperation).filter(ToolOperation.run_id == tool_run.id).one()
+        )
+        attempt = (
+            db.query(ToolAttempt).filter(ToolAttempt.operation_id == operation.id).one()
+        )
         assert stored_tool_run.status == "completed"
         assert stored_tool_run.provider_started_at is None
         assert stored_tool_run.execution_started_at is not None
@@ -433,9 +461,12 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
         assert attempt.outcome == "succeeded"
         assert calls == ["terraform deployment plan"]
         assert db.query(Message).filter(Message.run_id == tool_run.id).count() == 0
-        assert db.query(ProviderAttempt).filter(
-            ProviderAttempt.run_id == tool_run.id
-        ).count() == 0
+        assert (
+            db.query(ProviderAttempt)
+            .filter(ProviderAttempt.run_id == tool_run.id)
+            .count()
+            == 0
+        )
         tool_events = db.query(Event).filter(Event.run_id == tool_run.id).all()
         assert any(event.type == "tool.completed" for event in tool_events)
         assert any(event.type == "run.succeeded" for event in tool_events)
@@ -452,7 +483,9 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
             str(uuid.uuid4()),
             provider_profile_id="primary-fixture",
         )
-        db.query(RunJob).filter(RunJob.run_id != chat_run.id).delete(synchronize_session=False)
+        db.query(RunJob).filter(RunJob.run_id != chat_run.id).delete(
+            synchronize_session=False
+        )
         db.commit()
         chat_claim = claim_next(db, worker_id="first-chat-worker", lease_seconds=30)
         assert chat_claim is not None and chat_claim.run_id == chat_run.id
@@ -472,17 +505,27 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
         def fake_chat_factory(_checkpointer, invocation_factory=None):
             return FakeChatGraph()
 
-        monkeypatch.setitem(dispatch_module._GRAPH_FACTORIES, ("chat", 1), fake_chat_factory)
+        monkeypatch.setitem(
+            dispatch_module._GRAPH_FACTORIES, ("chat", 1), fake_chat_factory
+        )
         assert worker.process_job(chat_claim)
         db.expire_all()
         assert prompt_was_first == [True]
         assert "choose one provider" in system_prompts[0]
-        assert "do not repeat the same search" in system_prompts[0]
+        assert (
+            "do not repeat an equivalent successful search" in system_prompts[0].lower()
+        )
         assert db.get(Conversation, conversation.id).title == "After manual search"
-        assert db.query(Message).filter(
-            Message.run_id == chat_run.id,
-            Message.role == "assistant",
-        ).one().content == "Review the plan."
+        assert (
+            db.query(Message)
+            .filter(
+                Message.run_id == chat_run.id,
+                Message.role == "assistant",
+            )
+            .one()
+            .content
+            == "Review the plan."
+        )
         history = asyncio.run(get_conversation_messages(conversation.id, db, user))
         assert [
             (message["role"], message["run_id"])
@@ -514,7 +557,9 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
 
     store = LocalArtifactStore(tmp_path / "cancel-artifacts", uuid.uuid4())
     store.initialize()
-    monkeypatch.setattr("src.openship.runs.worker.credential_value", lambda _binding: "test-key")
+    monkeypatch.setattr(
+        "src.openship.runs.worker.credential_value", lambda _binding: "test-key"
+    )
     monkeypatch.setattr("src.openship.runs.worker.configured_store", lambda: store)
     started = threading.Event()
     supervisor_observed_owner = threading.Event()
@@ -535,7 +580,10 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
 
     def track_supervisor_ownership(db_session, run_id, fence):
         ownership_lost = original_ownership_lost(db_session, run_id, fence)
-        if threading.current_thread() is not threading.main_thread() and not ownership_lost:
+        if (
+            threading.current_thread() is not threading.main_thread()
+            and not ownership_lost
+        ):
             supervisor_observed_owner.set()
         return ownership_lost
 
@@ -560,16 +608,23 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
         operation = db.query(ToolOperation).filter(ToolOperation.run_id == run.id).one()
         assert stored_run.status == "cancelled"
         assert operation.status == "interrupted"
-        output = db.query(Artifact).filter(
-            Artifact.originating_operation_id == operation.id
-        ).one()
+        output = (
+            db.query(Artifact)
+            .filter(Artifact.originating_operation_id == operation.id)
+            .one()
+        )
         assert output.status == "deleted"
         assert output.reserved_bytes == 0
-        assert db.query(ArtifactQuota).filter(
-            ArtifactQuota.conversation_id == conversation.id,
-            ArtifactQuota.scope == "conversation",
-            ArtifactQuota.reserved_bytes > 0,
-        ).count() == 0
+        assert (
+            db.query(ArtifactQuota)
+            .filter(
+                ArtifactQuota.conversation_id == conversation.id,
+                ArtifactQuota.scope == "conversation",
+                ArtifactQuota.reserved_bytes > 0,
+            )
+            .count()
+            == 0
+        )
         assert db.query(Message).filter(Message.run_id == run.id).count() == 0
     finally:
         if thread.is_alive():

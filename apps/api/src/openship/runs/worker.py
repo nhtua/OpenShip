@@ -81,6 +81,34 @@ def _run_outcome(error_code: str) -> str:
     return _OUTCOME.get(error_code, "failed")
 
 
+def _chat_system_prompt(
+    *, is_first: bool, preferred_search_kind: str | None = None
+) -> str:
+    if preferred_search_kind in {"brave", "tavily"}:
+        preferred_name = "Brave" if preferred_search_kind == "brave" else "Tavily"
+        search_guidance = (
+            f"For automatic searches, use {preferred_name} Search first because it is the project's "
+            "default. If that search returns an error, retry with another available search provider. "
+            "Do not repeat an equivalent successful search through another provider unless the user "
+            "asks to compare providers. Explicit manual connector selections take precedence."
+        )
+    else:
+        search_guidance = (
+            "When equivalent search tools from different providers are available, choose one provider "
+            "and use its results. If the chosen provider returns an error, retry with another available "
+            "search provider. Do not repeat an equivalent successful search through another provider "
+            "unless the user asks to compare providers."
+        )
+    system_content = (
+        "You are OpenShip, an AI DevOps co-pilot. Help users with infrastructure, deployment, "
+        "and operations tasks. Be concise and practical. "
+        f"{search_guidance}"
+    )
+    if is_first:
+        system_content += "\n\nAfter your response, include a short 50-character summary on a new line prefixed with '## Title: '. This will be used as the conversation title. Do not include any other content after the title."
+    return system_content
+
+
 def _terminal_model(job, run) -> dict | None:
     """The safe provider summary a terminal event carries.
 
@@ -712,15 +740,12 @@ class Worker:
             messages = []
 
             # Add system prompt with title generation instruction for first message
-            system_content = (
-                "You are OpenShip, an AI DevOps co-pilot. Help users with infrastructure, deployment, "
-                "and operations tasks. Be concise and practical. When equivalent search tools from "
-                "different providers are available, choose one provider and use its results; do not "
-                "repeat the same search through another provider unless the user asks to compare "
-                "providers or the chosen provider fails."
+            system_content = _chat_system_prompt(
+                is_first=is_first,
+                preferred_search_kind=getattr(
+                    agent_execution, "preferred_search_kind", None
+                ),
             )
-            if is_first:
-                system_content += "\n\nAfter your response, include a short 50-character summary on a new line prefixed with '## Title: '. This will be used as the conversation title. Do not include any other content after the title."
             messages.append({"role": "system", "content": system_content})
 
             for msg in history:

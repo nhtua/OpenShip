@@ -94,6 +94,20 @@ describe('ConversationFiles', () => {
     expect(wrapper.emitted('delete-file')?.[0]).toEqual(['conversation-1', 'artifact-1'])
   })
 
+  it('keeps archived files readable and blocks delete controls and emits', async () => {
+    const wrapper = mount(ConversationFiles, { props: props({ readOnly: true }) })
+
+    expect(wrapper.get('[aria-label="Preview same.txt"]').exists()).toBe(true)
+    expect(wrapper.get('[aria-label="Download same.txt"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="Delete same.txt"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="Preview same.txt"]').trigger('click')
+    await wrapper.get('[aria-label="Download same.txt"]').trigger('click')
+
+    expect(wrapper.emitted('select-file')?.[0]).toEqual(['conversation-1', 'artifact-1'])
+    expect(wrapper.emitted('download-file')?.[0]).toEqual(['artifact-1', 'same.txt'])
+    expect(wrapper.emitted('delete-file')).toBeUndefined()
+  })
+
   it('keeps the close-preview button enabled while the selected file is loading', () => {
     const wrapper = mount(ConversationFiles, {
       props: props({ selectedArtifactId: 'artifact-1', readingArtifactId: 'artifact-1' }),

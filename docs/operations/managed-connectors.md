@@ -117,6 +117,19 @@ never relabeled, copied or widened automatically. Project-scoped search import
 is rejected before reading an environment file or credential. Do not re-import
 an existing project key as a project Connector.
 
+The Connectors page lists one card per global instance. Open a card to add
+another named credential for that provider or replace an existing key. The
+replacement action is labelled **Save**. **Check status** sends one fixed,
+one-result search request through the provider to verify the key; results are
+discarded and the provider may count the request toward quota. It runs only
+when selected. The dialog keeps **Save**, **Check status**, **Revoke**, and
+**Add another** together beside the credential field; the status chip uses the
+same green, grey, or red state as its indicator dot. **Revoke** permanently
+deletes the connector and its encrypted credential/revision rows, clears
+project defaults that point to it and advances those settings revisions.
+Secret-free audit events remain. Finish admitted legacy work before revoking
+its connector.
+
 Preview the selected global service and credential presence. Preview and import
 output contain no credential values. Import reads only the selected
 `BRAVE_SEARCH_API_KEY` and/or `TAVILY_API_KEY` from the process environment or
@@ -157,7 +170,8 @@ keys:
    credential after processing pending batches. Verify the expected Connector
    scopes/defaults and run `uv run python -m src.openship.artifacts.maintenance verify`
    to check retained artifact bytes. Confirm provider key status through the
-   provider's account controls or a separately authorized external check.
+   Connectors page's explicit **Check status** action or provider account
+   controls.
 7. Unlock managed dispatch explicitly. Review a manual search run and reopen
    its retained evidence before returning normal traffic.
 

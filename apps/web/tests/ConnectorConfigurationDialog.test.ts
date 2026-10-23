@@ -15,10 +15,12 @@ vi.mock('@/services/api', () => ({
     createGlobalConnector: vi.fn(),
     replaceGlobalCredential: vi.fn(),
     updateGlobalConnector: vi.fn(),
+    checkGlobalConnector: vi.fn(),
     globalRequestStatus: vi.fn(),
     createProjectConnector: vi.fn(),
     replaceProjectCredential: vi.fn(),
     updateProjectConnector: vi.fn(),
+    checkProjectConnector: vi.fn(),
     projectRequestStatus: vi.fn(),
     listGlobalConnectors: vi.fn(),
   },
@@ -59,11 +61,13 @@ describe('connector configuration dialog', () => {
     pendingConnectorRequests.clear()
     api.createGlobalConnector.mockResolvedValue({ data: { id: 'global-created' } } as never)
     api.replaceGlobalCredential.mockResolvedValue({ data: { id: 'global-brave-1' } } as never)
-    api.updateGlobalConnector.mockResolvedValue({ data: { id: 'global-brave-1' } } as never)
+    api.updateGlobalConnector.mockResolvedValue({ data: { id: 'global-brave-1', deleted: true } } as never)
+    api.checkGlobalConnector.mockResolvedValue({ data: { status: 'valid', message: 'Brave Search accepted this API key.', revision: 3 } } as never)
     api.listGlobalConnectors.mockResolvedValue({ data: [] } as never)
     api.createProjectConnector.mockResolvedValue({ data: { id: 'legacy-created' } } as never)
     api.replaceProjectCredential.mockResolvedValue({ data: { id: 'legacy-brave-1' } } as never)
-    api.updateProjectConnector.mockResolvedValue({ data: { id: 'legacy-brave-1' } } as never)
+    api.updateProjectConnector.mockResolvedValue({ data: { id: 'legacy-brave-1', deleted: true } } as never)
+    api.checkProjectConnector.mockResolvedValue({ data: { status: 'valid', message: 'Brave Search accepted this API key.', revision: 7 } } as never)
   })
 
   afterEach(() => {
@@ -103,6 +107,7 @@ describe('connector configuration dialog', () => {
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
     expect(document.body.querySelector('input[type="password"]')).not.toBeNull()
     expect(document.body.innerText).toContain('Global')
+    expect(document.body.querySelector('[data-testid="connector-status"]')).toBeNull()
     expect(document.body.innerText).not.toContain('Project visibility')
     const nameInput = document.body.querySelector('input[aria-label="Connector name"]') as HTMLInputElement
     nameInput.value = 'Shared Brave'
@@ -118,6 +123,9 @@ describe('connector configuration dialog', () => {
     expect(api.createGlobalConnector).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       kind: 'brave', name: 'Shared Brave', configuration: {}, api_key: 'sample',
     }))
+    const statusChip = document.body.querySelector('[data-testid="connector-status"]')
+    expect(statusChip?.textContent).toContain('Configured')
+    expect(statusChip?.querySelector('[aria-hidden="true"]')?.className).toContain('bg-emerald-500')
     expect(api.createGlobalConnector.mock.calls[0][1]).not.toHaveProperty('visibility')
     expect(useConnectorsStore(pinia)).not.toHaveProperty('apiKey')
     expect(JSON.stringify(useConnectorsStore(pinia).$state)).not.toContain('sample')
@@ -133,8 +141,22 @@ describe('connector configuration dialog', () => {
     expect(document.body.textContent).toContain('Shared Brave')
     expect(document.body.textContent).toContain('installation operator')
     expect(document.body.querySelector('input[type="password"]')).toBeNull()
-    expect(document.body.innerText).not.toContain('Revoke globally')
+    expect(document.body.innerText).not.toContain('Revoke')
     wrapper.unmount()
+  })
+
+  it('uses the shared grey and red indicator colors for disabled and attention statuses', async () => {
+    const disabled = mountDialog({ connector: { ...globalConnector, status: 'disabled' } })
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="connector-status"]')?.textContent).toContain('Disabled')
+    expect(document.body.querySelector('[data-testid="connector-status"] [aria-hidden="true"]')?.className).toContain('bg-muted-foreground')
+    disabled.unmount()
+
+    const expired = mountDialog({ connector: { ...globalConnector, status: 'expired' } })
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="connector-status"]')?.textContent).toContain('Needs attention')
+    expect(document.body.querySelector('[data-testid="connector-status"] [aria-hidden="true"]')?.className).toContain('bg-destructive')
+    expired.unmount()
   })
 
   it('reconciles a pending Global request through the Global endpoint even after project selection changes', async () => {
@@ -200,42 +222,188 @@ describe('connector configuration dialog', () => {
     wrapper.unmount()
   })
 
-  it('uses the existing authorized Global mutation when disabling the connector', async () => {
+  it('puts Save, Check status, Revoke, and Add another in the credential action row', async () => {
+    const wrapper = mountDialog({ connector: globalConnector })
+    await flushPromises()
+    const buttons = [...document.body.querySelectorAll('button')]
+    const save = buttons.find((button) => button.textContent?.trim() === 'Save')!
+    const check = buttons.find((button) => button.textContent?.trim() === 'Check status')!
+    const revoke = buttons.find((button) => button.textContent?.trim() === 'Revoke')!
+    const addAnother = buttons.find((button) => button.textContent?.trim() === 'Add another Brave Search')!
+
+    expect(buttons.some((button) => button.textContent?.trim() === 'Rotate API key')).toBe(false)
+    expect(save.parentElement).toBe(check.parentElement)
+    expect(save.parentElement).toBe(revoke.parentElement)
+    expect(save.parentElement).toBe(addAnother.parentElement)
+    expect(revoke.className).toContain('border-destructive')
+    expect(revoke.className).toContain('text-destructive')
+    expect(revoke.className).toContain('bg-background')
+    const chip = document.body.querySelector('[data-testid="connector-status"]')!
+    expect(chip.className).toContain('border-emerald-500')
+    expect(chip.querySelector('[aria-hidden="true"]')?.className).toContain('bg-emerald-500')
+    wrapper.unmount()
+  })
+
+  it('keeps reconciliation available after an uncertain Save without resending the key', async () => {
+    api.replaceGlobalCredential.mockRejectedValueOnce(Object.assign(new Error('write response lost'), {
+      response: { status: 503 },
+    }))
+    api.globalRequestStatus
+      .mockRejectedValueOnce(Object.assign(new Error('status unavailable'), { response: { status: 503 } }))
+      .mockResolvedValueOnce({ data: { status: 'complete', result: { id: 'global-brave-1', status: 'configured' } } } as never)
+    const wrapper = mountDialog({ connector: globalConnector })
+    await flushPromises()
+    const key = document.body.querySelector('input[type="password"]') as HTMLInputElement
+    key.value = 'sample'
+    key.dispatchEvent(new Event('input', { bubbles: true }))
+    document.body.querySelector('form[data-testid="connector-credential-form"]')?.dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+
+    const button = (name: string) => [...document.body.querySelectorAll('button')]
+      .find((item) => item.textContent?.trim() === name)!
+    expect(document.body.textContent).toContain('Check request status')
+    expect(button('Check request status').disabled).toBe(false)
+    expect(button('Check status').disabled).toBe(true)
+    expect(button('Revoke').disabled).toBe(true)
+    expect(button('Add another Brave Search').disabled).toBe(true)
+    expect(document.body.innerHTML).not.toContain('sample')
+
+    button('Check request status').click()
+    await flushPromises()
+
+    expect(api.replaceGlobalCredential).toHaveBeenCalledTimes(1)
+    expect(api.globalRequestStatus).toHaveBeenCalledTimes(2)
+    expect(document.body.querySelector('[data-testid="connector-status"]')?.textContent).toContain('Configured')
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+    wrapper.unmount()
+  })
+
+  it('saves a Global replacement through its existing credential endpoint', async () => {
+    const wrapper = mountDialog({ connector: globalConnector })
+    await flushPromises()
+    const key = document.body.querySelector('input[type="password"]') as HTMLInputElement
+    key.value = 'sample'
+    key.dispatchEvent(new Event('input', { bubbles: true }))
+    document.body.querySelector('form[data-testid="connector-credential-form"]')?.dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+
+    expect(api.replaceGlobalCredential).toHaveBeenCalledWith(
+      'global-brave-1', expect.any(String), { expected_revision: 3, api_key: 'sample' },
+    )
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="connector-status"]')?.textContent).toContain('Configured')
+    wrapper.unmount()
+  })
+
+  it('uses the new connector revision for a second Save in the same dialog', async () => {
+    api.replaceGlobalCredential
+      .mockResolvedValueOnce({ data: { ...globalConnector, revision: 4 } } as never)
+      .mockResolvedValueOnce({ data: { ...globalConnector, revision: 5 } } as never)
     const wrapper = mountDialog({ connector: globalConnector })
     await flushPromises()
 
-    const disable = Array.from(document.body.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Disable',
+    const saveCredential = async (keyValue: string) => {
+      const key = document.body.querySelector('input[type="password"]') as HTMLInputElement
+      key.value = keyValue
+      key.dispatchEvent(new Event('input', { bubbles: true }))
+      document.body.querySelector('form[data-testid="connector-credential-form"]')?.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      await flushPromises()
+    }
+
+    await saveCredential('first-secret')
+    await saveCredential('second-secret')
+
+    expect(api.replaceGlobalCredential).toHaveBeenNthCalledWith(
+      1, 'global-brave-1', expect.any(String), { expected_revision: 3, api_key: 'first-secret' },
     )
-    disable?.click()
-    await flushPromises()
-    expect(api.updateGlobalConnector).toHaveBeenCalledWith(
-      'global-brave-1',
-      expect.any(String),
-      { expected_revision: 3, enabled: false },
+    expect(api.replaceGlobalCredential).toHaveBeenNthCalledWith(
+      2, 'global-brave-1', expect.any(String), { expected_revision: 4, api_key: 'second-secret' },
     )
     wrapper.unmount()
   })
 
-  it('confirms cross-project impact before revoking a Global connector', async () => {
+  it('checks status against the latest revision after saving in the same dialog', async () => {
+    api.replaceGlobalCredential.mockResolvedValueOnce({
+      data: { ...globalConnector, revision: 4 },
+    } as never)
+    api.checkGlobalConnector.mockResolvedValueOnce({
+      data: { status: 'valid', message: 'Current key accepted.', revision: 4 },
+    } as never)
+    const wrapper = mountDialog({ connector: globalConnector })
+    await flushPromises()
+    const key = document.body.querySelector('input[type="password"]') as HTMLInputElement
+    key.value = 'replacement-secret'
+    key.dispatchEvent(new Event('input', { bubbles: true }))
+    document.body.querySelector('form[data-testid="connector-credential-form"]')?.dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+
+    const check = [...document.body.querySelectorAll('button')]
+      .find((button) => button.textContent?.trim() === 'Check status')!
+    check.click()
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="connector-check-result"]')?.textContent)
+      .toContain('Current key accepted.')
+    wrapper.unmount()
+  })
+
+  it('checks a global connector key and shows the provider result', async () => {
+    const wrapper = mountDialog({ connector: globalConnector })
+    await flushPromises()
+
+    const check = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Check status',
+    )
+    check?.click()
+    await flushPromises()
+    expect(api.checkGlobalConnector).toHaveBeenCalledWith('global-brave-1')
+    expect(document.body.querySelector('[data-testid="connector-check-result"]')?.textContent).toContain('Brave Search accepted this API key.')
+    expect(document.body.querySelector('[data-testid="connector-check-result"] [aria-hidden="true"]')?.className).toContain('bg-emerald-500')
+    wrapper.unmount()
+  })
+
+  it('confirms cross-project impact before deleting a revoked Global connector setup', async () => {
     const confirm = vi.fn(() => true)
     vi.stubGlobal('confirm', confirm)
     const wrapper = mountDialog({ connector: globalConnector })
     await flushPromises()
     const revoke = Array.from(document.body.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Revoke globally',
+      (button) => button.textContent?.trim() === 'Revoke',
     )
     revoke?.click()
     await flushPromises()
 
     expect(confirm).toHaveBeenCalledWith(
-      'Revoke Shared Brave? This affects every project using this global connector.',
+      'Revoke Shared Brave? This removes the shared setup for every project and clears project defaults that use it. This cannot be undone.',
     )
     expect(api.updateGlobalConnector).toHaveBeenCalledWith(
       'global-brave-1',
       expect.any(String),
       { expected_revision: 3, revoke: true },
     )
+    expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false])
+    wrapper.unmount()
+  })
+
+  it('opens the additional credential form inside the selected connector dialog', async () => {
+    const wrapper = mountDialog({ connector: globalConnector })
+    await flushPromises()
+    await Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Add another Brave Search',
+    )?.click()
+    await flushPromises()
+
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Add another Brave Search')
+    expect((document.body.querySelector('input[aria-label="Connector name"]') as HTMLInputElement).value).toBe('')
+    expect(document.body.querySelector('input[type="password"]')).not.toBeNull()
     wrapper.unmount()
   })
 

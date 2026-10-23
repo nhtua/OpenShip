@@ -14,15 +14,21 @@ export const fixtureUser: User = {
 export const fixtureConversations: Conversation[] = [
   {
     id: 'c1',
+    project_name: 'Fixture project',
+    project_archived_at: null,
     title: 'Deploy pipeline',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T10:00:00Z',
+    archived_at: null,
   },
   {
     id: 'c2',
+    project_name: 'Fixture project',
+    project_archived_at: null,
     title: 'Scale up web',
     created_at: '2026-01-02T00:00:00Z',
     updated_at: '2026-01-02T10:00:00Z',
+    archived_at: null,
   },
 ]
 
@@ -130,6 +136,12 @@ export function healthyChatApiGet(url: string): { data: unknown } {
   }
   if (url === '/model-profiles') {
     return { data: modelProfileCatalog }
+  }
+  const metadataMatch = String(url).match(/^\/conversations\/([^/]+)$/)
+  if (metadataMatch) {
+    const conversation = fixtureConversations.find((item) => item.id === metadataMatch[1])
+    if (!conversation) throw apiError('Conversation not found')
+    return { data: { ...conversation } }
   }
   const match = String(url).match(/^\/conversations\/([^/]+)\/messages$/)
   if (match) {

@@ -3,6 +3,7 @@ import { generateRequestId } from '@/lib/requestId'
 import type {
   ArtifactPage,
   ArtifactSummary,
+  ArchiveListState,
   AuthResponse,
   CapabilitySummary,
   ConnectorKind,
@@ -10,6 +11,7 @@ import type {
   ConnectorSetupContext,
   ConnectorUsage,
   ConversationWorkspacePage,
+  Conversation,
   OperationPage,
   Run,
   Snapshot,
@@ -62,7 +64,8 @@ export const authApi = {
 }
 
 export const projectsApi = {
-  list: (): Promise<{ data: ProjectSummary[] }> => api.get('/projects'),
+  list: (state: ArchiveListState = 'active'): Promise<{ data: ProjectSummary[] }> =>
+    api.get('/projects', { params: { state } }),
 
   create: (payload: { name: string }): Promise<{ data: ProjectSummary }> =>
     api.post('/projects', payload),
@@ -73,8 +76,25 @@ export const projectsApi = {
   rename: (projectId: string, payload: { name: string }): Promise<{ data: ProjectSummary }> =>
     api.patch(`/projects/${encodeURIComponent(projectId)}`, payload),
 
-  delete: (projectId: string): Promise<unknown> =>
-    api.delete(`/projects/${encodeURIComponent(projectId)}`),
+  archive: (projectId: string): Promise<{ data: ProjectSummary }> =>
+    api.post(`/projects/${encodeURIComponent(projectId)}/archive`),
+
+  restore: (projectId: string): Promise<{ data: ProjectSummary }> =>
+    api.post(`/projects/${encodeURIComponent(projectId)}/restore`),
+}
+
+export const conversationsApi = {
+  list: (state: ArchiveListState = 'active'): Promise<{ data: Conversation[] }> =>
+    api.get('/workspace/conversations', { params: { state } }),
+
+  get: (conversationId: string): Promise<{ data: Conversation }> =>
+    api.get(`/conversations/${encodeURIComponent(conversationId)}`),
+
+  archive: (conversationId: string): Promise<{ data: Conversation }> =>
+    api.post(`/conversations/${encodeURIComponent(conversationId)}/archive`),
+
+  restore: (conversationId: string): Promise<{ data: Conversation }> =>
+    api.post(`/conversations/${encodeURIComponent(conversationId)}/restore`),
 }
 
 // Durable run commands
@@ -169,6 +189,12 @@ export const connectorsApi = {
     { headers: { 'Idempotency-Key': requestId } },
   ),
 
+  checkProjectConnector: (
+    projectId: string,
+    connectorId: string,
+  ): Promise<{ data: { status: 'valid' | 'invalid' | 'unavailable'; message: string; revision: number } }> =>
+    api.post(`/projects/${encodeURIComponent(projectId)}/connectors/${encodeURIComponent(connectorId)}/check`, {}),
+
   replaceProjectCredential: (
     projectId: string,
     connectorId: string,
@@ -200,6 +226,11 @@ export const connectorsApi = {
   ) => api.patch(`/global-connectors/${encodeURIComponent(connectorId)}`, payload, {
     headers: { 'Idempotency-Key': requestId },
   }),
+
+  checkGlobalConnector: (
+    connectorId: string,
+  ): Promise<{ data: { status: 'valid' | 'invalid' | 'unavailable'; message: string; revision: number } }> =>
+    api.post(`/global-connectors/${encodeURIComponent(connectorId)}/check`, {}),
 
   replaceGlobalCredential: (
     connectorId: string,

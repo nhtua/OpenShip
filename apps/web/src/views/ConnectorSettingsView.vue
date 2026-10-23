@@ -199,25 +199,14 @@ onMounted(async () => {
               </div>
             </header>
 
-            <div class="grid gap-3 md:grid-cols-2">
-              <div v-for="card in catalogCards" :key="`${card.entry.kind}:${card.connector?.id ?? 'unconfigured'}`" class="grid gap-2">
-                <ConnectorCard
-                  :entry="card.entry"
-                  :connector="card.connector ?? undefined"
-                  @select="selectGlobalConnector(card.entry, card.connector, $event)"
-                />
-                <Button
-                  v-if="connectors.canManageGlobal"
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  class="w-fit"
-                  :aria-label="`${globalInstances.some((item) => item.kind === card.entry.kind) ? 'Add another' : 'Add'} ${card.entry.name}`"
-                  @click="selectGlobalConnector(card.entry, null, $event)"
-                >
-                  {{ globalInstances.some((item) => item.kind === card.entry.kind) ? `Add another ${card.entry.name}` : `Add ${card.entry.name}` }}
-                </Button>
-              </div>
+            <div class="grid gap-3 md:grid-cols-2" data-connector-card-grid>
+              <ConnectorCard
+                v-for="card in catalogCards"
+                :key="`${card.entry.kind}:${card.connector?.id ?? 'unconfigured'}`"
+                :entry="card.entry"
+                :connector="card.connector ?? undefined"
+                @select="selectGlobalConnector(card.entry, card.connector, $event)"
+              />
             </div>
           </section>
 

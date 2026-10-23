@@ -11,6 +11,9 @@ export interface E2EConversation {
   title: string
   created_at: string
   updated_at: string
+  archived_at: string | null
+  project_archived_at: string | null
+  project_name: string
 }
 
 export interface E2EMessage {
@@ -36,6 +39,9 @@ export const E2E_CONVERSATIONS: E2EConversation[] = [
     title: 'Deploy pipeline',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T10:00:00Z',
+    archived_at: null,
+    project_archived_at: null,
+    project_name: 'Personal project',
   },
   {
     id: 'c2',
@@ -43,6 +49,9 @@ export const E2E_CONVERSATIONS: E2EConversation[] = [
     title: 'Scale up web',
     created_at: '2026-01-02T00:00:00Z',
     updated_at: '2026-01-02T10:00:00Z',
+    archived_at: null,
+    project_archived_at: null,
+    project_name: 'Personal project',
   },
 ]
 
@@ -88,6 +97,10 @@ export function makeConversations(count: number): E2EConversation[] {
     title: i === 0 ? 'A'.repeat(300) : `Conversation ${i + 1}`,
     created_at: `2026-01-01T00:00:0${i % 10}Z`,
     updated_at: '2026-01-01T10:00:00Z',
+    project_id: 'project-e2e',
+    archived_at: null,
+    project_archived_at: null,
+    project_name: 'Personal project',
   }))
 }
 
@@ -143,6 +156,16 @@ export async function mockApi(
     messages = E2E_MESSAGES,
   } = options
 
+  const asConversation = (conversation: E2EConversation): E2EConversation => ({
+    project_id: 'project-e2e',
+    archived_at: null,
+    project_archived_at: null,
+    project_name: 'Personal project',
+    ...conversation,
+  })
+  const activeConversations = conversations.map(asConversation)
+  const archivedConversations: E2EConversation[] = []
+
   const json = (route: Route, status: number, body: unknown): Promise<void> =>
     route.fulfill({
       status,
@@ -167,15 +190,15 @@ export async function mockApi(
 
   await page.route('**/api/auth/logout', (route) => json(route, 200, {}))
 
-  await page.route('**/api/workspace/conversations', (route) =>
-    conversationsStatus !== 200
-      ? json(route, conversationsStatus, { detail: 'Server exploded' })
-      : json(route, 200, conversations),
-  )
+  await page.route('**/api/workspace/conversations*', (route) => {
+    if (conversationsStatus !== 200) return json(route, conversationsStatus, { detail: 'Server exploded' })
+    const state = new URL(route.request().url()).searchParams.get('state') ?? 'active'
+    return json(route, 200, state === 'archived' ? archivedConversations : activeConversations)
+  })
 
-  await page.route('**/api/projects', (route) =>
+  await page.route('**/api/projects*', (route) =>
     route.request().method() === 'GET'
-      ? json(route, 200, [{ id: 'project-e2e', name: 'Personal project' }])
+      ? json(route, 200, [{ id: 'project-e2e', name: 'Personal project', archived_at: null }])
       : json(route, 405, { detail: 'Method not allowed' }),
   )
   await page.route('**/api/projects/project-e2e/connectors', (route) =>
@@ -250,13 +273,40 @@ export async function mockApi(
       return json(route, 405, { detail: 'Method not allowed' })
     }
     const body = (route.request().postDataJSON() ?? {}) as { title?: string; project_id?: string }
-    return json(route, 201, {
+    const created = asConversation({
       id: 'c-new',
       project_id: body.project_id ?? 'project-e2e',
       title: body.title || 'New Conversation',
       created_at: '2026-01-03T00:00:00Z',
       updated_at: '2026-01-03T00:00:00Z',
+      archived_at: null,
+      project_archived_at: null,
+      project_name: 'Personal project',
     })
+    activeConversations.unshift(created)
+    return json(route, 201, created)
+  })
+
+  await page.route(/\/api\/conversations\/[^/?]+$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue()
+    const id = new URL(route.request().url()).pathname.split('/').at(-1)
+    const conversation = [...activeConversations, ...archivedConversations].find((item) => item.id === id)
+    return conversation
+      ? json(route, 200, conversation)
+      : json(route, 404, { detail: 'Conversation not found' })
+  })
+
+  await page.route(/\/api\/conversations\/([^/]+)\/(archive|restore)$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.continue()
+    const [, id, action] = new URL(route.request().url()).pathname.match(/\/api\/conversations\/([^/]+)\/(archive|restore)$/) ?? []
+    const source = action === 'archive' ? activeConversations : archivedConversations
+    const destination = action === 'archive' ? archivedConversations : activeConversations
+    const index = source.findIndex((item) => item.id === id)
+    if (index < 0) return json(route, 404, { detail: 'Conversation not found' })
+    const [conversation] = source.splice(index, 1)
+    const updated = { ...conversation, archived_at: action === 'archive' ? new Date().toISOString() : null }
+    destination.unshift(updated)
+    return json(route, 200, updated)
   })
 
   await mockDurableApi(page, {
