@@ -120,7 +120,7 @@ def _identity(db, label: str):
     return user, project
 
 
-def test_postgres_pins_and_decrypts_only_the_authorized_search_connector(
+def test_postgres_pins_and_decrypts_a_shared_global_search_connector(
     pg_sessions, monkeypatch, tmp_path
 ):
     _install_keys(monkeypatch, tmp_path)
@@ -128,6 +128,7 @@ def test_postgres_pins_and_decrypts_only_the_authorized_search_connector(
     with pg_sessions() as db:
         owner, project = _identity(db, "owner")
         _other_owner, other_project = _identity(db, "other")
+        monkeypatch.setattr(settings, "connector_operator_user_id", owner.id)
         conversation = Conversation(
             user_id=owner.id,
             project_id=project.id,
@@ -138,10 +139,10 @@ def test_postgres_pins_and_decrypts_only_the_authorized_search_connector(
         result = create_connector(
             db,
             actor=owner,
-            visibility="project",
-            project_id=project.id,
+            visibility="global",
+            project_id=None,
             kind="brave",
-            name="Project Brave",
+            name="Shared Brave",
             configuration_raw={"schema_version": 1, "kind": "brave"},
             api_key=API_KEY,
         )
@@ -193,9 +194,9 @@ def test_postgres_pins_and_decrypts_only_the_authorized_search_connector(
         broker.acquire(project_id=project_id, kind="brave", reference=pinned) == API_KEY
     )
 
-    with pytest.raises(ConnectorCredentialError) as cross_project:
-        broker.acquire(project_id=other_project_id, kind="brave", reference=pinned)
-    assert cross_project.value.code == "connector_scope_denied"
+    assert broker.acquire(
+        project_id=other_project_id, kind="brave", reference=pinned
+    ) == API_KEY
 
     with pg_sessions() as db:
         connector = db.get(Connector, connector_id)

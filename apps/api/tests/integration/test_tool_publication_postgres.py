@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from src.openship.artifacts.filesystem import LocalArtifactStore
 from src.openship.artifacts.models import Artifact
 from src.openship.auth.models import User
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import list_legacy_search_manifests
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
@@ -120,7 +120,7 @@ async def test_postgres_publishes_ready_artifact_result_and_events_in_one_commit
 ):
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     manifest = next(
-        item for item in list_capability_manifests() if item.id == "brave_web_search"
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
     )
     ref = CapabilityRef(
         id=manifest.id,

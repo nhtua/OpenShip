@@ -22,7 +22,7 @@ export default defineConfig({
     ? {}
     : {
         webServer: {
-          command: 'E2E=1 pnpm dev --host 127.0.0.1 --port 4173 --strictPort',
+          command: 'pnpm dev --host 127.0.0.1 --port 4173 --strictPort',
           url: localWebURL,
           reuseExistingServer: false,
           timeout: 180_000,

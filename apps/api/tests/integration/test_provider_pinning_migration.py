@@ -16,7 +16,7 @@ import uuid as uuidlib
 from pathlib import Path
 
 import pytest
-from sqlalchemy import MetaData, create_engine, text
+from sqlalchemy import MetaData, create_engine, inspect, text
 from sqlalchemy.pool import NullPool
 
 from tests.integration.postgres import bounded_postgres_url
@@ -133,10 +133,36 @@ datefmt = %H:%M:%S
 def phase2_db(database_url, alembic_ini):
     """A database at Phase 2, empty, ready for one test to fill."""
     _upgrade(alembic_ini, "head")
-    with _engine(database_url).connect() as conn:
-        for table in ("provider_attempts", "messages", "runs", "conversations", "projects", "users"):
-            conn.execute(text(f"DELETE FROM {table}"))
-        conn.commit()
+    engine = _engine(database_url)
+    try:
+        with engine.begin() as conn:
+            if conn.dialect.name == "postgresql":
+                tables = [
+                    name
+                    for name in inspect(conn).get_table_names()
+                    if name != "alembic_version"
+                ]
+                if tables:
+                    names = ", ".join(
+                        conn.dialect.identifier_preparer.quote(name)
+                        for name in tables
+                    )
+                    # The migration lane is disposable. TRUNCATE avoids
+                    # violating append-only row triggers while clearing data
+                    # left by earlier integration modules on the shared lane.
+                    conn.execute(text(f"TRUNCATE TABLE {names} CASCADE"))
+            else:
+                for table in (
+                    "provider_attempts",
+                    "messages",
+                    "runs",
+                    "conversations",
+                    "projects",
+                    "users",
+                ):
+                    conn.execute(text(f"DELETE FROM {table}"))
+    finally:
+        engine.dispose()
     result = _alembic(alembic_ini, "downgrade", PHASE2_HEAD)
     assert result.returncode == 0, f"cannot return the lane to Phase 2: {result.stderr}"
     return database_url

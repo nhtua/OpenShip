@@ -451,7 +451,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
         "CONNECTOR_ENCRYPTION_KEY_FILE": str(encryption_path),
         "CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE": str(hmac_path),
         "CONNECTOR_DISPATCH_LOCK_FILE": str(secrets_dir / "managed-dispatch.lock"),
-        "CONNECTOR_BROWSER_ORIGINS": "http://127.0.0.1:5174",
+        "CONNECTOR_BROWSER_ORIGINS": "http://127.0.0.1:4173,http://127.0.0.1:5174",
         "CONNECTOR_OPERATOR_USER_ID": "",
         "ARTIFACT_ROOT": str(artifact_root),
         "ARTIFACT_STORAGE_ID": artifact_storage_id,

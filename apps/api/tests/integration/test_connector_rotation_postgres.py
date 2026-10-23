@@ -93,7 +93,7 @@ def pg_sessions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 
 def test_rotation_resumes_across_postgres_commits_and_retires_only_after_verification(
-    pg_sessions,
+    pg_sessions, monkeypatch,
 ):
     with pg_sessions() as db:
         user = User(
@@ -106,6 +106,7 @@ def test_rotation_resumes_across_postgres_commits_and_retires_only_after_verific
         project = Project(owner_user_id=user.id, name="Rotation integration")
         db.add(project)
         db.flush()
+        monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
         connectors = []
         for kind, secret in (
             ("brave", "synthetic-brave-rotation-sentinel"),
@@ -114,8 +115,8 @@ def test_rotation_resumes_across_postgres_commits_and_retires_only_after_verific
             result = create_connector(
                 db,
                 actor=user,
-                visibility="project",
-                project_id=project.id,
+                visibility="global",
+                project_id=None,
                 kind=kind,
                 name=f"{kind} integration key",
                 configuration_raw={"schema_version": 1, "kind": kind},
