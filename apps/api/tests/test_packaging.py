@@ -45,6 +45,7 @@ SHARED_SERVICES = ("api", "worker")
 #: Search runs execute in the worker, so these bindings intentionally do not
 #: need to be present in the API container.
 WORKER_ONLY_CREDENTIALS = {"BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY"}
+OPTIONAL_RUNTIME_SETTINGS = {"TOOL_ENABLED_IDS"}
 
 #: Provider credentials are optional bindings, never values embedded in the
 #: packaging. Installation secrets such as JWT_SECRET have a separate policy.
@@ -139,10 +140,19 @@ def test_the_documented_environment_names_every_binding_the_packaging_asks_for()
             if match:
                 wanted.add(match.group("name"))
 
-    missing = sorted(wanted - _documented_bindings())
+    missing = sorted(wanted - _documented_bindings() - OPTIONAL_RUNTIME_SETTINGS)
     assert not missing, (
         f"the packaging asks for {missing}, which the documented environment never mentions"
     )
+
+
+def test_tool_enabled_ids_remains_an_optional_documented_compose_ceiling():
+    services = _services()
+    for name in SHARED_SERVICES:
+        assert services[name]["environment"]["TOOL_ENABLED_IDS"] is None
+    assert "TOOL_ENABLED_IDS" in (
+        ROOT / "docs/operations/tool-availability.md"
+    ).read_text()
 
 
 def test_the_documented_profiles_form_a_usable_installation_configuration():

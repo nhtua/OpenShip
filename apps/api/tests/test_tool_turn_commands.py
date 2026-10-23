@@ -125,6 +125,38 @@ def test_tool_chat_pins_exact_enabled_refs_and_ready_artifacts(monkeypatch):
         db.close()
 
 
+def test_auto_inventory_does_not_select_a_storage_binding_or_enable_storage(
+    monkeypatch,
+):
+    _tool_profiles(monkeypatch)
+    monkeypatch.setattr(
+        settings,
+        "tool_enabled_ids",
+        "brave_web_search,tavily_web_search,aws_s3_list_bound_buckets,aws_s3_bucket_storage",
+    )
+    _no_managed_search_connectors(monkeypatch)
+    db = SessionLocal()
+    try:
+        user, _project, conversation = _owned_conversation(db)
+        run = submit_turn(
+            db=db,
+            user_id=user.id,
+            conversation_id=str(conversation.id),
+            content="List the buckets already bound to this project.",
+            client_request_id=str(uuid.uuid4()),
+            enable_tools=True,
+        )
+        db.commit()
+        config = ExecutionConfig.model_validate_json(run.execution_configuration)
+        capability_ids = {item.id for item in config.allowed_capabilities}
+
+        assert "aws_s3_list_bound_buckets" in capability_ids
+        assert "aws_s3_bucket_storage" not in capability_ids
+        assert getattr(config, "selected_resource_binding_refs", ()) == ()
+    finally:
+        db.close()
+
+
 def test_changed_tool_mode_or_selected_artifact_conflicts_on_request_replay(monkeypatch):
     _tool_profiles(monkeypatch)
     db = SessionLocal()

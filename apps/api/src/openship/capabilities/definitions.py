@@ -15,6 +15,12 @@ from src.openship.capabilities.contracts import (
     CapabilityManifestLike,
     canonical_json,
 )
+from src.openship.tools.aws.bound_inventory import (
+    BoundInventoryArguments,
+    BoundInventoryError,
+    BoundInventoryResult,
+    list_bound_buckets,
+)
 from src.openship.tools.aws.checks import aws_check_connection
 from src.openship.tools.aws.contracts import (
     AwsCheckArguments,
@@ -135,6 +141,7 @@ _BUILTIN_IDS = frozenset(
         "workspace_read_file",
         "aws_check_connection",
         "aws_s3_bucket_storage",
+        "aws_s3_list_bound_buckets",
     }
 )
 _REGISTERED: dict[str, ToolDefinitionEntry] = {}
@@ -198,6 +205,10 @@ def _workspace_publication(db: Any, operation: Any, value: Any) -> Any:
 
 def _aws_error(error: Exception) -> str | None:
     return error.code if isinstance(error, AwsToolError) else None
+
+
+def _bound_inventory_error(error: Exception) -> str | None:
+    return error.code if isinstance(error, BoundInventoryError) else None
 
 
 def _aws_check_output(operation: Any, value: Any) -> Any:
@@ -364,6 +375,16 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             artifact_name="s3-bucket-storage.json",
             error_mapper=_aws_error,
             safe_failure_code="aws_unavailable",
+        )
+    elif manifest.id == "aws_s3_list_bound_buckets":
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=manifest.description,
+            argument_model=BoundInventoryArguments,
+            result_model=BoundInventoryResult,
+            handler=list_bound_buckets,
+            error_mapper=_bound_inventory_error,
+            safe_failure_code="inventory_unavailable",
         )
     else:
         raise LookupError("tool definition is not registered")

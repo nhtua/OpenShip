@@ -30,6 +30,7 @@ def test_tool_ids_and_connector_kinds_are_independent():
         "workspace_read_file",
         "aws_check_connection",
         "aws_s3_bucket_storage",
+        "aws_s3_list_bound_buckets",
     }
     assert manifests["brave_web_search"].connector_kinds == ("brave",)
     assert manifests["tavily_web_search"].connector_kinds == ("tavily",)
@@ -44,6 +45,14 @@ def test_tool_ids_and_connector_kinds_are_independent():
         assert manifest.credential_binding_ref is None
         assert manifest.outputs == ()
         assert "path" not in manifest.input_schema["properties"]
+
+    inventory = manifests["aws_s3_list_bound_buckets"]
+    assert inventory.effect == "read_only_local"
+    assert inventory.connector_kinds == ()
+    assert inventory.operations == ()
+    assert inventory.target_kinds == ()
+    assert inventory.outputs == ()
+    assert inventory.enablement_requirements == ("operator_enabled",)
 
 
 def test_manifest_digest_covers_implementation_schema_and_limits():

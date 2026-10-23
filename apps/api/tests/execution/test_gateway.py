@@ -395,6 +395,54 @@ async def test_gateway_runs_workspace_list_and_read_without_credentials_or_new_a
     db.close()
 
 
+@pytest.mark.asyncio
+async def test_gateway_runs_bound_inventory_without_workspace_or_aws_access(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "tool_enabled_ids", "aws_s3_list_bound_buckets")
+    db = SessionLocal()
+    _user, _project, _conversation, run, claim, ref, context = _running_tool(
+        db, tool_id="aws_s3_list_bound_buckets"
+    )
+    context.artifact_store = None
+    context.credential_resolver = lambda _name: pytest.fail(
+        "bound inventory must not resolve credentials"
+    )
+    monkeypatch.setattr(
+        "src.openship.execution.gateway.AwsRoleBroker",
+        lambda *_args, **_kwargs: pytest.fail(
+            "bound inventory must not create an AWS broker"
+        ),
+    )
+    monkeypatch.setattr(
+        "src.openship.execution.gateway.SearchCredentialBroker",
+        lambda *_args, **_kwargs: pytest.fail(
+            "bound inventory must not create a credential broker"
+        ),
+    )
+
+    result = await ToolGateway(SessionLocal).execute_tool(
+        claim=claim,
+        context=context,
+        logical_call_id="model:0:list-bound-buckets",
+        ref=ref,
+        arguments={"limit": 5},
+        control=InvocationControl(),
+    )
+
+    assert result.status == "succeeded"
+    assert result.result == {
+        "items": [],
+        "next_cursor": None,
+        "source": "stored_bindings",
+    }
+    assert result.artifacts == ()
+    operation = db.query(ToolOperation).filter_by(run_id=run.id).one()
+    assert operation.credential_binding_ref is None
+    assert operation.output_artifact_ids == "[]"
+    db.close()
+
+
 @pytest.mark.parametrize(
     ("query", "expected_filename"),
     [

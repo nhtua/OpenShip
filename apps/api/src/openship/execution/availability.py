@@ -52,7 +52,7 @@ def observe_tool_availability(
             getattr(manifest, "credential_binding_ref", None)
             or legacy_credential_binding(manifest.id)
         ) is None:
-            if manifest.effect == "read_only_local":
+            if "conversation_workspace" in manifest.enablement_requirements:
                 try:
                     configured_store().verify()
                     available, reason = True, None

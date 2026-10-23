@@ -44,7 +44,7 @@ services:
       ARTIFACT_CONVERSATION_QUOTA_COUNT: ${ARTIFACT_CONVERSATION_QUOTA_COUNT:-100}
       ARTIFACT_PROJECT_QUOTA_BYTES: ${ARTIFACT_PROJECT_QUOTA_BYTES:-1073741824}
       ARTIFACT_PROJECT_QUOTA_COUNT: ${ARTIFACT_PROJECT_QUOTA_COUNT:-1000}
-      TOOL_ENABLED_IDS: ${TOOL_ENABLED_IDS:-}
+      TOOL_ENABLED_IDS:
       # Profile configuration is non-secret and shared: the worker executes a
       # run the API queued, so a profile that means different things to the
       # two of them would make "which model answered" a question with two
@@ -96,7 +96,7 @@ services:
       ARTIFACT_CONVERSATION_QUOTA_COUNT: ${ARTIFACT_CONVERSATION_QUOTA_COUNT:-100}
       ARTIFACT_PROJECT_QUOTA_BYTES: ${ARTIFACT_PROJECT_QUOTA_BYTES:-1073741824}
       ARTIFACT_PROJECT_QUOTA_COUNT: ${ARTIFACT_PROJECT_QUOTA_COUNT:-1000}
-      TOOL_ENABLED_IDS: ${TOOL_ENABLED_IDS:-}
+      TOOL_ENABLED_IDS:
       # Identical to the api service above, on the same variables: the worker
       # executes what the API queued, so the profile a run names has to mean
       # the same thing to both.

@@ -83,10 +83,10 @@ status: in_progress
 
 **Interfaces:** `aws_s3_list_bound_buckets` is a `read_only_local` maintained capability with no Connector requirement, no AWS operations and no output artifact requirement. Arguments are `limit` (default 20, maximum 50) and an opaque optional cursor. Results label `source=stored_bindings`, contain bounded owned binding metadata and a next cursor, and make no live-existence claim.
 
-- [ ] Write failing tests for owner/project filtering, foreign or malformed cursors, stable pagination, limits, revoked/expired Connector credentials and zero external/broker/decryption calls. Scope cursors to the owning project and query.
-- [ ] Register and implement the handler through the existing local gateway path. Return active local bindings with their retained Connector/binding references; do not hide stored resources solely because live access is unavailable. Retired bindings remain retained history, outside the active inventory result.
-- [ ] Test that returned IDs do not modify the run's admitted resource selection. Storage/metadata on an unselected or foreign binding remains refused even if its ID appears in prior text or another inventory result.
-- [ ] Run `uv run pytest tests/tools/test_bound_inventory.py tests/test_tool_run_commands.py tests/test_tool_turn_commands.py -q`; expect passing cases. Commit the inventory increment.
+- [x] Write failing tests for owner/project filtering, foreign or malformed cursors, stable pagination, limits, revoked/expired Connector credentials and zero external/broker/decryption calls. Scope cursors to the owning project and query.
+- [x] Register and implement the handler through the existing local gateway path. Return active local bindings with their retained Connector/binding references; do not hide stored resources solely because live access is unavailable. Retired bindings remain retained history, outside the active inventory result.
+- [x] Test that returned IDs do not modify the run's admitted resource selection. Storage/metadata on an unselected or foreign binding remains refused even if its ID appears in prior text or another inventory result.
+- [x] Run `uv run pytest tests/tools/test_bound_inventory.py tests/test_tool_run_commands.py tests/test_tool_turn_commands.py -q`; expect passing cases. Commit the inventory increment.
 
 ## Task 15.4 — Bound-bucket metadata and retained evidence
 

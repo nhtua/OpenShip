@@ -15,6 +15,10 @@ from src.openship.capabilities.contracts import (
 )
 from src.openship.execution.errors import CapabilityError
 from src.openship.providers.credentials import credential_binding_present
+from src.openship.tools.aws.bound_inventory import (
+    BoundInventoryArguments,
+    BoundInventoryResult,
+)
 from src.openship.tools.aws.contracts import (
     AwsCheckArguments,
     AwsCheckResult,
@@ -74,6 +78,19 @@ _AWS_SOURCE_FILES = (
     "connectors/aws/clients.py",
     "execution/aws_sdk.py",
     "execution/aws_transport.py",
+)
+_BOUND_INVENTORY_SOURCE_FILES = (
+    "capabilities/catalog.py",
+    "capabilities/contracts.py",
+    "capabilities/definitions.py",
+    "execution/gateway.py",
+    "resources/contracts.py",
+    "resources/models.py",
+    "resources/service.py",
+    "tools/aws/bound_inventory.py",
+    "workspace/lifecycle.py",
+    "workspace/models.py",
+    "workspace/projects.py",
 )
 
 # These exact v1 manifests were admitted before managed Connectors. Keep them
@@ -226,6 +243,48 @@ def _aws_implementation_digest() -> str:
     return digest.hexdigest()
 
 
+def _bound_inventory_implementation_digest() -> str:
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for relative in _BOUND_INVENTORY_SOURCE_FILES:
+        path = root / relative
+        name = relative.encode("utf-8")
+        body = path.read_bytes()
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(len(body).to_bytes(8, "big"))
+        digest.update(body)
+    return digest.hexdigest()
+
+
+def _bound_inventory_manifest() -> CapabilityManifestV2:
+    description = (
+        "List this project's locally stored active S3 bucket bindings. "
+        "The result does not verify that a bucket still exists or is reachable."
+    )
+    fields = {
+        "schema_version": 2,
+        "id": "aws_s3_list_bound_buckets",
+        "version": "1.0.0",
+        "implementation_digest": _bound_inventory_implementation_digest(),
+        "description": description,
+        "input_schema": BoundInventoryArguments.model_json_schema(),
+        "output_schema": BoundInventoryResult.model_json_schema(),
+        "effect": "read_only_local",
+        "enablement_requirements": ("operator_enabled",),
+        "limits": {
+            "max_page_size": 50,
+            "max_model_result_bytes": 16 * 1024,
+        },
+        "outputs": (),
+        "connector_kinds": (),
+        "operations": (),
+        "target_kinds": (),
+        "execution_kind": "maintained",
+    }
+    return CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
+
+
 def _aws_manifests():
     implementation_digest = _aws_implementation_digest()
     declarations = (
@@ -349,6 +408,7 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
         _search_manifest("tavily_web_search", "tavily"),
         *_workspace_manifests(),
         *_aws_manifests(),
+        _bound_inventory_manifest(),
     )
     registered = tuple(entry.manifest for entry in registered_tool_definitions())
     return (*builtins, *registered)

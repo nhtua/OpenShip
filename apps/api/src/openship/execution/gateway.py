@@ -76,6 +76,7 @@ def _require_operation_policy(db, operation: ToolOperation):
     except ToolPolicyError:
         raise ToolPublicationError("disabled") from None
 
+
 _PRE_DISPATCH_MESSAGES = {
     "missing_credentials": "The selected search tool is missing its operator credential.",
     "connector_required": "Choose a search Connector before using this service.",
@@ -111,10 +112,12 @@ _PRE_DISPATCH_MESSAGES = {
     "invalid_tool_output": "The maintained tool returned an invalid result.",
     "workspace_unavailable": "The conversation workspace is unavailable.",
     "artifact_not_found": "The requested file is not available in this conversation.",
-    "invalid_cursor": "The workspace file cursor is invalid.",
+    "invalid_cursor": "The pagination cursor is invalid.",
     "invalid_offset": "The requested byte offset is invalid.",
     "invalid_utf8_boundary": "The requested byte offset is not on a UTF-8 boundary.",
     "artifact_unavailable": "The saved file could not be verified in storage.",
+    "invalid_page_size": "The bucket inventory page size is invalid.",
+    "inventory_unavailable": "The saved bucket inventory is unavailable.",
     "execution_interrupted": "The tool execution was interrupted and will not be repeated automatically.",
 }
 
@@ -184,14 +187,18 @@ class ToolGateway:
             raise
 
         store = context.artifact_store
-        needs_store = manifest.effect == "read_only_local" or bool(manifest.outputs)
+        needs_workspace = "conversation_workspace" in manifest.enablement_requirements
+        needs_store = needs_workspace or bool(manifest.outputs)
+        store_error_code = (
+            "workspace_unavailable"
+            if needs_workspace
+            else "artifact_storage_unavailable"
+        )
         if needs_store and store is None:
             return self._finish_before_dispatch(
                 claim,
                 operation_id,
-                "workspace_unavailable"
-                if manifest.effect == "read_only_local"
-                else "artifact_storage_unavailable",
+                store_error_code,
             )
         if needs_store:
             try:
@@ -200,9 +207,7 @@ class ToolGateway:
                 return self._finish_before_dispatch(
                     claim,
                     operation_id,
-                    "workspace_unavailable"
-                    if manifest.effect == "read_only_local"
-                    else "artifact_storage_unavailable",
+                    store_error_code,
                 )
 
         binding = getattr(manifest, "credential_binding_ref", None)

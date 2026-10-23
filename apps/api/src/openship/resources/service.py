@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from ..artifacts.contracts import ArtifactRef
@@ -269,11 +269,17 @@ def list_resource_bindings(
     )
     if cursor:
         decoded = _decode_cursor(cursor)
+        if db.get_bind().dialect.name == "sqlite":
+            binding_time = func.strftime("%Y-%m-%d %H:%M:%f", ResourceBinding.created_at)
+            cursor_time = func.strftime("%Y-%m-%d %H:%M:%f", decoded.created_at)
+        else:
+            binding_time = ResourceBinding.created_at
+            cursor_time = decoded.created_at
         query = query.filter(
             or_(
-                ResourceBinding.created_at < decoded.created_at,
+                binding_time < cursor_time,
                 and_(
-                    ResourceBinding.created_at == decoded.created_at,
+                    binding_time == cursor_time,
                     ResourceBinding.id < decoded.row_id,
                 ),
             )
