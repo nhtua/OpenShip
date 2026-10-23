@@ -67,7 +67,7 @@ class Run(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('created', 'queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out', 'stale')",
+            "status IN ('created', 'queued', 'running', 'waiting_connector', 'completed', 'failed', 'cancelled', 'timed_out', 'stale')",
             name="ck_runs_status",
         ),
         CheckConstraint("kind IN ('chat', 'tool')", name="ck_runs_kind"),
@@ -76,6 +76,13 @@ class Run(Base):
         Index("ix_runs_project_id", "project_id"),
         Index("ix_runs_status", "status"),
         Index("ix_runs_ended_at", "ended_at"),
+        Index(
+            "uq_runs_project_conversation_id",
+            "project_id",
+            "conversation_id",
+            "id",
+            unique=True,
+        ),
     )
 
 

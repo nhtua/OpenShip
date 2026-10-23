@@ -52,6 +52,13 @@ class ToolOperation(Base):
 
     __table_args__ = (
         UniqueConstraint("run_id", "logical_call_id", name="uq_tool_operations_run_logical_call"),
+        Index(
+            "uq_tool_operations_project_conversation_id",
+            "project_id",
+            "conversation_id",
+            "id",
+            unique=True,
+        ),
         CheckConstraint(
             "status IN ('admitted', 'dispatching', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')",
             name="ck_tool_operations_status",

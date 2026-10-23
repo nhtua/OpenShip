@@ -18,6 +18,13 @@ from ..execution.models import (
     ToolAvailability,
     ToolOperation,
 )
+from ..resources.models import (
+    ConnectorBlocker,
+    Environment,
+    ResourceBinding,
+    ResourceObject,
+    ResourceObservation,
+)
 from ..runs.models import (
     Event,
     Outbox,
@@ -35,11 +42,13 @@ __all__ = [
     "Connector",
     "ConnectorAuditEvent",
     "ConnectorAvailability",
+    "ConnectorBlocker",
     "ConnectorRequestLedger",
     "ConnectorRevision",
     "Conversation",
     "ConversationWorkspace",
     "CredentialVersion",
+    "Environment",
     "Event",
     "ExecutionSlot",
     "Message",
@@ -47,6 +56,9 @@ __all__ = [
     "Project",
     "ProjectConnectorDefault",
     "ProviderAttempt",
+    "ResourceBinding",
+    "ResourceObject",
+    "ResourceObservation",
     "Run",
     "RunJob",
     "RunTranscriptRecord",

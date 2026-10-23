@@ -56,6 +56,7 @@ def setup_db(request):
         or "test_workspace_retention_postgres" in test_path
         or "test_tool_transcript_postgres" in test_path
         or "test_agent_tool_loop_postgres" in test_path
+        or "test_phase5_resources_postgres" in test_path
     ):
         yield
         return

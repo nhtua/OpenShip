@@ -26,6 +26,7 @@ from src.openship.workspace.models import Project
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_KIND = "search_result"
 _UPLOAD_KIND = "upload"
+_CLOUD_OBSERVATION_KIND = "cloud_observation"
 _ZERO_SHA256 = "0" * 64
 
 
@@ -156,11 +157,16 @@ def reserve_artifact(
     provenance: str | None = None,
 ) -> Artifact:
     """Reserve per-conversation and project quota without committing the caller's transaction."""
-    if kind not in (_SEARCH_KIND, _UPLOAD_KIND):
+    if kind not in (_SEARCH_KIND, _UPLOAD_KIND, _CLOUD_OBSERVATION_KIND):
         raise _error(422, "invalid_artifact_kind", "Artifact kind is invalid")
     if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 0:
         raise _error(422, "invalid_artifact_size", "Artifact size limit is invalid")
-    maximum = settings.artifact_search_reservation_bytes if kind == _SEARCH_KIND else settings.artifact_upload_max_bytes
+    if kind == _SEARCH_KIND:
+        maximum = settings.artifact_search_reservation_bytes
+    elif kind == _CLOUD_OBSERVATION_KIND:
+        maximum = settings.artifact_cloud_observation_reservation_bytes
+    else:
+        maximum = settings.artifact_upload_max_bytes
     if max_bytes > maximum:
         raise _error(413, "artifact_too_large", "Artifact exceeds the configured size limit")
     try:

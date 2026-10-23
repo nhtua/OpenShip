@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     artifact_project_quota_bytes: int = Field(default=1024 * 1024 * 1024, ge=1)
     artifact_project_quota_count: int = Field(default=1000, ge=1)
     artifact_search_reservation_bytes: int = Field(default=64 * 1024, ge=1, le=64 * 1024)
+    artifact_cloud_observation_reservation_bytes: int = Field(
+        default=64 * 1024, ge=1, le=64 * 1024
+    )
     artifact_upload_max_bytes: int = Field(default=8 * 1024 * 1024, ge=1, le=8 * 1024 * 1024)
     artifact_incomplete_uploads_per_conversation: int = Field(default=2, ge=1, le=2)
     artifact_staging_retention_seconds: int = Field(default=600, ge=60)

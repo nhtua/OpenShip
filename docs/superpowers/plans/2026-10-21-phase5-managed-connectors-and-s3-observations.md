@@ -258,17 +258,17 @@ credentials and protocol-compatible transports until then.
 
 **Files:** New `resources/{models,contracts,service,routes}.py`, connector-blocker models and run/artifact model updates.
 
-**Migration:** `010_phase5_resources_and_connector_waits.py`, revision `phase5a010`, following `phase5a009b`.
+**Migration:** `010_phase5_resources_and_connector_waits.py`, revision `phase5a010`, following the current 5A.1 head `phase5a009f` (the accepted 5A.1 work added revisions `phase5a009c`–`phase5a009f` after the original plan was written).
 
 **Tests:** `tests/resources/test_bindings.py`, `tests/integration/test_phase5_resources_postgres.py`.
 
-- [ ] Add environments, resource objects, immutable resource bindings and observations, plus connector-blocker records.
-- [ ] Enforce project/environment/AWS-connector ownership using composite associations. Reject duplicate active mappings for the same project/environment/account/region/bucket.
-- [ ] Add `cloud_observation` artifact support and only `waiting_connector` to the run status constraint.
-- [ ] Implement bounded owned environment/resource setup and observation listing; do not discover resources from AWS.
-- [ ] Resource bindings contain explicit account, region, bucket and expected owner. They remain locators, not proof of existence.
-- [ ] Observation metadata may list retained evidence references but must not broaden existing conversation artifact access.
-- [ ] Protect downgrade when resource, observation or waiting-run data exists.
+- [x] Add environments, resource objects, immutable resource bindings and observations, plus connector-blocker records.
+- [x] Enforce project/environment/AWS-connector ownership using composite associations. Reject duplicate active mappings for the same project/environment/account/region/bucket.
+- [x] Add `cloud_observation` artifact support and only `waiting_connector` to the run status constraint.
+- [x] Implement bounded owned environment/resource setup and observation listing; do not discover resources from AWS.
+- [x] Resource bindings contain explicit account, region, bucket and expected owner. They remain locators, not proof of existence.
+- [x] Observation metadata may list retained evidence references but must not broaden existing conversation artifact access.
+- [x] Protect downgrade when resource, observation or waiting-run data exists.
 
 **Commit deliverable:** Stable owned resource identities reusable by later provisioning.
 
