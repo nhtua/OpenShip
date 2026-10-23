@@ -40,6 +40,7 @@ from src.openship.capabilities.definitions import (
     register_tool_definition,
     unregister_tool_definition,
 )
+from src.openship.capabilities.models import ToolPolicyState
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.connectors.aws.broker import AwsRoleBroker
@@ -135,6 +136,10 @@ def database_sessions(request, tmp_path):
         )
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    if engine.dialect.name == "sqlite":
+        with sessions() as db:
+            db.add(ToolPolicyState(id=1, revision=1))
+            db.commit()
     try:
         yield sessions
     finally:
@@ -476,6 +481,9 @@ def sqlite_worker_sessions(tmp_path):
     )
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with sessions() as db:
+        db.add(ToolPolicyState(id=1, revision=1))
+        db.commit()
     try:
         yield sessions
     finally:

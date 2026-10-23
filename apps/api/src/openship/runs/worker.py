@@ -31,6 +31,7 @@ from ..capabilities.contracts import (
     ToolInvocationContext,
     decode_execution_config,
 )
+from ..capabilities.policy import read_effective_tool_policy
 from ..chat.models import Conversation, Message
 from ..config import settings
 from ..connectors.blockers import park_connector_wait
@@ -311,7 +312,8 @@ class Worker:
         return job is None or job.fence != fence
 
     def _refresh_tool_availability(self, db) -> None:
-        observations = observe_tool_availability(enabled_ids=settings.enabled_tool_ids)
+        policy = read_effective_tool_policy(db)
+        observations = observe_tool_availability(enabled_ids=policy.effective_ids)
         publish_tool_availability(db, self.worker_id, observations)
         db.commit()
 
@@ -811,6 +813,7 @@ class Worker:
             thread_id = f"{run_id}-{claim.checkpoint_ns}"
             if agent_execution is not None:
                 state["execution_configuration"] = agent_execution.model_dump_json()
+                state["tool_policy_revision"] = run.tool_policy_revision
 
             # The control and recorder are injected per invocation: neither is
             # ever serialized into graph state or a checkpoint.

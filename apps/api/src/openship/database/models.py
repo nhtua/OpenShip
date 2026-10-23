@@ -2,6 +2,11 @@
 # Order matters for FK resolution: users → projects → conversations → runs → others
 from ..artifacts.models import Artifact, ArtifactQuota
 from ..auth.models import Base, User
+from ..capabilities.models import (
+    ToolPolicyAuditEvent,
+    ToolPolicyOverride,
+    ToolPolicyState,
+)
 from ..chat.models import Conversation, Message
 from ..connectors.models import (
     Connector,
@@ -65,5 +70,8 @@ __all__ = [
     "ToolAttempt",
     "ToolAvailability",
     "ToolOperation",
+    "ToolPolicyAuditEvent",
+    "ToolPolicyOverride",
+    "ToolPolicyState",
     "User",
 ]

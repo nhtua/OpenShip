@@ -354,9 +354,15 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
     return (*builtins, *registered)
 
 
+def list_installed_tool_definitions() -> tuple[CapabilityManifestLike, ...]:
+    """List maintained definitions installed by this distribution."""
+    return list_capability_manifests()
+
+
 def list_capabilities(
     *,
     enabled_ids: frozenset[str] | None = None,
+    deployment_restricted_ids: frozenset[str] | None = None,
     availability: Mapping[str, bool | tuple[bool, str | None]] | None = None,
     credential_check: Callable[[str], bool] = credential_binding_present,
 ) -> tuple[CapabilitySummary, ...]:
@@ -365,12 +371,25 @@ def list_capabilities(
         from src.openship.config import settings
 
         enabled_ids = settings.enabled_tool_ids
-    manifests = list_capability_manifests()
+    manifests = list_installed_tool_definitions()
+    if deployment_restricted_ids is None:
+        from src.openship.config import settings
+
+        ceiling = settings.tool_enabled_ceiling
+        deployment_restricted_ids = (
+            frozenset(item.id for item in manifests) - ceiling
+            if ceiling is not None
+            else frozenset()
+        )
     summaries = []
     for manifest in manifests:
         enabled = manifest.id in enabled_ids
         if not enabled:
-            available, reason = False, "disabled"
+            available, reason = (
+                (False, "deployment_restricted")
+                if manifest.id in deployment_restricted_ids
+                else (False, "disabled")
+            )
         elif availability is not None:
             observed = availability.get(manifest.id, (False, "runtime_unavailable"))
             if isinstance(observed, tuple):
@@ -403,6 +422,7 @@ def list_capabilities(
                 output_schema=manifest.output_schema,
                 effect=manifest.effect,
                 enabled=enabled,
+                deployment_restricted=manifest.id in deployment_restricted_ids,
                 available=available,
                 unavailable_reason=reason,
             )

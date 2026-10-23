@@ -64,6 +64,9 @@ class Run(Base):
     # Digest of the original user-visible submission semantics. Null means
     # this run predates tool-mode request pinning and must remain unknown.
     submission_digest = Column(String(64), nullable=True)
+    # Revision of the shared tool policy when a tool-enabled run was queued.
+    # Null keeps pre-Phase-5B history explicitly unknown.
+    tool_policy_revision = Column(Integer, nullable=True)
 
     __table_args__ = (
         CheckConstraint(

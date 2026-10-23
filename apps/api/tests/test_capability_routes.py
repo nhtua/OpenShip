@@ -64,10 +64,11 @@ def test_catalog_auth_and_secret_redaction(monkeypatch):
     assert all(not item.available for item in summary)
     assert by_id["brave_web_search"].unavailable_reason == "runtime_unavailable"
     assert by_id["tavily_web_search"].unavailable_reason == "runtime_unavailable"
-    assert by_id["workspace_list_files"].unavailable_reason == "disabled"
-    assert by_id["workspace_read_file"].unavailable_reason == "disabled"
-    assert by_id["aws_check_connection"].unavailable_reason == "disabled"
-    assert by_id["aws_s3_bucket_storage"].unavailable_reason == "disabled"
+    assert by_id["workspace_list_files"].unavailable_reason == "deployment_restricted"
+    assert by_id["workspace_read_file"].unavailable_reason == "deployment_restricted"
+    assert by_id["aws_check_connection"].unavailable_reason == "deployment_restricted"
+    assert by_id["aws_s3_bucket_storage"].unavailable_reason == "deployment_restricted"
+    assert by_id["workspace_list_files"].deployment_restricted is True
     assert sentinel not in body
     assert "credential_binding_ref" not in body
     assert "BRAVE_SEARCH_API_KEY" not in body
@@ -86,9 +87,9 @@ def test_catalog_only_checks_presence_not_key_values(monkeypatch):
     assert catalog["brave_web_search"].available is True
     assert catalog["brave_web_search"].unavailable_reason is None
     assert catalog["tavily_web_search"].available is False
-    assert catalog["tavily_web_search"].unavailable_reason == "disabled"
-    assert catalog["workspace_list_files"].unavailable_reason == "disabled"
-    assert catalog["workspace_read_file"].unavailable_reason == "disabled"
+    assert catalog["tavily_web_search"].unavailable_reason == "deployment_restricted"
+    assert catalog["workspace_list_files"].unavailable_reason == "deployment_restricted"
+    assert catalog["workspace_read_file"].unavailable_reason == "deployment_restricted"
 
 
 def test_project_catalog_reports_permission_separately_from_connector_readiness(

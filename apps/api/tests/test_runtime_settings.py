@@ -38,7 +38,10 @@ def _build_tool_execution(model_config, monkeypatch):
     monkeypatch.setattr(service, "_connector_rows_for_project", lambda *_args: 0)
     db = SessionLocal()
     try:
-        return service._tool_chat_execution(db, uuid.uuid4(), model_config, (), {})
+        execution, _policy_revision = service._tool_chat_execution(
+            db, uuid.uuid4(), model_config, (), {}
+        )
+        return execution
     finally:
         db.close()
 

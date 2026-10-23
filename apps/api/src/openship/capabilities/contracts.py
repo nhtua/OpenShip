@@ -157,9 +157,16 @@ class CapabilitySummary(FrozenModel):
     output_schema: dict[str, Any]
     effect: Literal["read_only_external", "read_only_local"]
     enabled: StrictBool
+    deployment_restricted: StrictBool = False
     available: StrictBool
     unavailable_reason: (
-        Literal["disabled", "missing_credentials", "runtime_unavailable"] | None
+        Literal[
+            "disabled",
+            "deployment_restricted",
+            "missing_credentials",
+            "runtime_unavailable",
+        ]
+        | None
     ) = None
 
 
@@ -173,6 +180,20 @@ class ProjectCapabilitySummary(FrozenModel):
     output_schema: dict[str, Any]
     effect: Literal["read_only_external", "read_only_local"]
     permitted: StrictBool
+    policy_enabled: StrictBool = True
+    deployment_restricted: StrictBool = False
+    unavailable_reason: (
+        Literal[
+            "disabled_by_operator",
+            "deployment_restricted",
+            "runtime_unavailable",
+            "connector_required",
+            "connector_ambiguous",
+            "target_required",
+            "policy_unavailable",
+        ]
+        | None
+    ) = None
     required_connector_kinds: tuple[str, ...] = ()
     connector_readiness: dict[
         str, Literal["ready", "required", "ambiguous", "unavailable"]

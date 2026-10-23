@@ -28,6 +28,10 @@ from src.openship.capabilities.contracts import (
     decode_execution_config,
 )
 from src.openship.capabilities.definitions import get_tool_definition
+from src.openship.capabilities.policy import (
+    ToolPolicyError,
+    require_current_tool_policy,
+)
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.connectors.aws.broker import AwsRoleBroker
@@ -59,6 +63,18 @@ from .publication import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _require_operation_policy(db, operation: ToolOperation):
+    try:
+        return require_current_tool_policy(
+            db,
+            frozenset({operation.capability_id}),
+            pinned_revision=operation.tool_policy_revision,
+            lock=True,
+        )
+    except ToolPolicyError:
+        raise ToolPublicationError("disabled") from None
 
 _PRE_DISPATCH_MESSAGES = {
     "missing_credentials": "The selected search tool is missing its operator credential.",
@@ -541,7 +557,8 @@ class ToolGateway:
             ):
                 raise ToolPublicationError("changed")
             try:
-                manifest = resolve_capability(ref, settings.enabled_tool_ids)
+                policy = _require_operation_policy(db, operation)
+                manifest = resolve_capability(ref, policy.effective_ids)
             except CapabilityError as exc:
                 code = exc.code
                 if code not in ("disabled", "changed"):
@@ -627,6 +644,7 @@ class ToolGateway:
                             None,
                             None,
                         )
+                _require_operation_policy(db, operation)
                 slot = acquire_execution_slot(db, claim, operation_id)
                 if slot is None:
                     db.rollback()
@@ -664,6 +682,11 @@ class ToolGateway:
                 raise
             except ToolPublicationError as refused:
                 db.rollback()
+                if refused.code == "disabled":
+                    result = await self._finish_before_dispatch_async(
+                        claim, operation_id, "disabled"
+                    )
+                    return operation_id, result, None, None
                 return (
                     operation_id,
                     self._interrupted(operation_id, refused.code),
@@ -915,6 +938,7 @@ class ToolGateway:
             )
             if operation is None:
                 raise ToolPublicationError("execution_interrupted")
+            policy = _require_operation_policy(db, operation)
             pinned_ref = next(
                 (
                     item
@@ -928,7 +952,7 @@ class ToolGateway:
             if pinned_ref is None:
                 raise ToolPublicationError("changed")
             try:
-                manifest = resolve_capability(pinned_ref, settings.enabled_tool_ids)
+                manifest = resolve_capability(pinned_ref, policy.effective_ids)
             except CapabilityError as refused:
                 code = (
                     refused.code
@@ -1004,6 +1028,12 @@ class ToolGateway:
     def _publish_local(self, *, claim, operation_id, attempt_id, result, definition):
         db = self._session_factory()
         try:
+            operation = (
+                db.query(ToolOperation).filter(ToolOperation.id == operation_id).first()
+            )
+            if operation is None:
+                raise ToolPublicationError("execution_interrupted")
+            _require_operation_policy(db, operation)
             published = publish_local_tool_result(
                 db, claim, attempt_id, result, definition
             )

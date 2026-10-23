@@ -31,6 +31,7 @@ from ..capabilities.contracts import (
     canonical_digest,
 )
 from ..capabilities.definitions import get_tool_definition
+from ..capabilities.policy import read_effective_tool_policy
 from ..chat.lifecycle import ConversationLifecycleError, get_owned_conversation_scope
 from ..chat.models import Conversation, Message
 from ..config import settings
@@ -458,7 +459,18 @@ def _tool_chat_execution(
                 },
             )
 
-    enabled_ids = settings.enabled_tool_ids
+    policy = read_effective_tool_policy(db, lock=True)
+    if not policy.state_available:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "code": "tool_policy_unavailable",
+                    "message": "Managed tool availability is unavailable",
+                }
+            },
+        )
+    enabled_ids = policy.effective_ids
     refs: list[CapabilityRef] = []
     binding_refs: list[str] = []
     connector_refs: list[ConnectorRef] = []
@@ -629,24 +641,30 @@ def _tool_chat_execution(
             ),
         }
         if preferred_search_kind is not None:
-            return ExecutionConfigV3(
-                **execution_fields,
-                preferred_search_kind=preferred_search_kind,
+            return (
+                ExecutionConfigV3(
+                    **execution_fields,
+                    preferred_search_kind=preferred_search_kind,
+                ),
+                policy.revision,
             )
-        return ExecutionConfigV2(**execution_fields)
+        return ExecutionConfigV2(**execution_fields), policy.revision
 
-    return ExecutionConfig(
-        graph_kind="chat",
-        graph_version=2,
-        allowed_capabilities=tuple(refs),
-        selected_artifacts=artifact_refs,
-        credential_binding_refs=tuple(binding_refs),
-        loop_limits=LoopLimits(
-            deadline_seconds=min(
-                settings.workflow_run_timeout_seconds,
-                int(model_config.limits.run_timeout_seconds),
-            )
+    return (
+        ExecutionConfig(
+            graph_kind="chat",
+            graph_version=2,
+            allowed_capabilities=tuple(refs),
+            selected_artifacts=artifact_refs,
+            credential_binding_refs=tuple(binding_refs),
+            loop_limits=LoopLimits(
+                deadline_seconds=min(
+                    settings.workflow_run_timeout_seconds,
+                    int(model_config.limits.run_timeout_seconds),
+                )
+            ),
         ),
+        policy.revision,
     )
 
 
@@ -821,7 +839,7 @@ def submit_turn(
                 }
             },
         )
-    execution = (
+    execution_and_policy = (
         _tool_chat_execution(
             db,
             conv.project_id,
@@ -832,6 +850,9 @@ def submit_turn(
         )
         if enable_tools
         else None
+    )
+    execution, tool_policy_revision = (
+        execution_and_policy if execution_and_policy is not None else (None, None)
     )
     admitted_context_ids = ()
     if execution is not None and getattr(execution, "connector_refs", ()):
@@ -866,6 +887,7 @@ def submit_turn(
         execution_configuration=execution.model_dump_json()
         if execution is not None
         else None,
+        tool_policy_revision=tool_policy_revision,
         submission_digest=submission_digest,
     )
     db.add(run)
@@ -1045,8 +1067,15 @@ def submit_tool_run(
             "Another run is already active on this conversation",
         )
 
+    policy = read_effective_tool_policy(db, lock=True)
+    if not policy.state_available:
+        raise _tool_command_error(
+            503,
+            "tool_policy_unavailable",
+            "Managed tool availability is unavailable",
+        )
     try:
-        manifest = resolve_capability(command.capability, settings.enabled_tool_ids)
+        manifest = resolve_capability(command.capability, policy.effective_ids)
         definition = get_tool_definition(manifest)
         normalized_arguments = definition.validate_arguments(command.arguments)
     except CapabilityError as refused:
@@ -1185,6 +1214,7 @@ def submit_tool_run(
         kind="tool",
         graph_version=graph_version,
         execution_configuration=execution.model_dump_json(),
+        tool_policy_revision=policy.revision,
         status="queued",
         attempt=0,
         fence=0,

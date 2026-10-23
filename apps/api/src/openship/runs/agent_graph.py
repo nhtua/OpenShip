@@ -19,7 +19,10 @@ from ..capabilities.contracts import (
     decode_execution_config,
 )
 from ..capabilities.definitions import get_tool_definition
-from ..config import settings
+from ..capabilities.policy import (
+    policy_changed_for_capabilities_since,
+    read_effective_tool_policy,
+)
 from ..execution.errors import CapabilityError
 from ..providers.contracts import (
     ChatMessage,
@@ -40,6 +43,7 @@ class AgentState(TypedDict):
     conversation_id: str
     model_configuration: str
     execution_configuration: str
+    tool_policy_revision: int | None
     assistant_response: str
     usage: dict | None
     finish_reason: str
@@ -56,15 +60,16 @@ def _messages(state: AgentState) -> list[ChatMessage]:
         ) from invalid
 
 
-def _available_tools(execution: ExecutionConfigLike) -> tuple[ToolDefinition, ...]:
+def _available_tools(
+    execution: ExecutionConfigLike, enabled_ids: frozenset[str]
+) -> tuple[ToolDefinition, ...]:
     """Expose only still-enabled, unchanged capabilities pinned to this run."""
-    enabled = settings.enabled_tool_ids
     definitions = []
     for ref in execution.allowed_capabilities:
-        if ref.id not in enabled:
+        if ref.id not in enabled_ids:
             continue
         try:
-            manifest = resolve_capability(ref, enabled)
+            manifest = resolve_capability(ref, enabled_ids)
         except (
             CapabilityError
         ) as refused:  # manifest changes must stop before model dispatch.
@@ -176,7 +181,23 @@ def build_agent_graph(
 
         for model_turn_ordinal in range(execution.loop_limits.max_model_turns):
             invocation.control.raise_if_stopped()
-            definitions = _available_tools(execution)
+            with invocation.session_factory() as db:
+                policy = read_effective_tool_policy(db)
+                if not policy.state_available:
+                    raise ProviderError("unsupported_capability")
+                revision = state.get("tool_policy_revision")
+                changed_ids = {
+                    ref.id
+                    for ref in execution.allowed_capabilities
+                    if policy_changed_for_capabilities_since(
+                        db,
+                        frozenset({ref.id}),
+                        revision,
+                        current_revision=policy.revision,
+                    )
+                }
+                enabled_ids = policy.effective_ids - changed_ids
+            definitions = _available_tools(execution, enabled_ids)
             request = ModelRequest(
                 messages=tuple(messages),
                 tools=definitions,

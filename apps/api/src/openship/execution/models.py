@@ -41,6 +41,7 @@ class ToolOperation(Base):
     credential_binding_ref = Column(String(128), nullable=True)
     configuration_revision = Column(String(64), nullable=False)
     execution_bundle_digest = Column(String(64), nullable=False)
+    tool_policy_revision = Column(Integer, nullable=True)
     status = Column(String(24), nullable=False, server_default="admitted")
     error_code = Column(String(64), nullable=True)
     result_json = Column(Text, nullable=True)

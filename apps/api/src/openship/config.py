@@ -20,9 +20,47 @@ class Settings(BaseSettings):
     model_context_tokens: int = Field(default=128000, ge=1)
     model_max_context_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
 
-    # Maintained Phase 4 tools. Credentials are separate fixed environment bindings.
-    tool_enabled_ids: str = ""
+    # Optional deployment ceiling for maintained tools. Unset leaves normal
+    # enablement to the persisted operator policy; an explicit empty value
+    # preserves a legacy chat-only deployment.
+    tool_enabled_ids: str | None = None
     tool_concurrency: int = Field(default=1, ge=1, le=128)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        # Keep the existing ignore-empty behavior for every setting except
+        # TOOL_ENABLED_IDS, where an explicit empty string means an empty
+        # deployment ceiling. Pydantic constructs both sources using the
+        # model-wide ignore-empty flag, so reload and filter their values here.
+        for source in (env_settings, dotenv_settings):
+            source.env_ignore_empty = False
+            loaded = source._load_env_vars()
+            filtered = {}
+            prefix = (source.env_prefix or "").lower()
+            for key, value in loaded.items():
+                normalized = key.lower()
+                if prefix and normalized.startswith(prefix):
+                    normalized = normalized[len(prefix) :]
+                if value == "" and normalized != "tool_enabled_ids":
+                    continue
+                filtered[key] = value
+            source.env_vars = filtered
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
+
+    @property
+    def tool_enabled_ceiling(self) -> frozenset[str] | None:
+        if self.tool_enabled_ids is None:
+            return None
+        return frozenset(
+            item.strip() for item in self.tool_enabled_ids.split(",") if item.strip()
+        )
 
     # Managed Connector keys are provisioned separately and read lazily by
     # credential setup/dispatch. Missing files do not affect plain chat.
@@ -87,8 +125,14 @@ class Settings(BaseSettings):
 
     @property
     def enabled_tool_ids(self) -> frozenset[str]:
+        """Compatibility view; authorization callers must use persisted policy."""
+        ceiling = self.tool_enabled_ceiling
+        if ceiling is not None:
+            return ceiling
+        from src.openship.capabilities.catalog import list_installed_tool_definitions
+
         return frozenset(
-            item.strip() for item in self.tool_enabled_ids.split(",") if item.strip()
+            item.id for item in list_installed_tool_definitions()
         )
 
 

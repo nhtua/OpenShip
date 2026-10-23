@@ -25,6 +25,7 @@ from ..capabilities.definitions import (
     get_tool_definition,
     get_tool_definition_by_id,
 )
+from ..capabilities.policy import ToolPolicyError, require_current_tool_policy
 from ..chat.models import Conversation
 from ..config import settings
 from ..runs.models import Run, RunJob
@@ -189,9 +190,23 @@ def admit_operation(
         return existing
 
     try:
-        manifest = resolve_capability(ref, settings.enabled_tool_ids)
+        policy = require_current_tool_policy(
+            db,
+            frozenset({ref.id}),
+            pinned_revision=run.tool_policy_revision,
+            lock=True,
+        )
+        manifest = resolve_capability(ref, policy.effective_ids)
         definition = get_tool_definition(manifest)
         normalized = definition.validate_arguments(arguments).model_dump(mode="json")
+    except ToolPolicyError as refused:
+        if refused.code == "tool_policy_unavailable":
+            raise _refused(
+                503, refused.code, "Managed tool availability is unavailable"
+            ) from None
+        raise _refused(
+            422, "disabled", "The requested tool is disabled for this installation"
+        ) from None
     except CapabilityError as refused:
         raise _refused(422, refused.code, str(refused)) from refused
     except LookupError as refused:
@@ -220,6 +235,7 @@ def admit_operation(
             "capability": ref.model_dump(mode="json"),
             "arguments": normalized,
             "inputs": input_refs,
+            "tool_policy_revision": policy.revision,
             "execution_configuration_digest": canonical_digest(
                 json.loads(run.execution_configuration) if run.execution_configuration else {}
             ),
@@ -241,6 +257,7 @@ def admit_operation(
         credential_binding_ref=getattr(manifest, "credential_binding_ref", None),
         configuration_revision=manifest.manifest_digest,
         execution_bundle_digest=bundle_digest,
+        tool_policy_revision=policy.revision,
         status="admitted",
     )
     db.add(operation)
