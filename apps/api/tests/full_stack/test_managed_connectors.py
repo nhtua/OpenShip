@@ -941,7 +941,9 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
         assert revoked_run["status"] == "failed"
         revoked_operation = revoked_run["operations"][0]
         assert revoked_operation["status"] == "failed"
-        assert revoked_operation["error_code"] == "connector_revoked"
+        # Revoke hard-deletes the setup, so a pinned reference is now outside
+        # the project's visible connector scope when the worker rechecks it.
+        assert revoked_operation["error_code"] == "connector_scope_denied"
         assert revoked_operation["result"] is None
         assert revoked_operation["artifacts"] == []
         calls_before_revoked_retry = len(_read_calls(call_log))
@@ -955,7 +957,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
             connector_id=global_brave["id"],
         )
         assert retry_status == 422
-        assert retry["error"]["code"] == "connector_revoked"
+        assert retry["error"]["code"] == "connector_scope_denied"
         time.sleep(0.2)
         assert len(_read_calls(call_log)) == calls_before_revoked_retry
 
