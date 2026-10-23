@@ -210,8 +210,8 @@ test('unprovisioned connector setup explains a missing HMAC file and blocks writ
 
   await page.goto('/connectors')
   await expect(page.getByText(/idempotency HMAC key file is missing or invalid/)).toBeVisible()
-  await page.getByRole('button', { name: 'Configure Shared Brave from browser' }).click()
+  await page.locator('[data-kind="tavily"][data-visibility="global"] button').first().click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog.getByRole('button', { name: 'Rotate API key' })).toBeDisabled()
+  await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled()
   expect(creates).toBe(0)
 })
