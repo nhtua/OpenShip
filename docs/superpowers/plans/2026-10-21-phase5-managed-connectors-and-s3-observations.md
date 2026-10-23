@@ -224,14 +224,14 @@ credentials and protocol-compatible transports until then.
 
 **Tests:** `tests/execution/test_aws_sdk.py`, `test_aws_transport.py`, existing search transport tests.
 
-- [ ] Add boto3 and keep the already-declared cryptography dependency explicit; freeze compatible versions in the lockfile and check Python 3.11–3.13.
-- [ ] Implement `AwsSdkContext.client(service)` and `await AwsSdkContext.run(method, **parameters)`.
-- [ ] Use one isolated transport adapter implementing botocore’s HTTP-session boundary. Its synchronous `send` delegates network I/O to the bounded asynchronous HTTP transport and returns a bounded `AWSResponse`.
-- [ ] Run SDK calls in a bounded executor. Bridge to the worker event loop without blocking it; cancellation cancels active transport futures and prevents subsequent requests.
-- [ ] Keep serialization, signing and response parsing inside the SDK. Isolate the botocore transport integration behind compatibility tests because it uses an internal SDK seam. See [Botocore endpoint](https://raw.githubusercontent.com/boto/botocore/develop/botocore/endpoint.py) and [response contract](https://raw.githubusercontent.com/boto/botocore/develop/botocore/awsrequest.py).
-- [ ] Construct clients with explicit credentials/region/endpoints, no environment proxy inheritance, no ambient credential lookup, standard retries with `total_max_attempts=1`, and no automatic paginators/waiters.
-- [ ] Configure regional STS/CloudWatch/S3 endpoints, path-style S3 addressing and public-address pinning. Reject redirects, region redirection, custom endpoints, metadata access and unsupported streaming operations.
-- [ ] Enforce the shared 30-second deadline, eight physical requests and 2 MiB decompressed response limit before SDK parsing. Hold executor capacity until cancelled work actually stops; do not free capacity while a background request continues.
+- [x] Add boto3 and keep the already-declared cryptography dependency explicit; freeze compatible versions in the lockfile and validate Python 3.11–3.13 resolution.
+- [x] Implement `AwsSdkContext.client(service)` and `await AwsSdkContext.run(method, **parameters)`.
+- [x] Use one isolated transport adapter implementing botocore’s HTTP-session boundary. Its synchronous `send` delegates network I/O to the bounded asynchronous HTTP transport and returns a bounded `AWSResponse`.
+- [x] Run SDK calls in a bounded executor. Bridge to the worker event loop without blocking it; cancellation cancels active transport futures and prevents subsequent requests.
+- [x] Keep serialization, signing and response parsing inside the SDK. Isolate the botocore transport integration behind compatibility tests because it uses an internal SDK seam. See [Botocore endpoint](https://raw.githubusercontent.com/boto/botocore/develop/botocore/endpoint.py) and [response contract](https://raw.githubusercontent.com/boto/botocore/develop/botocore/awsrequest.py).
+- [x] Construct clients with explicit credentials/region/endpoints, no environment proxy inheritance, no ambient credential lookup, standard retries with `total_max_attempts=1`, and no automatic paginators/waiters.
+- [x] Configure regional STS/CloudWatch/S3 endpoints, path-style S3 addressing and public-address pinning. Reject redirects, region redirection, custom endpoints, metadata access and unsupported streaming operations.
+- [x] Enforce the shared 30-second deadline, eight physical requests and 2 MiB decompressed response limit before SDK parsing. Hold executor capacity until cancelled work actually stops; do not free capacity while a background request continues.
 
 **Critical tests:** Real SDK encoding/decoding through the adapter; oversized successful/error/STS responses; compressed expansion; DNS rebinding; proxy variables; redirect/retry attempts; cancellation during reads; slot saturation; safe errors containing no signed headers or STS bodies.
 
@@ -405,4 +405,4 @@ Required acceptance evidence includes nonzero tests, zero required skips, synthe
 - Existing personal projects remain the project model; global reuse is demonstrated across distinct owners’ projects.
 - Native SDK transport integration is pinned and compatibility-tested. It does not claim compatibility with arbitrary future SDK versions or streaming operations.
 - Each acceptance unit includes its own operational documentation and qualification record.
-- Implementation has not started. The recommended execution method is native, sequential work because schema, credential, gateway and worker changes share tightly dependent interfaces.
+- 5A.1 is accepted and Tasks 8–14 are in sequential implementation. Keep schema, credential, gateway and worker changes on the shared interfaces above; stop at the 5A.2 acceptance gate before beginning 5B.
