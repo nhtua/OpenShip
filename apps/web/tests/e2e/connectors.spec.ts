@@ -72,6 +72,51 @@ test('an uncertain connector write clears the key, checks status, and never rese
   expect(await page.locator('body').innerText()).not.toContain('sample')
 })
 
+test('opening another connector kind resets the retained dialog state', async ({ page }) => {
+  await clearApiRoutes(page)
+  await mockApi(page)
+  await setAuthToken(page)
+
+  const connectors: Record<string, unknown>[] = []
+  await page.route('**/api/connectors/setup-context', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ can_manage_global: true, credential_store_ready: true, unavailable_reason: null }),
+  }))
+  await page.route('**/api/global-connectors', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(connectors) })
+      return
+    }
+    const request = route.request().postDataJSON() as { kind: string; name: string }
+    const connector = {
+      id: `created-${request.kind}`,
+      kind: request.kind,
+      visibility: 'global',
+      name: request.name,
+      status: 'configured',
+      revision: 1,
+      is_default: false,
+    }
+    connectors.push(connector)
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(connector) })
+  })
+
+  await page.goto('/connectors')
+  await page.getByRole('button', { name: 'Configure Brave Search' }).click()
+  let dialog = page.getByRole('dialog')
+  await dialog.getByLabel('Connector name').fill('Shared Brave')
+  await dialog.getByLabel('Brave Search API key').fill('sample-brave')
+  await dialog.getByRole('button', { name: 'Add global connector' }).click()
+  await expect(dialog.getByTestId('connector-status')).toContainText('Configured')
+  await dialog.getByRole('button', { name: 'Close connector details' }).click()
+
+  await page.getByRole('button', { name: 'Configure Tavily Search' }).click()
+  dialog = page.getByRole('dialog')
+  await expect(dialog.getByLabel('Connector name')).toHaveValue('Tavily Search')
+  await expect(dialog.getByLabel('Tavily Search API key')).toBeVisible()
+})
+
 test('the operator sees global instance controls only after setup context allows management', async ({ page }) => {
   await clearApiRoutes(page)
   await mockApi(page)

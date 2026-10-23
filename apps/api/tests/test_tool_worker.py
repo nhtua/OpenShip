@@ -236,7 +236,9 @@ def test_expired_dispatched_tool_is_interrupted_and_never_requeued():
         db.refresh(job)
         db.refresh(operation)
         db.refresh(attempt)
-        assert reclaimed == 1
+        # Reconciliation is installation-wide, so another stale lease may be
+        # reclaimed during the same pass in a shared test database.
+        assert reclaimed >= 1
         assert run.status == "failed"
         assert run.error_code == "execution_interrupted"
         assert operation.status == "interrupted"

@@ -67,7 +67,7 @@ const credentialScopeKey = computed(() => props.scope === 'global'
   : `project:${props.projectId ?? 'missing-project'}:credential:${currentConnector.value?.id ?? 'missing-connector'}`,
 )
 
-watch(() => props.connector, (connector) => {
+watch(() => [props.entry.kind, props.scope, props.projectId, props.connector] as const, ([, , , connector]) => {
   currentConnector.value = connector
 }, { immediate: true })
 
