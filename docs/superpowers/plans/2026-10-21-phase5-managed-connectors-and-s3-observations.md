@@ -140,12 +140,12 @@ Each condition must have an explicit owning test:
 
 **Tests:** `tests/connectors/test_search_broker.py`, `tests/test_managed_search_commands.py`, `tests/integration/test_managed_search_postgres.py`.
 
-- [ ] Implement broker acquisition for a selected search connector. Supply only that service’s key through the existing restricted resolver pattern.
-- [ ] Add managed tool graph v2 and chat graph v3. Persist resolved connector/credential references and exact submitted selections in command/configuration digests.
-- [ ] Recheck current connector state, eligibility and credential revocation before dispatch and publication, including cached access.
-- [ ] Make capability discovery project-aware while retaining the legacy installation catalog for existing clients. Expose readiness separately from permission.
-- [ ] Keep plain chat independent of managed credential-store readiness. Offer automatic tools from the project’s resolved capability set; missing unrelated connectors must not block plain chat or workspace tools.
-- [ ] Preserve the explicit operator-key compatibility lane until migration/drain. Exact request retries return their original run rather than resolving today’s default.
+- [x] Implement broker acquisition for a selected search connector. Supply only that service’s key through the existing restricted resolver pattern.
+- [x] Add managed tool graph v2 and chat graph v3. Persist resolved connector/credential references and exact submitted selections in command/configuration digests.
+- [x] Recheck current connector state, eligibility and credential revocation before dispatch and publication, including cached access.
+- [x] Make capability discovery project-aware while retaining the legacy installation catalog for existing clients. Expose readiness separately from permission.
+- [x] Keep plain chat independent of managed credential-store readiness. Offer automatic tools from the project’s resolved capability set; missing unrelated connectors must not block plain chat or workspace tools.
+- [x] Preserve the explicit operator-key compatibility lane until migration/drain. Exact request retries return their original run rather than resolving today’s default.
 
 **Critical tests:** One global key used from two projects with separate evidence; different project keys remain isolated; disable/revoke during dispatch rejects late publication; no secrets in graph/checkpoint/transcript/result surfaces.
 
@@ -195,7 +195,7 @@ Each condition must have an explicit owning test:
 - [x] Scan database records, captured HTTP responses, logs, events, checkpoints and artifacts for synthetic secret sentinels.
 - [x] Extend CI selectors so connector integration/full-stack tests actually run; required lanes must have nonzero tests and zero required skips.
 - [x] Demonstrate global reuse, project isolation, replacement/revocation and reopening retained evidence.
-- [ ] Record the user's accept/revise/stop decision in the qualification record.
+- [x] Record the user's accept/revise/stop decision in the qualification record.
 
 **Gate:** Do not admit real AWS credentials or begin 5A.2 before 5A.1 acceptance.
 
@@ -211,8 +211,10 @@ renewed 5A.1 acceptance is still pending and Task 8 remains gated.
 **Requalification follow-up (2026-10-22):** The approved 5A.1 revisions have
 passed the real-stack/browser and PostgreSQL migration/lifecycle lanes with
 synthetic credentials. See the [requalification record](../testing/phase5a1-managed-connector-qualification.md)
-for commands, evidence and limits. Renewed user acceptance remains pending;
-Task 8 and AWS implementation have not started.
+for commands, evidence and limits. The user tested and accepted 5A.1 on
+2026-10-22, clearing the gate for Task 8 and 5A.2. Real AWS credentials and
+live provider calls remain separately opt-in; Task 8 onward uses synthetic
+credentials and protocol-compatible transports until then.
 
 ## 3. Tasks 8–16: AWS, observations and gated expansion
 
@@ -222,7 +224,7 @@ Task 8 and AWS implementation have not started.
 
 **Tests:** `tests/execution/test_aws_sdk.py`, `test_aws_transport.py`, existing search transport tests.
 
-- [ ] Add boto3 and explicitly declared cryptography dependencies; freeze compatible versions in the lockfile and check Python 3.11–3.13.
+- [ ] Add boto3 and keep the already-declared cryptography dependency explicit; freeze compatible versions in the lockfile and check Python 3.11–3.13.
 - [ ] Implement `AwsSdkContext.client(service)` and `await AwsSdkContext.run(method, **parameters)`.
 - [ ] Use one isolated transport adapter implementing botocore’s HTTP-session boundary. Its synchronous `send` delegates network I/O to the bounded asynchronous HTTP transport and returns a bounded `AWSResponse`.
 - [ ] Run SDK calls in a bounded executor. Bridge to the worker event loop without blocking it; cancellation cancels active transport futures and prevents subsequent requests.

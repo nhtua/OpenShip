@@ -1,18 +1,19 @@
 ---
 type: testing
 summary: Synthetic full-stack evidence and user acceptance gate for Phase 5A.1 managed search Connectors.
-status: review
+status: accepted
 date: 2026-10-22
 ---
 
 # Phase 5A.1 Managed Connector Qualification
 
-**Technical requalification: passed. User acceptance: pending.** The revised
+**Technical requalification: passed. User acceptance: accepted on 2026-10-22.** The revised
 Project Settings, Global search catalog, legacy cutover and failure-recovery
 journeys were exercised against the real API, worker, PostgreSQL and local
 artifact store. Search keys and transports were synthetic. No provider or AWS
-request was made. Do not start Task 8 or admit AWS credentials before the user
-records an acceptance decision.
+request was made. The user tested and accepted this result, authorizing the
+synthetic-only implementation work in Task 8 and 5A.2. Real AWS credentials
+and live AWS/provider requests remain separately opt-in.
 
 ## Requalification evidence
 
@@ -66,13 +67,7 @@ synthetic. No provider credential from `.env` was used.
 
 ## Acceptance decision
 
-**Decision: pending.** The user requested the 5A.1 revisions before accepting.
-Those revisions are implemented and technically requalified. Choose one:
-
-- **Accept 5A.1:** authorize starting Task 8 (AWS SDK runner), still using
-  synthetic tests until any separate live-service authorization.
-- **Revise:** identify the 5A.1 behavior or evidence that needs more work.
-- **Stop:** leave the managed search implementation as the current scope.
-
-Task 8 and AWS implementation remain unstarted. Live provider/AWS qualification
-and real AWS credentials remain outside this revision.
+**Decision: accepted on 2026-10-22.** The user tested and accepted the 5A.1
+result. Task 8 and synthetic 5A.2 implementation may proceed. Live
+provider/AWS qualification and real AWS credentials remain outside this
+authorization.
