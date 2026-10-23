@@ -825,7 +825,9 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
             item for item in project_caps.json() if item["id"] == "brave_web_search"
         )
         assert project_brave_status["permitted"] is True
-        assert project_brave_status["connector_readiness"]["brave"] == "ready"
+        # Both the shared connector and retained legacy Project connector are
+        # eligible, and this project has not selected a Brave default.
+        assert project_brave_status["connector_readiness"]["brave"] == "ambiguous"
 
         # The project's Global default selects Tavily without a manual ID.
         status, tavily_run = _submit_managed(
