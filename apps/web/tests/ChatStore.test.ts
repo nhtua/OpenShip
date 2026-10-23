@@ -436,7 +436,10 @@ describe('chat store', () => {
       body: mockStream,
     } as Response)
 
-    await chat.sendMessage('Hello', 'c1')
+    await chat.sendMessage('Hello', 'c1', {
+      enableTools: true,
+      resourceBindingSelections: ['binding-1'],
+    })
 
     // Verify the run command was posted with a client_request_id. Naming no
     // profile is what lets this installation's default answer; the browser
@@ -448,6 +451,8 @@ describe('chat store', () => {
         client_request_id: mockUuid,
         provider_profile_id: null,
         fallback_profile_ids: [],
+        enable_tools: true,
+        resource_binding_selections: ['binding-1'],
       }),
     )
 
@@ -603,6 +608,36 @@ describe('chat store', () => {
     expect(mockRunsApi.getSnapshot).toHaveBeenCalledWith('c1')
     // Verify cursor was stored
     expect(chat.cursors.get('c1')).toBe(0)
+  })
+
+  it('hydrates an exact connector blocker when a conversation reloads from its snapshot', async () => {
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1', project_id: 'p1', sequence: 0, events: [],
+        runs: [{
+          id: 'run-blocked', status: 'waiting_connector', attempt: 0,
+          started_at: null, ended_at: null, error_code: null,
+        }],
+      },
+    } as never)
+    mockRunsApi.getRun.mockResolvedValueOnce({
+      data: {
+        id: 'run-blocked', conversation_id: 'c1', status: 'waiting_connector',
+        created_at: '', attempt: 0, kind: 'chat', connector_blocker: {
+          id: 'blocker-1', request_id: 'request-1', reason: 'credential_unavailable',
+          configuration_digest: 'a'.repeat(64), expires_at: '2026-10-23T00:00:00Z',
+          connector_kind: 'aws', connector_visibility: 'project', connector_revision: 3,
+          connector_id: 'connector-aws-1',
+        },
+      },
+    } as never)
+
+    const chat = useChatStore()
+    await chat.loadConversation('c1')
+
+    expect(mockRunsApi.getRun).toHaveBeenCalledWith('run-blocked')
+    expect(chat.runCards.get('c1')?.status).toBe('waiting_connector')
+    expect(chat.runCards.get('c1')?.connector_blocker?.connector_id).toBe('connector-aws-1')
   })
 
   it('retains operations from every snapshot run and deduplicates durable refreshes per conversation', async () => {

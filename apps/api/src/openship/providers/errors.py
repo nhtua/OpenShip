@@ -32,6 +32,19 @@ SAFE_MESSAGES: Mapping[str, str] = {
         "The selected model profile does not support the requested capability. "
         "Choose a profile that declares it, or ask for text only."
     ),
+    "connector_unavailable": (
+        "A Connector pinned to this run is unavailable. Restore that exact Connector and resume, or submit a new run with a replacement."
+    ),
+    "connector_expired": (
+        "A Connector credential pinned to this run has expired. Replace it and submit a new run."
+    ),
+    "credential_store_unavailable": (
+        "The encrypted Connector credential is temporarily unavailable. Restore the credential store, then resume this run."
+    ),
+    "connector_wait_expired": (
+        "The Connector wait expired before the run was resumed. Submit a new run after restoring its Connector."
+    ),
+    "connector_dismissed": "The Connector wait was dismissed.",
     "context_limit_exceeded": (
         "The conversation is larger than the selected model's context limit. "
         "Shorten the conversation or choose a profile with a larger context."
@@ -66,9 +79,7 @@ SAFE_MESSAGES: Mapping[str, str] = {
         "The model requested another tool after this run's tool allowance ended. "
         "Start another turn to continue the search."
     ),
-    "model_interrupted": (
-        "The model stopped before completing the answer. Try again."
-    ),
+    "model_interrupted": ("The model stopped before completing the answer. Try again."),
     "execution_interrupted": (
         "The tool execution was interrupted and will not be repeated automatically."
     ),

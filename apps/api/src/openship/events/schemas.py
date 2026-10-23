@@ -6,7 +6,13 @@ from pydantic import BaseModel, Field
 
 from ..artifacts.contracts import ArtifactSummary
 from ..execution.projections import OperationSummary
-from ..runs.schemas import AttemptSummary, ErrorSummary, ModelSummary, UsageSummary
+from ..runs.schemas import (
+    AttemptSummary,
+    ConnectorBlockerSummary,
+    ErrorSummary,
+    ModelSummary,
+    UsageSummary,
+)
 
 
 class EventInput(BaseModel):
@@ -52,6 +58,7 @@ class RunSummary(BaseModel):
     provider_attempts: list[AttemptSummary] = Field(default_factory=list)
     operations: list[OperationSummary] = Field(default_factory=list)
     operations_next_cursor: str | None = None
+    connector_blocker: ConnectorBlockerSummary | None = None
 
 
 class SnapshotResponse(BaseModel):

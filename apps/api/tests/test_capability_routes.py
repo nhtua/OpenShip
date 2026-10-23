@@ -58,12 +58,16 @@ def test_catalog_auth_and_secret_redaction(monkeypatch):
         "tavily_web_search",
         "workspace_list_files",
         "workspace_read_file",
+        "aws_check_connection",
+        "aws_s3_bucket_storage",
     }
     assert all(not item.available for item in summary)
     assert by_id["brave_web_search"].unavailable_reason == "runtime_unavailable"
     assert by_id["tavily_web_search"].unavailable_reason == "runtime_unavailable"
     assert by_id["workspace_list_files"].unavailable_reason == "disabled"
     assert by_id["workspace_read_file"].unavailable_reason == "disabled"
+    assert by_id["aws_check_connection"].unavailable_reason == "disabled"
+    assert by_id["aws_s3_bucket_storage"].unavailable_reason == "disabled"
     assert sentinel not in body
     assert "credential_binding_ref" not in body
     assert "BRAVE_SEARCH_API_KEY" not in body

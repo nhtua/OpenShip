@@ -36,19 +36,25 @@ class Environment(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     name = Column(String(64), nullable=False)
     display_name = Column(String(255), nullable=False)
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         UniqueConstraint("project_id", "name", name="uq_environments_project_name"),
         Index("uq_environments_project_id", "project_id", "id", unique=True),
-        CheckConstraint("length(name) BETWEEN 1 AND 64", name="ck_environments_name_length"),
+        CheckConstraint(
+            "length(name) BETWEEN 1 AND 64", name="ck_environments_name_length"
+        ),
         CheckConstraint(
             "length(display_name) BETWEEN 1 AND 255",
             name="ck_environments_display_name_length",
@@ -63,7 +69,9 @@ class ResourceObject(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     kind = Column(String(32), nullable=False)
     uri = Column(String(255), nullable=False)
@@ -71,13 +79,17 @@ class ResourceObject(Base):
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         Index("uq_resource_objects_project_id", "project_id", "id", unique=True),
         UniqueConstraint("project_id", "uri", name="uq_resource_objects_project_uri"),
         CheckConstraint("kind = 'aws_s3_bucket'", name="ck_resource_objects_kind"),
-        CheckConstraint("length(uri) BETWEEN 1 AND 255", name="ck_resource_objects_uri"),
+        CheckConstraint(
+            "length(uri) BETWEEN 1 AND 255", name="ck_resource_objects_uri"
+        ),
         CheckConstraint(
             "length(display_name) BETWEEN 1 AND 255",
             name="ck_resource_objects_display_name",
@@ -107,7 +119,9 @@ class ResourceBinding(Base):
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     retired_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
@@ -170,20 +184,44 @@ class ResourceBinding(Base):
             postgresql_where=text("state = 'active'"),
             sqlite_where=text("state = 'active'"),
         ),
-        Index("ix_resource_bindings_connector", "project_id", "connector_id", "connector_revision"),
+        Index(
+            "ix_resource_bindings_connector",
+            "project_id",
+            "connector_id",
+            "connector_revision",
+        ),
         CheckConstraint("revision >= 1", name="ck_resource_bindings_revision"),
-        CheckConstraint("connector_revision >= 1", name="ck_resource_bindings_connector_revision"),
-        CheckConstraint("length(account_id) = 12", name="ck_resource_bindings_account_id"),
-        CheckConstraint("length(expected_owner) = 12", name="ck_resource_bindings_expected_owner"),
-        CheckConstraint("account_id = expected_owner", name="ck_resource_bindings_owner_matches_account"),
-        CheckConstraint("length(region) BETWEEN 1 AND 64", name="ck_resource_bindings_region"),
-        CheckConstraint("length(bucket_name) BETWEEN 3 AND 63", name="ck_resource_bindings_bucket_name"),
-        CheckConstraint("length(bucket_arn) BETWEEN 1 AND 255", name="ck_resource_bindings_bucket_arn"),
+        CheckConstraint(
+            "connector_revision >= 1", name="ck_resource_bindings_connector_revision"
+        ),
+        CheckConstraint(
+            "length(account_id) = 12", name="ck_resource_bindings_account_id"
+        ),
+        CheckConstraint(
+            "length(expected_owner) = 12", name="ck_resource_bindings_expected_owner"
+        ),
+        CheckConstraint(
+            "account_id = expected_owner",
+            name="ck_resource_bindings_owner_matches_account",
+        ),
+        CheckConstraint(
+            "length(region) BETWEEN 1 AND 64", name="ck_resource_bindings_region"
+        ),
+        CheckConstraint(
+            "length(bucket_name) BETWEEN 3 AND 63",
+            name="ck_resource_bindings_bucket_name",
+        ),
+        CheckConstraint(
+            "length(bucket_arn) BETWEEN 1 AND 255",
+            name="ck_resource_bindings_bucket_arn",
+        ),
         CheckConstraint(
             "management_method IN ('external', 'unknown')",
             name="ck_resource_bindings_management_method",
         ),
-        CheckConstraint("state IN ('active', 'retired')", name="ck_resource_bindings_state"),
+        CheckConstraint(
+            "state IN ('active', 'retired')", name="ck_resource_bindings_state"
+        ),
         CheckConstraint(
             "(state = 'active' AND retired_at IS NULL) OR "
             "(state = 'retired' AND retired_at IS NOT NULL)",
@@ -212,7 +250,9 @@ class ResourceObservation(Base):
     outcome = Column(String(16), nullable=False)
     evidence_artifact_id = Column(UUID(as_uuid=True), nullable=True)
     evidence_sha256 = Column(String(64), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -223,7 +263,11 @@ class ResourceObservation(Base):
         ),
         ForeignKeyConstraint(
             ["project_id", "conversation_id", "operation_id"],
-            ["tool_operations.project_id", "tool_operations.conversation_id", "tool_operations.id"],
+            [
+                "tool_operations.project_id",
+                "tool_operations.conversation_id",
+                "tool_operations.id",
+            ],
             ondelete="RESTRICT",
             name="fk_resource_observations_project_operation",
         ),
@@ -234,7 +278,12 @@ class ResourceObservation(Base):
             name="fk_resource_observations_project_object",
         ),
         ForeignKeyConstraint(
-            ["project_id", "resource_object_id", "resource_binding_id", "binding_revision"],
+            [
+                "project_id",
+                "resource_object_id",
+                "resource_binding_id",
+                "binding_revision",
+            ],
             [
                 "resource_bindings.project_id",
                 "resource_bindings.resource_object_id",
@@ -251,10 +300,24 @@ class ResourceObservation(Base):
             name="fk_resource_observations_conversation_artifact",
         ),
         Index("uq_resource_observations_project_id", "project_id", "id", unique=True),
-        Index("ix_resource_observations_resource_retrieved", "project_id", "resource_object_id", "retrieved_at", "id"),
-        Index("ix_resource_observations_conversation_created", "conversation_id", "created_at"),
-        CheckConstraint("binding_revision >= 1", name="ck_resource_observations_binding_revision"),
-        CheckConstraint("length(source) BETWEEN 1 AND 32", name="ck_resource_observations_source"),
+        Index(
+            "ix_resource_observations_resource_retrieved",
+            "project_id",
+            "resource_object_id",
+            "retrieved_at",
+            "id",
+        ),
+        Index(
+            "ix_resource_observations_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            "binding_revision >= 1", name="ck_resource_observations_binding_revision"
+        ),
+        CheckConstraint(
+            "length(source) BETWEEN 1 AND 32", name="ck_resource_observations_source"
+        ),
         CheckConstraint(
             "length(coverage_json) <= 16384",
             name="ck_resource_observations_coverage_size",
@@ -280,6 +343,9 @@ class ConnectorBlocker(Base):
     project_id = Column(UUID(as_uuid=True), nullable=False)
     conversation_id = Column(UUID(as_uuid=True), nullable=False)
     run_id = Column(UUID(as_uuid=True), nullable=False)
+    connector_kind = Column(String(32), nullable=False)
+    connector_visibility = Column(String(16), nullable=False)
+    connector_project_id = Column(UUID(as_uuid=True), nullable=True)
     connector_id = Column(UUID(as_uuid=True), nullable=False)
     connector_revision = Column(Integer, nullable=False)
     credential_version_id = Column(UUID(as_uuid=True), nullable=False)
@@ -290,7 +356,9 @@ class ConnectorBlocker(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False)
     consumed_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -300,7 +368,22 @@ class ConnectorBlocker(Base):
             name="fk_connector_blockers_project_run",
         ),
         ForeignKeyConstraint(
-            ["project_id", "connector_id", "connector_revision", "credential_version_id"],
+            ["connector_id", "connector_revision", "credential_version_id"],
+            [
+                "connector_revisions.connector_id",
+                "connector_revisions.revision",
+                "connector_revisions.credential_version_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_connector_blockers_connector_revision_identity",
+        ),
+        ForeignKeyConstraint(
+            [
+                "connector_project_id",
+                "connector_id",
+                "connector_revision",
+                "credential_version_id",
+            ],
             [
                 "connector_revisions.project_id",
                 "connector_revisions.connector_id",
@@ -310,7 +393,9 @@ class ConnectorBlocker(Base):
             ondelete="RESTRICT",
             name="fk_connector_blockers_connector_revision",
         ),
-        UniqueConstraint("project_id", "request_id", name="uq_connector_blockers_project_request"),
+        UniqueConstraint(
+            "project_id", "request_id", name="uq_connector_blockers_project_request"
+        ),
         Index(
             "uq_connector_blockers_waiting_run",
             "project_id",
@@ -320,8 +405,21 @@ class ConnectorBlocker(Base):
             sqlite_where=text("state = 'waiting'"),
         ),
         Index("ix_connector_blockers_expiry", "state", "expires_at"),
-        CheckConstraint("connector_revision >= 1", name="ck_connector_blockers_revision"),
-        CheckConstraint("length(configuration_digest) = 64", name="ck_connector_blockers_digest"),
+        CheckConstraint(
+            "connector_revision >= 1", name="ck_connector_blockers_revision"
+        ),
+        CheckConstraint(
+            "connector_kind IN ('brave', 'tavily', 'aws')",
+            name="ck_connector_blockers_connector_kind",
+        ),
+        CheckConstraint(
+            "(connector_visibility = 'global' AND connector_project_id IS NULL) OR "
+            "(connector_visibility = 'project' AND connector_project_id = project_id)",
+            name="ck_connector_blockers_connector_scope",
+        ),
+        CheckConstraint(
+            "length(configuration_digest) = 64", name="ck_connector_blockers_digest"
+        ),
         CheckConstraint(
             "reason IN ('connector_required', 'connector_ambiguous', 'connector_unavailable', "
             "'connector_expired', 'credential_store_unavailable')",

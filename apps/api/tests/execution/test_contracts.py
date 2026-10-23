@@ -28,6 +28,8 @@ def test_tool_ids_and_connector_kinds_are_independent():
         "tavily_web_search",
         "workspace_list_files",
         "workspace_read_file",
+        "aws_check_connection",
+        "aws_s3_bucket_storage",
     }
     assert manifests["brave_web_search"].connector_kinds == ("brave",)
     assert manifests["tavily_web_search"].connector_kinds == ("tavily",)

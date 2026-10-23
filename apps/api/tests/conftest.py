@@ -24,9 +24,7 @@ test_engine = create_engine(
     _TEST_DATABASE_URL,
     connect_args={"check_same_thread": False},
 )
-TestSessionLocal = sessionmaker(
-    autocommit=False, autoflush=False, bind=test_engine
-)
+TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 # Patch the module so that get_db() uses our test engine.
 db_session.engine = test_engine
@@ -57,6 +55,8 @@ def setup_db(request):
         or "test_tool_transcript_postgres" in test_path
         or "test_agent_tool_loop_postgres" in test_path
         or "test_phase5_resources_postgres" in test_path
+        or "test_cloud_observation_publication_postgres" in test_path
+        or "test_connector_resume_postgres" in test_path
     ):
         yield
         return
@@ -191,6 +191,7 @@ def cleanup_global_connector_fixtures(setup_db):
 def client():
     """Create a FastAPI test client."""
     from src.openship.main import app
+
     return TestClient(app)
 
 
@@ -199,15 +200,19 @@ def auth_token(client: TestClient, request) -> str:
     """Register a user and return an auth token."""
     # Use unique username per test to avoid conflicts
     import hashlib
+
     test_name = request.node.name
     short_id = hashlib.md5(test_name.encode()).hexdigest()[:8]
     username = f"tuser_{short_id}"
     email = f"tuser_{short_id}@example.com"
-    response = client.post("/api/auth/register", json={
-        "username": username,
-        "email": email,
-        "password": "password123",
-    })
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "username": username,
+            "email": email,
+            "password": "password123",
+        },
+    )
     assert response.status_code == 201, f"Failed to register user: {response.text}"
     return response.json()["access_token"]
 
@@ -216,6 +221,7 @@ def auth_token(client: TestClient, request) -> str:
 def authorized_client(client: TestClient, auth_token: str):
     """Return headers with Bearer token for authenticated requests."""
     return {"Authorization": f"Bearer {auth_token}"}
+
 
 # --- Model profile configuration helpers (non-secret; credentials stay in bindings) ---
 
@@ -250,7 +256,9 @@ def profile_spec(
         "model": FIXTURE_MODEL,
         "endpoint": endpoint or FIXTURE_ENDPOINT,
         "api_version": "chat-completions",
-        "credential_ref": CREDENTIAL_BINDING if credential_ref is None else credential_ref,
+        "credential_ref": CREDENTIAL_BINDING
+        if credential_ref is None
+        else credential_ref,
         "capabilities": {
             "streaming": True,
             "usage_reporting": True,
@@ -275,8 +283,12 @@ def configure_profiles(monkeypatch, specs, default_id: str):
     """Declare the installation's profiles for one test."""
     import json
 
-    monkeypatch.setattr("src.openship.config.settings.model_profiles_json", json.dumps(specs))
-    monkeypatch.setattr("src.openship.config.settings.model_default_profile_id", default_id)
+    monkeypatch.setattr(
+        "src.openship.config.settings.model_profiles_json", json.dumps(specs)
+    )
+    monkeypatch.setattr(
+        "src.openship.config.settings.model_default_profile_id", default_id
+    )
     monkeypatch.setenv(CREDENTIAL_BINDING, SENTINEL_CREDENTIAL)
 
 

@@ -12,6 +12,7 @@ from starlette.requests import Request
 
 from src.openship.auth.models import User
 from src.openship.auth.routes import require_jwt
+from src.openship.capabilities.routes import get_project_capabilities
 from src.openship.config import settings
 from src.openship.connectors.contracts import ConnectorConfiguration
 from src.openship.connectors.models import (
@@ -27,8 +28,11 @@ from src.openship.connectors.routes import (
     connector_setup_context,
     global_connector_check,
     global_connector_create,
+    global_connector_list,
     global_connector_request_status,
     global_connector_update,
+    project_aws_connector_create,
+    project_aws_connector_replace_credential,
     project_connector_create,
     project_connector_default_get,
     project_connector_default_set,
@@ -313,6 +317,129 @@ def test_new_project_search_credentials_are_refused_before_body_read(
         )
 
 
+def _aws_setup_body(*, access_key_id="ASIAEXAMPLEKEY", secret_access_key="synthetic-aws-secret-material"):
+    return {
+        "name": "Production AWS",
+        "configuration": {
+            "schema_version": 1,
+            "kind": "aws",
+            "region": "us-east-1",
+            "expected_account_id": "123456789012",
+            "basic_role_arn": "arn:aws:iam::123456789012:role/OpenShipRead",
+        },
+        "auth": {
+            "access_key_id": access_key_id,
+            "secret_access_key": secret_access_key,
+        },
+    }
+
+
+def test_project_aws_setup_encrypts_auth_and_replays_idempotently(
+    connector_identity, monkeypatch, tmp_path
+):
+    actor, project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    body = _aws_setup_body()
+    request_id = uuid.uuid4()
+    path = f"/api/projects/{project_id}/aws-connectors"
+
+    async def create(payload):
+        request, _consumed = _request(
+            "POST",
+            path,
+            headers={"Origin": ORIGIN, "Idempotency-Key": str(request_id)},
+            content=json.dumps(payload).encode(),
+        )
+        with SessionLocal() as db:
+            return await project_aws_connector_create(project_id, request, db, actor)
+
+    created = _invoke(create(body))
+    replay = _invoke(create(body))
+    result = _json_response(created)
+    assert result == _json_response(replay)
+    assert result["kind"] == "aws"
+    assert result["visibility"] == "project"
+    assert result["status"] == "configured"
+    assert result["configuration"]["expected_account_id"] == "123456789012"
+    assert "auth" not in result
+    assert "synthetic-aws-secret-material" not in json.dumps(result)
+
+    with SessionLocal() as db:
+        credential = (
+            db.query(CredentialVersion)
+            .filter(CredentialVersion.connector_id == uuid.UUID(result["id"]))
+            .one()
+        )
+        assert credential.kind == "aws_bootstrap"
+        assert b"synthetic-aws-secret-material" not in credential.ciphertext
+        status = project_connector_request_status(project_id, request_id, db, actor)
+    assert status["status"] == "complete"
+    assert "synthetic-aws-secret-material" not in json.dumps(status)
+
+    with SessionLocal() as db:
+        capabilities = get_project_capabilities(project_id, actor, db)
+    storage = next(item for item in capabilities if item.id == "aws_s3_bucket_storage")
+    assert storage.connector_readiness["aws"] == "ready"
+
+
+def test_project_aws_credential_rotation_advances_revision_without_exposure(
+    connector_identity, monkeypatch, tmp_path
+):
+    actor, project_id = connector_identity
+    _install_keys(monkeypatch, tmp_path)
+    request_id = uuid.uuid4()
+    create_request, _ = _request(
+        "POST",
+        f"/api/projects/{project_id}/aws-connectors",
+        headers={"Origin": ORIGIN, "Idempotency-Key": str(request_id)},
+        content=json.dumps(_aws_setup_body()).encode(),
+    )
+    with SessionLocal() as db:
+        created = _json_response(
+            _invoke(project_aws_connector_create(project_id, create_request, db, actor))
+        )
+
+    replacement_request_id = uuid.uuid4()
+    replacement = {
+        "expected_revision": 1,
+        "auth": {
+            "access_key_id": "ASIAREPLACEMENTKEY",
+            "secret_access_key": "replacement-aws-secret-material",
+        },
+    }
+    request, _ = _request(
+        "POST",
+        f"/api/projects/{project_id}/connectors/{created['id']}/aws-credentials",
+        headers={"Origin": ORIGIN, "Idempotency-Key": str(replacement_request_id)},
+        content=json.dumps(replacement).encode(),
+    )
+    with SessionLocal() as db:
+        rotated_response = _invoke(
+            project_aws_connector_replace_credential(
+                project_id, uuid.UUID(created["id"]), request, db, actor
+            )
+        )
+        rotated = (
+            _json_response(rotated_response)
+            if hasattr(rotated_response, "body")
+            else rotated_response
+        )
+
+    assert rotated["revision"] == 2
+    assert rotated["status"] == "configured"
+    assert "replacement-aws-secret-material" not in json.dumps(rotated)
+    with SessionLocal() as db:
+        credentials = (
+            db.query(CredentialVersion)
+            .filter(CredentialVersion.connector_id == uuid.UUID(created["id"]))
+            .order_by(CredentialVersion.created_at)
+            .all()
+        )
+        assert len(credentials) == 2
+        assert all(item.kind == "aws_bootstrap" for item in credentials)
+        assert b"replacement-aws-secret-material" not in credentials[-1].ciphertext
+
+
 def test_shared_service_refuses_new_project_search_credentials(
     connector_identity, monkeypatch, tmp_path
 ):
@@ -401,7 +528,7 @@ def test_credential_replacement_activates_new_revision_without_exposing_secret(
     assert all(b"replacement-secret-sentinel" not in row.ciphertext for row in versions)
 
 
-def test_revoke_deletes_connector_credentials_and_clears_project_defaults(
+def test_revoke_purges_secret_hides_connector_and_clears_project_defaults(
     connector_identity, monkeypatch, tmp_path
 ):
     actor, project_id = connector_identity
@@ -452,19 +579,26 @@ def test_revoke_deletes_connector_credentials_and_clears_project_defaults(
 
     with SessionLocal() as db:
         connector_id = uuid.UUID(created["id"])
-        assert db.query(Connector).filter(Connector.id == connector_id).count() == 0
+        connector = db.query(Connector).filter(Connector.id == connector_id).one()
+        assert connector.revoked_at is not None
+        assert connector.enabled is False
         assert (
             db.query(ConnectorRevision)
             .filter(ConnectorRevision.connector_id == connector_id)
             .count()
-            == 0
+            == 1
         )
-        assert (
+        credential = (
             db.query(CredentialVersion)
             .filter(CredentialVersion.connector_id == connector_id)
-            .count()
-            == 0
+            .one()
         )
+        assert credential.state == "revoked"
+        assert credential.purged_at is not None
+        assert credential.key_id == "purged"
+        assert credential.nonce == b"\x00" * 12
+        assert credential.ciphertext == b"\x00" * 16
+        assert global_connector_list(db, actor) == []
         cleared = (
             db.query(ProjectConnectorDefault)
             .filter(ProjectConnectorDefault.project_id == project_id)
@@ -475,13 +609,15 @@ def test_revoke_deletes_connector_credentials_and_clears_project_defaults(
             cleared.connector_revision,
             cleared.settings_revision,
         ) == (None, None, 5)
-        events = (
+        revoked = (
             db.query(ConnectorAuditEvent)
-            .filter(ConnectorAuditEvent.action.in_(("deleted", "default_cleared")))
-            .all()
+            .filter(
+                ConnectorAuditEvent.connector_id == connector_id,
+                ConnectorAuditEvent.action == "revoked",
+            )
+            .one()
         )
-        assert {event.action for event in events} == {"deleted", "default_cleared"}
-        assert all(event.connector_id is None for event in events)
+        assert revoked.connector_id == connector_id
         status = global_connector_request_status(request_id, db, actor)
         assert status["status"] == "complete"
         assert status["result"] == result

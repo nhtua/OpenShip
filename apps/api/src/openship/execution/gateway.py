@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import uuid
 from collections.abc import Callable
 
 from fastapi import HTTPException
@@ -28,10 +30,12 @@ from src.openship.capabilities.contracts import (
 from src.openship.capabilities.definitions import get_tool_definition
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
+from src.openship.connectors.aws.broker import AwsRoleBroker
 from src.openship.connectors.credentials.broker import (
     ConnectorCredentialError,
     SearchCredentialBroker,
 )
+from src.openship.execution.aws_transport import AwsRequestBudget, AwsSdkError
 from src.openship.providers.control import InvocationControl
 from src.openship.providers.errors import ProviderError
 from src.openship.runs.models import Run
@@ -70,6 +74,15 @@ _PRE_DISPATCH_MESSAGES = {
     "quota_exhausted": "The search service account has exhausted its configured quota.",
     "provider_timeout": "The search service did not respond within the allowed time.",
     "provider_unavailable": "The search service is temporarily unavailable.",
+    "aws_unavailable": "The AWS service is temporarily unavailable.",
+    "aws_account_mismatch": "The AWS role belongs to a different account than the Connector.",
+    "aws_identity_mismatch": "The AWS role identity does not match the Connector.",
+    "aws_region_mismatch": "The bound S3 bucket is in a different AWS region.",
+    "aws_resource_unavailable": "The selected AWS resource is not available in this project.",
+    "aws_invalid_metric_response": "AWS returned an invalid storage metrics response.",
+    "aws_request_limit_exceeded": "The AWS request limit was exceeded.",
+    "aws_output_limit_exceeded": "The AWS storage observation exceeded its size limit.",
+    "aws_configuration_error": "The AWS Connector configuration is unavailable.",
     "invalid_response": "The search service returned an invalid response.",
     "output_limit_exceeded": "The search response exceeded the allowed size.",
     "disabled": "The requested tool is disabled for this installation.",
@@ -138,9 +151,11 @@ class ToolGateway:
         )
         if status != "admitted":
             with self._session_factory() as db:
-                operation = db.query(ToolOperation).filter(
-                    ToolOperation.id == operation_id
-                ).first()
+                operation = (
+                    db.query(ToolOperation)
+                    .filter(ToolOperation.id == operation_id)
+                    .first()
+                )
                 return project_published_result(db, operation)
 
         try:
@@ -148,14 +163,13 @@ class ToolGateway:
                 claim, context, operation_id, ref
             )
         except ToolPublicationError as refused:
-            return self._finish_before_dispatch(
-                claim, operation_id, refused.code
-            )
+            return self._finish_before_dispatch(claim, operation_id, refused.code)
         except HTTPException:
             raise
 
         store = context.artifact_store
-        if store is None:
+        needs_store = manifest.effect == "read_only_local" or bool(manifest.outputs)
+        if needs_store and store is None:
             return self._finish_before_dispatch(
                 claim,
                 operation_id,
@@ -163,16 +177,17 @@ class ToolGateway:
                 if manifest.effect == "read_only_local"
                 else "artifact_storage_unavailable",
             )
-        try:
-            store.verify()
-        except ArtifactStorageError:
-            return self._finish_before_dispatch(
-                claim,
-                operation_id,
-                "workspace_unavailable"
-                if manifest.effect == "read_only_local"
-                else "artifact_storage_unavailable",
-            )
+        if needs_store:
+            try:
+                store.verify()
+            except ArtifactStorageError:
+                return self._finish_before_dispatch(
+                    claim,
+                    operation_id,
+                    "workspace_unavailable"
+                    if manifest.effect == "read_only_local"
+                    else "artifact_storage_unavailable",
+                )
 
         binding = getattr(manifest, "credential_binding_ref", None)
         if binding is None:
@@ -180,30 +195,66 @@ class ToolGateway:
         managed_reference = None
         managed_kind = None
         broker = None
+        aws_broker = None
         credential = None
         if manifest.schema_version == 2 and getattr(manifest, "connector_kinds", ()):
             expected_kinds = set(manifest.connector_kinds)
-            references = [
-                item
-                for item in getattr(pinned_config, "connector_refs", ())
-                if item.kind in expected_kinds
-            ]
+            if "aws" in expected_kinds:
+                managed_reference = self._aws_reference(
+                    manifest.id,
+                    arguments,
+                    pinned_config,
+                    context.authorization.project_id,
+                )
+                references = (
+                    [managed_reference] if managed_reference is not None else []
+                )
+            else:
+                references = [
+                    item
+                    for item in getattr(pinned_config, "connector_refs", ())
+                    if item.kind in expected_kinds
+                ]
             if len(references) != 1:
                 return self._finish_before_dispatch(
                     claim, operation_id, "connector_required"
                 )
             managed_reference = references[0]
             managed_kind = managed_reference.kind
-            broker = SearchCredentialBroker(self._session_factory)
             try:
-                broker.validate(
-                    project_id=context.authorization.project_id,
-                    kind=managed_kind,
-                    reference=managed_reference,
-                )
+                if managed_kind == "aws":
+                    aws_broker = AwsRoleBroker(self._session_factory)
+                    aws_configuration = aws_broker.validate(
+                        project_id=context.authorization.project_id,
+                        reference=managed_reference,
+                    )
+                    if not self._validate_aws_target(
+                        manifest.id,
+                        arguments,
+                        pinned_config,
+                        context.authorization.project_id,
+                        managed_reference,
+                        aws_configuration,
+                    ):
+                        return self._finish_before_dispatch(
+                            claim, operation_id, "aws_resource_unavailable"
+                        )
+                else:
+                    broker = SearchCredentialBroker(self._session_factory)
+                    broker.validate(
+                        project_id=context.authorization.project_id,
+                        kind=managed_kind,
+                        reference=managed_reference,
+                    )
             except ConnectorCredentialError as refused:
+                return self._finish_before_dispatch(claim, operation_id, refused.code)
+            except AwsSdkError as refused:
                 return self._finish_before_dispatch(
-                    claim, operation_id, refused.code
+                    claim,
+                    operation_id,
+                    refused.code
+                    if refused.code in _PRE_DISPATCH_MESSAGES
+                    else "credential_store_unavailable",
                 )
             except Exception:  # noqa: BLE001 - database/key details stay private.
                 return self._finish_before_dispatch(
@@ -218,12 +269,12 @@ class ToolGateway:
                 return self._finish_before_dispatch(
                     claim, operation_id, "missing_credentials"
                 )
-        if binding and managed_reference is None and binding not in getattr(
-            pinned_config, "credential_binding_refs", ()
+        if (
+            binding
+            and managed_reference is None
+            and binding not in getattr(pinned_config, "credential_binding_refs", ())
         ):
-            return self._finish_before_dispatch(
-                claim, operation_id, "changed"
-            )
+            return self._finish_before_dispatch(claim, operation_id, "changed")
 
         operation_id, attempt_id, artifact_id, slot_id = await self._acquire_and_mark(
             claim=claim,
@@ -231,10 +282,16 @@ class ToolGateway:
             control=control,
             max_output_bytes=min(
                 pinned_config.limits.max_observation_bytes,
-                settings.artifact_search_reservation_bytes,
+                (
+                    settings.artifact_cloud_observation_reservation_bytes
+                    if definition.artifact_kind == "cloud_observation"
+                    else settings.artifact_search_reservation_bytes
+                ),
                 64 * 1024,
             ),
             reserve_output=bool(manifest.outputs),
+            artifact_kind=definition.artifact_kind or "search_result",
+            artifact_name=definition.artifact_name,
         )
         if isinstance(attempt_id, PublishedToolResult):
             return attempt_id
@@ -253,6 +310,8 @@ class ToolGateway:
                 claim, operation_id, attempt_id, "execution_interrupted"
             )
 
+        aws_request_budget = AwsRequestBudget() if aws_broker is not None else None
+        runtime_accesses = []
         runtime_context = ToolInvocationContext(
             authorization=context.authorization,
             execution=pinned_config,
@@ -263,11 +322,28 @@ class ToolGateway:
                     reference=managed_reference,
                 )
                 if managed_reference is not None and requested == binding
-                else credential if requested == binding else None
+                else credential
+                if requested == binding
+                else None
             ),
             artifact_store=store,
             session_factory=self._session_factory,
+            operation_id=operation_id,
+            aws_access_factory=(
+                self._aws_access_factory(
+                    broker=aws_broker,
+                    project_id=context.authorization.project_id,
+                    run_id=claim.run_id,
+                    request_budget=aws_request_budget,
+                    control_holder=lambda: dispatch_control,
+                    references=tuple(getattr(pinned_config, "connector_refs", ())),
+                    accesses=runtime_accesses,
+                )
+                if aws_broker is not None
+                else None
+            ),
         )
+        runtime_context._aws_accesses = runtime_accesses
         slot_lost = asyncio.Event()
         dispatch_control = _CombinedControl(control, slot_lost)
         renewal = asyncio.create_task(
@@ -292,7 +368,9 @@ class ToolGateway:
                     raise ToolPublicationError("output_limit_exceeded")
             except ProviderError as failure:
                 local_failure = (
-                    "cancelled" if failure.code == "cancelled" else "execution_interrupted"
+                    "cancelled"
+                    if failure.code == "cancelled"
+                    else "execution_interrupted"
                 )
             except ToolPublicationError as failure:
                 local_failure = failure.code
@@ -304,6 +382,7 @@ class ToolGateway:
                     await renewal
                 except asyncio.CancelledError:
                     pass
+                await runtime_context.close_runtime_accesses()
             if local_failure is not None:
                 return await self._fail_active(
                     claim, operation_id, attempt_id, local_failure
@@ -341,16 +420,33 @@ class ToolGateway:
                 await renewal
             except asyncio.CancelledError:
                 pass
+            await runtime_context.close_runtime_accesses()
         if dispatch_failure is not None:
             return await self._fail_active(
                 claim, operation_id, attempt_id, dispatch_failure
             )
 
+        if not manifest.outputs:
+            return self._publish_local(
+                claim=claim,
+                operation_id=operation_id,
+                attempt_id=attempt_id,
+                definition=definition,
+                result=observation,
+            )
+
         try:
-            snapshot = canonical_json(observation.model_dump(mode="json"))
+            evidence = definition.project_evidence(observation)
+            if hasattr(evidence, "model_dump"):
+                evidence = evidence.model_dump(mode="json")
+            snapshot = canonical_json(evidence)
             if len(snapshot) > min(
                 pinned_config.limits.max_observation_bytes,
-                settings.artifact_search_reservation_bytes,
+                (
+                    settings.artifact_cloud_observation_reservation_bytes
+                    if definition.artifact_kind == "cloud_observation"
+                    else settings.artifact_search_reservation_bytes
+                ),
                 64 * 1024,
             ):
                 raise ToolPublicationError("output_limit_exceeded")
@@ -394,6 +490,7 @@ class ToolGateway:
             observation=observation,
             store=store,
             context=context,
+            definition=definition,
         )
 
     def _admit(self, claim, context, logical_call_id, ref, arguments, inputs):
@@ -420,16 +517,14 @@ class ToolGateway:
 
     def _resolve_dispatch(self, claim, context, operation_id, ref):
         with self._session_factory() as db:
-            operation = db.query(ToolOperation).filter(
-                ToolOperation.id == operation_id
-            ).first()
+            operation = (
+                db.query(ToolOperation).filter(ToolOperation.id == operation_id).first()
+            )
             run = db.query(Run).filter(Run.id == claim.run_id).first()
             if operation is None or run is None:
                 raise ToolPublicationError("execution_interrupted")
             try:
-                pinned = decode_execution_config(
-                    run.execution_configuration or "{}"
-                )
+                pinned = decode_execution_config(run.execution_configuration or "{}")
             except (ValidationError, TypeError, ValueError) as exc:
                 raise ToolPublicationError("changed") from exc
             is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2)
@@ -459,26 +554,46 @@ class ToolGateway:
             return pinned, manifest, definition
 
     async def _acquire_and_mark(
-        self, *, claim, operation_id, control, max_output_bytes, reserve_output=True
+        self,
+        *,
+        claim,
+        operation_id,
+        control,
+        max_output_bytes,
+        reserve_output=True,
+        artifact_kind="search_result",
+        artifact_name=None,
     ):
         while True:
             try:
                 control.raise_if_stopped()
             except ProviderError:
-                return operation_id, await self._finish_before_dispatch_async(
-                    claim, operation_id, "cancelled"
-                ), None, None
+                return (
+                    operation_id,
+                    await self._finish_before_dispatch_async(
+                        claim, operation_id, "cancelled"
+                    ),
+                    None,
+                    None,
+                )
             remaining = control.request_timeout_seconds(self._capacity_poll_interval)
             if remaining <= 0:
-                return operation_id, await self._finish_before_dispatch_async(
-                    claim, operation_id, "capacity_timeout"
-                ), None, None
+                return (
+                    operation_id,
+                    await self._finish_before_dispatch_async(
+                        claim, operation_id, "capacity_timeout"
+                    ),
+                    None,
+                    None,
+                )
 
             db = self._session_factory()
             try:
-                locator = db.query(ToolOperation).filter(
-                    ToolOperation.id == operation_id
-                ).first()
+                locator = (
+                    db.query(ToolOperation)
+                    .filter(ToolOperation.id == operation_id)
+                    .first()
+                )
                 if locator is None:
                     raise ToolPublicationError("execution_interrupted")
                 conversation = (
@@ -492,16 +607,26 @@ class ToolGateway:
                 from .admission import require_live_claim
 
                 require_live_claim(db, claim, lock=True)
-                operation = db.query(ToolOperation).filter(
-                    ToolOperation.id == operation_id
-                ).with_for_update().first()
+                operation = (
+                    db.query(ToolOperation)
+                    .filter(ToolOperation.id == operation_id)
+                    .with_for_update()
+                    .first()
+                )
                 if operation is None or operation.status != "admitted":
                     db.rollback()
                     with self._session_factory() as read_db:
-                        current = read_db.query(ToolOperation).filter(
-                            ToolOperation.id == operation_id
-                        ).first()
-                        return operation_id, project_published_result(read_db, current), None, None
+                        current = (
+                            read_db.query(ToolOperation)
+                            .filter(ToolOperation.id == operation_id)
+                            .first()
+                        )
+                        return (
+                            operation_id,
+                            project_published_result(read_db, current),
+                            None,
+                            None,
+                        )
                 slot = acquire_execution_slot(db, claim, operation_id)
                 if slot is None:
                     db.rollback()
@@ -513,6 +638,8 @@ class ToolGateway:
                         slot.id,
                         max_output_bytes,
                         reserve_output=reserve_output,
+                        artifact_kind=artifact_kind,
+                        artifact_name=artifact_name,
                     )
                     attempt_id = attempt.id
                     artifact_id = artifact.id if artifact is not None else None
@@ -522,7 +649,12 @@ class ToolGateway:
             except HTTPException as refused:
                 db.rollback()
                 if _http_error_code(refused) == "lease_lost":
-                    return operation_id, self._interrupted(operation_id, "lease_lost"), None, None
+                    return (
+                        operation_id,
+                        self._interrupted(operation_id, "lease_lost"),
+                        None,
+                        None,
+                    )
                 code = _http_error_code(refused)
                 if code == "artifact_quota_exceeded":
                     result = await self._finish_before_dispatch_async(
@@ -532,7 +664,12 @@ class ToolGateway:
                 raise
             except ToolPublicationError as refused:
                 db.rollback()
-                return operation_id, self._interrupted(operation_id, refused.code), None, None
+                return (
+                    operation_id,
+                    self._interrupted(operation_id, refused.code),
+                    None,
+                    None,
+                )
             finally:
                 db.close()
             await self._sleep(remaining)
@@ -616,12 +753,131 @@ class ToolGateway:
 
     def _operation_for_validation(self, operation_id):
         with self._session_factory() as db:
-            operation = db.query(ToolOperation).filter(
-                ToolOperation.id == operation_id
-            ).first()
+            operation = (
+                db.query(ToolOperation).filter(ToolOperation.id == operation_id).first()
+            )
             if operation is None:
                 raise ToolPublicationError("execution_interrupted")
             return operation
+
+    def _aws_reference(self, capability_id, arguments, execution, project_id):
+        references = tuple(getattr(execution, "connector_refs", ()))
+        if capability_id == "aws_check_connection":
+            try:
+                connector_id = uuid.UUID(str(arguments["connector_id"]))
+            except (KeyError, TypeError, ValueError):
+                return None
+            matches = [
+                item
+                for item in references
+                if item.kind == "aws" and item.id == connector_id
+            ]
+            return matches[0] if len(matches) == 1 else None
+        if capability_id == "aws_s3_bucket_storage":
+            try:
+                binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
+            except (KeyError, TypeError, ValueError):
+                return None
+            binding_refs = [
+                item
+                for item in getattr(execution, "resource_binding_refs", ())
+                if item.id == binding_id
+            ]
+            if len(binding_refs) != 1:
+                return None
+            target = binding_refs[0]
+            matches = [
+                item
+                for item in references
+                if item.kind == "aws"
+                and item.id == target.connector_id
+                and item.configuration_revision == target.connector_revision
+            ]
+            return matches[0] if len(matches) == 1 else None
+        return None
+
+    def _validate_aws_target(
+        self,
+        capability_id,
+        arguments,
+        execution,
+        project_id,
+        connector_ref,
+        configuration,
+    ):
+        binding_id = None
+        if capability_id == "aws_s3_bucket_storage":
+            try:
+                binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
+            except (KeyError, TypeError, ValueError):
+                return False
+        elif capability_id == "aws_check_connection" and arguments.get(
+            "resource_binding_id"
+        ):
+            try:
+                binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
+            except (TypeError, ValueError):
+                return False
+        if binding_id is None:
+            return capability_id == "aws_check_connection"
+        references = [
+            item
+            for item in getattr(execution, "resource_binding_refs", ())
+            if item.id == binding_id
+        ]
+        if len(references) != 1:
+            return False
+        target = references[0]
+        with self._session_factory() as db:
+            from src.openship.resources.models import ResourceBinding
+
+            binding = (
+                db.query(ResourceBinding)
+                .filter(
+                    ResourceBinding.id == binding_id,
+                    ResourceBinding.project_id == project_id,
+                    ResourceBinding.revision == target.revision,
+                    ResourceBinding.connector_id == target.connector_id,
+                    ResourceBinding.connector_revision == target.connector_revision,
+                    ResourceBinding.state == "active",
+                )
+                .first()
+            )
+            if binding is None:
+                return False
+            return (
+                binding.connector_id == connector_ref.id
+                and binding.connector_revision == connector_ref.configuration_revision
+                and binding.account_id == configuration.expected_account_id
+                and binding.expected_owner == configuration.expected_account_id
+                and binding.region == configuration.region
+            )
+
+    @staticmethod
+    def _aws_access_factory(
+        *,
+        broker,
+        project_id,
+        run_id,
+        request_budget,
+        control_holder,
+        references,
+        accesses,
+    ):
+        async def acquire(reference):
+            if reference not in references or reference.kind != "aws":
+                raise ConnectorCredentialError("connector_scope_denied")
+            access = await broker.acquire(
+                project_id=project_id,
+                reference=reference,
+                run_id=run_id,
+                control=control_holder(),
+                request_budget=request_budget,
+            )
+            accesses.append(access)
+            return access
+
+        return acquire
 
     def _artifact(self, artifact_id):
         with self._session_factory() as db:
@@ -650,12 +906,13 @@ class ToolGateway:
         observation,
         store,
         context,
+        definition,
     ):
         db = self._session_factory()
         try:
-            operation = db.query(ToolOperation).filter(
-                ToolOperation.id == operation_id
-            ).first()
+            operation = (
+                db.query(ToolOperation).filter(ToolOperation.id == operation_id).first()
+            )
             if operation is None:
                 raise ToolPublicationError("execution_interrupted")
             pinned_ref = next(
@@ -673,24 +930,51 @@ class ToolGateway:
             try:
                 manifest = resolve_capability(pinned_ref, settings.enabled_tool_ids)
             except CapabilityError as refused:
-                code = refused.code if refused.code in ("disabled", "changed") else "changed"
+                code = (
+                    refused.code
+                    if refused.code in ("disabled", "changed")
+                    else "changed"
+                )
                 raise ToolPublicationError(code) from None
             if manifest.schema_version == 2 and manifest.connector_kinds:
-                references = [
-                    item
-                    for item in getattr(context.execution, "connector_refs", ())
-                    if item.kind in manifest.connector_kinds
-                ]
-                if len(references) != 1:
-                    raise ToolPublicationError("connector_required")
-                SearchCredentialBroker(self._session_factory).validate_in_session(
-                    db,
-                    project_id=context.authorization.project_id,
-                    kind=references[0].kind,
-                    reference=references[0],
-                    lock=True,
-                )
-            result = publish_tool_result(db, claim, attempt_id, observation, (staged,))
+                if "aws" in manifest.connector_kinds:
+                    reference = self._aws_reference(
+                        operation.capability_id,
+                        json.loads(operation.arguments_json),
+                        context.execution,
+                        context.authorization.project_id,
+                    )
+                    if reference is None:
+                        raise ToolPublicationError("connector_required")
+                    AwsRoleBroker(self._session_factory).validate_in_session(
+                        db,
+                        project_id=context.authorization.project_id,
+                        reference=reference,
+                        lock=True,
+                    )
+                else:
+                    references = [
+                        item
+                        for item in getattr(context.execution, "connector_refs", ())
+                        if item.kind in manifest.connector_kinds
+                    ]
+                    if len(references) != 1:
+                        raise ToolPublicationError("connector_required")
+                    SearchCredentialBroker(self._session_factory).validate_in_session(
+                        db,
+                        project_id=context.authorization.project_id,
+                        kind=references[0].kind,
+                        reference=references[0],
+                        lock=True,
+                    )
+            result = publish_tool_result(
+                db,
+                claim,
+                attempt_id,
+                observation,
+                (staged,),
+                definition=definition,
+            )
             try:
                 db.commit()
             except Exception:  # noqa: BLE001 - commit acknowledgement may be ambiguous.
@@ -743,9 +1027,11 @@ class ToolGateway:
     def _read_after_uncertain_commit(self, operation_id):
         try:
             with self._session_factory() as db:
-                operation = db.query(ToolOperation).filter(
-                    ToolOperation.id == operation_id
-                ).first()
+                operation = (
+                    db.query(ToolOperation)
+                    .filter(ToolOperation.id == operation_id)
+                    .first()
+                )
                 if operation is not None and operation.status in (
                     "succeeded",
                     "failed",
@@ -760,9 +1046,9 @@ class ToolGateway:
     def _cleanup_uncommitted(self, staged: StagedArtifact, store, context) -> None:
         try:
             with self._session_factory() as db:
-                artifact = db.query(Artifact).filter(
-                    Artifact.id == staged.artifact_id
-                ).first()
+                artifact = (
+                    db.query(Artifact).filter(Artifact.id == staged.artifact_id).first()
+                )
                 if artifact is None or artifact.status != "staging":
                     return
                 relative_key = artifact.relative_storage_key

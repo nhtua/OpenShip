@@ -330,7 +330,11 @@ export const useChatStore = defineStore('chat', () => {
         // was pinned to or what it reported. The run read does, and it is the
         // only place that states it — so the card is hydrated from there.
         const rebuilt = runCards.value.get(conversationId)
-        if (rebuilt?.run_id && !(snapshot.runs ?? []).some((run) => run.id === rebuilt.run_id)) {
+        if (
+          rebuilt?.run_id &&
+          (rebuilt.status === 'waiting_connector' ||
+            !(snapshot.runs ?? []).some((run) => run.id === rebuilt.run_id))
+        ) {
           await hydrateRunCard(conversationId, rebuilt.run_id)
         }
       } catch (snapErr) {
@@ -567,6 +571,12 @@ export const useChatStore = defineStore('chat', () => {
         break
       }
 
+      case 'connector.blocked': {
+        updateRunStatus(convId, event.run_id || '', 'waiting_connector', event.created_at)
+        if (event.run_id) void hydrateRunCard(convId, event.run_id)
+        break
+      }
+
       case 'run.succeeded': {
         updateRunStatus(convId, event.run_id || '', 'succeeded', event.created_at)
         // The assistant message should be loaded from the messages endpoint
@@ -667,6 +677,7 @@ export const useChatStore = defineStore('chat', () => {
       // A slow read for the previous run must never overwrite the next card.
       if (!card || card.run_id !== runId) return
       card.status = cardStatus(run.status)
+      card.connector_blocker = run.connector_blocker ?? null
       // A run read is authoritative for what it was pinned to and what it
       // asked. Null stays null: a run from before profiles exists, and
       // nothing here guesses a provider, a model, or a count for it.
@@ -715,6 +726,7 @@ export const useChatStore = defineStore('chat', () => {
       attempts: run.provider_attempts ?? [],
       operations: run.operations ?? [],
       operations_next_cursor: run.operations_next_cursor ?? null,
+      connector_blocker: run.connector_blocker ?? null,
     }
   }
 
@@ -873,7 +885,11 @@ export const useChatStore = defineStore('chat', () => {
   async function sendMessage(
     content: string,
     conversationId: string | null = null,
-    options: { enableTools?: boolean; connectorSelections?: TurnSubmitRequest['connector_selections'] } = {},
+    options: {
+      enableTools?: boolean
+      connectorSelections?: TurnSubmitRequest['connector_selections']
+      resourceBindingSelections?: string[]
+    } = {},
   ) {
     error.value = null
     isStreaming.value = true
@@ -892,6 +908,9 @@ export const useChatStore = defineStore('chat', () => {
         enable_tools: options.enableTools ?? false,
         ...(options.connectorSelections
           ? { connector_selections: { ...options.connectorSelections } }
+          : {}),
+        ...(options.resourceBindingSelections?.length
+          ? { resource_binding_selections: [...options.resourceBindingSelections] }
           : {}),
       }
 
@@ -1050,6 +1069,7 @@ export const useChatStore = defineStore('chat', () => {
         attempts: [],
         operations: run.operations ?? [],
         operations_next_cursor: run.operations_next_cursor ?? null,
+      connector_blocker: run.connector_blocker ?? null,
       })
       mergeToolOperations(convId, run.operations ?? [])
       pendingToolRequests.value.delete(requestId)

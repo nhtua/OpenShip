@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ConnectorCard from '@/components/connectors/ConnectorCard.vue'
 import ConnectorConfigurationDialog from '@/components/connectors/ConnectorConfigurationDialog.vue'
+import AwsConnectorDialog from '@/components/connectors/AwsConnectorDialog.vue'
+import AwsResourcesPanel from '@/components/connectors/AwsResourcesPanel.vue'
 import { Button } from '@/components/ui'
-import { connectorCatalog, type ConnectorCatalogEntry } from '@/lib/connectorCatalog'
+import {
+  connectorCatalog,
+  connectorStatusChipClass,
+  connectorStatusDotClass,
+  connectorStatusPresentation,
+  type ConnectorCatalogEntry,
+} from '@/lib/connectorCatalog'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
+import { useResourcesStore } from '@/stores/resources'
 import type { ConnectorUsage } from '@/types'
 
 const router = useRouter()
@@ -17,6 +26,7 @@ const auth = useAuthStore()
 const chat = useChatStore()
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
+const resources = useResourcesStore()
 const pageError = ref<string | null>(null)
 const projectCreationError = ref<string | null>(null)
 const projectCreating = ref(false)
@@ -34,6 +44,9 @@ interface CatalogCard {
 }
 
 const selectedDialog = ref<DialogSelection | null>(null)
+const awsDialogOpen = ref(false)
+const selectedAwsConnector = ref<ConnectorUsage | null>(null)
+const awsCheckBusy = ref(false)
 const currentProject = computed(() =>
   projects.projects.find((project) => project.id === projects.currentProjectId) ?? null,
 )
@@ -53,6 +66,7 @@ const catalogCards = computed<CatalogCard[]>(() => connectorCatalog.flatMap<Cata
 const legacyProjectConnectors = computed(() => connectors.connectors.filter(
   (connector) => connector.visibility === 'project' && connector.kind !== 'aws',
 ))
+const awsConnectors = computed(() => connectors.connectors.filter((connector) => connector.kind === 'aws'))
 const catalogLoading = computed(() => connectors.loading || connectors.globalLoading)
 const catalogError = computed(() => pageError.value ?? connectors.error ?? connectors.globalError)
 const setupUnavailableMessage = computed(() => {
@@ -97,6 +111,45 @@ function closeDialog(open: boolean): void {
 async function refreshConnectorViews(): Promise<void> {
   pageError.value = null
   await connectors.reload(projects.currentProjectId)
+  await resources.loadProject(projects.currentProjectId)
+}
+
+function openAwsConnector(connector: ConnectorUsage | null = null): void {
+  selectedAwsConnector.value = connector
+  awsDialogOpen.value = true
+}
+
+async function checkAwsConnection(connectorId: string, resourceBindingId: string | null): Promise<void> {
+  const projectId = projects.currentProjectId
+  if (!projectId || awsCheckBusy.value) return
+  const capability = connectors.capabilities.find((item) => item.id === 'aws_check_connection')
+  if (!capability) {
+    pageError.value = 'AWS connection checks are unavailable in this installation.'
+    return
+  }
+  awsCheckBusy.value = true
+  pageError.value = null
+  try {
+    const conversation = await chat.createConversation('AWS connection check', projectId)
+    if (!conversation) throw new Error('Conversation could not be created')
+    await router.push({ name: 'conversation', params: { conversationId: conversation.id } })
+    await nextTick()
+    await chat.submitToolSearch(conversation.id, {
+      capability: {
+        id: capability.id,
+        version: capability.version,
+        manifest_digest: capability.manifest_digest,
+      },
+      arguments: {
+        connector_id: connectorId,
+        ...(resourceBindingId ? { resource_binding_id: resourceBindingId } : {}),
+      },
+    })
+  } catch {
+    pageError.value = 'The AWS connection check could not be queued. Reload the project and try again.'
+  } finally {
+    awsCheckBusy.value = false
+  }
 }
 
 function showDialogError(message: string): void {
@@ -105,7 +158,7 @@ function showDialogError(message: string): void {
 
 async function selectProject(projectId: string): Promise<void> {
   if (!projects.selectProject(projectId)) return
-  await connectors.loadProjectContext(projectId)
+  await Promise.all([connectors.loadProjectContext(projectId), resources.loadProject(projectId)])
 }
 
 async function goToConversation(id: string): Promise<void> {
@@ -125,7 +178,7 @@ async function createProject(name: string): Promise<void> {
   projectCreationError.value = null
   try {
     const project = await projects.createProject(name)
-    await connectors.loadProjectContext(project.id)
+    await Promise.all([connectors.loadProjectContext(project.id), resources.loadProject(project.id)])
   } catch {
     projectCreationError.value = projects.error ?? 'Failed to create project'
   } finally {
@@ -137,17 +190,22 @@ async function signOut(): Promise<void> {
   auth.logout()
   chat.clearMessages()
   connectors.clear()
+  resources.clear()
   projects.clear()
   await router.replace({ name: 'login' })
 }
 
 watch(() => projects.currentProjectId, (next, previous) => {
-  if (next !== previous) selectedDialog.value = null
+  if (next !== previous) {
+    selectedDialog.value = null
+    awsDialogOpen.value = false
+  }
 })
 
 onMounted(async () => {
   if (!projects.projects.length) await projects.initialize()
   await connectors.initialize(projects.currentProjectId, true)
+  await resources.loadProject(projects.currentProjectId)
   if (!chat.conversations.length) await chat.getConversations()
 })
 </script>
@@ -171,9 +229,9 @@ onMounted(async () => {
     <main class="min-h-0 flex-1 overflow-y-auto px-4 py-6 md:px-8">
       <div class="mx-auto grid w-full max-w-5xl gap-6">
         <header class="grid gap-2">
-          <h1 class="text-2xl font-semibold">Search connectors</h1>
+          <h1 class="text-2xl font-semibold">Connectors</h1>
           <p class="max-w-3xl text-sm text-muted-foreground">
-            Brave Search and Tavily Search are shared Global integrations. Each project keeps its own search defaults.
+            Brave Search and Tavily Search are shared Global integrations. AWS access and S3 bucket bindings belong to the selected project.
           </p>
         </header>
 
@@ -246,6 +304,56 @@ onMounted(async () => {
               </li>
             </ul>
           </section>
+
+          <section class="grid gap-4" aria-labelledby="aws-connectors-heading" data-aws-connectors>
+            <header class="grid gap-1">
+              <h2 id="aws-connectors-heading" class="text-lg font-semibold">Project AWS Connectors</h2>
+              <p class="max-w-3xl text-sm text-muted-foreground">
+                Configure an assume-role source for this project. OpenShip verifies identity through the run queue and uses short-lived sessions for read-only observations.
+              </p>
+            </header>
+            <div class="grid gap-3 md:grid-cols-2" data-aws-connector-card-grid>
+              <button
+                v-for="connector in awsConnectors"
+                :key="connector.id"
+                type="button"
+                class="grid gap-2 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :aria-label="`Configure ${connector.name}`"
+                @click="openAwsConnector(connector)"
+              >
+                <span class="flex flex-wrap items-center gap-2">
+                  <strong>{{ connector.name }}</strong>
+                  <span class="rounded-full border border-border px-2 py-0.5 text-xs">Project · OpenShip</span>
+                  <span :class="['inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs', connectorStatusChipClass(connectorStatusPresentation(connector).status)]">
+                    <span :class="['size-1.5 rounded-full', connectorStatusDotClass(connectorStatusPresentation(connector).status)]" aria-hidden="true" />
+                    {{ connectorStatusPresentation(connector).label }}
+                  </span>
+                </span>
+                <span class="text-xs text-muted-foreground">AWS assume-role access · Revision {{ connector.revision }}</span>
+                <span class="text-xs text-muted-foreground">Select this card to view settings, check the role, rotate credentials or revoke it.</span>
+              </button>
+              <button
+                v-if="awsConnectors.length < 10"
+                type="button"
+                class="grid min-h-28 content-center gap-1 rounded-xl border border-dashed border-border bg-card p-4 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Add project AWS Connector"
+                @click="openAwsConnector()"
+              >
+                <strong>Add AWS Connector</strong>
+                <span class="text-xs text-muted-foreground">Configure a project-scoped assume-role source.</span>
+              </button>
+            </div>
+          </section>
+
+          <AwsResourcesPanel
+            :project-id="projects.currentProjectId"
+            :connectors="connectors.connectors"
+            :environments="resources.environments"
+            :bindings="resources.bindings"
+            :loading="resources.loading"
+            @check="checkAwsConnection"
+            @error="showDialogError"
+          />
         </template>
 
         <ConnectorConfigurationDialog
@@ -260,6 +368,17 @@ onMounted(async () => {
           :return-focus-element="returnFocusElement"
           @update:open="closeDialog"
           @complete="refreshConnectorViews"
+          @error="showDialogError"
+        />
+        <AwsConnectorDialog
+          :open="awsDialogOpen"
+          :project-id="projects.currentProjectId"
+          :connector="selectedAwsConnector"
+          :bindings="resources.bindings"
+          :credential-store-ready="connectors.credentialStoreReady"
+          @update:open="awsDialogOpen = $event"
+          @saved="refreshConnectorViews"
+          @check="checkAwsConnection"
           @error="showDialogError"
         />
       </div>

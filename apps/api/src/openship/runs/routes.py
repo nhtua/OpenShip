@@ -4,6 +4,7 @@
 """Routes for durable run commands."""
 
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
@@ -12,10 +13,17 @@ from sqlalchemy.orm import Session
 from ..auth.models import User
 from ..auth.routes import require_jwt
 from ..capabilities.contracts import ToolCommandRequest
-from ..database.session import get_db
+from ..connectors.blockers import (
+    dismiss_connector_wait,
+    resume_connector_wait,
+    waiting_blocker,
+)
+from ..database.session import SessionLocal, get_db
 from ..execution.reads import OperationPage, read_operation_page
 from .models import ProviderAttempt
 from .schemas import (
+    ConnectorDismissRequest,
+    ConnectorResumeRequest,
     RunResponse,
     TurnSubmitRequest,
     project_run_response,
@@ -39,11 +47,15 @@ async def get_run_status(
             user_id=user.id,
             run_id=run_id,
         )
-        attempts = db.query(ProviderAttempt).filter(
-            ProviderAttempt.run_id == run.id
-        ).order_by(ProviderAttempt.ordinal).all()
+        attempts = (
+            db.query(ProviderAttempt)
+            .filter(ProviderAttempt.run_id == run.id)
+            .order_by(ProviderAttempt.ordinal)
+            .all()
+        )
         operations = read_operation_page(db, run.id)
-        return project_run_response(run, attempts, operations)
+        blocker = waiting_blocker(db, run.id)
+        return project_run_response(run, attempts, operations, blocker=blocker)
     except HTTPException:
         raise
     except Exception as e:
@@ -74,7 +86,9 @@ async def submit_chat_turn(
     user: User = Depends(require_jwt),
 ):
     """Submit a chat turn as a durable, queued run."""
-    logger.info(f"submit_chat_turn called: conversation={conversation_id}, user={user.id}, content={req.content[:50]}...")
+    logger.info(
+        f"submit_chat_turn called: conversation={conversation_id}, user={user.id}, content={req.content[:50]}..."
+    )
     try:
         run = submit_turn(
             db=db,
@@ -87,6 +101,7 @@ async def submit_chat_turn(
             enable_tools=req.enable_tools,
             artifact_ids=req.artifact_ids,
             connector_selections=req.connector_selections,
+            resource_binding_selections=req.resource_binding_selections,
         )
         logger.info(f"submit_chat_turn success: run={run.id}")
         return project_run_response(run)
@@ -138,7 +153,12 @@ async def submit_tool_command(
         logger.exception("submit_tool_command failed")
         raise HTTPException(
             status_code=500,
-            detail={"error": {"code": "submit_tool_failed", "message": "Tool command could not be submitted"}},
+            detail={
+                "error": {
+                    "code": "submit_tool_failed",
+                    "message": "Tool command could not be submitted",
+                }
+            },
         ) from exc
 
 
@@ -163,3 +183,84 @@ async def cancel_run(
             status_code=500,
             detail={"error": {"code": "cancel_failed", "message": str(e)}},
         )
+
+
+@router.post("/{run_id}/resume-connector", status_code=200, response_model=RunResponse)
+async def resume_connector_run(
+    run_id: str,
+    req: ConnectorResumeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """Resume one exact waiting run after its pinned Connector is ready."""
+    try:
+        parsed_run_id = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {"code": "invalid_run_id", "message": "Invalid run ID format"}
+            },
+        ) from None
+    try:
+        run = resume_connector_wait(
+            db,
+            user_id=user.id,
+            run_id=parsed_run_id,
+            blocker_id=req.blocker_id,
+            request_id=req.request_id,
+            expected_configuration_digest=req.expected_configuration_digest,
+            session_factory=SessionLocal,
+        )
+        return project_run_response(run)
+    except HTTPException:
+        raise
+    except IntegrityError as conflict:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": "connector_resume_conflict",
+                    "message": "The Connector wait changed while it was being resumed",
+                }
+            },
+        ) from conflict
+    except Exception as exc:
+        db.rollback()
+        logger.exception("resume Connector run failed")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "code": "connector_resume_failed",
+                    "message": "The Connector wait could not be resumed",
+                }
+            },
+        ) from exc
+
+
+@router.post("/{run_id}/dismiss-connector", status_code=200, response_model=RunResponse)
+async def dismiss_connector_run(
+    run_id: str,
+    req: ConnectorDismissRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """Dismiss one exact Connector wait and close its run."""
+    try:
+        parsed_run_id = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {"code": "invalid_run_id", "message": "Invalid run ID format"}
+            },
+        ) from None
+    run = dismiss_connector_wait(
+        db,
+        user_id=user.id,
+        run_id=parsed_run_id,
+        blocker_id=req.blocker_id,
+    )
+    return project_run_response(run)

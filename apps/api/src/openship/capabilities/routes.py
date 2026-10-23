@@ -15,6 +15,7 @@ from src.openship.capabilities.contracts import (
 )
 from src.openship.config import settings
 from src.openship.connectors.selection import ConnectorSelectionError, resolve_connector
+from src.openship.connectors.service import list_project_connectors
 from src.openship.database.session import get_db
 from src.openship.execution.availability import read_tool_availability
 from src.openship.workspace.models import Project
@@ -53,6 +54,18 @@ def get_project_capabilities(
         connector_kinds = getattr(manifest, "connector_kinds", ())
         readiness = {}
         for kind in connector_kinds:
+            if kind == "aws":
+                readiness[kind] = (
+                    "ready"
+                    if any(
+                        item.status == "configured"
+                        for item in list_project_connectors(
+                            db, project_id=project.id, service="aws"
+                        )
+                    )
+                    else "required"
+                )
+                continue
             try:
                 resolve_connector(db, project_id=project.id, service=kind)
             except ConnectorSelectionError as refused:

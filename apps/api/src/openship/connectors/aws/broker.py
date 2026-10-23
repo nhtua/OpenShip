@@ -67,13 +67,116 @@ class AwsRoleBroker:
         clock: Callable[[], datetime] | None = None,
     ):
         self._session_factory = session_factory
-        self._credential_store_factory = credential_store_factory or get_credential_store
+        self._credential_store_factory = (
+            credential_store_factory or get_credential_store
+        )
         self._sdk_context_factory = sdk_context_factory or AwsSdkContext
         self._transport_factory = transport_factory
         self._clock = clock or (lambda: datetime.now(UTC))
         self._guard = threading.RLock()
         self._sessions: dict[AwsRoleCacheKey, AwsAssumedRole] = {}
         self._inflight: dict[AwsRoleCacheKey, concurrent.futures.Future] = {}
+
+    def validate(
+        self, *, project_id: uuid.UUID, reference: ConnectorRef
+    ) -> ConnectorConfiguration:
+        """Validate one exact pinned AWS connector without external I/O."""
+        return self._read_binding(
+            project_id=project_id,
+            reference=reference,
+            include_auth=False,
+        ).configuration
+
+    def preflight(
+        self, *, project_id: uuid.UUID, reference: ConnectorRef
+    ) -> ConnectorConfiguration:
+        """Check local credential decryption and expiry without assuming a role."""
+        binding = self._read_binding(
+            project_id=project_id,
+            reference=reference,
+            include_auth=True,
+        )
+        if binding.source_auth is None:
+            raise ConnectorCredentialError("credential_store_unavailable")
+        return binding.configuration
+
+    def validate_in_session(
+        self,
+        db: Session,
+        *,
+        project_id: uuid.UUID,
+        reference: ConnectorRef,
+        lock: bool = False,
+    ) -> ConnectorConfiguration:
+        """Recheck and optionally lock pinned AWS authority in a caller transaction."""
+        if managed_dispatch_is_locked():
+            raise ConnectorCredentialError("connector_unavailable")
+        if (
+            not isinstance(reference, ConnectorRef)
+            or reference.kind != "aws"
+            or reference.visibility != "project"
+            or not isinstance(project_id, uuid.UUID)
+        ):
+            raise ConnectorCredentialError("connector_scope_denied")
+        connector_query = db.query(Connector).filter(
+            Connector.id == reference.id,
+            Connector.kind == "aws",
+            Connector.visibility == "project",
+            Connector.project_id == project_id,
+        )
+        if lock:
+            connector_query = connector_query.with_for_update()
+        connector = connector_query.first()
+        if connector is None:
+            raise ConnectorCredentialError("connector_scope_denied")
+        if connector.revoked_at is not None:
+            self._forget_connector(connector.id)
+            raise ConnectorCredentialError("connector_revoked")
+        if not connector.enabled:
+            raise ConnectorCredentialError("connector_unavailable")
+
+        revision_query = db.query(ConnectorRevision).filter(
+            ConnectorRevision.connector_id == connector.id,
+            ConnectorRevision.revision == reference.configuration_revision,
+            ConnectorRevision.credential_version_id == reference.credential_version_id,
+            ConnectorRevision.visibility == "project",
+            ConnectorRevision.project_id == project_id,
+        )
+        credential_query = db.query(CredentialVersion).filter(
+            CredentialVersion.id == reference.credential_version_id,
+            CredentialVersion.connector_id == connector.id,
+            CredentialVersion.visibility == "project",
+            CredentialVersion.project_id == project_id,
+            CredentialVersion.kind == "aws_bootstrap",
+        )
+        if lock:
+            revision_query = revision_query.with_for_update()
+            credential_query = credential_query.with_for_update()
+        revision = revision_query.first()
+        credential = credential_query.first()
+        if revision is None or credential is None:
+            raise ConnectorCredentialError("connector_scope_denied")
+        if credential.revoked_at is not None or credential.state == "revoked":
+            self._forget_connector(connector.id)
+            raise ConnectorCredentialError("connector_revoked")
+        if credential.state != "active":
+            raise ConnectorCredentialError("connector_unavailable")
+        expiry = _utc(credential.expires_at) if credential.expires_at else None
+        if expiry is not None and expiry <= self._now():
+            self._forget_connector(connector.id)
+            raise ConnectorCredentialError("connector_expired")
+        try:
+            configuration = ConnectorConfiguration.model_validate_json(
+                revision.configuration_json
+            )
+        except (TypeError, ValueError):
+            raise ConnectorCredentialError("connector_unavailable") from None
+        if configuration.kind != "aws":
+            raise ConnectorCredentialError("connector_scope_denied")
+        account, _role_name = _configured_role(configuration)
+        if account != configuration.expected_account_id:
+            raise AwsBrokerError("aws_configuration_error")
+        return configuration
 
     async def acquire(
         self,
@@ -154,7 +257,10 @@ class AwsRoleBroker:
                 reference=reference,
                 include_auth=True,
             )
-            if full_binding.cache_key != binding.cache_key or full_binding.source_auth is None:
+            if (
+                full_binding.cache_key != binding.cache_key
+                or full_binding.source_auth is None
+            ):
                 raise ConnectorCredentialError("connector_scope_denied")
             session, context = await self._assume_and_verify(
                 project_id=project_id,
@@ -232,11 +338,7 @@ class AwsRoleBroker:
         ):
             raise ConnectorCredentialError("connector_scope_denied")
         with self._session_factory() as db:
-            connector = (
-                db.query(Connector)
-                .filter(Connector.id == reference.id)
-                .first()
-            )
+            connector = db.query(Connector).filter(Connector.id == reference.id).first()
             if (
                 connector is None
                 or connector.kind != "aws"
@@ -324,12 +426,16 @@ class AwsRoleBroker:
                         nonce=credential.nonce,
                         ciphertext=credential.ciphertext,
                     )
-                    payload = self._credential_store_factory().decrypt(context, envelope)
+                    payload = self._credential_store_factory().decrypt(
+                        context, envelope
+                    )
                     source_auth = AwsBootstrapAuth.model_validate_json(
                         canonical_json(payload)
                     )
                 except Exception:  # noqa: BLE001 - decrypted source stays private.
-                    raise ConnectorCredentialError("credential_store_unavailable") from None
+                    raise ConnectorCredentialError(
+                        "credential_store_unavailable"
+                    ) from None
                 payload_expiry = (
                     _utc(source_auth.expires_at) if source_auth.expires_at else None
                 )
@@ -481,9 +587,8 @@ class AwsRoleBroker:
                 self._sessions.pop(key, None)
 
     def _usable(self, session: AwsAssumedRole | None, now: datetime) -> bool:
-        return (
-            session is not None
-            and _utc(session.expires_at) - now > timedelta(seconds=_RENEW_BEFORE_SECONDS)
+        return session is not None and _utc(session.expires_at) - now > timedelta(
+            seconds=_RENEW_BEFORE_SECONDS
         )
 
     def _now(self) -> datetime:
@@ -521,9 +626,7 @@ def _assumed_session(
         credentials.get("SessionToken"),
     )
     expiration = credentials.get("Expiration")
-    expected_arn = (
-        f"arn:aws:sts::{account_id}:assumed-role/{role_name}/{session_name}"
-    )
+    expected_arn = f"arn:aws:sts::{account_id}:assumed-role/{role_name}/{session_name}"
     if (
         any(not isinstance(value, str) or not value for value in auth_values)
         or not isinstance(expiration, datetime)
@@ -558,9 +661,7 @@ def _verify_identity(
         raise AwsBrokerError("aws_identity_mismatch")
     if identity.get("Account") != account_id:
         raise AwsBrokerError("aws_account_mismatch")
-    expected_arn = (
-        f"arn:aws:sts::{account_id}:assumed-role/{role_name}/{session_name}"
-    )
+    expected_arn = f"arn:aws:sts::{account_id}:assumed-role/{role_name}/{session_name}"
     if identity.get("Arn") != expected_arn:
         raise AwsBrokerError("aws_identity_mismatch")
 

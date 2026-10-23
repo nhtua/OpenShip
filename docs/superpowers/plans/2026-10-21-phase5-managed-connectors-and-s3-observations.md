@@ -260,6 +260,8 @@ credentials and protocol-compatible transports until then.
 
 **Migration:** `010_phase5_resources_and_connector_waits.py`, revision `phase5a010`, following the current 5A.1 head `phase5a009f` (the accepted 5A.1 work added revisions `phase5a009c`–`phase5a009f` after the original plan was written).
 
+**5A.2 migration follow-ups:** `phase5a011` pins Connector kind and visibility in blocker records so global Connectors can resume safely. `phase5a012` records credential-purge tombstones so revocation can erase active secret bytes while retaining revisions referenced by resources and audit history.
+
 **Tests:** `tests/resources/test_bindings.py`, `tests/integration/test_phase5_resources_postgres.py`.
 
 - [x] Add environments, resource objects, immutable resource bindings and observations, plus connector-blocker records.
@@ -268,6 +270,7 @@ credentials and protocol-compatible transports until then.
 - [x] Implement bounded owned environment/resource setup and observation listing; do not discover resources from AWS.
 - [x] Resource bindings contain explicit account, region, bucket and expected owner. They remain locators, not proof of existence.
 - [x] Observation metadata may list retained evidence references but must not broaden existing conversation artifact access.
+- [x] Connector revocation redacts active credential bytes and hides setup while preserving non-secret revision history referenced by durable bindings. Downgrade refuses to restore unavailable secret material.
 - [x] Protect downgrade when resource, observation or waiting-run data exists.
 
 **Commit deliverable:** Stable owned resource identities reusable by later provisioning.
@@ -278,16 +281,16 @@ credentials and protocol-compatible transports until then.
 
 **Tests:** `tests/tools/test_aws_checks.py`, `test_s3_storage.py`, `tests/integration/test_cloud_observation_publication_postgres.py`.
 
-- [ ] Register `aws_check_connection` as an explicit model-free capability; exclude it from automatic model selection.
-- [ ] Register `aws_s3_bucket_storage` with only `resource_binding_id` as its tool argument.
-- [ ] Resolve account/region/bucket/owner from the pinned binding. Use `GetCallerIdentity` and `GetBucketLocation`; normalize the documented default and legacy region values. Mismatch blocks execution.
-- [ ] Query CloudWatch `AWS/S3` / `BucketSizeBytes`, statistic `Average`, period 86,400 seconds and the preceding seven days.
-- [ ] Freeze `STORAGE_TYPES_V1` to the 22 documented general-purpose storage dimensions, excluding `ExpressOneZoneStorage`. Include overhead/staging and Intelligent-Tiering dimensions; do not silently adopt future dimensions. See [AWS dimension definitions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/metrics-dimensions.html).
-- [ ] Enforce at most 64 queries, 1,024 returned datapoints, eight total requests, 30 seconds, 64 KiB evidence and 16 KiB model result.
-- [ ] Preserve per-type timestamps and coverage. Prefer a latest common measurement time; never add different dates into a coherent total. Missing values remain unknown; measured zero remains zero.
-- [ ] Use “reported storage subtotal” unless completeness is independently established. Empty responses are `no_data`; measurements older than 48 hours are stale.
-- [ ] Publish durable evidence bytes before atomically recording ready artifact metadata, observation, safe operation result and outbox events. Register this through the common publication hook.
-- [ ] Add a test-only second handler using the same authenticated context/runner, proving extension without modifying credential acquisition or shipping another capability.
+- [x] Register `aws_check_connection` as an explicit model-free capability; exclude it from automatic model selection.
+- [x] Register `aws_s3_bucket_storage` with only `resource_binding_id` as its tool argument.
+- [x] Resolve account/region/bucket/owner from the pinned binding. Use `GetCallerIdentity` and `GetBucketLocation`; normalize the documented default and legacy region values. Mismatch blocks execution.
+- [x] Query CloudWatch `AWS/S3` / `BucketSizeBytes`, statistic `Average`, period 86,400 seconds and the preceding seven days.
+- [x] Freeze `STORAGE_TYPES_V1` to the 22 documented general-purpose storage dimensions, excluding `ExpressOneZoneStorage`. Include overhead/staging and Intelligent-Tiering dimensions; do not silently adopt future dimensions. See [AWS dimension definitions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/metrics-dimensions.html).
+- [x] Enforce at most 64 queries, 1,024 returned datapoints, eight total requests, 30 seconds, 64 KiB evidence and 16 KiB model result.
+- [x] Preserve per-type timestamps and coverage. Prefer a latest common measurement time; never add different dates into a coherent total. Missing values remain unknown; measured zero remains zero.
+- [x] Use “reported storage subtotal” unless completeness is independently established. Empty responses are `no_data`; measurements older than 48 hours are stale.
+- [x] Publish durable evidence bytes before atomically recording ready artifact metadata, observation, safe operation result and outbox events. Register this through the common publication hook.
+- [x] Add a test-only second handler using the same authenticated context/runner, proving extension without modifying credential acquisition or shipping another capability.
 
 **Critical tests:** Wrong account/owner/region; nonfinite or negative values; missing dimensions; mixed dates; duplicate/mismatched timestamps and values; partial results; continuation limits; publication rollback; cancellation/revocation between read and publication.
 
@@ -299,14 +302,14 @@ credentials and protocol-compatible transports until then.
 
 **Tests:** `tests/test_connector_resume.py`, `tests/integration/test_connector_resume_postgres.py`.
 
-- [ ] Perform local readiness checks before any model/tool dispatch intent. Do not make an external authentication probe during preflight.
-- [ ] Reject missing/ambiguous connector selection before admitting an unbound run. Park only runs with exact pinned references and a recorded pre-dispatch blocker.
-- [ ] Atomically record blocker/event/outbox, set `waiting_connector` and release job ownership, slot and lease. The existing queue must not reclaim waiting runs.
-- [ ] Implement the specified resume command with blocker ID, request ID and expected configuration digest. Consume once, recheck unchanged references, serialize against conversation activity and requeue under a new fence.
-- [ ] Persist the original context message IDs/cutoff. A resumed turn must not consume later messages or overwrite a newer active-run/title projection.
-- [ ] Expire blockers within 24 hours, shortened by an existing execution deadline. Resume never extends the deadline.
-- [ ] Cancellation, dismissal and expiry close the blocker and release pins.
-- [ ] Credential/target revision changes require explicit resubmission as a new run. Any access failure after dispatch intent fails safely with retained prior evidence; no automatic replay.
+- [x] Perform local readiness checks before any model/tool dispatch intent. Do not make an external authentication probe during preflight.
+- [x] Reject missing/ambiguous connector selection before admitting an unbound run. Park only runs with exact pinned references and a recorded pre-dispatch blocker.
+- [x] Atomically record blocker/event/outbox, set `waiting_connector` and release job ownership, slot and lease. The existing queue must not reclaim waiting runs.
+- [x] Implement the specified resume command with blocker ID, request ID and expected configuration digest. Consume once, recheck unchanged references, serialize against conversation activity and requeue under a new fence.
+- [x] Persist the original context message IDs/cutoff. A resumed turn must not consume later messages or overwrite a newer active-run/title projection.
+- [x] Expire blockers within 24 hours, shortened by an existing execution deadline. Resume never extends the deadline.
+- [x] Cancellation, dismissal and expiry close the blocker and release pins.
+- [x] Credential/target revision changes require explicit resubmission as a new run. Any access failure after dispatch intent fails safely with retained prior evidence; no automatic replay.
 
 **Critical tests:** Resume versus cancel/expiry/new chat; duplicate resume; conflicting request ID; restored key with unchanged references; replacement credential requiring a new run; old turn completing after newer conversation activity.
 
@@ -318,12 +321,12 @@ credentials and protocol-compatible transports until then.
 
 **Tests:** AWS setup, resource selection, observation and blocker component tests; fixture Playwright flows.
 
-- [ ] Add project-only AWS setup with authentication source, configured role/account/region, required trust/permissions and readiness.
-- [ ] Add explicit environment/bucket binding and connection-check commands through the existing run queue.
-- [ ] Let the composer select owned bindings and attach the storage tool or enable qualified automatic tool use.
-- [ ] Display source, retrieved time, measurement time, stale/missing/partial state, coverage and retained evidence independently of assistant interpretation.
-- [ ] Show connector blockers with setup, eligible resume, cancellation and explicit resubmission actions. Plain conversation remains available.
-- [ ] Preserve exact retry payloads, stale-response guards, keyboard access and responsive layout. Do not render maintenance-role controls.
+- [x] Add project-only AWS setup with authentication source, configured role/account/region, required trust/permissions and readiness.
+- [x] Add explicit environment/bucket binding and connection-check commands through the existing run queue.
+- [x] Let the composer select owned bindings and attach the storage tool or enable qualified automatic tool use.
+- [x] Display source, retrieved time, measurement time, stale/missing/partial state, coverage and retained evidence independently of assistant interpretation.
+- [x] Show connector blockers with setup, eligible resume, cancellation and explicit resubmission actions. Plain conversation remains available.
+- [x] Preserve exact retry payloads, stale-response guards, keyboard access and responsive layout. Do not render maintenance-role controls.
 
 **Commit deliverable:** Complete user-facing AWS observation and recovery flow.
 
@@ -331,14 +334,17 @@ credentials and protocol-compatible transports until then.
 
 **Files:** AWS synthetic transports/full-stack tests, PostgreSQL race tests, real-stack browser tests, runbook and AWS qualification record.
 
-- [ ] Use actual boto3 clients and protocol-compatible synthetic responses through the bounded transport; do not qualify the transport solely with SDK method mocks.
-- [ ] Restart API/worker before intent, after acquisition/read and before publication. Verify zero automatic replay of dispatched requests.
-- [ ] Exercise key loss, connector revocation, missing artifact bytes, restore locking, worker incompatibility and blocked-turn conversation continuity.
-- [ ] Update existing CI selectors to run the new PostgreSQL, synthetic-stack and browser tests with zero required skips.
-- [ ] Document administrator setup for the assume-role-only source and basic read role. Disclose that CloudWatch metric authority is broader than the selected bucket.
-- [ ] With separate live opt-in, compare identity and storage observations with an independent read for the same dimensions/time; qualify renewal and safe denial behavior.
-- [ ] Never test prohibited mutations against the user’s bucket. Use reviewed policy evidence or a separately authorized disposable denied-mutation fixture.
-- [ ] Record the source, SDK/tool/configuration revisions, timestamps, limits and remaining qualification gaps. Obtain accept/revise/stop.
+**Records:** [AWS setup and permissions runbook](../../operations/aws-s3-observations.md), [5A.2 qualification candidate](../../testing/phase5a2-aws-observation-qualification.md).
+
+- [x] Use actual boto3 clients and protocol-compatible synthetic responses through the bounded transport; do not qualify the transport solely with SDK method mocks.
+- [x] Hard-stop and replace the AWS worker process before intent, after the six synthetic AWS requests complete, and immediately before artifact publication. Reopen run state through the API route with a fresh database session. A pre-intent run dispatches once after recovery; runs with a committed intent are interrupted and never dispatched again. The local crash checkpoints use SQLite; PostgreSQL CI remains required. An API server process was not started locally because the sandbox denied socket creation.
+- [x] Exercise key loss, connector revocation, missing artifact bytes, restore locking, worker incompatibility and blocked-turn conversation continuity.
+- [x] Confirm existing CI selectors include the new PostgreSQL, synthetic-stack and browser tests with zero required skips. The PostgreSQL/full-stack CI jobs reject skipped tests; the local PostgreSQL cases remain unrun without a configured service.
+- [x] Document administrator setup for the assume-role-only source and basic read role. Disclose that CloudWatch metric authority is broader than the selected bucket.
+- [ ] With separate live opt-in, compare identity and storage observations with an independent read for the same dimensions/time; qualify renewal and safe denial behavior. No live AWS access was authorized for this qualification.
+- [x] Never test prohibited mutations against the user’s bucket. The registered SDK surface exposes only the documented read operations; no live mutation requests were made.
+- [x] Record the source, SDK/tool/configuration revisions, timestamps, limits and remaining qualification gaps.
+- [ ] Obtain accept/revise/stop at the 5A.2 gate.
 
 **Gate:** Do not start 5B before 5A.2 acceptance.
 

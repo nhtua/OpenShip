@@ -14,6 +14,7 @@ from ..chat.lifecycle import ConversationLifecycleError, get_owned_conversation_
 from ..chat.models import Conversation, Message
 from ..execution.pagination import decode_cursor, encode_cursor
 from ..execution.reads import read_operation_page
+from ..resources.models import ConnectorBlocker
 from ..runs.models import Event, ProviderAttempt, Run
 from ..runs.schemas import (
     _attempt_projection,
@@ -61,7 +62,7 @@ def _message_to_summary(msg: Message) -> MessageSummary:
     )
 
 
-def _run_to_summary(run: Run, attempts=(), operation_page=None) -> RunSummary:
+def _run_to_summary(run: Run, attempts=(), operation_page=None, blocker=None) -> RunSummary:
     """Convert Run model to RunSummary schema: only the public projection."""
     return RunSummary(
         id=str(run.id),
@@ -78,6 +79,20 @@ def _run_to_summary(run: Run, attempts=(), operation_page=None) -> RunSummary:
         provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
         operations=list(operation_page.items) if operation_page else [],
         operations_next_cursor=operation_page.next_cursor if operation_page else None,
+        connector_blocker=(
+            {
+                "id": blocker.id,
+                "request_id": blocker.request_id,
+                "reason": blocker.reason,
+                "configuration_digest": blocker.configuration_digest,
+                "expires_at": blocker.expires_at,
+                "connector_kind": blocker.connector_kind,
+                "connector_visibility": blocker.connector_visibility,
+                "connector_revision": blocker.connector_revision,
+            }
+            if blocker is not None
+            else None
+        ),
     )
 
 
@@ -275,11 +290,27 @@ def read_snapshot(
         for item in artifact_rows
     ]
 
+    blockers_by_run = {}
+    if runs:
+        blockers_by_run = {
+            item.run_id: item
+            for item in db.query(ConnectorBlocker)
+            .filter(
+                ConnectorBlocker.run_id.in_([run.id for run in runs]),
+                ConnectorBlocker.state == "waiting",
+            )
+            .all()
+        }
     run_summaries = []
     for run in runs:
         operation_page = read_operation_page(db, run.id, limit=operation_limit)
         run_summaries.append(
-            _run_to_summary(run, recorded_attempts.get(run.id, ()), operation_page)
+            _run_to_summary(
+                run,
+                recorded_attempts.get(run.id, ()),
+                operation_page,
+                blockers_by_run.get(run.id),
+            )
         )
 
     return SnapshotResponse(

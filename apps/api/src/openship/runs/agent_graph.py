@@ -65,7 +65,9 @@ def _available_tools(execution: ExecutionConfigLike) -> tuple[ToolDefinition, ..
             continue
         try:
             manifest = resolve_capability(ref, enabled)
-        except CapabilityError as refused:  # manifest changes must stop before model dispatch.
+        except (
+            CapabilityError
+        ) as refused:  # manifest changes must stop before model dispatch.
             raise ProviderError(
                 "unsupported_capability",
                 safe_message=(
@@ -83,6 +85,12 @@ def _available_tools(execution: ExecutionConfigLike) -> tuple[ToolDefinition, ..
                 ),
                 cause=refused,
             ) from None
+        if not definition.model_selectable:
+            continue
+        if manifest.id == "aws_s3_bucket_storage" and not getattr(
+            execution, "selected_resource_binding_refs", ()
+        ):
+            continue
         definitions.append(
             ToolDefinition(
                 name=manifest.id,
@@ -93,7 +101,9 @@ def _available_tools(execution: ExecutionConfigLike) -> tuple[ToolDefinition, ..
     return tuple(definitions)
 
 
-def _append_transcript(invocation, model_turn_ordinal: int, message: ChatMessage) -> None:
+def _append_transcript(
+    invocation, model_turn_ordinal: int, message: ChatMessage
+) -> None:
     with invocation.session_factory() as db:
         append_transcript(db, invocation.claim, model_turn_ordinal, message)
         db.commit()
@@ -147,9 +157,7 @@ def build_agent_graph(
             raise ProviderError("lease_lost")
 
         try:
-            execution = decode_execution_config(
-                state["execution_configuration"]
-            )
+            execution = decode_execution_config(state["execution_configuration"])
         except (KeyError, TypeError, ValueError, ValidationError) as invalid:
             raise ProviderError("configuration_error", cause=invalid) from invalid
         if invocation.context.execution != execution:
@@ -209,7 +217,11 @@ def build_agent_graph(
                 logical_call_id = f"model:{model_turn_ordinal}:call:0"
                 invocation.budget.admit_tool(logical_call_id)
                 ref = next(
-                    (item for item in execution.allowed_capabilities if item.id == call.name),
+                    (
+                        item
+                        for item in execution.allowed_capabilities
+                        if item.id == call.name
+                    ),
                     None,
                 )
                 if ref is None or call.name not in {tool.name for tool in definitions}:

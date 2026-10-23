@@ -136,4 +136,37 @@ describe('ToolAttachmentMenu', () => {
     expect(wrapper.text()).not.toContain('workspace_list_files')
     wrapper.unmount()
   })
+
+  it('offers bound S3 storage as an explicit maintained tool but keeps identity checks out of the model menu', async () => {
+    const awsStorage: CapabilitySummary = {
+      id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'd'.repeat(64),
+      input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true,
+      available: true, unavailable_reason: null,
+    }
+    const identityCheck: CapabilitySummary = { ...awsStorage, id: 'aws_check_connection' }
+    const wrapper = mount(ToolAttachmentMenu, {
+      props: {
+        capabilities: [...capabilities, awsStorage, identityCheck],
+        resourceBindings: [{
+          resource_id: 'resource-1', uri: 'aws:s3://example-bucket', display_name: 'Example bucket',
+          environment_id: 'environment-1', environment_name: 'production', binding_id: 'binding-1',
+          binding_revision: 1, connector_id: 'aws-1', connector_revision: 1, account_id: '123456789012',
+          region: 'us-east-1', bucket_name: 'example-bucket', bucket_arn: 'arn:aws:s3:::example-bucket',
+          expected_owner: '123456789012', management_method: 'unknown', state: 'active', created_at: '',
+        }],
+        selectedCapabilityId: null,
+        disabled: false,
+      },
+    })
+
+    await wrapper.get('[aria-label="Add tool"]').trigger('click')
+    expect(wrapper.text()).toContain('S3 bucket storage')
+    expect(wrapper.text()).not.toContain('aws_check_connection')
+    const storage = wrapper.findAll('[data-testid="tool-choice"]').find((item) => item.text().includes('S3'))!
+    await storage.trigger('click')
+    expect(wrapper.emitted('attach')?.[0]).toEqual([{
+      id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'd'.repeat(64),
+    }])
+    wrapper.unmount()
+  })
 })

@@ -22,6 +22,7 @@ from ..auth.routes import require_jwt
 from ..database.session import get_db
 from ..tools.search.health import check_search_api_key
 from ..workspace.lifecycle import ArchiveStateError, archive_http_error
+from .aws.contracts import AwsBootstrapAuth
 from .contracts import ConnectorUsage
 from .errors import CredentialStoreUnavailable
 from .selection import ConnectorSelectionError
@@ -29,6 +30,7 @@ from .service import (
     ConnectorCommandError,
     connector_api_key,
     create_connector,
+    create_project_aws_connector,
     delete_connector,
     detail,
     finalize_request,
@@ -38,6 +40,7 @@ from .service import (
     lock_active_project,
     owned_connector,
     owned_project,
+    replace_aws_credential,
     replace_credential,
     request_status,
     require_global_operator,
@@ -92,6 +95,17 @@ class _CreateConnector(_RequestModel):
     name: str = Field(min_length=1, max_length=255)
     configuration: dict[str, Any] = Field(default_factory=dict)
     api_key: str = Field(min_length=8, max_length=4096, repr=False)
+
+
+class _CreateProjectAwsConnector(_RequestModel):
+    name: str = Field(min_length=1, max_length=255)
+    configuration: dict[str, Any]
+    auth: AwsBootstrapAuth
+
+
+class _ReplaceAwsCredential(_RequestModel):
+    expected_revision: int = Field(ge=1)
+    auth: AwsBootstrapAuth
 
 
 class _ReplaceCredential(_RequestModel):
@@ -333,6 +347,48 @@ def project_connector_list(
         raise _translate_error(exc) from None
 
 
+@router.post("/api/projects/{project_id}/aws-connectors", status_code=201)
+async def project_aws_connector_create(
+    project_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    try:
+        lock_active_project(db, project_id=project_id, user_id=user.id)
+        _require_browser_origin(request)
+        request_id = _request_id(request)
+        body = await _validated_body(request, _CreateProjectAwsConnector)
+        reservation = _begin_request(
+            db,
+            user=user,
+            visibility="project",
+            project_id=project_id,
+            request_id=request_id,
+            command="project_aws_connector_create",
+            payload=_safe_payload(body),
+        )
+        if reservation.replay_result is not None:
+            return JSONResponse(status_code=200, content=reservation.replay_result)
+        result = create_project_aws_connector(
+            db,
+            actor=user,
+            project_id=project_id,
+            name=body.name,
+            configuration_raw=body.configuration,
+            auth=body.auth,
+        )
+        finalize_request(reservation, result, connector_id=uuid.UUID(result["id"]))
+        _commit_or_safe_error(db)
+        return JSONResponse(status_code=201, content=result)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise _translate_error(exc) from None
+
+
 @router.post("/api/projects/{project_id}/connectors", status_code=201)
 async def project_connector_create(
     project_id: uuid.UUID,
@@ -463,6 +519,59 @@ async def project_connector_replace_credential(
             actor=user,
             expected_revision=body.expected_revision,
             api_key=body.api_key,
+        )
+        finalize_request(reservation, result, connector_id=connector_id)
+        _commit_or_safe_error(db)
+        return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise _translate_error(exc) from None
+
+
+@router.post(
+    "/api/projects/{project_id}/connectors/{connector_id}/aws-credentials"
+)
+async def project_aws_connector_replace_credential(
+    project_id: uuid.UUID,
+    connector_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    try:
+        lock_active_project(db, project_id=project_id, user_id=user.id)
+        connector = owned_connector(
+            db, connector_id=connector_id, project_id=project_id
+        )
+        if connector.kind != "aws":
+            raise ConnectorCommandError("connector_not_found")
+        _require_browser_origin(request)
+        request_id = _request_id(request)
+        body = await _validated_body(request, _ReplaceAwsCredential)
+        reservation = _begin_request(
+            db,
+            user=user,
+            visibility="project",
+            project_id=project_id,
+            request_id=request_id,
+            command=f"project_aws_credential:{connector_id}",
+            payload=_safe_payload(body),
+        )
+        if reservation.replay_result is not None:
+            return JSONResponse(status_code=200, content=reservation.replay_result)
+        lock_active_project(db, project_id=project_id, user_id=user.id)
+        connector = owned_connector(
+            db, connector_id=connector_id, project_id=project_id
+        )
+        result = replace_aws_credential(
+            db,
+            connector=connector,
+            actor=user,
+            expected_revision=body.expected_revision,
+            auth=body.auth,
         )
         finalize_request(reservation, result, connector_id=connector_id)
         _commit_or_safe_error(db)

@@ -6,6 +6,8 @@ import { useChatStore } from '@/stores/chat'
 import { useArtifactsStore } from '@/stores/artifacts'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
+import { useResourcesStore } from '@/stores/resources'
+import { runsApi } from '@/services/api'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
@@ -32,6 +34,7 @@ const chat = useChatStore()
 const artifacts = useArtifactsStore()
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
+const resources = useResourcesStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
@@ -43,6 +46,8 @@ const archivedConversationsOpen = ref(false)
 const archivedConversationsLoading = ref(false)
 const restoringConversationId = ref<string | null>(null)
 const archiveDialogError = ref<string | null>(null)
+const connectorActionBusy = ref(false)
+const composerDraft = ref<string | null>(null)
 // Driven from the resulting store error, never inferred from an empty list.
 const historyLoadFailed = ref(false)
 const projectCreationError = ref<string | null>(null)
@@ -58,6 +63,17 @@ const hasActiveRun = computed(() => {
   const conversationId = chat.currentConversation?.id
   const status = conversationId ? chat.runCards.get(conversationId)?.status : null
   return status ? ['queued', 'running', 'paused'].includes(status) : false
+})
+const canResumeConnector = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  const blocker = conversationId ? chat.runCards.get(conversationId)?.connector_blocker : null
+  if (!blocker) return false
+  return connectors.connectors.some((connector) =>
+    connector.id === blocker.connector_id &&
+    connector.kind === blocker.connector_kind &&
+    connector.revision === blocker.connector_revision &&
+    connector.status === 'configured',
+  )
 })
 
 const busy = computed(
@@ -189,6 +205,10 @@ watch(() => [route.name, route.params.conversationId], () => {
   if (routeReady.value) routeLoad = loadConversationFromRoute()
 })
 
+watch(() => projects.currentProjectId, (projectId) => {
+  void resources.loadProject(projectId)
+})
+
 async function createAndOpenConversation(newTitle: string): Promise<string | null> {
   const origin = route.fullPath
   const generation = routeLoadGeneration
@@ -224,7 +244,11 @@ async function handleSelectConversation(id: string) {
   }
 }
 
-async function handleSend(content: string, options?: { enableTools: boolean; connectorSelections?: Partial<Record<'brave' | 'tavily', string>> }) {
+async function handleSend(content: string, options?: {
+  enableTools: boolean
+  connectorSelections?: Partial<Record<'brave' | 'tavily', string>>
+  resourceBindingSelections?: string[]
+}) {
   if (busy.value) return
   chat.error = null
 
@@ -256,6 +280,74 @@ async function handleCancelRun() {
   await chat.cancelRun(runId)
 }
 
+async function handleResumeConnector(): Promise<void> {
+  const conversationId = chat.currentConversation?.id
+  const card = conversationId ? chat.runCards.get(conversationId) : null
+  const blocker = card?.connector_blocker
+  if (!conversationId || !card?.run_id || !blocker || !canResumeConnector.value || connectorActionBusy.value) return
+  connectorActionBusy.value = true
+  chat.error = null
+  try {
+    await runsApi.resumeConnector(card.run_id, {
+      blocker_id: blocker.id,
+      request_id: blocker.request_id,
+      expected_configuration_digest: blocker.configuration_digest,
+    })
+    await chat.loadConversation(conversationId)
+  } catch {
+    chat.error = 'This Connector wait could not be resumed. Reload the conversation and check its setup.'
+  } finally {
+    connectorActionBusy.value = false
+  }
+}
+
+async function handleDismissConnector(): Promise<void> {
+  const conversationId = chat.currentConversation?.id
+  const card = conversationId ? chat.runCards.get(conversationId) : null
+  const blocker = card?.connector_blocker
+  if (!conversationId || !card?.run_id || !blocker || connectorActionBusy.value) return
+  connectorActionBusy.value = true
+  chat.error = null
+  try {
+    await runsApi.dismissConnector(card.run_id, { blocker_id: blocker.id })
+    await chat.loadConversation(conversationId)
+  } catch {
+    chat.error = 'This Connector wait could not be cancelled. Reload the conversation and try again.'
+  } finally {
+    connectorActionBusy.value = false
+  }
+}
+
+function handleSetupConnector(): void {
+  void router.push({ name: 'connectors' })
+}
+
+async function handleResubmitConnector(): Promise<void> {
+  const conversationId = chat.currentConversation?.id
+  const card = conversationId ? chat.runCards.get(conversationId) : null
+  const blocker = card?.connector_blocker
+  if (!conversationId || !card?.run_id || !blocker || connectorActionBusy.value) return
+  const original = chat.messages.find((message) => message.role === 'user' && message.run_id === card.run_id)?.content
+  const draft = original || (blocker.connector_kind === 'aws'
+    ? 'Check storage for the selected S3 bucket.'
+    : 'Please retry my request using the current connector setup.')
+  connectorActionBusy.value = true
+  chat.error = null
+  try {
+    await runsApi.dismissConnector(card.run_id, { blocker_id: blocker.id })
+    await chat.loadConversation(conversationId)
+    composerDraft.value = draft
+  } catch {
+    chat.error = 'The request could not be moved to the composer. Reload the conversation and try again.'
+  } finally {
+    connectorActionBusy.value = false
+  }
+}
+
+function handleComposerDraftConsumed(): void {
+  composerDraft.value = null
+}
+
 function dismissError() {
   chat.error = null
   historyLoadFailed.value = false
@@ -269,7 +361,7 @@ async function handleRetrySubmission() {
   else await chat.retryToolSubmission(requestId)
 }
 
-async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: { query: string; max_results: number }; connector_selections?: Partial<Record<'brave' | 'tavily', string>> }) {
+async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: Record<string, unknown>; connector_selections?: Partial<Record<'brave' | 'tavily', string>> }) {
   if (busy.value || hasActiveRun.value) return
   isToolSubmitting.value = true
   try {
@@ -387,6 +479,7 @@ async function handleSignOut() {
   chat.clearMessages()
   artifacts.clear()
   connectors.clear()
+  resources.clear()
   projects.clear()
   chat.conversations = []
   chat.error = null
@@ -408,6 +501,7 @@ async function handleSelectProject(projectId: string) {
   projectCreationError.value = null
   chat.deselectConversation()
   await connectors.loadProjectContext(projectId)
+  await resources.loadProject(projectId)
   if (route.name === 'conversation' && conversationProjectId !== projectId) {
     await router.replace({ name: 'chat' })
   }
@@ -422,6 +516,7 @@ async function handleCreateProject(name: string) {
     chat.deselectConversation()
     if (route.name !== 'chat') await router.replace({ name: 'chat' })
     await connectors.loadProjectContext(project.id)
+    await resources.loadProject(project.id)
   } catch {
     projectCreationError.value = projects.error ?? 'Failed to create project'
   } finally {
@@ -436,6 +531,7 @@ onMounted(async () => {
   await chat.loadModelProfiles()
   await projects.initialize()
   await connectors.initialize(projects.currentProjectId)
+  await resources.loadProject(projects.currentProjectId)
   await loadHistory()
   if (disposed) return
   routeReady.value = true
@@ -540,7 +636,13 @@ onBeforeUnmount(() => {
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
         <RunCard
           :card="chat.runCards.get(chat.currentConversation.id)!"
-          :has-actions="Boolean(pendingSubmissionId || (activeRunId && chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool'))"
+          :has-actions="Boolean(pendingSubmissionId || (activeRunId && chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool') || chat.runCards.get(chat.currentConversation.id)!.connector_blocker)"
+          :can-resume-connector="canResumeConnector"
+          :connector-action-busy="connectorActionBusy"
+          @resume-connector="handleResumeConnector"
+          @dismiss-connector="handleDismissConnector"
+          @setup-connector="handleSetupConnector"
+          @resubmit-connector="handleResubmitConnector"
         >
           <Button
             v-if="pendingSubmissionId"
@@ -584,6 +686,8 @@ onBeforeUnmount(() => {
         :catalog-error="chat.profileError"
         :capabilities="connectors.capabilities"
         :connectors="connectors.connectors"
+        :resource-bindings="resources.bindings"
+        :draft-content="composerDraft"
         :default-connector-ids="{
           brave: connectors.defaults.brave?.connector_id ?? undefined,
           tavily: connectors.defaults.tavily?.connector_id ?? undefined,
@@ -593,6 +697,7 @@ onBeforeUnmount(() => {
         @send="handleSend"
         @search="handleSearch"
         @select="handleSelectProfile"
+        @draft-consumed="handleComposerDraftConsumed"
       />
     </div>
 

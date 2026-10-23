@@ -15,6 +15,19 @@ from src.openship.capabilities.contracts import (
     CapabilityManifestLike,
     canonical_json,
 )
+from src.openship.tools.aws.checks import aws_check_connection
+from src.openship.tools.aws.contracts import (
+    AwsCheckArguments,
+    AwsCheckResult,
+    AwsStorageArguments,
+    AwsStorageObservation,
+    AwsStorageResult,
+    AwsToolError,
+)
+from src.openship.tools.aws.s3_storage import (
+    aws_s3_bucket_storage,
+    project_storage_result,
+)
 from src.openship.tools.search.brave import search_brave
 from src.openship.tools.search.contracts import (
     SearchArguments,
@@ -74,6 +87,10 @@ class ToolDefinitionEntry:
     input_artifact_ids: Callable[[BaseModel], tuple[UUID, ...]] = lambda _value: ()
     evidence_projector: ResultProjector = _identity
     publication_hook: Callable[..., Any] | None = None
+    external_publication_hook: Callable[..., Any] | None = None
+    artifact_kind: str | None = None
+    artifact_name: str | None = None
+    model_selectable: bool = True
     implementation_files: tuple[str, ...] = ()
     error_mapper: ErrorMapper = _no_error
     safe_failure_code: str = "provider_unavailable"
@@ -92,7 +109,9 @@ class ToolDefinitionEntry:
         return result_model.model_validate(value)
 
     def project_result(self, value: Any) -> dict[str, Any]:
-        source = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+        source = (
+            value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+        )
         projected = self.result_projector(source)
         normalized = self.result_model.model_validate_json(canonical_json(projected))
         return normalized.model_dump(mode="json")
@@ -114,6 +133,8 @@ _BUILTIN_IDS = frozenset(
         "tavily_web_search",
         "workspace_list_files",
         "workspace_read_file",
+        "aws_check_connection",
+        "aws_s3_bucket_storage",
     }
 )
 _REGISTERED: dict[str, ToolDefinitionEntry] = {}
@@ -134,7 +155,9 @@ def implementation_digest_for(source_files: tuple[str, ...]) -> str:
             or path.as_posix() != source_file
             or not source_file
         ):
-            raise ValueError("tool implementation paths must be normalized and relative")
+            raise ValueError(
+                "tool implementation paths must be normalized and relative"
+            )
         requested.add(source_file)
 
     digest = hashlib.sha256()
@@ -171,6 +194,98 @@ def _workspace_publication(db: Any, operation: Any, value: Any) -> Any:
     from src.openship.execution.publication import validate_workspace_result
 
     return validate_workspace_result(db, operation, value)
+
+
+def _aws_error(error: Exception) -> str | None:
+    return error.code if isinstance(error, AwsToolError) else None
+
+
+def _aws_check_output(operation: Any, value: Any) -> Any:
+    from src.openship.execution.publication import ToolPublicationError
+
+    try:
+        result = AwsCheckResult.model_validate(value)
+        if result.operation_id != str(operation.id):
+            raise ToolPublicationError("invalid_tool_output")
+        return result
+    except ToolPublicationError:
+        raise
+    except Exception as exc:
+        raise ToolPublicationError("invalid_tool_output") from exc
+
+
+def _aws_storage_output(operation: Any, value: Any) -> Any:
+    from src.openship.execution.publication import ToolPublicationError
+
+    try:
+        observation = AwsStorageObservation.model_validate(value)
+        arguments = AwsStorageArguments.model_validate_json(operation.arguments_json)
+        if (
+            observation.operation_id != str(operation.id)
+            or observation.project_id != operation.project_id
+            or observation.resource_binding_id != arguments.resource_binding_id
+            or observation.tool.id != operation.capability_id
+            or observation.tool.version != operation.capability_version
+            or observation.tool.manifest_digest != operation.manifest_digest
+        ):
+            raise ToolPublicationError("invalid_tool_output")
+        return observation
+    except ToolPublicationError:
+        raise
+    except Exception as exc:
+        raise ToolPublicationError("invalid_tool_output") from exc
+
+
+def _aws_storage_publication(
+    db: Any, operation: Any, observation: Any, artifact_ref: Any
+) -> Any:
+    from src.openship.execution.publication import ToolPublicationError
+    from src.openship.resources.models import ResourceBinding, ResourceObservation
+
+    binding = (
+        db.query(ResourceBinding)
+        .filter(
+            ResourceBinding.id == observation.resource_binding_id,
+            ResourceBinding.project_id == operation.project_id,
+            ResourceBinding.resource_object_id == observation.resource_id,
+            ResourceBinding.revision == observation.binding_revision,
+            ResourceBinding.connector_id == observation.connector_id,
+            ResourceBinding.connector_revision == observation.connector_revision,
+            ResourceBinding.account_id == observation.account_id,
+            ResourceBinding.region == observation.region,
+            ResourceBinding.bucket_name == observation.bucket_name,
+            ResourceBinding.state == "active",
+        )
+        .with_for_update()
+        .first()
+    )
+    if binding is None:
+        raise ToolPublicationError("changed")
+    coverage = observation.metrics.coverage.model_dump(mode="json")
+    coverage["stale"] = observation.metrics.stale
+    coverage["reported_storage_subtotal_bytes"] = (
+        observation.metrics.reported_storage_subtotal_bytes
+    )
+    coverage_json = canonical_json(coverage)
+    db.add(
+        ResourceObservation(
+            project_id=operation.project_id,
+            conversation_id=operation.conversation_id,
+            run_id=operation.run_id,
+            operation_id=operation.id,
+            resource_object_id=observation.resource_id,
+            resource_binding_id=observation.resource_binding_id,
+            binding_revision=observation.binding_revision,
+            source=operation.capability_id,
+            retrieved_at=observation.retrieved_at,
+            measurement_at=observation.metrics.measurement_at,
+            coverage_json=coverage_json.decode("utf-8"),
+            outcome=observation.metrics.outcome,
+            evidence_artifact_id=artifact_ref.id,
+            evidence_sha256=artifact_ref.sha256,
+        )
+    )
+    return project_storage_result(observation, artifact_ref)
 
 
 def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry:
@@ -222,6 +337,34 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             error_mapper=_workspace_error,
             safe_failure_code="workspace_unavailable",
         )
+    elif manifest.id == "aws_check_connection":
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=manifest.description,
+            argument_model=AwsCheckArguments,
+            result_model=AwsCheckResult,
+            handler=aws_check_connection,
+            handler_result_model=AwsCheckResult,
+            output_validator=_aws_check_output,
+            error_mapper=_aws_error,
+            safe_failure_code="aws_unavailable",
+            model_selectable=False,
+        )
+    elif manifest.id == "aws_s3_bucket_storage":
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=manifest.description,
+            argument_model=AwsStorageArguments,
+            result_model=AwsStorageResult,
+            handler=aws_s3_bucket_storage,
+            handler_result_model=AwsStorageObservation,
+            output_validator=_aws_storage_output,
+            external_publication_hook=_aws_storage_publication,
+            artifact_kind="cloud_observation",
+            artifact_name="s3-bucket-storage.json",
+            error_mapper=_aws_error,
+            safe_failure_code="aws_unavailable",
+        )
     else:
         raise LookupError("tool definition is not registered")
 
@@ -268,7 +411,11 @@ def get_tool_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
         if registered.manifest != manifest:
             raise LookupError("tool definition changed")
         override = TOOL_HANDLER_OVERRIDES.get(manifest.id)
-        return replace(registered, handler=override) if override is not None else registered
+        return (
+            replace(registered, handler=override)
+            if override is not None
+            else registered
+        )
     return _builtin_definition(manifest)
 
 

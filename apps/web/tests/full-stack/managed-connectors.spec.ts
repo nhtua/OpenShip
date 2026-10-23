@@ -1,4 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
+import {
+  E2E_CONVERSATIONS,
+  clearApiRoutes,
+  mockApi,
+  mockDurableApi,
+  setAuthToken,
+} from '../e2e/fixtures/api'
 
 const operatorToken = process.env.CONNECTOR_TEST_OPERATOR_TOKEN
 const initialProjectId = process.env.CONNECTOR_TEST_PROJECT_ID
@@ -214,4 +221,158 @@ test('unprovisioned connector setup explains a missing HMAC file and blocks writ
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled()
   expect(creates).toBe(0)
+})
+
+test('AWS project setup binds an S3 bucket and sends only the selected target to the storage tool', async ({ page }) => {
+  const { token, projectId } = requireOperatorSetup()
+  await clearApiRoutes(page)
+  await mockApi(page, {
+    conversations: E2E_CONVERSATIONS.map((conversation) => ({ ...conversation, project_id: projectId })),
+  })
+  await setAuthToken(page, token)
+
+  const awsConnector = {
+    id: 'aws-project-1', kind: 'aws', visibility: 'project', name: 'Production AWS',
+    status: 'configured', revision: 1, is_default: false,
+  }
+  const configuration = {
+    schema_version: 1, kind: 'aws', region: 'us-west-2',
+    expected_account_id: '123456789012',
+    basic_role_arn: 'arn:aws:iam::123456789012:role/OpenShipRead',
+  }
+  const environments: Record<string, unknown>[] = []
+  const bindings: Record<string, unknown>[] = []
+  const projectConnectors: Record<string, unknown>[] = []
+  let credentialRequest: Record<string, unknown> | null = null
+
+  await page.route('**/api/projects*', (route) => {
+    const url = new URL(route.request().url())
+    if (route.request().method() === 'GET' && url.pathname === '/api/projects') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{ id: projectId, name: 'AWS fixture project', archived_at: null }]),
+      })
+    }
+    return route.fallback()
+  })
+  await page.route(`**/api/projects/${projectId}/connectors`, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(projectConnectors) })
+      return
+    }
+    await route.continue()
+  })
+  await page.route(`**/api/projects/${projectId}/connectors/${awsConnector.id}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ...awsConnector, configuration }),
+  }))
+  await page.route(`**/api/projects/${projectId}/connector-defaults/*`, (route) => {
+    const service = new URL(route.request().url()).pathname.split('/').at(-1)
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ service, connector_id: null, revision: 0 }),
+    })
+  })
+  await page.route(`**/api/projects/${projectId}/aws-connectors`, async (route) => {
+    credentialRequest = route.request().postDataJSON() as Record<string, unknown>
+    const { auth: _auth, ...safeConnector } = credentialRequest as Record<string, unknown> & { auth: unknown }
+    projectConnectors.push(awsConnector)
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ ...safeConnector, ...awsConnector }) })
+  })
+  await page.route(`**/api/projects/${projectId}/environments`, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(environments) })
+      return
+    }
+    const body = route.request().postDataJSON() as { name: string; display_name: string }
+    const environment = { id: 'environment-1', project_id: projectId, ...body, created_at: '' }
+    environments.push(environment)
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(environment) })
+  })
+  await page.route(`**/api/projects/${projectId}/resources`, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: bindings, next_cursor: null }) })
+      return
+    }
+    const body = route.request().postDataJSON() as {
+      environment_id: string; connector_id: string; connector_revision: number; bucket_name: string; display_name: string
+    }
+    const binding = {
+      resource_id: 'resource-1', uri: 'openship://project/resource-1',
+      environment_name: 'production', binding_id: 'binding-1', binding_revision: 1,
+      account_id: '123456789012', region: 'us-west-2', bucket_arn: 'arn:aws:s3:::production-data',
+      expected_owner: '123456789012', management_method: 'unknown', state: 'active', created_at: '',
+      ...body,
+    }
+    bindings.push(binding)
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(binding) })
+  })
+  const storageCapability = {
+    id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'c'.repeat(64),
+    input_schema: {}, output_schema: {}, effect: 'read_only_external' as const,
+    enabled: true, available: true, unavailable_reason: null,
+  }
+  const queued = await mockDurableApi(page, {
+    capabilities: [storageCapability],
+    submittedToolRun: {
+      id: 'run-s3-observation', conversation_id: 'c1', status: 'queued', created_at: '', attempt: 0,
+      kind: 'tool', graph_version: 2, model: null, usage: null, error: null, provider_attempts: [],
+    },
+  })
+  await page.route(`**/api/projects/${projectId}/capabilities`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      ...storageCapability,
+      permitted: true,
+      required_connector_kinds: ['aws'],
+      connector_readiness: { aws: 'ready' },
+    }]),
+  }))
+
+  await page.goto('/connectors')
+  await expect(page.locator('main h1').last()).toHaveText('Connectors')
+  await expect(page.getByTestId('project-selector-trigger')).toContainText('AWS fixture project')
+  await page.getByRole('button', { name: 'Add project AWS Connector' }).click()
+  let dialog = page.getByRole('dialog')
+  await dialog.getByLabel('Connector name').fill('Production AWS')
+  await dialog.getByLabel('AWS region').fill('us-west-2')
+  await dialog.getByLabel('Expected AWS account ID').fill('123456789012')
+  await dialog.getByLabel('Basic read role ARN').fill(configuration.basic_role_arn)
+  await dialog.getByLabel('Bootstrap access key ID').fill('AKIAE2ESYNTHETIC')
+  await dialog.getByLabel('Bootstrap secret access key').fill('synthetic-aws-source-secret')
+  const setupButton = dialog.getByRole('button', { name: 'Set up AWS connector' })
+  await expect(setupButton).toBeEnabled()
+  await setupButton.click()
+
+  await expect.poll(() => credentialRequest !== null).toBe(true)
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Configure Production AWS' })).toContainText('Configured')
+  expect(credentialRequest).toMatchObject({ name: 'Production AWS', configuration })
+  expect((credentialRequest?.auth as Record<string, string>).access_key_id).toBe('AKIAE2ESYNTHETIC')
+  expect(JSON.stringify(credentialRequest)).toContain('synthetic-aws-source-secret')
+  expect(await page.locator('body').innerText()).not.toContain('AKIAE2ESYNTHETIC')
+  expect(await page.locator('body').innerText()).not.toContain('synthetic-aws-source-secret')
+
+  await page.getByLabel('Environment name').fill('production')
+  await page.getByLabel('Display name').fill('Production')
+  await page.getByRole('button', { name: 'Add environment' }).click()
+  await page.getByLabel('Bucket name').fill('production-data')
+  await page.getByLabel('Display name', { exact: true }).nth(1).fill('Production data')
+  await page.getByRole('button', { name: 'Bind S3 bucket' }).click()
+  await expect(page.locator('[data-binding-id="binding-1"]')).toContainText('production-data')
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
+  await page.getByRole('button', { name: 'Add tool' }).click()
+  await page.getByTestId('tool-choice').filter({ hasText: 'S3 bucket storage' }).click()
+  await page.getByLabel('AWS resource binding').selectOption('binding-1')
+  await page.getByRole('button', { name: 'Measure' }).click()
+
+  await expect.poll(() => queued.submittedTools.length).toBe(1)
+  expect(queued.submittedTools[0].payload.capability.id).toBe('aws_s3_bucket_storage')
+  expect(queued.submittedTools[0].payload.arguments).toEqual({ resource_binding_id: 'binding-1' })
 })

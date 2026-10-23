@@ -203,6 +203,24 @@ def test_reencryption_resumes_by_key_id_preserves_version_and_verifies_all_rows(
             installation_id=settings.connector_installation_id,
             batch_size=1,
         ) == 0
+
+        db.add(
+            CredentialVersion(
+                id=uuid.uuid4(),
+                connector_id=connector_id,
+                visibility="global",
+                project_id=None,
+                kind="brave_api_key",
+                schema_version=1,
+                key_id="purged",
+                nonce=b"\x00" * 12,
+                ciphertext=b"\x00" * 16,
+                state="revoked",
+                revoked_at=datetime.now(UTC),
+                purged_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
         assert verify_retained_credentials(
             db, rotated_store, installation_id=settings.connector_installation_id
         ) == 1

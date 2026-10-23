@@ -47,12 +47,20 @@ class Connector(Base):
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
-        CheckConstraint("kind IN ('brave', 'tavily', 'aws')", name="ck_connectors_kind"),
-        CheckConstraint("visibility IN ('global', 'project')", name="ck_connectors_visibility"),
+        CheckConstraint(
+            "kind IN ('brave', 'tavily', 'aws')", name="ck_connectors_kind"
+        ),
+        CheckConstraint(
+            "visibility IN ('global', 'project')", name="ck_connectors_visibility"
+        ),
         CheckConstraint(
             "(visibility = 'global' AND project_id IS NULL) OR "
             "(visibility = 'project' AND project_id IS NOT NULL)",
@@ -76,7 +84,9 @@ class CredentialVersion(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     connector_id = Column(
-        UUID(as_uuid=True), ForeignKey("connectors.id", ondelete="RESTRICT"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("connectors.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     visibility = Column(String(16), nullable=False)
     project_id = Column(
@@ -89,12 +99,20 @@ class CredentialVersion(Base):
     ciphertext = Column(LargeBinary, nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)
     state = Column(String(16), nullable=False, server_default="active")
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     revoked_at = Column(DateTime(timezone=True), nullable=True)
+    purged_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("connector_id", "id", name="uq_connector_credentials_connector_id"),
-        CheckConstraint("visibility IN ('global', 'project')", name="ck_connector_credentials_visibility"),
+        UniqueConstraint(
+            "connector_id", "id", name="uq_connector_credentials_connector_id"
+        ),
+        CheckConstraint(
+            "visibility IN ('global', 'project')",
+            name="ck_connector_credentials_visibility",
+        ),
         CheckConstraint(
             "(visibility = 'global' AND project_id IS NULL) OR "
             "(visibility = 'project' AND project_id IS NOT NULL)",
@@ -108,14 +126,18 @@ class CredentialVersion(Base):
             "NOT (kind = 'aws_bootstrap' AND visibility = 'global')",
             name="ck_connector_credentials_aws_project_only",
         ),
-        CheckConstraint("schema_version = 1", name="ck_connector_credentials_schema_version"),
+        CheckConstraint(
+            "schema_version = 1", name="ck_connector_credentials_schema_version"
+        ),
         CheckConstraint("length(key_id) BETWEEN 1 AND 64", name="ck_connector_credentials_key_id"),
         CheckConstraint("length(nonce) = 12", name="ck_connector_credentials_nonce"),
         CheckConstraint(
             "length(ciphertext) BETWEEN 16 AND 16400",
             name="ck_connector_credentials_ciphertext_size",
         ),
-        CheckConstraint("state IN ('active', 'revoked')", name="ck_connector_credentials_state"),
+        CheckConstraint(
+            "state IN ('active', 'revoked')", name="ck_connector_credentials_state"
+        ),
         Index("ix_connector_credentials_connector_state", "connector_id", "state"),
     )
 
@@ -139,7 +161,9 @@ class ConnectorRevision(Base):
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -148,7 +172,9 @@ class ConnectorRevision(Base):
             ondelete="RESTRICT",
             name="fk_connector_revisions_credential_owner",
         ),
-        UniqueConstraint("connector_id", "revision", name="uq_connector_revisions_revision"),
+        UniqueConstraint(
+            "connector_id", "revision", name="uq_connector_revisions_revision"
+        ),
         Index(
             "uq_connector_revisions_project_connector_revision",
             "project_id",
@@ -164,16 +190,34 @@ class ConnectorRevision(Base):
             "credential_version_id",
             unique=True,
         ),
+        Index(
+            "uq_connector_revisions_connector_revision_credential",
+            "connector_id",
+            "revision",
+            "credential_version_id",
+            unique=True,
+        ),
         CheckConstraint("revision >= 1", name="ck_connector_revisions_revision"),
-        CheckConstraint("schema_version = 1", name="ck_connector_revisions_schema_version"),
-        CheckConstraint("visibility IN ('global', 'project')", name="ck_connector_revisions_visibility"),
+        CheckConstraint(
+            "schema_version = 1", name="ck_connector_revisions_schema_version"
+        ),
+        CheckConstraint(
+            "visibility IN ('global', 'project')",
+            name="ck_connector_revisions_visibility",
+        ),
         CheckConstraint(
             "(visibility = 'global' AND project_id IS NULL) OR "
             "(visibility = 'project' AND project_id IS NOT NULL)",
             name="ck_connector_revisions_owner_shape",
         ),
-        CheckConstraint("length(configuration_json) <= 16384", name="ck_connector_revisions_config_size"),
-        CheckConstraint("length(configuration_digest) = 64", name="ck_connector_revisions_config_digest"),
+        CheckConstraint(
+            "length(configuration_json) <= 16384",
+            name="ck_connector_revisions_config_size",
+        ),
+        CheckConstraint(
+            "length(configuration_digest) = 64",
+            name="ck_connector_revisions_config_digest",
+        ),
     )
 
 
@@ -184,7 +228,9 @@ class ProjectConnectorDefault(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
     )
     service = Column(String(16), nullable=False)
     connector_id = Column(UUID(as_uuid=True), nullable=True)
@@ -193,7 +239,9 @@ class ProjectConnectorDefault(Base):
     updated_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -203,9 +251,18 @@ class ProjectConnectorDefault(Base):
             name="fk_project_connector_defaults_revision",
         ),
         UniqueConstraint("project_id", name="uq_project_connector_defaults_project"),
-        CheckConstraint("service IN ('brave', 'tavily')", name="ck_project_connector_defaults_service"),
-        CheckConstraint("connector_revision >= 1", name="ck_project_connector_defaults_connector_revision"),
-        CheckConstraint("settings_revision >= 1", name="ck_project_connector_defaults_settings_revision"),
+        CheckConstraint(
+            "service IN ('brave', 'tavily')",
+            name="ck_project_connector_defaults_service",
+        ),
+        CheckConstraint(
+            "connector_revision >= 1",
+            name="ck_project_connector_defaults_connector_revision",
+        ),
+        CheckConstraint(
+            "settings_revision >= 1",
+            name="ck_project_connector_defaults_settings_revision",
+        ),
         CheckConstraint(
             "(connector_id IS NULL AND connector_revision IS NULL) OR "
             "(connector_id IS NOT NULL AND connector_revision IS NOT NULL)",
@@ -229,25 +286,38 @@ class ConnectorRequestLedger(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     connector_id = Column(
-        UUID(as_uuid=True), ForeignKey("connectors.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("connectors.id", ondelete="SET NULL"),
+        nullable=True,
     )
     key_id = Column(String(64), nullable=False)
     request_key_hmac = Column(String(64), nullable=False)
     payload_hmac = Column(String(64), nullable=False)
     result_json = Column(Text, nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
-        CheckConstraint("visibility IN ('global', 'project')", name="ck_connector_request_ledger_visibility"),
+        CheckConstraint(
+            "visibility IN ('global', 'project')",
+            name="ck_connector_request_ledger_visibility",
+        ),
         CheckConstraint(
             "(visibility = 'global' AND project_id IS NULL) OR "
             "(visibility = 'project' AND project_id IS NOT NULL)",
             name="ck_connector_request_ledger_owner_shape",
         ),
-        CheckConstraint("length(key_id) BETWEEN 1 AND 64", name="ck_connector_request_ledger_key_id"),
-        CheckConstraint("length(request_key_hmac) = 64", name="ck_connector_request_ledger_key_hmac"),
-        CheckConstraint("length(payload_hmac) = 64", name="ck_connector_request_ledger_payload_hmac"),
+        CheckConstraint(
+            "length(key_id) BETWEEN 1 AND 64", name="ck_connector_request_ledger_key_id"
+        ),
+        CheckConstraint(
+            "length(request_key_hmac) = 64", name="ck_connector_request_ledger_key_hmac"
+        ),
+        CheckConstraint(
+            "length(payload_hmac) = 64", name="ck_connector_request_ledger_payload_hmac"
+        ),
         Index("ix_connector_request_ledger_expires_at", "expires_at"),
         Index(
             "uq_connector_request_ledger_global_key",
@@ -279,13 +349,19 @@ class ConnectorAuditEvent(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     visibility = Column(String(16), nullable=False)
     project_id = Column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="RESTRICT"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     consuming_project_id = Column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
     )
     connector_id = Column(
-        UUID(as_uuid=True), ForeignKey("connectors.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("connectors.id", ondelete="SET NULL"),
+        nullable=True,
     )
     connector_revision = Column(Integer, nullable=True)
     actor_user_id = Column(
@@ -294,18 +370,28 @@ class ConnectorAuditEvent(Base):
     action = Column(String(48), nullable=False)
     outcome = Column(String(24), nullable=False)
     details_json = Column(Text, nullable=False, server_default="{}")
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
-        CheckConstraint("visibility IN ('global', 'project')", name="ck_connector_audit_visibility"),
+        CheckConstraint(
+            "visibility IN ('global', 'project')", name="ck_connector_audit_visibility"
+        ),
         CheckConstraint(
             "(visibility = 'global' AND project_id IS NULL) OR "
             "(visibility = 'project' AND project_id IS NOT NULL)",
             name="ck_connector_audit_owner_shape",
         ),
-        CheckConstraint("length(action) BETWEEN 1 AND 48", name="ck_connector_audit_action"),
-        CheckConstraint("length(outcome) BETWEEN 1 AND 24", name="ck_connector_audit_outcome"),
-        CheckConstraint("length(details_json) <= 16384", name="ck_connector_audit_details_size"),
+        CheckConstraint(
+            "length(action) BETWEEN 1 AND 48", name="ck_connector_audit_action"
+        ),
+        CheckConstraint(
+            "length(outcome) BETWEEN 1 AND 24", name="ck_connector_audit_outcome"
+        ),
+        CheckConstraint(
+            "length(details_json) <= 16384", name="ck_connector_audit_details_size"
+        ),
         Index("ix_connector_audit_project_created", "project_id", "created_at"),
         Index("ix_connector_audit_connector_created", "connector_id", "created_at"),
     )
@@ -318,14 +404,18 @@ class ConnectorAvailability(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
     )
     connector_id = Column(UUID(as_uuid=True), nullable=False)
     connector_revision = Column(Integer, nullable=False)
     worker_id = Column(String(128), nullable=False)
     available = Column(Boolean, nullable=False)
     reason = Column(String(48), nullable=True)
-    observed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    observed_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -341,12 +431,18 @@ class ConnectorAvailability(Base):
             "worker_id",
             name="uq_connector_availability_project_worker",
         ),
-        CheckConstraint("length(worker_id) BETWEEN 1 AND 128", name="ck_connector_availability_worker"),
+        CheckConstraint(
+            "length(worker_id) BETWEEN 1 AND 128",
+            name="ck_connector_availability_worker",
+        ),
         CheckConstraint(
             "reason IS NULL OR reason IN ('missing_credentials', 'expired', 'revoked', 'runtime_unavailable', 'configuration_error')",
             name="ck_connector_availability_reason",
         ),
-        CheckConstraint("available OR reason IS NOT NULL", name="ck_connector_availability_reason_required"),
+        CheckConstraint(
+            "available OR reason IS NOT NULL",
+            name="ck_connector_availability_reason_required",
+        ),
         Index("ix_connector_availability_observed_at", "observed_at"),
     )
 

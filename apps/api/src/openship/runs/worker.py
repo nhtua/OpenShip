@@ -33,6 +33,8 @@ from ..capabilities.contracts import (
 )
 from ..chat.models import Conversation, Message
 from ..config import settings
+from ..connectors.blockers import park_connector_wait
+from ..connectors.readiness import preflight_connector_references
 from ..execution.availability import (
     observe_tool_availability,
     publish_tool_availability,
@@ -118,9 +120,7 @@ def _terminal_model(job, run) -> dict | None:
     that, so the summary is projected from it and from the attempts it made -
     never from the events that may already be gone.
     """
-    attempts = job.query(ProviderAttempt).filter(
-        ProviderAttempt.run_id == run.id
-    ).all()
+    attempts = job.query(ProviderAttempt).filter(ProviderAttempt.run_id == run.id).all()
     summary = _model_projection(run.model_configuration, attempts)
     return summary.model_dump(mode="json") if summary is not None else None
 
@@ -135,7 +135,11 @@ def _usage_record(usage) -> dict | None:
         return None
     record = {name: usage.get(name) for name in USAGE_FIELDS}
     record["schema_version"] = USAGE_SCHEMA_VERSION
-    reported = [name for name in ("input_tokens", "output_tokens", "total_tokens") if record[name] is not None]
+    reported = [
+        name
+        for name in ("input_tokens", "output_tokens", "total_tokens")
+        if record[name] is not None
+    ]
     record["estimated"] = len(reported) < 3
     return record
 
@@ -165,7 +169,12 @@ class Supervision:
 class Worker:
     """A chat turn worker that claims and executes queued jobs."""
 
-    def __init__(self, worker_id: str | None = None, session_factory=None, checkpointer=_INSTALLATION):
+    def __init__(
+        self,
+        worker_id: str | None = None,
+        session_factory=None,
+        checkpointer=_INSTALLATION,
+    ):
         if worker_id is None:
             worker_id = f"worker-{uuid.uuid4().hex[:8]}"
         self.worker_id = worker_id
@@ -247,7 +256,9 @@ class Worker:
                     supervision.deny_lease()
                     return
             except Exception as e:
-                logger.warning(f"[{self.worker_id}] Supervisor error for run {run_id}: {e}")
+                logger.warning(
+                    f"[{self.worker_id}] Supervisor error for run {run_id}: {e}"
+                )
                 supervision.deny_lease()
                 return
 
@@ -289,21 +300,13 @@ class Worker:
         owner asked. Either half having moved means this worker no longer holds
         the turn, so its read must stop.
         """
-        run = (
-            db.query(Run)
-            .filter(Run.id == run_id)
-            .populate_existing()
-            .first()
-        )
+        run = db.query(Run).filter(Run.id == run_id).populate_existing().first()
         if run is None or run.fence != fence:
             return True
         if run.status not in ("queued", "running", "paused"):
             return True
         job = (
-            db.query(RunJob)
-            .filter(RunJob.run_id == run_id)
-            .populate_existing()
-            .first()
+            db.query(RunJob).filter(RunJob.run_id == run_id).populate_existing().first()
         )
         return job is None or job.fence != fence
 
@@ -382,7 +385,8 @@ class Worker:
             payload = {
                 "kind": "tool",
                 "error_code": error_code,
-                "error": safe_message or SAFE_MESSAGES.get(
+                "error": safe_message
+                or SAFE_MESSAGES.get(
                     error_code, "The tool execution could not be completed safely."
                 ),
                 "model": None,
@@ -421,9 +425,7 @@ class Worker:
         graph_factory,
     ) -> bool:
         try:
-            execution = decode_execution_config(
-                run.execution_configuration or ""
-            )
+            execution = decode_execution_config(run.execution_configuration or "")
         except Exception:
             return self._finalize_tool_run(
                 job,
@@ -433,7 +435,10 @@ class Worker:
                 outcome="failed",
                 error_code="configuration_error",
             )
-        if execution.graph_kind != "tool" or execution.graph_version != run.graph_version:
+        if (
+            execution.graph_kind != "tool"
+            or execution.graph_version != run.graph_version
+        ):
             return self._finalize_tool_run(
                 job,
                 run,
@@ -465,6 +470,25 @@ class Worker:
                 outcome="timed_out",
                 error_code="budget_exceeded",
             )
+
+        readiness_failure = preflight_connector_references(
+            session_factory=self.Session,
+            project_id=run.project_id,
+            references=tuple(getattr(execution, "connector_refs", ())),
+        )
+        if readiness_failure is not None:
+            parked = park_connector_wait(
+                job,
+                claim=claim,
+                run_id=run.id,
+                conversation_id=conversation.id,
+                project_id=run.project_id,
+                execution=execution,
+                failure=readiness_failure,
+            )
+            if not parked:
+                supervision.deny_lease()
+            return parked
 
         def invocation_factory(state):
             if state.get("run_id") != str(run.id):
@@ -513,9 +537,7 @@ class Worker:
         except Exception:
             logger.warning("Tool graph execution failed before a terminal result")
             graph_failure_code = "execution_interrupted"
-            graph_failure_message = (
-                "The tool execution was interrupted and will not be repeated automatically."
-            )
+            graph_failure_message = "The tool execution was interrupted and will not be repeated automatically."
         finally:
             supervision.interrupt()
             if supervisor_thread.is_alive():
@@ -574,10 +596,14 @@ class Worker:
 
     def _is_first_message(self, db, conversation, user_msg):
         """Check if this is the first message in the conversation."""
-        existing = db.query(Message).filter(
-            Message.conversation_id == conversation.id,
-            Message.id != user_msg.id,
-        ).count()
+        existing = (
+            db.query(Message)
+            .filter(
+                Message.conversation_id == conversation.id,
+                Message.id != user_msg.id,
+            )
+            .count()
+        )
         return existing == 0
 
     def _generate_title(self, user_content):
@@ -621,7 +647,11 @@ class Worker:
                 logger.warning(f"Run {run_id} not found")
                 return False
 
-            conv = job.query(Conversation).filter(Conversation.id == run.conversation_id).first()
+            conv = (
+                job.query(Conversation)
+                .filter(Conversation.id == run.conversation_id)
+                .first()
+            )
             if not conv:
                 logger.warning(f"Conversation {run.conversation_id} not found")
                 return False
@@ -629,7 +659,9 @@ class Worker:
             try:
                 graph_factory = resolve_graph(run.kind, run.graph_version)
             except UnsupportedGraphVersion:
-                safe_message = "This run uses a graph version this runtime does not support."
+                safe_message = (
+                    "This run uses a graph version this runtime does not support."
+                )
                 finalized = finalize(
                     db=job,
                     run_id=run_id,
@@ -668,10 +700,14 @@ class Worker:
                     graph_factory,
                 )
 
-            user_msg = job.query(Message).filter(
-                Message.run_id == run_id,
-                Message.role == "user",
-            ).first()
+            user_msg = (
+                job.query(Message)
+                .filter(
+                    Message.run_id == run_id,
+                    Message.role == "user",
+                )
+                .first()
+            )
             if not user_msg:
                 logger.warning(f"No user message for run {run_id}")
                 return False
@@ -698,7 +734,9 @@ class Worker:
                     ):
                         raise ProviderError("configuration_error")
             except ProviderError as refused:
-                logger.warning(f"[{self.worker_id}] Run {run_id} cannot be run: {refused.code}")
+                logger.warning(
+                    f"[{self.worker_id}] Run {run_id} cannot be run: {refused.code}"
+                )
                 finalized = finalize(
                     db=job,
                     run_id=run_id,
@@ -731,10 +769,22 @@ class Worker:
             is_first = self._is_first_message(job, conv, user_msg)
 
             # Load conversation history for context
-            history = job.query(Message).filter(
+            history_query = job.query(Message).filter(
                 Message.conversation_id == conv.id,
                 Message.id != user_msg.id,
-            ).order_by(Message.created_at.asc()).all()
+            )
+            admitted_context_ids = tuple(
+                getattr(agent_execution, "admitted_context_message_ids", ())
+            )
+            if admitted_context_ids:
+                if user_msg.id not in admitted_context_ids:
+                    raise ProviderError("configuration_error")
+                history_query = history_query.filter(
+                    Message.id.in_(admitted_context_ids)
+                )
+            history = history_query.order_by(
+                Message.created_at.asc(), Message.id.asc()
+            ).all()
 
             # Build graph state with checkpoint namespace
             messages = []
@@ -780,6 +830,49 @@ class Worker:
                     (persisted_deadline - datetime.now(UTC)).total_seconds(),
                 )
                 deadline = time.monotonic() + remaining
+                if remaining <= 0:
+                    finalized = finalize(
+                        db=job,
+                        run_id=run.id,
+                        fence=claim.fence,
+                        result={
+                            "status": "timed_out",
+                            "error_code": "budget_exceeded",
+                        },
+                        commit=False,
+                    )
+                    if finalized:
+                        append_event(
+                            db=job,
+                            conversation_id=conv.id,
+                            run_id=run.id,
+                            event_type="run.failed",
+                            payload={
+                                "error_code": "budget_exceeded",
+                                "error": "The run exceeded its time limit.",
+                                "model": _terminal_model(job, run),
+                            },
+                        )
+                        job.commit()
+                    return bool(finalized)
+                readiness_failure = preflight_connector_references(
+                    session_factory=self.Session,
+                    project_id=run.project_id,
+                    references=tuple(getattr(agent_execution, "connector_refs", ())),
+                )
+                if readiness_failure is not None:
+                    parked = park_connector_wait(
+                        job,
+                        claim=claim,
+                        run_id=run.id,
+                        conversation_id=conv.id,
+                        project_id=run.project_id,
+                        execution=agent_execution,
+                        failure=readiness_failure,
+                    )
+                    if not parked:
+                        supervision.deny_lease()
+                    return parked
             else:
                 deadline = time.monotonic() + snapshot.limits.run_timeout_seconds
 
@@ -837,7 +930,9 @@ class Worker:
             # Provider dispatch boundary: immediately before the generation request
             # this worker is about to make. A lease this no longer holds stops here.
             if not mark_provider_started(job, run_id, fence):
-                logger.warning(f"[{self.worker_id}] Lease already lost for run {run_id} before dispatch")
+                logger.warning(
+                    f"[{self.worker_id}] Lease already lost for run {run_id} before dispatch"
+                )
                 supervision.deny_lease()
                 return False
 
@@ -853,7 +948,9 @@ class Worker:
             print(f"[worker] About to invoke graph for run {run_id}")
             failure = None
             try:
-                graph_state = graph.invoke(state, config={"configurable": {"thread_id": thread_id}})
+                graph_state = graph.invoke(
+                    state, config={"configurable": {"thread_id": thread_id}}
+                )
                 print("[worker] graph.invoke returned")
                 result = ModelResult(
                     assistant_response=graph_state.get("assistant_response", ""),
@@ -872,8 +969,12 @@ class Worker:
 
             # A lease this worker no longer holds publishes nothing: another
             # worker owns the run, and the reconciler will finish it.
-            if supervision.lease_lost() or (failure is not None and failure.code == "lease_lost"):
-                logger.warning(f"[{self.worker_id}] Lease lost for run {run_id}; publishing nothing")
+            if supervision.lease_lost() or (
+                failure is not None and failure.code == "lease_lost"
+            ):
+                logger.warning(
+                    f"[{self.worker_id}] Lease lost for run {run_id}; publishing nothing"
+                )
                 return False
 
             # Auto-title the conversation if this is the first message
@@ -921,9 +1022,13 @@ class Worker:
                         actor_id=None,
                     )
                     job.commit()
-                    logger.info(f"[{self.worker_id}] Run {run_id} failed: {failure.safe_message}")
+                    logger.info(
+                        f"[{self.worker_id}] Run {run_id} failed: {failure.safe_message}"
+                    )
                 else:
-                    logger.warning(f"[{self.worker_id}] Run {run_id} already finalized by another worker")
+                    logger.warning(
+                        f"[{self.worker_id}] Run {run_id} already finalized by another worker"
+                    )
             else:
                 # Try to finalize first to check ownership
                 finalized = finalize(
@@ -976,7 +1081,10 @@ class Worker:
                             conversation_id=conv.id,
                             run_id=run_id,
                             event_type="title_updated",
-                            payload={"conversation_id": str(conv.id), "title": new_title},
+                            payload={
+                                "conversation_id": str(conv.id),
+                                "title": new_title,
+                            },
                             actor_id=None,
                         )
 
@@ -984,9 +1092,13 @@ class Worker:
                     job.commit()
                     logger.info(f"[{self.worker_id}] Run {run_id} completed")
                     if is_first and new_title:
-                        logger.info(f"[{self.worker_id}] Auto-titled conversation: {new_title}")
+                        logger.info(
+                            f"[{self.worker_id}] Auto-titled conversation: {new_title}"
+                        )
                 else:
-                    logger.warning(f"[{self.worker_id}] Run {run_id} already finalized by another worker")
+                    logger.warning(
+                        f"[{self.worker_id}] Run {run_id} already finalized by another worker"
+                    )
 
             return True
 
@@ -1013,9 +1125,11 @@ class Worker:
                 if finalized and failed_run is not None:
                     from ..events.service import append_event
 
-                    conversation = failure_db.query(Conversation).filter_by(
-                        id=failed_run.conversation_id
-                    ).first()
+                    conversation = (
+                        failure_db.query(Conversation)
+                        .filter_by(id=failed_run.conversation_id)
+                        .first()
+                    )
                     if conversation is not None:
                         append_event(
                             db=failure_db,
@@ -1068,11 +1182,22 @@ class Worker:
             if now - last_reconcile >= reconcile_interval:
                 db = self.Session()
                 try:
+                    from ..connectors.blockers import expire_connector_blockers
+
+                    expired_blockers = expire_connector_blockers(db)
+                    if expired_blockers > 0:
+                        logger.info(
+                            f"[{self.worker_id}] Expired {expired_blockers} Connector waits"
+                        )
                     reclaimed = reconcile_expired(db)
                     if reclaimed > 0:
-                        logger.info(f"[{self.worker_id}] Reclaimed {reclaimed} expired leases")
+                        logger.info(
+                            f"[{self.worker_id}] Reclaimed {reclaimed} expired leases"
+                        )
                 except Exception as e:
-                    logger.warning(f"[{self.worker_id}] Error during reconciliation: {e}")
+                    logger.warning(
+                        f"[{self.worker_id}] Error during reconciliation: {e}"
+                    )
                 finally:
                     db.close()
                 last_reconcile = now

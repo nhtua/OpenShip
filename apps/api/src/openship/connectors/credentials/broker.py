@@ -21,13 +21,15 @@ from ..models import Connector, ConnectorRevision, CredentialVersion
 class ConnectorCredentialError(RuntimeError):
     """Closed, secret-free refusal to use a pinned Connector credential."""
 
-    _CODES: ClassVar[frozenset[str]] = frozenset({
-        "connector_scope_denied",
-        "connector_expired",
-        "connector_revoked",
-        "connector_unavailable",
-        "credential_store_unavailable",
-    })
+    _CODES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "connector_scope_denied",
+            "connector_expired",
+            "connector_revoked",
+            "connector_unavailable",
+            "credential_store_unavailable",
+        }
+    )
 
     def __init__(self, code: str):
         self.code = code if code in self._CODES else "connector_unavailable"
@@ -56,26 +58,17 @@ def _connector_bundle(
         connector is None
         or connector.kind != kind
         or connector.visibility != reference.visibility
-        or (
-            connector.visibility == "global"
-            and connector.project_id is not None
-        )
-        or (
-            connector.visibility == "project"
-            and connector.project_id != project_id
-        )
+        or (connector.visibility == "global" and connector.project_id is not None)
+        or (connector.visibility == "project" and connector.project_id != project_id)
     ):
         raise ConnectorCredentialError("connector_scope_denied")
 
-    revision_query = (
-        db.query(ConnectorRevision)
-        .filter(
-            ConnectorRevision.connector_id == connector.id,
-            ConnectorRevision.revision == reference.configuration_revision,
-            ConnectorRevision.credential_version_id == reference.credential_version_id,
-            ConnectorRevision.visibility == connector.visibility,
-            ConnectorRevision.project_id == connector.project_id,
-        )
+    revision_query = db.query(ConnectorRevision).filter(
+        ConnectorRevision.connector_id == connector.id,
+        ConnectorRevision.revision == reference.configuration_revision,
+        ConnectorRevision.credential_version_id == reference.credential_version_id,
+        ConnectorRevision.visibility == connector.visibility,
+        ConnectorRevision.project_id == connector.project_id,
     )
     credential_query = db.query(CredentialVersion).filter(
         CredentialVersion.id == reference.credential_version_id,
@@ -91,13 +84,19 @@ def _connector_bundle(
     credential = credential_query.first()
     if revision is None or credential is None:
         raise ConnectorCredentialError("connector_scope_denied")
-    if connector.revoked_at is not None or credential.revoked_at is not None or credential.state == "revoked":
+    if (
+        connector.revoked_at is not None
+        or credential.revoked_at is not None
+        or credential.state == "revoked"
+    ):
         raise ConnectorCredentialError("connector_revoked")
     if not connector.enabled:
         raise ConnectorCredentialError("connector_unavailable")
     if credential.state != "active":
         raise ConnectorCredentialError("connector_unavailable")
-    if credential.expires_at is not None and _utc(credential.expires_at) <= datetime.now(UTC):
+    if credential.expires_at is not None and _utc(
+        credential.expires_at
+    ) <= datetime.now(UTC):
         raise ConnectorCredentialError("connector_expired")
     return connector, revision, credential
 
@@ -117,7 +116,9 @@ class SearchCredentialBroker:
         credential_store_factory=None,
     ) -> None:
         self._session_factory = session_factory
-        self._credential_store_factory = credential_store_factory or get_credential_store
+        self._credential_store_factory = (
+            credential_store_factory or get_credential_store
+        )
 
     def validate(
         self,
@@ -135,6 +136,16 @@ class SearchCredentialBroker:
                 kind=kind,
                 reference=reference,
             )
+
+    def preflight(
+        self,
+        *,
+        project_id: UUID,
+        kind: str,
+        reference: ConnectorRef,
+    ) -> None:
+        """Check exact key decryption locally without making a provider request."""
+        self.acquire(project_id=project_id, kind=kind, reference=reference)
 
     def validate_in_session(
         self,

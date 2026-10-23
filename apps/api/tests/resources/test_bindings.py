@@ -13,6 +13,7 @@ from src.openship.connectors.models import (
     ConnectorRevision,
     CredentialVersion,
 )
+from src.openship.connectors.service import delete_connector
 from src.openship.database.session import SessionLocal
 from src.openship.resources import service as resource_service
 from src.openship.resources.contracts import EnvironmentCreate, ResourceBindingCreate
@@ -239,3 +240,61 @@ def test_binding_limit_counts_retained_revisions(monkeypatch):
                 ),
             )
         assert caught.value.code == "resource_limit_exceeded"
+
+
+def test_revoking_bound_aws_connector_purges_secrets_and_retains_resource_history():
+    with SessionLocal() as db:
+        user, project, connector = _scope(db, "revoke-bound")
+        environment = create_environment(
+            db,
+            owner_id=user.id,
+            project_id=project.id,
+            request=EnvironmentCreate(name="production", display_name="Production"),
+        )
+        resource, binding = create_resource_binding(
+            db,
+            owner_id=user.id,
+            project_id=project.id,
+            request=ResourceBindingCreate(
+                environment_id=environment.id,
+                connector_id=connector.id,
+                connector_revision=1,
+                bucket_name="openship-revoke-data-123",
+                display_name="Retained production data",
+            ),
+        )
+
+        result = delete_connector(
+            db,
+            connector=connector,
+            actor=user,
+            expected_revision=1,
+        )
+        db.commit()
+
+        credential = (
+            db.query(CredentialVersion)
+            .filter(CredentialVersion.connector_id == connector.id)
+            .one()
+        )
+        revision = (
+            db.query(ConnectorRevision)
+            .filter(ConnectorRevision.connector_id == connector.id)
+            .one()
+        )
+        retained_binding = db.get(type(binding), binding.id)
+        retained_resource = db.get(type(resource), resource.id)
+
+        assert result == {"id": str(connector.id), "deleted": True}
+        assert connector.revoked_at is not None
+        assert credential.state == "revoked"
+        assert credential.revoked_at is not None
+        assert credential.purged_at is not None
+        assert credential.key_id == "purged"
+        assert credential.nonce == b"\x00" * 12
+        assert credential.ciphertext == b"\x00" * 16
+        assert revision.id is not None
+        assert retained_binding is not None
+        assert retained_resource is not None
+        assert retained_binding.connector_id == connector.id
+        assert retained_binding.state == "active"

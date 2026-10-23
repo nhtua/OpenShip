@@ -292,7 +292,7 @@ def _run_browser_qualification(
         pytest.fail(f"real-stack connector browser qualification failed:\n{output[-8000:]}")
     summary = re.search(r"(?m)^\s*(\d+) passed(?:\s+\([^)]+\))?\s*$", output)
     skipped = re.search(r"(?m)^\s*(\d+) skipped(?:\s+\([^)]+\))?\s*$", output)
-    expected = 1 if test_filter else 2
+    expected = 1 if test_filter else 3
     assert summary is not None, "Playwright browser result did not report a passing test count"
     assert int(summary.group(1)) == expected, "Playwright browser lane ran an unexpected test count"
     assert skipped is None or int(skipped.group(1)) == 0, "Playwright browser lane skipped a required test"

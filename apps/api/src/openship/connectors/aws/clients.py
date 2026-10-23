@@ -59,13 +59,20 @@ class AwsRoleAccess:
             raise AwsSdkError("aws_operation_not_supported")
         return _AwsServiceClient(self, service)
 
+    @property
+    def configuration(self) -> ConnectorConfiguration:
+        return self._configuration
+
+    @property
+    def request_budget(self) -> AwsRequestBudget:
+        return self._request_budget
+
     async def run(self, operation: _AwsSdkMethod, **parameters):
         if (
             not isinstance(operation, _AwsSdkMethod)
             or operation.access is not self
-            or operation.name not in _ALLOWED_READ_OPERATIONS.get(
-                operation.service, frozenset()
-            )
+            or operation.name
+            not in _ALLOWED_READ_OPERATIONS.get(operation.service, frozenset())
         ):
             raise AwsSdkError("aws_operation_not_supported")
         async with self._run_lock:

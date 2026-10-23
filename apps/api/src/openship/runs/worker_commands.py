@@ -18,7 +18,9 @@ from ..events.retention import dry_run_retention, run_retention
 from ..runs.queue import reconcile_expired
 
 
-def run_retention_command(dry_run: bool = False, event_days: int = 30, checkpoint_days: int = 30):
+def run_retention_command(
+    dry_run: bool = False, event_days: int = 30, checkpoint_days: int = 30
+):
     """Run the retention policy.
 
     Args:
@@ -55,6 +57,9 @@ def run_reconcile_command():
     db = Session()
 
     try:
+        from ..connectors.blockers import expire_connector_blockers
+
+        expire_connector_blockers(db)
         return reconcile_expired(db)
     finally:
         db.close()

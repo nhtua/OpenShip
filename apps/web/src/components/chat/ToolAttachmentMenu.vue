@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { CapabilityRef, CapabilitySummary, ProjectCapabilitySummary } from '@/types'
+import type {
+  CapabilityRef,
+  CapabilitySummary,
+  ProjectCapabilitySummary,
+  ResourceBindingSummary,
+} from '@/types'
 
 interface Props {
   capabilities: Array<CapabilitySummary | ProjectCapabilitySummary>
@@ -10,6 +15,7 @@ interface Props {
   automaticToolMode?: boolean
   automaticToolDisabled?: boolean
   automaticToolDisabledReason?: string | null
+  resourceBindings?: ResourceBindingSummary[]
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -17,6 +23,7 @@ const props = withDefaults(defineProps<Props>(), {
   automaticToolMode: false,
   automaticToolDisabled: false,
   automaticToolDisabledReason: null,
+  resourceBindings: () => [],
 })
 const emit = defineEmits<{
   attach: [capability: CapabilityRef]
@@ -28,17 +35,21 @@ const trigger = ref<HTMLButtonElement | null>(null)
 const menu = ref<HTMLElement | null>(null)
 const directCapabilities = computed(() => props.capabilities.filter((capability) =>
   capability.effect === 'read_only_external' &&
-  ['brave_web_search', 'tavily_web_search'].includes(capability.id) &&
+  ['brave_web_search', 'tavily_web_search', 'aws_s3_bucket_storage'].includes(capability.id) &&
   capability.permitted !== false,
 ))
 
 function label(id: string): string {
   if (id === 'brave_web_search') return 'Brave Search'
   if (id === 'tavily_web_search') return 'Tavily Search'
+  if (id === 'aws_s3_bucket_storage') return 'S3 bucket storage'
   return id
 }
 
 function unavailableReason(capability: CapabilitySummary | ProjectCapabilitySummary): string {
+  if (capability.id === 'aws_s3_bucket_storage' && !props.resourceBindings.some((binding) => binding.state === 'active')) {
+    return 'Bind an S3 bucket in Connectors first'
+  }
   if (capability.permitted === false) return 'Not enabled for this project'
   if (capability.enabled === false || capability.unavailable_reason === 'disabled') return 'Disabled in tool settings'
   if (capability.unavailable_reason === 'missing_credentials') return 'Add a search provider connection'
@@ -64,6 +75,7 @@ function attach(capability: CapabilitySummary | ProjectCapabilitySummary) {
   if (
     props.disabled || capability.permitted === false ||
     capability.enabled === false || capability.available === false
+    || (capability.id === 'aws_s3_bucket_storage' && !props.resourceBindings.some((binding) => binding.state === 'active'))
   ) return
   emit('attach', {
     id: capability.id,
@@ -161,7 +173,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
         Attach one tool to run it directly
       </p>
       <p v-if="!directCapabilities.length" class="px-2 pb-2 text-xs text-muted-foreground">
-        No directly attachable search tools are configured.
+        No directly attachable tools are configured.
       </p>
       <button
         v-for="capability in directCapabilities"

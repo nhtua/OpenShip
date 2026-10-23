@@ -203,7 +203,9 @@ def list_project_connectors(
     db: Session, *, project_id: uuid.UUID, service: str | None = None
 ) -> list[ConnectorUsage]:
     own_query = db.query(Connector).filter(
-        Connector.visibility == "project", Connector.project_id == project_id
+        Connector.visibility == "project",
+        Connector.project_id == project_id,
+        Connector.revoked_at.is_(None),
     )
     global_query = db.query(Connector).filter(
         Connector.visibility == "global",
@@ -242,6 +244,7 @@ def list_global_connectors(db: Session) -> list[ConnectorUsage]:
             Connector.visibility == "global",
             Connector.project_id.is_(None),
             Connector.kind.in_(("brave", "tavily")),
+            Connector.revoked_at.is_(None),
         )
         .order_by(Connector.created_at, Connector.id)
         .all()
@@ -399,7 +402,11 @@ def create_connector(
     db.query(User).filter(User.id == actor.id).with_for_update().first()
     count = (
         db.query(func.count(Connector.id))
-        .filter(Connector.visibility == "global", Connector.project_id.is_(None))
+        .filter(
+            Connector.visibility == "global",
+            Connector.project_id.is_(None),
+            Connector.revoked_at.is_(None),
+        )
         .scalar()
     )
     if count >= MAX_CONNECTORS_PER_SCOPE:
@@ -441,6 +448,157 @@ def create_connector(
     db.flush()
     _audit(
         db, connector=connector, actor_user_id=actor.id, action="created", revision=1
+    )
+    return detail(db, connector)
+
+
+def _new_aws_credential(
+    db: Session,
+    *,
+    connector: Connector,
+    auth,
+) -> CredentialVersion:
+    from .aws.contracts import AwsBootstrapAuth
+
+    if (
+        connector.kind != "aws"
+        or connector.visibility != "project"
+        or connector.project_id is None
+        or not isinstance(auth, AwsBootstrapAuth)
+    ):
+        raise ConnectorCommandError("invalid_connector_request")
+    credential_id = uuid.uuid4()
+    context = _credential_context(
+        connector_id=connector.id,
+        credential_version_id=credential_id,
+        visibility="project",
+        project_id=connector.project_id,
+        kind="aws_bootstrap",
+    )
+    envelope = get_credential_store().encrypt(context, auth.to_payload())
+    credential = CredentialVersion(
+        id=credential_id,
+        connector_id=connector.id,
+        visibility="project",
+        project_id=connector.project_id,
+        kind="aws_bootstrap",
+        schema_version=1,
+        key_id=envelope.key_id,
+        nonce=envelope.nonce,
+        ciphertext=envelope.ciphertext,
+        expires_at=auth.expires_at,
+        state="active",
+    )
+    db.add(credential)
+    return credential
+
+
+def create_project_aws_connector(
+    db: Session,
+    *,
+    actor: User,
+    project_id: uuid.UUID,
+    name: str,
+    configuration_raw: dict[str, Any],
+    auth,
+) -> dict[str, Any]:
+    from .aws.contracts import AwsBootstrapAuth
+
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or len(name) > 255
+        or not isinstance(auth, AwsBootstrapAuth)
+    ):
+        raise ConnectorCommandError("invalid_connector_request")
+    project = lock_active_project(db, project_id=project_id, user_id=actor.id)
+    count = (
+        db.query(func.count(Connector.id))
+        .filter(
+            Connector.visibility == "project",
+            Connector.project_id == project.id,
+            Connector.revoked_at.is_(None),
+        )
+        .scalar()
+    )
+    if count >= MAX_CONNECTORS_PER_SCOPE:
+        raise ConnectorCommandError("connector_limit_reached")
+    configuration = _validate_configuration("aws", configuration_raw)
+    connector = Connector(
+        id=uuid.uuid4(),
+        kind="aws",
+        visibility="project",
+        project_id=project.id,
+        name=name.strip(),
+        current_revision=1,
+        enabled=True,
+        managed_by_user_id=actor.id,
+        created_by_user_id=actor.id,
+    )
+    db.add(connector)
+    db.flush()
+    credential = _new_aws_credential(db, connector=connector, auth=auth)
+    db.flush()
+    revision = ConnectorRevision(
+        id=uuid.uuid4(),
+        connector_id=connector.id,
+        revision=1,
+        schema_version=1,
+        visibility="project",
+        project_id=project.id,
+        configuration_json=configuration.canonical_bytes().decode("utf-8"),
+        configuration_digest=configuration.digest(),
+        credential_version_id=credential.id,
+        created_by_user_id=actor.id,
+    )
+    db.add(revision)
+    db.flush()
+    _audit(
+        db, connector=connector, actor_user_id=actor.id, action="created", revision=1
+    )
+    return detail(db, connector)
+
+
+def replace_aws_credential(
+    db: Session,
+    *,
+    connector: Connector,
+    actor: User,
+    expected_revision: int,
+    auth,
+) -> dict[str, Any]:
+    from .aws.contracts import AwsBootstrapAuth
+
+    if not isinstance(auth, AwsBootstrapAuth) or connector.kind != "aws":
+        raise ConnectorCommandError("invalid_connector_request")
+    _lock_connector_project(db, connector, actor)
+    connector = (
+        db.query(Connector).filter(Connector.id == connector.id).with_for_update().one()
+    )
+    if connector.visibility != "project" or connector.project_id is None:
+        raise ConnectorCommandError("connector_scope_denied")
+    if connector.current_revision != expected_revision:
+        raise ConnectorCommandError("connector_revision_changed")
+    if connector.revoked_at is not None:
+        raise ConnectorCommandError("connector_revoked")
+    prior = current_revision(db, connector)
+    credential = _new_aws_credential(db, connector=connector, auth=auth)
+    db.flush()
+    configuration = ConnectorConfiguration.model_validate_json(prior.configuration_json)
+    revision = _new_revision(
+        db,
+        connector=connector,
+        configuration=configuration,
+        credential_version_id=credential.id,
+        actor_user_id=actor.id,
+    )
+    db.flush()
+    _audit(
+        db,
+        connector=connector,
+        actor_user_id=actor.id,
+        action="credential_replaced",
+        revision=revision.revision,
     )
     return detail(db, connector)
 
@@ -503,7 +661,7 @@ def delete_connector(
     actor: User,
     expected_revision: int,
 ) -> dict[str, Any]:
-    """Remove a Connector and its encrypted credential history permanently."""
+    """Revoke active setup, purge secret bytes, and retain referenced history."""
     _lock_connector_project(db, connector, actor)
     connector = (
         db.query(Connector).filter(Connector.id == connector.id).with_for_update().one()
@@ -536,7 +694,7 @@ def delete_connector(
             details={
                 "service": row.service,
                 "settings_revision": row.settings_revision,
-                "reason": "connector_deleted",
+                "reason": "connector_revoked",
             },
         )
 
@@ -545,20 +703,27 @@ def delete_connector(
         visibility=connector.visibility,
         project_id=connector.project_id,
         actor_user_id=actor.id,
+        connector_id=connector.id,
         connector_revision=revision.revision,
-        action="deleted",
+        action="revoked",
         details={"kind": connector.kind, "revision": revision.revision},
     )
     db.flush()
 
-    db.query(ConnectorRevision).filter(
-        ConnectorRevision.connector_id == connector.id
-    ).delete(synchronize_session=False)
-    db.flush()
-    db.query(CredentialVersion).filter(
-        CredentialVersion.connector_id == connector.id
-    ).delete(synchronize_session=False)
-    db.delete(connector)
+    connector.enabled = False
+    connector.revoked_at = now
+    for credential in (
+        db.query(CredentialVersion)
+        .filter(CredentialVersion.connector_id == connector.id)
+        .with_for_update()
+        .all()
+    ):
+        credential.state = "revoked"
+        credential.revoked_at = now
+        credential.key_id = "purged"
+        credential.nonce = b"\x00" * 12
+        credential.ciphertext = b"\x00" * 16
+        credential.purged_at = now
     db.flush()
     return {"id": str(connector.id), "deleted": True}
 

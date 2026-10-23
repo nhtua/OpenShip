@@ -10,6 +10,7 @@ import type {
   ConnectorRequestStatus,
   ConnectorSetupContext,
   ConnectorUsage,
+  EnvironmentSummary,
   ConversationWorkspacePage,
   Conversation,
   OperationPage,
@@ -21,6 +22,10 @@ import type {
   ProjectCapabilitySummary,
   ProjectConnectorDefault,
   ProjectSummary,
+  ProjectAwsConnectorCreate,
+  ResourceObservationPage,
+  ResourcePage,
+  ResourceBindingSummary,
   WorkspaceFileRead,
 } from '@/types'
 
@@ -108,6 +113,18 @@ export const runsApi = {
   cancelRun: (runId: string): Promise<{ data: Run }> =>
     api.post(`/runs/${runId}/cancel`, {}),
 
+  resumeConnector: (
+    runId: string,
+    payload: { blocker_id: string; request_id: string; expected_configuration_digest: string },
+  ): Promise<{ data: Run }> =>
+    api.post(`/runs/${encodeURIComponent(runId)}/resume-connector`, payload),
+
+  dismissConnector: (
+    runId: string,
+    payload: { blocker_id: string },
+  ): Promise<{ data: Run }> =>
+    api.post(`/runs/${encodeURIComponent(runId)}/dismiss-connector`, payload),
+
   getSnapshot: (conversationId: string): Promise<{ data: Snapshot }> =>
     api.get(`/conversations/${encodeURIComponent(conversationId)}/snapshot`),
 
@@ -147,6 +164,28 @@ export const connectorsApi = {
     api.get(`/projects/${encodeURIComponent(projectId)}/connectors`, {
       params: service ? { service } : undefined,
     }),
+
+  getProjectConnector: (projectId: string, connectorId: string) =>
+    api.get(`/projects/${encodeURIComponent(projectId)}/connectors/${encodeURIComponent(connectorId)}`),
+
+  createProjectAwsConnector: (
+    projectId: string,
+    requestId: string,
+    payload: ProjectAwsConnectorCreate,
+  ) => api.post(`/projects/${encodeURIComponent(projectId)}/aws-connectors`, payload, {
+    headers: { 'Idempotency-Key': requestId },
+  }),
+
+  replaceProjectAwsCredential: (
+    projectId: string,
+    connectorId: string,
+    requestId: string,
+    payload: { expected_revision: number; auth: ProjectAwsConnectorCreate['auth'] },
+  ) => api.post(
+    `/projects/${encodeURIComponent(projectId)}/connectors/${encodeURIComponent(connectorId)}/aws-credentials`,
+    payload,
+    { headers: { 'Idempotency-Key': requestId } },
+  ),
 
   getProjectDefault: (
     projectId: string,
@@ -258,6 +297,40 @@ export const artifactsApi = {
 
   delete: (artifactId: string): Promise<{ data: ArtifactSummary }> =>
     api.delete(`/artifacts/${artifactId}`),
+}
+
+export const resourcesApi = {
+  listEnvironments: (projectId: string): Promise<{ data: EnvironmentSummary[] }> =>
+    api.get(`/projects/${encodeURIComponent(projectId)}/environments`),
+
+  createEnvironment: (
+    projectId: string,
+    payload: { name: string; display_name: string },
+  ): Promise<{ data: EnvironmentSummary }> =>
+    api.post(`/projects/${encodeURIComponent(projectId)}/environments`, payload),
+
+  listBindings: (projectId: string): Promise<{ data: ResourcePage }> =>
+    api.get(`/projects/${encodeURIComponent(projectId)}/resources`),
+
+  createBinding: (
+    projectId: string,
+    payload: {
+      environment_id: string
+      connector_id: string
+      connector_revision: number
+      bucket_name: string
+      display_name: string
+    },
+  ): Promise<{ data: ResourceBindingSummary }> =>
+    api.post(`/projects/${encodeURIComponent(projectId)}/resources`, payload),
+
+  listObservations: (
+    projectId: string,
+    resourceId: string,
+  ): Promise<{ data: ResourceObservationPage }> =>
+    api.get(
+      `/projects/${encodeURIComponent(projectId)}/resources/${encodeURIComponent(resourceId)}/observations`,
+    ),
 }
 
 export const workspaceApi = {

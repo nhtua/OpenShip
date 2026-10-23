@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import suppress
 from typing import Any, Literal, TypeAlias
 from uuid import UUID
 
@@ -120,7 +121,9 @@ class CapabilityManifestV2(FrozenModel):
 CapabilityManifestLike: TypeAlias = CapabilityManifest | CapabilityManifestV2
 
 
-def _json_object(payload: str | bytes | dict[str, Any], *, label: str) -> dict[str, Any]:
+def _json_object(
+    payload: str | bytes | dict[str, Any], *, label: str
+) -> dict[str, Any]:
     if isinstance(payload, bytes):
         payload = payload.decode("utf-8")
     if isinstance(payload, str):
@@ -314,10 +317,13 @@ class ToolInvocationContext:
     """Runtime-only authority and resolvers; never place this in graph state."""
 
     __slots__ = (
+        "_aws_accesses",
         "artifact_store",
         "authorization",
+        "aws_access_factory",
         "credential_resolver",
         "execution",
+        "operation_id",
         "session_factory",
     )
 
@@ -328,12 +334,23 @@ class ToolInvocationContext:
         credential_resolver,
         artifact_store=None,
         session_factory=None,
+        operation_id=None,
+        aws_access_factory=None,
     ):
         self.authorization = authorization
         self.execution = execution
         self.credential_resolver = credential_resolver
         self.artifact_store = artifact_store
         self.session_factory = session_factory
+        self.operation_id = operation_id
+        self.aws_access_factory = aws_access_factory
+        self._aws_accesses = []
+
+    async def close_runtime_accesses(self) -> None:
+        accesses, self._aws_accesses = tuple(self._aws_accesses), []
+        for access in accesses:
+            with suppress(Exception):
+                await access.aclose()
 
 
 class ToolFailure(FrozenModel):

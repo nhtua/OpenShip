@@ -87,6 +87,11 @@ class AwsRequestBudget:
         with self._lock:
             return self._used
 
+    @property
+    def remaining(self) -> int:
+        with self._lock:
+            return max(0, self.limit - self._used)
+
 
 class _BoundedRawBody:
     def __init__(self, body: bytes):
@@ -121,9 +126,13 @@ class _HttpcoreResponseStream(httpx.AsyncByteStream):
             async for chunk in self._stream:
                 yield chunk
         except httpcore.TimeoutException:
-            raise httpx.ReadTimeout("AWS response timed out", request=self._request) from None
+            raise httpx.ReadTimeout(
+                "AWS response timed out", request=self._request
+            ) from None
         except httpcore.NetworkError:
-            raise httpx.ReadError("AWS response could not be read", request=self._request) from None
+            raise httpx.ReadError(
+                "AWS response could not be read", request=self._request
+            ) from None
 
     async def aclose(self) -> None:
         await self._stream.aclose()
@@ -195,7 +204,9 @@ class AwsPinnedHttpTransport(httpx.AsyncBaseTransport):
         try:
             response = await self._pool.handle_async_request(core_request)
         except httpcore.TimeoutException:
-            raise httpx.ConnectTimeout("AWS connection timed out", request=request) from None
+            raise httpx.ConnectTimeout(
+                "AWS connection timed out", request=request
+            ) from None
         except httpcore.NetworkError:
             raise httpx.ConnectError("AWS connection failed", request=request) from None
         return httpx.Response(
@@ -320,7 +331,9 @@ class BoundedAwsHttpSession:
                     if not active:
                         self._active.pop(call_id, None)
 
-    async def _request(self, sdk_request, body: bytes | None, timeout: float) -> AWSResponse:
+    async def _request(
+        self, sdk_request, body: bytes | None, timeout: float
+    ) -> AWSResponse:
         try:
             self._control.raise_if_stopped()
         except ProviderError:

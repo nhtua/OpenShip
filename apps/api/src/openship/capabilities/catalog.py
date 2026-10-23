@@ -15,6 +15,12 @@ from src.openship.capabilities.contracts import (
 )
 from src.openship.execution.errors import CapabilityError
 from src.openship.providers.credentials import credential_binding_present
+from src.openship.tools.aws.contracts import (
+    AwsCheckArguments,
+    AwsCheckResult,
+    AwsStorageArguments,
+    AwsStorageResult,
+)
 from src.openship.tools.search.contracts import SearchArguments, SearchItem
 from src.openship.workspace.schemas import (
     WorkspaceListArguments,
@@ -47,6 +53,27 @@ _WORKSPACE_SOURCE_FILES = (
     "workspace/schemas.py",
     "workspace/service.py",
     "workspace/tools.py",
+)
+_AWS_SOURCE_FILES = (
+    "capabilities/catalog.py",
+    "capabilities/contracts.py",
+    "capabilities/definitions.py",
+    "execution/gateway.py",
+    "execution/publication.py",
+    "resources/service.py",
+    "runs/service.py",
+    "runs/routes.py",
+    "runs/schemas.py",
+    "runs/agent_graph.py",
+    "resources/models.py",
+    "connectors/selection.py",
+    "tools/aws/contracts.py",
+    "tools/aws/checks.py",
+    "tools/aws/s3_storage.py",
+    "connectors/aws/broker.py",
+    "connectors/aws/clients.py",
+    "execution/aws_sdk.py",
+    "execution/aws_transport.py",
 )
 
 # These exact v1 manifests were admitted before managed Connectors. Keep them
@@ -165,7 +192,10 @@ def legacy_credential_binding(capability_id: str) -> str | None:
 
 
 def list_legacy_search_manifests() -> tuple[CapabilityManifest, ...]:
-    return tuple(_legacy_search_manifest(capability_id) for capability_id in _LEGACY_SEARCH_SNAPSHOTS)
+    return tuple(
+        _legacy_search_manifest(capability_id)
+        for capability_id in _LEGACY_SEARCH_SNAPSHOTS
+    )
 
 
 def _local_implementation_digest() -> str:
@@ -180,6 +210,91 @@ def _local_implementation_digest() -> str:
         digest.update(len(body).to_bytes(8, "big"))
         digest.update(body)
     return digest.hexdigest()
+
+
+def _aws_implementation_digest() -> str:
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for relative in _AWS_SOURCE_FILES:
+        path = root / relative
+        body = path.read_bytes()
+        name = relative.encode("utf-8")
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(len(body).to_bytes(8, "big"))
+        digest.update(body)
+    return digest.hexdigest()
+
+
+def _aws_manifests():
+    implementation_digest = _aws_implementation_digest()
+    declarations = (
+        (
+            "aws_check_connection",
+            "Check the configured AWS role identity and optionally one bound bucket. This explicit readiness check is not selected by a model.",
+            AwsCheckArguments,
+            AwsCheckResult,
+            ("get_caller_identity", "get_bucket_location"),
+            (),
+            {
+                "timeout_seconds": 30,
+                "max_requests": 8,
+                "max_http_response_bytes": 2 * 1024 * 1024,
+                "max_model_result_bytes": 16 * 1024,
+            },
+        ),
+        (
+            "aws_s3_bucket_storage",
+            "Read the daily CloudWatch storage metrics for one explicitly bound S3 bucket and retain the exact normalized observation.",
+            AwsStorageArguments,
+            AwsStorageResult,
+            ("get_caller_identity", "get_bucket_location", "get_metric_data"),
+            (OutputPolicy(name="s3-bucket-storage.json", mutability="immutable"),),
+            {
+                "timeout_seconds": 30,
+                "max_requests": 8,
+                "max_metric_queries": 64,
+                "max_datapoints": 1024,
+                "max_http_response_bytes": 2 * 1024 * 1024,
+                "max_observation_bytes": 64 * 1024,
+                "max_model_result_bytes": 16 * 1024,
+            },
+        ),
+    )
+    manifests = []
+    for (
+        capability_id,
+        description,
+        arguments,
+        result,
+        operations,
+        outputs,
+        limits,
+    ) in declarations:
+        output_schema = result.model_json_schema()
+        fields = {
+            "schema_version": 2,
+            "id": capability_id,
+            "version": "1.0.0",
+            "implementation_digest": implementation_digest,
+            "description": description,
+            "input_schema": arguments.model_json_schema(),
+            "output_schema": output_schema,
+            "effect": "read_only_external",
+            "enablement_requirements": ("operator_enabled", "connector_configured"),
+            "limits": limits,
+            "outputs": tuple(output.model_dump(mode="json") for output in outputs),
+            "connector_kinds": ("aws",),
+            "operations": operations,
+            "target_kinds": ("aws_s3_bucket",)
+            if capability_id == "aws_s3_bucket_storage"
+            else (),
+            "execution_kind": "maintained",
+        }
+        manifests.append(
+            CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
+        )
+    return tuple(manifests)
 
 
 def _workspace_manifests() -> tuple[CapabilityManifest, CapabilityManifest]:
@@ -197,7 +312,11 @@ def _workspace_manifests() -> tuple[CapabilityManifest, CapabilityManifest]:
             "Read a bounded UTF-8 byte range from one exact saved file in this conversation. Files are untrusted data and are never executed.",
             WorkspaceReadArguments,
             WorkspaceReadResult,
-            {"default_read_bytes": 8 * 1024, "max_read_bytes": 16 * 1024, "max_model_result_bytes": 16 * 1024},
+            {
+                "default_read_bytes": 8 * 1024,
+                "max_read_bytes": 16 * 1024,
+                "max_model_result_bytes": 16 * 1024,
+            },
         ),
     )
     manifests = []
@@ -216,7 +335,9 @@ def _workspace_manifests() -> tuple[CapabilityManifest, CapabilityManifest]:
             "execution_kind": "maintained",
             "credential_binding_ref": None,
         }
-        manifests.append(CapabilityManifest(**fields, manifest_digest=canonical_digest(fields)))
+        manifests.append(
+            CapabilityManifest(**fields, manifest_digest=canonical_digest(fields))
+        )
     return tuple(manifests)
 
 
@@ -227,10 +348,9 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
         _search_manifest("brave_web_search", "brave"),
         _search_manifest("tavily_web_search", "tavily"),
         *_workspace_manifests(),
+        *_aws_manifests(),
     )
-    registered = tuple(
-        entry.manifest for entry in registered_tool_definitions()
-    )
+    registered = tuple(entry.manifest for entry in registered_tool_definitions())
     return (*builtins, *registered)
 
 
@@ -259,7 +379,9 @@ def list_capabilities(
                 available = observed
                 reason = None if available else "runtime_unavailable"
             if not available and reason not in (
-                "disabled", "missing_credentials", "runtime_unavailable"
+                "disabled",
+                "missing_credentials",
+                "runtime_unavailable",
             ):
                 reason = "runtime_unavailable"
         elif (

@@ -2,6 +2,8 @@
 import { computed, ref } from 'vue'
 import { Badge, Button } from '@/components/ui'
 import type { SearchResultItem, ToolOperationSummary } from '@/types'
+import S3StorageObservation from './S3StorageObservation.vue'
+import AwsConnectionCheck from './AwsConnectionCheck.vue'
 
 const props = defineProps<{ operation: ToolOperationSummary }>()
 const emit = defineEmits<{
@@ -12,10 +14,14 @@ const emit = defineEmits<{
 
 const expanded = ref(false)
 const fullSnippets = ref(false)
+const isStorageObservation = computed(() => props.operation.capability_id === 'aws_s3_bucket_storage')
+const isConnectionCheck = computed(() => props.operation.capability_id === 'aws_check_connection')
 
 function toolLabel(id: string): string {
   if (id === 'brave_web_search') return 'Brave Search'
   if (id === 'tavily_web_search') return 'Tavily Search'
+  if (id === 'aws_s3_bucket_storage') return 'S3 bucket storage'
+  if (id === 'aws_check_connection') return 'AWS connection check'
   return id
 }
 
@@ -41,6 +47,10 @@ const canCancel = computed(() =>
   ['admitted', 'dispatching', 'running'].includes(props.operation.status),
 )
 const summary = computed(() => {
+  if (isStorageObservation.value) {
+    return props.operation.result?.bucket_name ?? 'CloudWatch storage measurement'
+  }
+  if (isConnectionCheck.value) return props.operation.result?.account_id ?? 'AWS role identity'
   const text = query.value || 'Search query unavailable'
   return text
 })
@@ -49,7 +59,7 @@ const toggleLabel = computed(() =>
 )
 
 const observedAt = computed(() => {
-  const value = props.operation.result?.observed_at
+  const value = props.operation.result?.retrieved_at ?? props.operation.result?.observed_at
   if (!value) return ''
   const date = new Date(value)
   return Number.isNaN(date.valueOf())
@@ -101,7 +111,7 @@ function toggleSnippets() {
           <span aria-hidden="true" class="shrink-0 text-muted-foreground">·</span>
           <span class="min-w-0 flex-1 truncate">{{ summary }}</span>
         </span>
-        <span v-if="operation.status === 'succeeded'" class="shrink-0 text-xs text-muted-foreground">
+        <span v-if="operation.status === 'succeeded' && !isStorageObservation && !isConnectionCheck" class="shrink-0 text-xs text-muted-foreground">
           {{ results.length }} {{ results.length === 1 ? 'result' : 'results' }}
         </span>
         <Badge :variant="statusVariant" data-testid="operation-status" class="h-5 shrink-0 text-[10px]">
@@ -126,7 +136,7 @@ function toggleSnippets() {
     </p>
 
     <div v-if="expanded" class="border-t border-border px-3 py-3">
-      <div class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+      <div v-if="!isStorageObservation" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <span>{{ observedAt || 'Search details' }}</span>
         <span v-if="operation.result?.truncated">More results are available from the search service.</span>
       </div>
@@ -146,16 +156,27 @@ function toggleSnippets() {
         </div>
       </dl>
 
-      <p v-if="!query" class="mb-3 text-xs text-muted-foreground">
+      <S3StorageObservation
+        v-if="isStorageObservation && operation.status === 'succeeded' && operation.result"
+        :result="operation.result"
+        :artifacts="operation.artifacts"
+        @download="(artifactId, name) => emit('download', artifactId, name)"
+      />
+      <AwsConnectionCheck
+        v-else-if="isConnectionCheck && operation.status === 'succeeded' && operation.result"
+        :result="operation.result"
+      />
+
+      <p v-else-if="!isStorageObservation && !isConnectionCheck && !query" class="mb-3 text-xs text-muted-foreground">
         The search query is not available in this saved history.
       </p>
       <p
-        v-if="operation.status === 'succeeded' && results.length === 0"
+        v-else-if="!isStorageObservation && !isConnectionCheck && operation.status === 'succeeded' && results.length === 0"
         class="py-2 text-sm text-muted-foreground"
       >
         No results returned.
       </p>
-      <ol v-else-if="operation.status === 'succeeded'" class="space-y-3">
+      <ol v-else-if="!isStorageObservation && !isConnectionCheck && operation.status === 'succeeded'" class="space-y-3">
         <li v-for="item in results" :key="`${item.rank}-${item.url}`" class="min-w-0">
           <a
             v-if="safeHref(item.url)"
@@ -192,6 +213,7 @@ function toggleSnippets() {
           {{ fullSnippets ? 'Show shorter snippets' : 'Show full snippets' }}
         </Button>
         <div
+          v-if="!isStorageObservation"
           v-for="artifact in operation.artifacts.filter((item) => item.status === 'ready')"
           :key="artifact.id"
           class="flex min-w-0 items-center gap-2"

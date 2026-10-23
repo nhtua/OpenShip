@@ -457,10 +457,11 @@ def test_resource_migration_enforces_scope_immutability_and_retention(database_u
         connection.execute(
             text(
                 "INSERT INTO connector_blockers "
-                "(id, project_id, conversation_id, run_id, connector_id, connector_revision, "
+                "(id, project_id, conversation_id, run_id, connector_id, connector_kind, "
+                "connector_visibility, connector_project_id, connector_revision, "
                 "credential_version_id, configuration_digest, request_id, reason, expires_at) "
-                "VALUES (:id, :project, :conversation, :run, :connector, 1, :credential, :digest, "
-                ":request, 'connector_required', CURRENT_TIMESTAMP)"
+                "VALUES (:id, :project, :conversation, :run, :connector, 'aws', 'project', "
+                ":project, 1, :credential, :digest, :request, 'connector_required', CURRENT_TIMESTAMP)"
             ),
             {
                 "id": _uuid_text(connection, blocker_id),
@@ -500,4 +501,65 @@ def test_resource_migration_enforces_scope_immutability_and_retention(database_u
         ).scalar_one() == 1
         current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         assert current == "phase5a010"
+    engine.dispose()
+
+
+def test_purged_connector_credential_prevents_irreversible_downgrade(database_url, tmp_path):
+    ini = _alembic_ini(tmp_path, database_url)
+    engine = _engine(database_url)
+    upgraded = _run_alembic(ini, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    user_id, project_id, connector_id, credential_id = (uuid.uuid4() for _ in range(4))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, email, password_hash) "
+                "VALUES (:id, :username, :email, 'test-hash')"
+            ),
+            {
+                "id": _uuid_text(connection, user_id),
+                "username": f"phase5-purge-{user_id.hex}",
+                "email": f"phase5-purge-{user_id.hex}@example.test",
+            },
+        )
+        connection.execute(
+            text("INSERT INTO projects (id, owner_user_id, name) VALUES (:id, :owner, 'purge')"),
+            {"id": _uuid_text(connection, project_id), "owner": _uuid_text(connection, user_id)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO connectors "
+                "(id, kind, visibility, project_id, name, managed_by_user_id, created_by_user_id) "
+                "VALUES (:id, 'aws', 'project', :project, 'AWS', :user, :user)"
+            ),
+            {
+                "id": _uuid_text(connection, connector_id),
+                "project": _uuid_text(connection, project_id),
+                "user": _uuid_text(connection, user_id),
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO connector_credentials "
+                "(id, connector_id, visibility, project_id, kind, schema_version, key_id, "
+                "nonce, ciphertext, state, revoked_at, purged_at) "
+                "VALUES (:id, :connector, 'project', :project, 'aws_bootstrap', 1, 'purged', "
+                ":nonce, :ciphertext, 'revoked', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "id": _uuid_text(connection, credential_id),
+                "connector": _uuid_text(connection, connector_id),
+                "project": _uuid_text(connection, project_id),
+                "nonce": b"\x00" * 12,
+                "ciphertext": b"\x00" * 16,
+            },
+        )
+
+    refused = _run_alembic(ini, "downgrade", "phase5a011")
+    assert refused.returncode != 0
+    assert "purged credential bytes cannot be restored" in refused.stderr.lower()
+    with engine.connect() as connection:
+        current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        assert current == "phase5a012"
     engine.dispose()

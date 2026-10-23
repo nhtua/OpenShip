@@ -33,6 +33,21 @@ const toolCapableProfiles: ModelProfileItem[] = modelProfileCatalog.profiles.map
   capabilities: { ...profile.capabilities, tool_calls: profile.profile_id === 'primary-fixture' },
 }))
 
+const awsStorage: CapabilitySummary = {
+  id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'd'.repeat(64),
+  input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true,
+  available: true, unavailable_reason: null, required_connector_kinds: ['aws'],
+  connector_readiness: { aws: 'ready' },
+}
+
+const resourceBinding = {
+  resource_id: 'resource-1', uri: 'aws:s3://example-bucket', display_name: 'Example bucket',
+  environment_id: 'environment-1', environment_name: 'production', binding_id: 'binding-1',
+  binding_revision: 1, connector_id: 'aws-1', connector_revision: 1, account_id: '123456789012',
+  region: 'us-east-1', bucket_name: 'example-bucket', bucket_arn: 'arn:aws:s3:::example-bucket',
+  expected_owner: '123456789012', management_method: 'unknown' as const, state: 'active' as const, created_at: '',
+}
+
 describe('ChatInput', () => {
   it('shows keyboard instructions in the placeholder only at desktop widths', async () => {
     const matchMedia = vi.spyOn(window, 'matchMedia')
@@ -452,5 +467,59 @@ describe('ChatInput', () => {
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
     await wrapper.setProps({ submissionError: 'Failed to submit message. Please try again.' })
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('keep this draft')
+  })
+
+  it('attaches S3 storage to a selected binding without an unused message field', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: modelProfileCatalog.profiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [awsStorage],
+        resourceBindings: [resourceBinding],
+      },
+    })
+
+    await wrapper.get('[aria-label="Add tool"]').trigger('click')
+    const storageChoice = wrapper.findAll('[data-testid="tool-choice"]').find((item) => item.text().includes('S3'))!
+    await storageChoice.trigger('click')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="AWS resource binding"]').exists()).toBe(true)
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('search')?.[0]?.[0]).toMatchObject({
+      capability: { id: 'aws_s3_bucket_storage', version: '1.0.0' },
+      arguments: { resource_binding_id: 'binding-1' },
+    })
+    wrapper.unmount()
+  })
+
+  it('includes explicitly selected bucket bindings in automatic tool turns', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [awsStorage],
+        resourceBindings: [resourceBinding],
+      },
+    })
+
+    await wrapper.get('[data-testid="resource-binding-selection"]').setValue(['binding-1'])
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
+    await wrapper.get('textarea').setValue('What is the storage usage?')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('send')?.[0]).toEqual([
+      'What is the storage usage?',
+      { enableTools: true, resourceBindingSelections: ['binding-1'] },
+    ])
+    wrapper.unmount()
   })
 })

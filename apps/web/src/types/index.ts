@@ -46,7 +46,7 @@ export interface Conversation {
 export interface Run {
   id: string
   conversation_id: string
-  status: 'created' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'stale'
+  status: 'created' | 'queued' | 'running' | 'waiting_connector' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'stale'
   created_at: string
   attempt: number
   kind?: 'chat' | 'tool'
@@ -59,6 +59,7 @@ export interface Run {
   provider_attempts?: ProviderAttemptSummary[]
   operations?: ToolOperationSummary[]
   operations_next_cursor?: string | null
+  connector_blocker?: ConnectorBlockerSummary | null
 }
 
 export interface RunCard {
@@ -78,6 +79,19 @@ export interface RunCard {
   attempts: ProviderAttemptSummary[]
   operations: ToolOperationSummary[]
   operations_next_cursor: string | null
+  connector_blocker?: ConnectorBlockerSummary | null
+}
+
+export interface ConnectorBlockerSummary {
+  id: string
+  request_id: string
+  reason: string
+  configuration_digest: string
+  expires_at: string
+  connector_kind: string
+  connector_visibility: ConnectorVisibility
+  connector_revision: number
+  connector_id: string
 }
 
 export interface TurnSubmitRequest {
@@ -92,9 +106,11 @@ export interface TurnSubmitRequest {
   // server resolves and pins the exact enabled capability versions.
   enable_tools?: boolean
   connector_selections?: ConnectorSelections
+  resource_binding_selections?: string[]
 }
 
 export type ConnectorKind = 'brave' | 'tavily'
+export type ManagedConnectorKind = ConnectorKind | 'aws'
 export type ConnectorVisibility = 'global' | 'project'
 export type ConnectorSelections = Partial<Record<ConnectorKind, string>>
 
@@ -108,7 +124,7 @@ export type ArchiveListState = 'active' | 'archived'
 
 export interface ConnectorUsage {
   id: string
-  kind: ConnectorKind | 'aws'
+  kind: ManagedConnectorKind
   visibility: ConnectorVisibility
   name: string
   status: 'configured' | 'disabled' | 'expired' | 'revoked' | 'unavailable'
@@ -130,8 +146,8 @@ export interface ProjectCapabilitySummary {
   output_schema: Record<string, unknown>
   effect: 'read_only_external' | 'read_only_local'
   permitted: boolean
-  required_connector_kinds: ConnectorKind[]
-  connector_readiness: Partial<Record<ConnectorKind, 'ready' | 'required' | 'ambiguous' | 'unavailable'>>
+  required_connector_kinds: ManagedConnectorKind[]
+  connector_readiness: Partial<Record<ManagedConnectorKind, 'ready' | 'required' | 'ambiguous' | 'unavailable'>>
   enabled?: boolean
   available?: boolean
   unavailable_reason?: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
@@ -258,6 +274,7 @@ export interface SnapshotRun {
   provider_attempts?: ProviderAttemptSummary[]
   operations?: ToolOperationSummary[]
   operations_next_cursor?: string | null
+  connector_blocker?: ConnectorBlockerSummary | null
 }
 
 export interface CapabilityRef {
@@ -274,15 +291,88 @@ export interface CapabilitySummary extends CapabilityRef {
   available: boolean
   unavailable_reason: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
   permitted?: boolean
-  required_connector_kinds?: ConnectorKind[]
-  connector_readiness?: Partial<Record<ConnectorKind, 'ready' | 'required' | 'ambiguous' | 'unavailable'>>
+  required_connector_kinds?: ManagedConnectorKind[]
+  connector_readiness?: Partial<Record<ManagedConnectorKind, 'ready' | 'required' | 'ambiguous' | 'unavailable'>>
 }
 
 export interface ToolCommandRequest {
   client_request_id: string
   capability: CapabilityRef
-  arguments: { query: string; max_results: number }
+  arguments: Record<string, unknown>
   connector_selections?: ConnectorSelections
+}
+
+export interface AwsBootstrapAuthInput {
+  access_key_id: string
+  secret_access_key: string
+  session_token?: string | null
+  expires_at?: string | null
+}
+
+export interface ProjectAwsConnectorCreate {
+  name: string
+  configuration: {
+    schema_version: 1
+    kind: 'aws'
+    region: string
+    expected_account_id: string
+    basic_role_arn: string
+  }
+  auth: AwsBootstrapAuthInput
+}
+
+export interface EnvironmentSummary {
+  id: string
+  project_id: string
+  name: string
+  display_name: string
+  created_at: string
+}
+
+export interface ResourceBindingSummary {
+  resource_id: string
+  uri: string
+  display_name: string
+  environment_id: string
+  environment_name: string
+  binding_id: string
+  binding_revision: number
+  connector_id: string
+  connector_revision: number
+  account_id: string
+  region: string
+  bucket_name: string
+  bucket_arn: string
+  expected_owner: string
+  management_method: 'external' | 'unknown'
+  state: 'active' | 'retired'
+  created_at: string
+}
+
+export interface ResourceObservationSummary {
+  id: string
+  resource_id: string
+  binding_id: string
+  binding_revision: number
+  run_id: string
+  operation_id: string
+  source: string
+  retrieved_at: string
+  measurement_at: string | null
+  outcome: 'measured' | 'no_data' | 'partial' | 'failed'
+  coverage: Record<string, unknown>
+  evidence: { id: string; sha256: string; size_bytes: number; media_type: string } | null
+  evidence_status: 'staging' | 'ready' | 'deleting' | 'deleted' | 'unavailable' | null
+}
+
+export interface ResourcePage {
+  items: ResourceBindingSummary[]
+  next_cursor: string | null
+}
+
+export interface ResourceObservationPage {
+  items: ResourceObservationSummary[]
+  next_cursor: string | null
 }
 
 export interface ArtifactSummary {
@@ -336,11 +426,27 @@ export interface ToolOperationSummary {
   // Added with the owned operation summary; absent on legacy snapshots.
   query?: string | null
   result: {
-    operation_id?: string
     observed_at?: string
     query?: string
     items?: SearchResultItem[]
     truncated?: boolean
+    resource_id?: string
+    resource_binding_id?: string
+    binding_revision?: number
+    account_id?: string
+    region?: string
+    bucket_name?: string
+    retrieved_at?: string
+    outcome?: 'measured' | 'no_data' | 'partial'
+    stale?: boolean
+    measurement_at?: string | null
+    reported_storage_subtotal_bytes?: number | null
+    coverage?: Record<string, unknown>
+    artifact?: { id: string; sha256: string; size_bytes: number; media_type: string }
+    status?: 'ready'
+    role_arn?: string
+    bucket_verified?: boolean
+    checked_at?: string
   } | null
   artifacts: ArtifactSummary[]
   attempts: ToolAttemptSummary[]

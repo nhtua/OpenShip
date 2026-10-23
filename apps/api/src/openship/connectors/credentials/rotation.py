@@ -160,7 +160,10 @@ def reencrypt_credentials_batch(
         raise ValueError("invalid_batch_size")
     query = (
         db.query(CredentialVersion)
-        .filter(CredentialVersion.key_id != store.active_key_id)
+        .filter(
+            CredentialVersion.purged_at.is_(None),
+            CredentialVersion.key_id != store.active_key_id,
+        )
         .order_by(CredentialVersion.id)
         .limit(batch_size)
         .with_for_update()
@@ -193,7 +196,12 @@ def verify_retained_credentials(
     installation_id: UUID,
 ) -> int:
     """Decrypt every retained row without returning or logging its payload."""
-    records = db.query(CredentialVersion).order_by(CredentialVersion.id).yield_per(100)
+    records = (
+        db.query(CredentialVersion)
+        .filter(CredentialVersion.purged_at.is_(None))
+        .order_by(CredentialVersion.id)
+        .yield_per(100)
+    )
     count = 0
     for record in records:
         store.decrypt(
