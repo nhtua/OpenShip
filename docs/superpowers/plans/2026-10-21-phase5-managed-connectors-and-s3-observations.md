@@ -205,8 +205,9 @@ for basic multiple-project lifecycle, scoped settings, actionable setup errors
 and connector cards/dialogs. The approved addendum additionally sets Brave/Tavily search
 to use Global visibility for new configuration, with project-owned defaults
 and an explicit cutover for existing private connectors. The addendum records
-this policy change. The 5A.1 revision plan is approved for implementation;
-renewed 5A.1 acceptance is still pending and Task 8 remains gated.
+this policy change. The revision plan was approved for implementation; the
+requalification follow-up below records the later 5A.1 acceptance that cleared
+the Task 8 gate.
 
 **Requalification follow-up (2026-10-22):** The approved 5A.1 revisions have
 passed the real-stack/browser and PostgreSQL migration/lifecycle lanes with
@@ -243,13 +244,13 @@ credentials and protocol-compatible transports until then.
 
 **Tests:** `tests/connectors/test_aws_broker.py`.
 
-- [ ] Support the proposed explicit machine-key source, including session token plus mandatory expiration when provided.
-- [ ] Acquire only the configured basic role through the common SDK runner. Bootstrap credentials never reach observation handlers.
-- [ ] Derive session names from server-owned run identity; verify returned account/role identity before resource reads.
-- [ ] Request 900-second sessions. Cache only in memory, separated by consuming project, connector/revision, credential version, role, region and scope.
-- [ ] Renew on demand below 120 seconds remaining. Concurrent acquisition for the same cache key shares one bounded acquisition.
-- [ ] Recheck current revocation before every dispatch. Expired source sessions require replacement; denied assumption must not select another role/source.
-- [ ] Treat acquisition and verification requests as journaled physical dispatches within the observation’s request/deadline budget.
+- [x] Support the proposed explicit machine-key source, including session token plus mandatory expiration when provided.
+- [x] Acquire only the configured basic role through the common SDK runner. Bootstrap credentials never reach observation handlers.
+- [x] Derive session names from server-owned run identity; verify returned account/role identity before resource reads.
+- [x] Request 900-second sessions. Cache only in memory, separated by consuming project, connector/revision, credential version, role, region and scope.
+- [x] Renew on demand below 120 seconds remaining. Concurrent acquisition for the same cache key shares one bounded acquisition.
+- [x] Recheck current revocation before every dispatch. Expired source sessions require replacement; denied assumption must not select another role/source.
+- [x] Treat acquisition and verification requests as journaled physical dispatches within the observation’s request/deadline budget.
 
 **Commit deliverable:** Temporary, scoped execution-role clients with safe renewal and failure behavior.
 

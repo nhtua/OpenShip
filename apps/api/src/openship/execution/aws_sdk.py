@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 
 from src.openship.providers.errors import ProviderError
 
-from .aws_transport import AwsSdkError, BoundedAwsHttpSession
+from .aws_transport import AwsRequestBudget, AwsSdkError, BoundedAwsHttpSession
 
 _REGION = re.compile(
     r"^(?:(?:af|ap|ca|eu|il|me|mx|sa)-[a-z0-9-]+-\d|"
@@ -49,6 +49,7 @@ class AwsSdkContext:
         max_response_bytes: int = 2 * 1024 * 1024,
         timeout_seconds: float = 30.0,
         transport_factory=None,
+        request_budget: AwsRequestBudget | None = None,
     ):
         if (
             not isinstance(auth, AwsSdkAuth)
@@ -78,6 +79,7 @@ class AwsSdkContext:
             request_limit=max_requests,
             max_response_bytes=max_response_bytes,
             timeout_seconds=timeout_seconds,
+            request_budget=request_budget,
         )
 
     def client(self, service: str):

@@ -41,6 +41,8 @@ _SAFE_MESSAGES = {
     "aws_trust_denied": "AWS denied the configured role assumption.",
     "aws_credentials_expired": "The AWS source credentials have expired.",
     "aws_credentials_invalid": "The AWS source credentials were rejected.",
+    "aws_account_mismatch": "The AWS role is configured for a different account.",
+    "aws_identity_mismatch": "AWS returned an unexpected role identity.",
     "aws_output_limit_exceeded": "The AWS response exceeded the allowed size.",
     "aws_redirect": "The AWS service returned an unsupported redirect.",
     "aws_invalid_response": "The AWS service returned an invalid response.",
@@ -61,6 +63,29 @@ class AwsSdkError(Exception):
 
     def __str__(self) -> str:
         return self.safe_message
+
+
+class AwsRequestBudget:
+    """Thread-safe physical-request allowance shared across SDK contexts."""
+
+    def __init__(self, limit: int = AWS_MAX_REQUESTS):
+        if not 1 <= limit <= AWS_MAX_REQUESTS:
+            raise ValueError("AWS request limit is outside the supported range")
+        self.limit = limit
+        self._used = 0
+        self._lock = threading.Lock()
+
+    def reserve(self) -> bool:
+        with self._lock:
+            if self._used >= self.limit:
+                return False
+            self._used += 1
+            return True
+
+    @property
+    def used(self) -> int:
+        with self._lock:
+            return self._used
 
 
 class _BoundedRawBody:
@@ -196,6 +221,7 @@ class BoundedAwsHttpSession:
         request_limit: int = AWS_MAX_REQUESTS,
         max_response_bytes: int = AWS_MAX_RESPONSE_BYTES,
         timeout_seconds: float = AWS_MAX_TIMEOUT_SECONDS,
+        request_budget: AwsRequestBudget | None = None,
     ):
         if not 1 <= request_limit <= AWS_MAX_REQUESTS:
             raise ValueError("AWS request limit is outside the supported range")
@@ -208,6 +234,7 @@ class BoundedAwsHttpSession:
         self._request_limit = request_limit
         self._max_response_bytes = max_response_bytes
         self._timeout_seconds = timeout_seconds
+        self._request_budget = request_budget
         self._request_count = 0
         self._request_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -264,6 +291,8 @@ class BoundedAwsHttpSession:
             raise AwsSdkError("aws_timeout")
         with self._request_lock:
             if self._request_count >= self._request_limit:
+                raise AwsSdkError("aws_request_limit_exceeded")
+            if self._request_budget is not None and not self._request_budget.reserve():
                 raise AwsSdkError("aws_request_limit_exceeded")
             self._request_count += 1
 
