@@ -57,7 +57,7 @@ test('operator configures shared search and chooses project defaults independent
   })
 
   await page.goto('/connectors')
-  await expect(page.getByRole('heading', { name: 'Search connectors' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Search connectors', exact: true })).toBeVisible()
 
   await openConnectorCreation(page, 'Brave Search')
   let dialog = page.getByRole('dialog')

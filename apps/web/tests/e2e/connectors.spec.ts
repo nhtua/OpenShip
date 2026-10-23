@@ -46,7 +46,7 @@ test('an uncertain connector write clears the key, checks status, and never rese
   })
 
   await page.goto('/connectors')
-  await expect(page.getByRole('heading', { name: 'Search connectors' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Search connectors', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Global search connectors' })).toBeVisible()
   const card = page.getByRole('button', { name: 'Configure Brave Search' })
   await card.click()
