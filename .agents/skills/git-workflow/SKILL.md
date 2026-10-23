@@ -1,3 +1,8 @@
+---
+name: git-workflow
+description: skill for any Git-related work on this repository
+---
+
 # Git Workflow (OpenShip)
 
 Invoke this skill for any Git-related work on this repository.
@@ -11,12 +16,15 @@ Invoke this skill for any Git-related work on this repository.
 ## Worktree Lifecycle
 
 1. **Check existing worktrees:**
+
    ```bash
    git worktree list
    ```
+
    Reuse a relevant worktree if it already exists.
 
 2. **Create a worktree** from the latest `main`:
+
    ```bash
    git fetch origin
    git worktree add -b <branch-name> .worktrees/<task-slug> origin/main
@@ -24,6 +32,7 @@ Invoke this skill for any Git-related work on this repository.
    ```
 
 3. **Install dependencies and pre-commit hooks** in the new worktree:
+
    ```bash
    # Frontend dependencies
    cd apps/web
@@ -40,13 +49,16 @@ Invoke this skill for any Git-related work on this repository.
    ```
 
 4. **Sync before starting a sub-task** (rebase, not merge):
+
    ```bash
    git fetch origin
    git rebase origin/main
    ```
+
    Resolve any uncommitted or unstaged work first.
 
 5. **Run tests before committing:**
+
    ```bash
    # Frontend typecheck, tests, and build
    cd apps/web
@@ -85,6 +97,7 @@ quotes, backticks, dollar signs, and newlines without shell interpolation.
 2. Write the exact UTF-8 text with a file-writing/editing tool. If a shell is
    needed, use a **single-quoted heredoc delimiter**, chosen so it does not
    occur as a line in the message:
+
    ```bash
    cat > '/tmp/openship-<task>-commit-message.txt' <<'COMMIT_MESSAGE_EOF'
    docs: require file-based Git messages
@@ -92,14 +105,17 @@ quotes, backticks, dollar signs, and newlines without shell interpolation.
    Preserve literal `code`, $variables, and $(expressions) as text.
    COMMIT_MESSAGE_EOF
    ```
+
    Prepare separate files for the commit message, PR description, and comment.
    Use real newlines, not literal `\n` sequences.
 3. Review the file's wording, then use Rayloc to check for secrets and credentials.
    **Immediately before every Git or GitHub command that consumes a message
    file**, scan that exact file in a separate tool call:
+
    ```bash
    rayloc scan '/tmp/openship-<task>-commit-message.txt'
    ```
+
    Proceed only when the scan succeeds with no findings. If Rayloc is missing,
    the scan fails, or it reports secrets or credentials, stop; do not run the
    Git/GitHub command or bypass the scan. Remove any sensitive content and
@@ -131,10 +147,13 @@ files you created after success.
 ## Completing a Task
 
 1. Push the branch:
+
    ```bash
    git push -u origin <branch-name>
    ```
+
 2. Clean up the worktree (the branch is preserved on remote):
+
    ```bash
    cd <repo-root>
    git worktree remove .worktrees/<task-slug>
