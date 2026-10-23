@@ -150,7 +150,39 @@ export interface ProjectCapabilitySummary {
   connector_readiness: Partial<Record<ManagedConnectorKind, 'ready' | 'required' | 'ambiguous' | 'unavailable'>>
   enabled?: boolean
   available?: boolean
-  unavailable_reason?: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
+  policy_enabled?: boolean
+  deployment_restricted?: boolean
+  unavailable_reason?:
+    | 'disabled'
+    | 'disabled_by_operator'
+    | 'deployment_restricted'
+    | 'missing_credentials'
+    | 'runtime_unavailable'
+    | 'connector_required'
+    | 'connector_ambiguous'
+    | 'target_required'
+    | 'policy_unavailable'
+    | null
+}
+
+export interface ToolPolicyEntry {
+  id: string
+  description: string
+  enabled: boolean
+  permitted: boolean
+  deployment_restricted: boolean
+  unavailable_reason: 'disabled_by_operator' | 'deployment_restricted' | null
+}
+
+export interface ToolPolicyResponse {
+  revision: number
+  tools: ToolPolicyEntry[]
+  effective_ids: string[]
+  deployment_ceiling_active: boolean
+  deployment_ceiling_ids: string[] | null
+  unknown_deployment_ids: string[]
+  cutover_available: boolean
+  legacy_cutover_at: string | null
 }
 
 export interface ConnectorRequestStatus {
@@ -289,7 +321,15 @@ export interface CapabilitySummary extends CapabilityRef {
   effect: 'read_only_external' | 'read_only_local'
   enabled: boolean
   available: boolean
-  unavailable_reason: 'disabled' | 'missing_credentials' | 'runtime_unavailable' | null
+  unavailable_reason:
+    | 'disabled'
+    | 'disabled_by_operator'
+    | 'deployment_restricted'
+    | 'policy_unavailable'
+    | 'missing_credentials'
+    | 'runtime_unavailable'
+    | null
+  deployment_restricted?: boolean
   permitted?: boolean
   required_connector_kinds?: ManagedConnectorKind[]
   connector_readiness?: Partial<Record<ManagedConnectorKind, 'ready' | 'required' | 'ambiguous' | 'unavailable'>>

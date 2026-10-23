@@ -117,6 +117,41 @@ describe('ChatInput', () => {
     expect(wrapper.emitted('search')).toBeFalsy()
   })
 
+  it('explains an installation ceiling and keeps restricted manual choices disabled', async () => {
+    const restricted = {
+      ...capabilities[0],
+      enabled: false,
+      available: false,
+      permitted: false,
+      deployment_restricted: true,
+      unavailable_reason: 'deployment_restricted' as const,
+      policy_enabled: true,
+      required_connector_kinds: ['brave'] as const,
+      connector_readiness: { brave: 'ready' as const },
+    }
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [restricted],
+        submissionError: null,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    const automaticMode = wrapper.get('[data-testid="automatic-tool-mode"]')
+    expect((automaticMode.element as HTMLButtonElement).disabled).toBe(true)
+    expect(automaticMode.text()).toContain('TOOL_ENABLED_IDS')
+    const manualChoice = wrapper.get('[data-testid="tool-choice"]')
+    expect((manualChoice.element as HTMLButtonElement).disabled).toBe(true)
+    expect(manualChoice.text()).toContain('Restricted by TOOL_ENABLED_IDS')
+    wrapper.unmount()
+  })
+
   it('hides the active-run warning but still blocks tool submission', async () => {
     const wrapper = mount(ChatInput, {
       props: {

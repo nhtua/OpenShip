@@ -35,8 +35,7 @@ const trigger = ref<HTMLButtonElement | null>(null)
 const menu = ref<HTMLElement | null>(null)
 const directCapabilities = computed(() => props.capabilities.filter((capability) =>
   capability.effect === 'read_only_external' &&
-  ['brave_web_search', 'tavily_web_search', 'aws_s3_bucket_storage'].includes(capability.id) &&
-  capability.permitted !== false,
+  ['brave_web_search', 'tavily_web_search', 'aws_s3_bucket_storage'].includes(capability.id),
 ))
 
 function label(id: string): string {
@@ -47,10 +46,19 @@ function label(id: string): string {
 }
 
 function unavailableReason(capability: CapabilitySummary | ProjectCapabilitySummary): string {
+  if (capability.unavailable_reason === 'deployment_restricted') {
+    return 'Restricted by TOOL_ENABLED_IDS'
+  }
+  if (capability.unavailable_reason === 'disabled_by_operator') {
+    return 'Disabled in Global Settings'
+  }
+  if (capability.unavailable_reason === 'policy_unavailable') {
+    return 'Tool availability could not be confirmed'
+  }
   if (capability.id === 'aws_s3_bucket_storage' && !props.resourceBindings.some((binding) => binding.state === 'active')) {
     return 'Bind an S3 bucket in Connectors first'
   }
-  if (capability.permitted === false) return 'Not enabled for this project'
+  if (capability.permitted === false) return 'Not enabled for this installation'
   if (capability.enabled === false || capability.unavailable_reason === 'disabled') return 'Disabled in tool settings'
   if (capability.unavailable_reason === 'missing_credentials') return 'Add a search provider connection'
   if (capability.unavailable_reason === 'runtime_unavailable') return 'Search service is not configured'

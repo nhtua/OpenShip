@@ -169,4 +169,30 @@ describe('ToolAttachmentMenu', () => {
     }])
     wrapper.unmount()
   })
+
+  it('shows disabled and deployment-restricted tools with a useful reason', async () => {
+    const restricted = {
+      ...capabilities[0],
+      id: 'tavily_web_search',
+      enabled: false,
+      available: false,
+      permitted: false,
+      deployment_restricted: true,
+      unavailable_reason: 'deployment_restricted' as const,
+      policy_enabled: true,
+      required_connector_kinds: ['tavily'] as const,
+      connector_readiness: { tavily: 'ready' as const },
+    }
+    const wrapper = mount(ToolAttachmentMenu, {
+      props: { capabilities: [restricted], selectedCapabilityId: null, disabled: false },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+
+    const choice = wrapper.get('[data-testid="tool-choice"]')
+    expect((choice.element as HTMLButtonElement).disabled).toBe(true)
+    expect(choice.text()).toContain('Restricted by TOOL_ENABLED_IDS')
+    expect(wrapper.emitted('attach')).toBeFalsy()
+    wrapper.unmount()
+  })
 })

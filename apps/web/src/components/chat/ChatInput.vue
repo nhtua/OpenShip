@@ -101,6 +101,22 @@ const automaticToolDisabledReason = computed(() => {
   if (!props.capabilities.some((capability) =>
     capability.permitted !== false && capability.enabled !== false && capability.available !== false,
   )) {
+    const deploymentRestricted = props.capabilities.some((capability) =>
+      capability.unavailable_reason === 'deployment_restricted' || capability.deployment_restricted === true,
+    )
+    const disabledByOperator = props.capabilities.some((capability) =>
+      capability.unavailable_reason === 'disabled_by_operator',
+    )
+    if (props.capabilities.some((capability) => capability.unavailable_reason === 'policy_unavailable')) {
+      return 'Tool availability could not be confirmed. Ask the installation operator to check Global Settings.'
+    }
+    if (deploymentRestricted && disabledByOperator) {
+      return 'Enable at least one tool in Global Settings and include it in TOOL_ENABLED_IDS.'
+    }
+    if (deploymentRestricted) {
+      return 'Tools are restricted by TOOL_ENABLED_IDS. Ask the installation operator to update the deployment ceiling.'
+    }
+    if (disabledByOperator) return 'Enable at least one tool in Global Settings.'
     return props.capabilities.length
       ? 'Configure a Connector or bind an S3 bucket to enable tools.'
       : 'No tools are configured.'

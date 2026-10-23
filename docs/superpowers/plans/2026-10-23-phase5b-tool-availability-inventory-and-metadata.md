@@ -2,12 +2,12 @@
 type: plan
 summary: Proposed Phase 5B implementation detail aligned with accepted 5A.1/5A.2, adding managed built-in tool availability, local bucket inventory and bounded bucket metadata.
 date: 2026-10-23
-status: proposed
+status: in_progress
 ---
 
 # Phase 5B Tool Availability, Inventory and Metadata Implementation Plan
 
-> **For agentic workers:** Use `superpowers:executing-plans` for sequential implementation. This addendum expands Tasks 15–16 of the approved Phase 5 plan. Its implementation detail is awaiting review; preparing it does not start 5B.
+> **For agentic workers:** Use `superpowers:executing-plans` for sequential implementation. The user approved this addendum on 2026-10-23; implement Tasks 15–16 in order. Completion still awaits qualification and user acceptance.
 
 **Goal:** Make configured built-in tools usable without maintaining a per-tool environment list, then add local bound-bucket inventory and evidence-backed metadata reads.
 
@@ -118,4 +118,4 @@ Use the documented `Enabled`/`Suspended` versioning states and distinguish absen
 
 ## Verification and handoff
 
-Use the parent plan's verification commands and shared CI lanes. No 5B code is included in the change that records this plan. Review this addendum before implementation; sequential execution remains the established method.
+Use the parent plan's verification commands and shared CI lanes. Keep this plan synchronized with the task ledger and observed evidence; sequential execution remains the established method.

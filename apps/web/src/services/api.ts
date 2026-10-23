@@ -17,6 +17,7 @@ import type {
   Run,
   Snapshot,
   ToolCommandRequest,
+  ToolPolicyResponse,
   TurnSubmitRequest,
   ModelProfileCatalog,
   ProjectCapabilitySummary,
@@ -151,6 +152,21 @@ export const modelProfilesApi = {
 
 export const capabilitiesApi = {
   list: (): Promise<{ data: CapabilitySummary[] }> => api.get('/capabilities'),
+}
+
+export const toolPolicyApi = {
+  get: (): Promise<{ data: ToolPolicyResponse }> => api.get('/global-tool-policy'),
+
+  set: (
+    capabilityId: string,
+    payload: { enabled: boolean; expected_revision: number },
+  ): Promise<{ data: ToolPolicyResponse }> =>
+    api.put(`/global-tool-policy/${encodeURIComponent(capabilityId)}`, payload),
+
+  cutover: (
+    payload: { expected_revision: number },
+  ): Promise<{ data: ToolPolicyResponse }> =>
+    api.post('/global-tool-policy/cutover', payload),
 }
 
 export const connectorsApi = {
