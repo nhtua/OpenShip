@@ -222,9 +222,16 @@ async def test_postgres_publishes_ready_artifact_result_and_events_in_one_commit
     original_publish = gateway_module.publish_tool_result
     uncommitted_state = []
 
-    def inspect_before_commit(db, active_claim, attempt_id, observation, staged_outputs):
+    def inspect_before_commit(
+        db, active_claim, attempt_id, observation, staged_outputs, definition=None
+    ):
         result = original_publish(
-            db, active_claim, attempt_id, observation, staged_outputs
+            db,
+            active_claim,
+            attempt_id,
+            observation,
+            staged_outputs,
+            definition=definition,
         )
         reader = pg_sessions()
         try:

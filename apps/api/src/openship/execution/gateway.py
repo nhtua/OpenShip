@@ -97,6 +97,7 @@ _PRE_DISPATCH_MESSAGES = {
     "aws_region_mismatch": "The bound S3 bucket is in a different AWS region.",
     "aws_resource_unavailable": "The selected AWS resource is not available in this project.",
     "aws_invalid_metric_response": "AWS returned an invalid storage metrics response.",
+    "aws_invalid_metadata_response": "AWS returned invalid S3 versioning metadata.",
     "aws_request_limit_exceeded": "The AWS request limit was exceeded.",
     "aws_output_limit_exceeded": "The AWS storage observation exceeded its size limit.",
     "aws_configuration_error": "The AWS Connector configuration is unavailable.",
@@ -353,6 +354,8 @@ class ToolGateway:
             aws_access_factory=(
                 self._aws_access_factory(
                     broker=aws_broker,
+                    capability_id=manifest.id,
+                    allowed_operations=tuple(manifest.operations),
                     project_id=context.authorization.project_id,
                     run_id=claim.run_id,
                     request_budget=aws_request_budget,
@@ -801,7 +804,7 @@ class ToolGateway:
                 if item.kind == "aws" and item.id == connector_id
             ]
             return matches[0] if len(matches) == 1 else None
-        if capability_id == "aws_s3_bucket_storage":
+        if capability_id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
             try:
                 binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
             except (KeyError, TypeError, ValueError):
@@ -834,7 +837,7 @@ class ToolGateway:
         configuration,
     ):
         binding_id = None
-        if capability_id == "aws_s3_bucket_storage":
+        if capability_id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
             try:
                 binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
             except (KeyError, TypeError, ValueError):
@@ -885,6 +888,8 @@ class ToolGateway:
     def _aws_access_factory(
         *,
         broker,
+        capability_id,
+        allowed_operations,
         project_id,
         run_id,
         request_budget,
@@ -901,6 +906,8 @@ class ToolGateway:
                 run_id=run_id,
                 control=control_holder(),
                 request_budget=request_budget,
+                capability_id=capability_id,
+                allowed_operations=allowed_operations,
             )
             accesses.append(access)
             return access

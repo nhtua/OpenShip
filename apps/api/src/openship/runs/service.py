@@ -498,7 +498,7 @@ def _tool_chat_execution(
             ) from refused
         if not definition.model_selectable:
             continue
-        if manifest.id == "aws_s3_bucket_storage":
+        if manifest.id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
             if resource_binding_refs:
                 refs.append(
                     CapabilityRef(
@@ -1161,7 +1161,7 @@ def submit_tool_run(
                     "The selected bucket binding does not use this Connector revision",
                 )
             resource_binding_refs = selected_bindings
-    elif command.capability.id == "aws_s3_bucket_storage":
+    elif command.capability.id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
         arguments = normalized_arguments.model_dump(mode="python")
         resource_binding_refs, connector_refs = _selected_aws_bindings(
             db,

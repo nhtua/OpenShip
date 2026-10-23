@@ -2,12 +2,12 @@
 type: plan
 summary: Proposed Phase 5B implementation detail aligned with accepted 5A.1/5A.2, adding managed built-in tool availability, local bucket inventory and bounded bucket metadata.
 date: 2026-10-23
-status: in_progress
+status: candidate
 ---
 
 # Phase 5B Tool Availability, Inventory and Metadata Implementation Plan
 
-> **For agentic workers:** Use `superpowers:executing-plans` for sequential implementation. The user approved this addendum on 2026-10-23; implement Tasks 15–16 in order. Completion still awaits qualification and user acceptance.
+> **For agentic workers:** Use `superpowers:executing-plans` for sequential implementation. The user approved this addendum on 2026-10-23. Implementation and candidate qualification are recorded in the [5B qualification report](../../testing/phase5b-tool-availability-and-reads-qualification.md). The non-service API selector and independent live comparison remain open; user acceptance is pending.
 
 **Goal:** Make configured built-in tools usable without maintaining a per-tool environment list, then add local bound-bucket inventory and evidence-backed metadata reads.
 
@@ -58,12 +58,12 @@ status: in_progress
 
 **Interfaces:** `list_installed_tool_definitions()` enumerates maintained definitions; `read_effective_tool_policy(db)` returns a revision and effective IDs; `set_tool_policy(db, actor, capability_id, enabled, expected_revision)` performs an operator-only revision-checked update. Public catalog entries expose permission and a closed unavailable-reason code separately from Connector/target readiness. Existing `resolve_capability(ref, enabled_ids)` consumes the effective ID set instead of independently reparsing environment configuration.
 
-- [ ] Write failing tests in `tests/test_tool_policy.py` and `tests/integration/test_tool_policy_postgres.py`: an installed definition appears without editing configuration; foreign/non-operator writes fail; concurrent writes use revision preconditions; API and worker agree after an update; missing policy state fails safely.
-- [ ] Test migration and configuration semantics separately: unset allowlist means no deployment ceiling; an explicit empty legacy allowlist preserves chat-only intent; a nonempty explicit ceiling remains authoritative; unknown IDs are reported; enabling a tool in the UI cannot bypass a deployment restriction. Do not change global empty-value parsing for unrelated settings.
-- [ ] Persist global overrides with revision/audit metadata. Derive defaults from the installed qualified built-in definitions; retain explicit disabled overrides. Migration records no secrets and makes no provider requests.
-- [ ] Provide an operator-visible one-time preview/cutover from the legacy allowlist to stored global policy. Preserve existing allow/deny intent; document removing the legacy deployment list once the operator chooses managed settings. Update `.env.example` so a fresh managed installation does not accidentally start with a permanent empty ceiling. No per-tool configuration edit or process restart is needed after cutover for ordinary policy or readiness changes.
-- [ ] Use the shared policy at admission and before external dispatch/publication. Pin the admitted effective IDs and policy identity using the existing operation/bundle mechanisms; version any changed frozen DTO explicitly. Enabling later does not replay a failed or interrupted run. Old history remains readable.
-- [ ] Run `uv run pytest tests/test_tool_policy.py tests/integration/test_tool_policy_postgres.py tests/test_capability_routes.py -q`; expect passing SQLite/contract cases and zero required PostgreSQL skips in its configured lane. Commit the working policy increment using the repository's scanned file-based messages.
+- [x] Write failing tests in `tests/test_tool_policy.py` and `tests/integration/test_tool_policy_postgres.py`: an installed definition appears without editing configuration; foreign/non-operator writes fail; concurrent writes use revision preconditions; API and worker agree after an update; missing policy state fails safely.
+- [x] Test migration and configuration semantics separately: unset allowlist means no deployment ceiling; an explicit empty legacy allowlist preserves chat-only intent; a nonempty explicit ceiling remains authoritative; unknown IDs are reported; enabling a tool in the UI cannot bypass a deployment restriction. Do not change global empty-value parsing for unrelated settings.
+- [x] Persist global overrides with revision/audit metadata. Derive defaults from the installed qualified built-in definitions; retain explicit disabled overrides. Migration records no secrets and makes no provider requests.
+- [x] Provide an operator-visible one-time preview/cutover from the legacy allowlist to stored global policy. Preserve existing allow/deny intent; document removing the legacy deployment list once the operator chooses managed settings. Update `.env.example` so a fresh managed installation does not accidentally start with a permanent empty ceiling. No per-tool configuration edit or process restart is needed after cutover for ordinary policy or readiness changes.
+- [x] Use the shared policy at admission and before external dispatch/publication. Pin the admitted effective IDs and policy identity using the existing operation/bundle mechanisms; version any changed frozen DTO explicitly. Enabling later does not replay a failed or interrupted run. Old history remains readable.
+- [x] Run the tool-policy, capability-route and PostgreSQL policy coverage. The combined focused API suite passed; the selected PostgreSQL lane separately passed all required PostgreSQL cases. Commit the working policy increment using the repository's scanned file-based messages.
 
 ## Task 15.2 — Global Settings and live eligibility refresh
 
@@ -71,11 +71,11 @@ status: in_progress
 
 **Interfaces:** Operator-only tool-policy management routes return the effective revision and installed tool rows. Project capability routes expose only authorized metadata and distinguish disabled-by-operator, deployment-restricted, missing-Connector, missing-target and incompatible-runtime states. Use the existing operator check, not project ownership alone, for installation changes.
 
-- [ ] Write failing component tests in `GlobalSettings.test.ts`, `ToolAttachmentMenu.test.ts`, `ChatInput.test.ts`, `ConnectorSettingsCatalog.test.ts` and policy-store tests. Verify one operator toggle, non-operator visibility, deployment-ceiling explanations, stale response protection and cross-project isolation.
-- [ ] Add Global Settings controls for built-in tool enablement. Connector save/revoke, binding changes and policy changes refresh the same effective catalog; navigating back or refocusing the page refreshes stale state. Use ordinary bounded refresh/revision reads; no background AWS checks.
-- [ ] Keep one project search-default selector and manual choices. Preserve the connection-check admission-before-navigation fix and first-open AWS dialog behavior. A bucket selector alone must not imply a check has run.
-- [ ] Verify an already-running API and worker can use an enabled ready tool after a UI update, with no environment edits or process restarts. A blocked/disabled tool remains unavailable with a useful reason.
-- [ ] Run `pnpm typecheck`, the named component tests, and the fixture browser policy flow; expect passing checks. Commit the working settings increment.
+- [x] Write failing component tests in `GlobalSettings.test.ts`, `ToolAttachmentMenu.test.ts`, `ChatInput.test.ts`, `ConnectorSettingsCatalog.test.ts` and policy-store tests. Verify one operator toggle, non-operator visibility, deployment-ceiling explanations, stale response protection and cross-project isolation.
+- [x] Add Global Settings controls for built-in tool enablement. Connector save/revoke, binding changes and policy changes refresh the same effective catalog; navigating back or refocusing the page refreshes stale state. Use ordinary bounded refresh/revision reads; no background AWS checks.
+- [x] Keep one project search-default selector and manual choices. Preserve the connection-check admission-before-navigation fix and first-open AWS dialog behavior. A bucket selector alone must not imply a check has run.
+- [x] Verify an already-running API and worker can use an enabled ready tool after a UI update, with no environment edits or process restarts. A blocked/disabled tool remains unavailable with a useful reason.
+- [x] Run `pnpm typecheck`, the named component tests, and the fixture browser policy flow; expect passing checks. Commit the working settings increment.
 
 ## Task 15.3 — Local bound-bucket inventory
 
@@ -96,22 +96,22 @@ status: in_progress
 
 Use the documented `Enabled`/`Suspended` versioning states and distinguish absent MFA-delete metadata from `Disabled`; AWS returns no versioning status for a bucket that has never enabled versioning. See the [GetBucketVersioning API](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketVersioning.html).
 
-- [ ] Write failing tests for enabled/suspended/never-enabled versioning, malformed/unknown states, owner/account/region mismatches, changed/revoked Connector refs, foreign/unselected targets and publication rollback/cancellation. No raw response fields or session values enter public results/evidence.
-- [ ] Keep bounds of 30 seconds, at most 8 physical requests including role acquisition/checks, 2 MiB HTTP responses, 64 KiB evidence and 16 KiB model result. Preserve the recorded request count and retrieved time; metadata has no invented CloudWatch measurement time.
-- [ ] Add bucket-scoped `s3:GetBucketVersioning` to the 5B permission documentation. Do not edit the user's IAM role automatically. Bind allowed SDK operations to the admitted capability: adding versioning support must not make it callable by storage or connection-check handlers. Never add mutation methods.
-- [ ] Give new handlers their own manifest identities. Shared broker/transport source changes may invalidate old exact refs; retain compatible frozen definitions only when executable, otherwise fail visibly as changed. Do not recompute an old digest for changed code. Keep the storage manifest's declared operation set and existing admitted configuration semantics intact.
-- [ ] Generalize the existing selected-resource checks used by admission, automatic model definitions and the composer to include metadata. Keep `aws_check_connection` model-free; local inventory does not need a selected cloud target. Use existing definition hooks rather than another provider dispatch abstraction.
-- [ ] Test successful native SDK requests through production destination validation with only network I/O stubbed. Retain the 5A.2 empty-userinfo, origin/path/query, foreign-key and secret-debug-log regressions.
-- [ ] Show compact metadata results and retained evidence in the conversation and resource observations, with automatic refresh after publication. Keep archive/restore and file-history behavior unchanged.
-- [ ] Run the metadata, broker, SDK/transport and publication tests plus affected browser tests; expect passing configured lanes. Commit the working metadata increment.
+- [x] Write failing tests for enabled/suspended/never-enabled versioning, malformed/unknown states, owner/account/region mismatches, changed/revoked Connector refs, foreign/unselected targets and publication rollback/cancellation. No raw response fields or session values enter public results/evidence.
+- [x] Keep bounds of 30 seconds, at most 8 physical requests including role acquisition/checks, 2 MiB HTTP responses, 64 KiB evidence and 16 KiB model result. Preserve the recorded request count and retrieved time; metadata has no invented CloudWatch measurement time.
+- [x] Add bucket-scoped `s3:GetBucketVersioning` to the 5B permission documentation. Do not edit the user's IAM role automatically. Bind allowed SDK operations to the admitted capability: adding versioning support must not make it callable by storage or connection-check handlers. Never add mutation methods.
+- [x] Give new handlers their own manifest identities. Shared broker/transport source changes may invalidate old exact refs; retain compatible frozen definitions only when executable, otherwise fail visibly as changed. Do not recompute an old digest for changed code. Keep the storage manifest's declared operation set and existing admitted configuration semantics intact.
+- [x] Generalize the existing selected-resource checks used by admission, automatic model definitions and the composer to include metadata. Keep `aws_check_connection` model-free; local inventory does not need a selected cloud target. Use existing definition hooks rather than another provider dispatch abstraction.
+- [x] Test successful native SDK requests through production destination validation with only network I/O stubbed. Retain the 5A.2 empty-userinfo, origin/path/query, foreign-key and secret-debug-log regressions.
+- [x] Show compact metadata results and retained evidence in the conversation and resource observations, with automatic refresh after publication. Keep archive/restore and file-history behavior unchanged.
+- [x] Run the metadata, broker, SDK/transport and publication tests plus affected browser tests; expect passing configured lanes. Commit the working metadata increment.
 
 ## Task 16 — Qualify 5B and obtain acceptance
 
 **Files:** Extend the existing synthetic-stack/browser/PostgreSQL fixtures and AWS runbook; add `docs/testing/phase5b-tool-availability-and-reads-qualification.md`. Update parent-plan checkboxes only against observed evidence.
 
 - [ ] Run full API Ruff and the non-service API selector, PostgreSQL integration cases against a disposable test database, synthetic full-stack flows and browser policy/inventory/metadata flows. Run web typecheck, unit tests and build. Record exact commands, results and any skips; required CI lanes must show zero skips.
-- [ ] Demonstrate: configure an eligible Connector, enable/disable its built-in tools in Global Settings, list local bindings without cloud credentials, explicitly select a bucket, read metadata, and reopen its exact evidence after restart. Repeat under a different project/owner and verify isolation.
-- [ ] Exercise policy disablement between admission and dispatch/publication, stale worker/catalog state, revocation, cancellation/lease loss and crashes after dispatch intent. No implicit retry, credential fallback or publication after a fence is lost.
+- [ ] Demonstrate the complete flow under a second project/owner: configure an eligible Connector, enable/disable its built-in tools in Global Settings, list local bindings without cloud credentials, explicitly select a bucket, read metadata, and reopen its exact evidence after restart. Current candidate evidence covers these steps across synthetic/browser and PostgreSQL tests, with owner isolation verified in focused inventory tests, but not as a repeated end-to-end second-owner metadata workflow.
+- [x] Exercise policy disablement between admission and dispatch/publication, stale worker/catalog state, revocation, cancellation/lease loss and crashes after dispatch intent. No implicit retry, credential fallback or publication after a fence is lost.
 - [ ] Verify accepted 5A.1/5A.2 journeys: one search default and eligible error fallback, manual choices, archive/restore without resource changes, UUID binding requests, foreign-key-safe resource insertion, accepted-check navigation, storage coverage/evidence and secret-safe debug logging.
 - [ ] With separate live opt-in, compare metadata to an independent read and record the added IAM authority. User UI testing and synthetic proof are separate evidence; do not claim an unperformed live comparison or send prohibited mutations.
 - [ ] Request accept/revise/stop for 5B. Until accepted, report 5B as a candidate and Phase 5 as incomplete. Phase 11's broader discovery/import system remains outside this unit.

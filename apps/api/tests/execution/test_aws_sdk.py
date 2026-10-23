@@ -142,6 +142,44 @@ async def test_native_sdk_requests_cross_the_production_destination_checks(
 
 
 @pytest.mark.asyncio
+async def test_native_s3_versioning_request_uses_expected_owner_through_destination_checks(monkeypatch):
+    forwarded = []
+
+    async def respond(_pool, request):
+        forwarded.append(request)
+        body = b'''<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+          <Status>Enabled</Status><MfaDelete>Disabled</MfaDelete>
+        </VersioningConfiguration>'''
+        return httpcore.Response(
+            200,
+            headers={"content-type": "application/xml"},
+            content=_BodyStream(body),
+        )
+
+    monkeypatch.setattr(httpcore.AsyncConnectionPool, "handle_async_request", respond)
+    AwsSdkContext, AwsSdkAuth, _AwsSdkError = _sdk_types()
+    async with AwsSdkContext(
+        auth=AwsSdkAuth("explicit-access-key", "explicit-secret-key"),
+        region="us-east-1",
+        control=_Control(),
+    ) as aws:
+        result = await aws.run(
+            aws.client("s3").get_bucket_versioning,
+            Bucket="example-bucket",
+            ExpectedBucketOwner="123456789012",
+        )
+
+    assert result["Status"] == "Enabled"
+    assert result["MFADelete"] == "Disabled"
+    assert len(forwarded) == 1
+    assert forwarded[0].url.host == b"s3.us-east-1.amazonaws.com"
+    assert forwarded[0].url.target == b"/example-bucket?versioning"
+    headers = {key.lower(): value for key, value in forwarded[0].headers}
+    assert headers[b"x-amz-expected-bucket-owner"] == b"123456789012"
+    assert b"explicit-access-key" in headers[b"authorization"]
+
+
+@pytest.mark.asyncio
 async def test_application_debug_logging_does_not_log_signed_aws_requests(caplog):
     async def respond(_request):
         return httpx.Response(200, stream=_BodyStream(_identity_xml()))

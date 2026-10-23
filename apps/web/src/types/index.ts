@@ -476,6 +476,9 @@ export interface ToolOperationSummary {
     account_id?: string
     region?: string
     bucket_name?: string
+    versioning_status?: 'enabled' | 'suspended' | 'not_enabled'
+    mfa_delete_status?: 'enabled' | 'disabled' | 'not_reported'
+    request_count?: number
     retrieved_at?: string
     outcome?: 'measured' | 'no_data' | 'partial'
     stale?: boolean

@@ -41,6 +41,11 @@ export const useChatStore = defineStore('chat', () => {
   // Search operations are independent durable timeline entries. Keep them by
   // conversation because the pinned run card only describes the latest run.
   const toolOperationsByConversation = ref<Map<string, Map<string, ToolOperationSummary>>>(new Map())
+  const resourceObservationEvent = ref<{
+    event_id: string
+    project_id: string
+    resource_id: string
+  } | null>(null)
   // Pending requests: request_id -> the exact payload that was sent. A retry
   // replays this payload, so the provider it named travels with it.
   const pendingRequests = ref<Map<string, { conversation_id: string; payload: TurnSubmitRequest }>>(
@@ -626,6 +631,19 @@ export const useChatStore = defineStore('chat', () => {
         break
       }
 
+      case 'resource.observed': {
+        const projectId = currentConversation.value?.project_id
+        const resourceId = event.payload.resource_id
+        if (isCurrent && projectId && typeof resourceId === 'string') {
+          resourceObservationEvent.value = {
+            event_id: event.id,
+            project_id: projectId,
+            resource_id: resourceId,
+          }
+        }
+        break
+      }
+
       case 'title_updated': {
         const payload = event.payload
         const title = (payload.title as string) || ''
@@ -1152,6 +1170,7 @@ export const useChatStore = defineStore('chat', () => {
     conversationLoadGeneration += 1
     messages.value = []
     currentConversation.value = null
+    resourceObservationEvent.value = null
     conversationMetadataReady.value = false
     error.value = null
   }
@@ -1183,6 +1202,7 @@ export const useChatStore = defineStore('chat', () => {
     error,
     runCards,
     toolOperationsByConversation,
+    resourceObservationEvent,
     cursors,
     modelProfiles,
     profileError,

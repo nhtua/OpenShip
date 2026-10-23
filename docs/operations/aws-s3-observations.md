@@ -58,9 +58,12 @@ Set the role's maximum session duration to at least 15 minutes. OpenShip asks
 STS for a 900-second session and does not chain roles. The role trust policy
 must allow the source principal from step 1 to assume this role.
 
-The role needs only the following read operations for the current storage
-check. Scope `s3:GetBucketLocation` to the bucket ARN that will be bound. The
-handler also calls `sts:GetCallerIdentity`; AWS requires no IAM permission for
+The role needs the read operations for the features you plan to use. Scope
+`s3:GetBucketLocation` to the bucket ARN that will be bound. To use metadata,
+also allow `s3:GetBucketVersioning` on that bucket. Storage observations also
+use `cloudwatch:GetMetricData` with the broader account-level metric-read scope
+shown below. OpenShip calls
+`sts:GetCallerIdentity` to verify the role; AWS requires no IAM permission for
 that operation. Do not add `s3:ListBucket`, object reads, writes, deletes,
 CloudWatch Logs, or maintenance-role permissions for this flow.
 
@@ -84,6 +87,17 @@ CloudWatch Logs, or maintenance-role permissions for this flow.
 }
 ```
 
+Add this separate statement only when you plan to use the bucket metadata tool:
+
+```json
+{
+  "Sid": "ReadSelectedBucketVersioning",
+  "Effect": "Allow",
+  "Action": "s3:GetBucketVersioning",
+  "Resource": "arn:aws:s3:::replace-with-bound-bucket"
+}
+```
+
 `cloudwatch:GetMetricData` with `Resource: "*"` grants metric-read authority
 broader than the selected S3 bucket. OpenShip's handler constrains its own
 requests to the `AWS/S3` `BucketSizeBytes` metric and the selected bucket's
@@ -95,16 +109,21 @@ and the [GetMetricData operation](https://docs.aws.amazon.com/AmazonCloudWatch/l
 
 The S3 operation-to-permission mapping is in AWS's [required S3 API
 permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-with-s3-policy-actions.html).
+The metadata handler uses the native [GetBucketVersioning API](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketVersioning.html)
+with the expected bucket owner. If bucket versioning was never enabled, AWS
+omits `Status`; OpenShip records `Not enabled`. Missing MFA Delete metadata is
+shown as `Not reported`, not inferred as disabled.
 The handler's storage dimensions are the frozen list in the Phase 5
 specification and AWS's [S3 metrics and dimensions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/metrics-dimensions.html).
 
 ## 3. Configure the project Connector
 
-Add `aws_check_connection` and `aws_s3_bucket_storage` to `TOOL_ENABLED_IDS`
-in the configuration used by both the API and runtime worker, preserving any
-existing tool IDs. Restart both processes after changing the setting.
-Configuring a Connector or binding a bucket does not enable these tools by
-itself. Disabled tools are omitted from the conversation's tool menu.
+In **Global Settings**, the installation operator enables the installed tools
+that projects may use. `TOOL_ENABLED_IDS` is an optional deployment ceiling;
+if explicitly set, it can continue restricting tools enabled in Global
+Settings. Ordinary policy and Connector changes do not require a process
+restart. A configured Connector or bucket binding does not enable a tool by
+itself.
 
 In the project's Connector settings:
 
@@ -122,14 +141,17 @@ In the project's Connector settings:
    verifies account, bucket owner and region before reading CloudWatch metrics.
 
 In a conversation belonging to the same project, choose **+ → S3 bucket
-storage**, select the bound bucket and submit to run the observation directly.
+metadata** or **S3 bucket storage**, select the bound bucket and submit to run
+the read directly. Metadata records versioning and MFA Delete state, the AWS
+request count and retrieval time. It does not report a CloudWatch measurement
+time. The normalized observation is retained as `s3-bucket-metadata.json`.
 For automatic use, select the bucket in the composer's **S3 buckets** selector,
 enable **Let the model use tools automatically**, and ask about its storage.
 The bucket selector chooses targets; it does not attach or run a tool. The
 connection check runs explicitly from Connector settings and is excluded
 from the model's tool choices.
 
-The observation reports CloudWatch's daily bucket-size measurements, not a
+The storage observation reports CloudWatch's daily bucket-size measurements, not a
 live object scan. Missing dimensions remain unknown, and values from different
 measurement dates are not added together. Review the displayed measurement
 time, freshness, coverage and evidence before treating a subtotal as complete.
@@ -150,5 +172,7 @@ still contain its prior ciphertext until those backups expire; follow the
 installation's backup retention and encryption-key retirement procedures.
 
 Do not test prohibited AWS mutations against a user's bucket. The registered
-SDK surface permits only `GetCallerIdentity`, `GetBucketLocation` and
-`GetMetricData`; it exposes no bucket mutation operation.
+SDK surface permits only `GetCallerIdentity`, `GetBucketLocation`,
+`GetBucketVersioning` and `GetMetricData`; it exposes no bucket mutation
+operation. Versioning access is limited to the metadata tool and does not
+make that operation available to storage or connection checks.

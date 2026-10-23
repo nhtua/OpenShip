@@ -80,7 +80,7 @@ let pendingDraft: {
 const selectedConnectorId = ref<string | null>(null)
 const selectedResourceBindingIds = ref<string[]>([])
 const selectedStorageBindingId = ref<string | null>(null)
-const isStorageTool = computed(() => attachedCapability.value?.id === 'aws_s3_bucket_storage')
+const isS3ReadTool = computed(() => ['aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(attachedCapability.value?.id ?? ''))
 const activeResourceBindings = computed(() => props.resourceBindings.filter((binding) => binding.state === 'active'))
 
 const inputPlaceholder = computed(() =>
@@ -126,7 +126,7 @@ const automaticToolDisabledReason = computed(() => {
     (capability.required_connector_kinds ?? []).every((kind) =>
       capability.connector_readiness?.[kind] === 'ready',
     ) && (
-      capability.id !== 'aws_s3_bucket_storage' ||
+      !['aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(capability.id) ||
       selectedResourceBindingIds.value.some((id) => props.resourceBindings.some(
         (binding) => binding.binding_id === id && binding.state === 'active',
       ))
@@ -180,6 +180,7 @@ const attachedLabel = computed(() => {
   if (attachedCapability.value?.id === 'brave_web_search') return 'Brave Search'
   if (attachedCapability.value?.id === 'tavily_web_search') return 'Tavily Search'
   if (attachedCapability.value?.id === 'aws_s3_bucket_storage') return 'S3 storage'
+  if (attachedCapability.value?.id === 'aws_s3_bucket_metadata') return 'S3 metadata'
   return attachedCapability.value?.id ?? ''
 })
 const toolUnavailable = computed(() => Boolean(
@@ -205,9 +206,9 @@ const connectorSelectionMissing = computed(() => Boolean(
   !attachedConnectorChoices.value.some((connector) => connector.id === selectedConnectorId.value),
 ))
 const submitDisabled = computed(() =>
-  props.disabled || (!isStorageTool.value && !content.value.trim()) ||
+  props.disabled || (!isS3ReadTool.value && !content.value.trim()) ||
   (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value || connectorSelectionMissing.value)) ||
-  (isStorageTool.value && !activeResourceBindings.value.some((binding) => binding.binding_id === selectedStorageBindingId.value)) ||
+  (isS3ReadTool.value && !activeResourceBindings.value.some((binding) => binding.binding_id === selectedStorageBindingId.value)) ||
   (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value),
 )
 
@@ -272,7 +273,7 @@ async function focusInput() {
 async function handleSubmit() {
   if (submitDisabled.value) return
   const text = content.value.trim()
-  if (!text && !isStorageTool.value) return
+  if (!text && !isS3ReadTool.value) return
 
   pendingDraft = {
     content: content.value,
@@ -287,7 +288,7 @@ async function handleSubmit() {
     if (attachedConnectorKind.value && selectedConnectorId.value) {
       connectorSelections[attachedConnectorKind.value] = selectedConnectorId.value
     }
-    const command: Omit<ToolCommandRequest, 'client_request_id'> = isStorageTool.value
+    const command: Omit<ToolCommandRequest, 'client_request_id'> = isS3ReadTool.value
       ? {
           capability: { ...attachedCapability.value },
           arguments: { resource_binding_id: selectedStorageBindingId.value },
@@ -296,7 +297,7 @@ async function handleSubmit() {
           capability: { ...attachedCapability.value },
           arguments: { query: text, max_results: maxResults.value },
         }
-    if (!isStorageTool.value && props.connectors !== undefined) command.connector_selections = connectorSelections
+    if (!isS3ReadTool.value && props.connectors !== undefined) command.connector_selections = connectorSelections
     emit('search', command)
   } else {
     if (automaticToolMode.value) {
@@ -385,7 +386,7 @@ onBeforeUnmount(() => {
   >
     <Label for="message" class="sr-only">Message</Label>
     <Textarea
-      v-if="!isStorageTool"
+      v-if="!isS3ReadTool"
       ref="textareaRef"
       v-model="content"
       id="message"
@@ -450,7 +451,7 @@ onBeforeUnmount(() => {
       >
         <span>{{ attachedLabel }}</span>
         <select
-          v-if="isStorageTool"
+          v-if="isS3ReadTool"
           v-model="selectedStorageBindingId"
           data-testid="storage-binding-selection"
           aria-label="AWS resource binding"
@@ -544,7 +545,7 @@ onBeforeUnmount(() => {
             </span>
             <span class="sr-only">Streaming</span>
           </span>
-          <span v-else>{{ isStorageTool ? 'Measure' : attachedCapability ? 'Search' : 'Send' }}</span>
+          <span v-else>{{ attachedCapability?.id === 'aws_s3_bucket_storage' ? 'Measure' : attachedCapability?.id === 'aws_s3_bucket_metadata' ? 'Inspect' : attachedCapability ? 'Search' : 'Send' }}</span>
         </Button>
       </div>
     </div>

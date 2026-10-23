@@ -174,7 +174,9 @@ def test_migration_preserves_existing_project_references_and_refuses_unsafe_down
     assert "refusing to downgrade" in refused.stderr.lower()
     assert "multiple projects" in refused.stderr.lower()
     with project_postgres["engine"].connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "phase5a009f"
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == "phase5b013"
 
 
 def test_concurrent_deletion_cannot_remove_both_last_projects(project_postgres):

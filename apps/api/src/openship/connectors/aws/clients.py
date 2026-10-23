@@ -21,6 +21,17 @@ _ALLOWED_READ_OPERATIONS = {
     "s3": frozenset({"get_bucket_location"}),
     "sts": frozenset({"get_caller_identity"}),
 }
+_CAPABILITY_READ_OPERATIONS = {
+    "aws_check_connection": {
+        "s3": frozenset({"get_bucket_location"}),
+        "sts": frozenset({"get_caller_identity"}),
+    },
+    "aws_s3_bucket_storage": _ALLOWED_READ_OPERATIONS,
+    "aws_s3_bucket_metadata": {
+        "s3": frozenset({"get_bucket_location", "get_bucket_versioning"}),
+        "sts": frozenset({"get_caller_identity"}),
+    },
+}
 
 
 class AwsRoleAccess:
@@ -38,6 +49,8 @@ class AwsRoleAccess:
         configuration: ConnectorConfiguration,
         session: AwsAssumedRole,
         sdk_context: AwsSdkContext,
+        capability_id: str | None = None,
+        allowed_operations: tuple[str, ...] | None = None,
     ):
         self._broker = broker
         self._project_id = project_id
@@ -48,6 +61,10 @@ class AwsRoleAccess:
         self._configuration = configuration
         self._session = session
         self._sdk_context = sdk_context
+        self._capability_id = capability_id
+        self._allowed_operations = (
+            frozenset(allowed_operations) if allowed_operations is not None else None
+        )
         self._contexts = {sdk_context}
         self._active: dict[AwsSdkContext, int] = {sdk_context: 0}
         self._retired: set[AwsSdkContext] = set()
@@ -68,11 +85,28 @@ class AwsRoleAccess:
         return self._request_budget
 
     async def run(self, operation: _AwsSdkMethod, **parameters):
+        if not isinstance(operation, _AwsSdkMethod) or operation.access is not self:
+            raise AwsSdkError("aws_operation_not_supported")
+        operation_profile = _CAPABILITY_READ_OPERATIONS.get(self._capability_id or "")
+        if operation_profile is not None:
+            operation_is_allowed = operation.name in operation_profile.get(
+                operation.service, frozenset()
+            )
+        elif self._capability_id is None:
+            operation_is_allowed = operation.name in _ALLOWED_READ_OPERATIONS.get(
+                operation.service, frozenset()
+            )
+        else:
+            operation_is_allowed = (
+                self._allowed_operations is not None
+                and operation.name in self._allowed_operations
+            )
         if (
-            not isinstance(operation, _AwsSdkMethod)
-            or operation.access is not self
-            or operation.name
-            not in _ALLOWED_READ_OPERATIONS.get(operation.service, frozenset())
+            not operation_is_allowed
+            or (
+                self._allowed_operations is not None
+                and operation.name not in self._allowed_operations
+            )
         ):
             raise AwsSdkError("aws_operation_not_supported")
         async with self._run_lock:
@@ -89,6 +123,12 @@ class AwsRoleAccess:
                     run_id=self._run_id,
                     control=self._control,
                     request_budget=self._request_budget,
+                    capability_id=self._capability_id,
+                    allowed_operations=(
+                        tuple(sorted(self._allowed_operations))
+                        if self._allowed_operations is not None
+                        else None
+                    ),
                 )
                 old_context = self._sdk_context
                 self._sdk_context = replacement._sdk_context

@@ -30,4 +30,25 @@ describe('ResourceObservationCard', () => {
     await wrapper.get('[aria-label="Download retained S3 storage evidence"]').trigger('click')
     expect(wrapper.emitted('download')).toEqual([['artifact-1', 's3-bucket-storage.json']])
   })
+
+  it('shows retained bucket metadata without inventing a measurement time', async () => {
+    const wrapper = mount(ResourceObservationCard, {
+      props: {
+        observation: {
+          ...observation,
+          source: 'aws_s3_bucket_metadata',
+          measurement_at: null,
+          outcome: 'measured',
+          coverage: { versioning_status: 'suspended', mfa_delete_status: 'not_reported' },
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('AWS S3 bucket versioning metadata')
+    expect(wrapper.text()).toContain('Versioning: suspended')
+    expect(wrapper.text()).toContain('MFA Delete: not reported')
+    expect(wrapper.text()).toContain('Not reported')
+    await wrapper.get('[aria-label="Download retained S3 metadata evidence"]').trigger('click')
+    expect(wrapper.emitted('download')).toEqual([['artifact-1', 's3-bucket-metadata.json']])
+  })
 })

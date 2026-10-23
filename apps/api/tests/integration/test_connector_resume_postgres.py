@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import os
 import subprocess
 import sys
@@ -70,11 +71,12 @@ def postgres_sessions(tmp_path_factory):
         ).render_as_string(hide_password=False)
         api_root = Path(__file__).parents[2]
         ini = tmp_path_factory.mktemp("connector-resume") / "alembic.ini"
-        ini.write_text(
-            f"[alembic]\nscript_location = {api_root / 'alembic'}\n"
-            f"sqlalchemy.url = {scoped_url.replace('%', '%%')}\n",
-            encoding="utf-8",
-        )
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(api_root / "alembic.ini")
+        parser.set("alembic", "script_location", str(api_root / "alembic"))
+        parser.set("alembic", "sqlalchemy.url", scoped_url.replace("%", "%%"))
+        with ini.open("w", encoding="utf-8") as config_file:
+            parser.write(config_file)
         ini.chmod(0o600)
         try:
             upgraded = subprocess.run(

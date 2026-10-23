@@ -348,7 +348,7 @@ credentials and protocol-compatible transports until then.
 
 **Acceptance follow-up:** User testing exposed HTTP UUID validation, parent/binding insert order, premature check navigation, missing local AWS enablement and production transport URL handling. These fixes and their regression evidence are recorded in the [5A.2 qualification record](../../testing/phase5a2-aws-observation-qualification.md). User acceptance is distinct from the outstanding independent live comparison and PostgreSQL qualification items.
 
-**Gate:** 5A.2 acceptance is satisfied. On 2026-10-23 the user requested review of 5B against the accepted implementation and addition of managed tool discovery/enablement. The revised [5B implementation addendum](2026-10-23-phase5b-tool-availability-inventory-and-metadata.md) is prepared for review; 5B implementation has not started.
+**Gate:** 5A.2 acceptance is satisfied. On 2026-10-23 the user requested review of 5B against the accepted implementation and addition of managed tool discovery/enablement. The approved [5B implementation addendum](2026-10-23-phase5b-tool-availability-inventory-and-metadata.md) has been implemented as a candidate and its evidence is recorded in the [5B qualification report](../../testing/phase5b-tool-availability-and-reads-qualification.md). The full non-service API selector, independent live comparison and user acceptance remain open; Phase 5 is not complete.
 
 ### Task 15 — Gated 5B inventory and metadata handlers
 
@@ -356,22 +356,22 @@ credentials and protocol-compatible transports until then.
 
 **Tests:** `tests/tools/test_bound_inventory.py`, `test_s3_metadata.py`.
 
-- [ ] Register installed built-in tools automatically, expose operator enable/disable controls in Global Settings, derive availability from shared policy and project/Connector/target readiness, and retain `TOOL_ENABLED_IDS` only as an optional deployment restriction with an explicit upgrade path. Ordinary connector setup and policy changes must not require editing individual tool IDs or restarting services.
-- [ ] Implement `aws_s3_list_bound_buckets` from owned local bindings, with page size 20/max 50 and an explicit stored-inventory source label. It performs no AWS discovery and requires neither AWS credentials nor a live connection. Listing does not grant target-selection authority for cloud reads.
-- [ ] Implement `aws_s3_bucket_metadata` for one selected binding using location and versioning reads through the same broker/runner.
-- [ ] Add only the separately accepted bucket-scoped `s3:GetBucketVersioning` authority.
-- [ ] Use independent manifest digests and the common target, budget, observation and evidence contracts.
-- [ ] Preserve archived project/conversation history and resource bindings, retained non-secret Connector revisions, secret purging on revocation, one project search default, manual selection and eligible automatic alternate-provider retry.
-- [ ] Test foreign bindings/cursors, pagination bounds, missing resources, unsupported responses and inherited cancellation/revocation controls.
+- [x] Register installed built-in tools automatically, expose operator enable/disable controls in Global Settings, derive availability from shared policy and project/Connector/target readiness, and retain `TOOL_ENABLED_IDS` only as an optional deployment restriction with an explicit upgrade path. Ordinary connector setup and policy changes must not require editing individual tool IDs or restarting services.
+- [x] Implement `aws_s3_list_bound_buckets` from owned local bindings, with page size 20/max 50 and an explicit stored-inventory source label. It performs no AWS discovery and requires neither AWS credentials nor a live connection. Listing does not grant target-selection authority for cloud reads.
+- [x] Implement `aws_s3_bucket_metadata` for one selected binding using location and versioning reads through the same broker/runner.
+- [x] Add only the separately accepted bucket-scoped `s3:GetBucketVersioning` authority.
+- [x] Use independent manifest digests and the common target, budget, observation and evidence contracts.
+- [x] Preserve archived project/conversation history and resource bindings, retained non-secret Connector revisions, secret purging on revocation, one project search default, manual selection and eligible automatic alternate-provider retry.
+- [x] Test foreign bindings/cursors, pagination bounds, missing resources, unsupported responses and inherited cancellation/revocation controls.
 
 **Commit deliverable:** Bounded read expansion without another backend or credential abstraction.
 
 ### Task 16 — Qualify 5B and close Phase 5
 
-- [ ] Run PostgreSQL, synthetic-stack and browser scenarios for inventory/metadata.
+- [x] Run PostgreSQL, synthetic-stack and browser scenarios for inventory/metadata.
 - [ ] Perform separately opted-in live read comparison and record the additional IAM authority.
-- [ ] Verify that enabling 5B does not broaden the storage tool's declared operations or rewrite old admitted configuration/refs. Shared-code changes may change current manifest digests; old exact refs must remain executable as recorded or fail visibly as changed.
-- [ ] Verify shared tool-policy updates without process restarts, legacy allowlist cutover, operator-only controls and policy changes racing with dispatch/publication.
+- [x] Verify that enabling 5B does not broaden the storage tool's declared operations or rewrite old admitted configuration/refs. Shared-code changes may change current manifest digests; old exact refs must remain executable as recorded or fail visibly as changed.
+- [x] Verify shared tool-policy updates without process restarts, legacy allowlist cutover, operator-only controls and policy changes racing with dispatch/publication.
 - [ ] Update acceptance/runbook records and obtain accept/revise/stop.
 - [ ] Declare Phase 5 complete only when its delivered units are accepted; otherwise identify 5B as undelivered.
 

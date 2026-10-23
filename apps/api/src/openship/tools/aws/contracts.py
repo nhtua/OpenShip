@@ -126,6 +126,70 @@ class AwsStorageResult(AwsToolContract):
     artifact: ArtifactRef
 
 
+class AwsS3MetadataArguments(AwsToolContract):
+    resource_binding_id: UUID
+
+    @field_validator("resource_binding_id", mode="before")
+    @classmethod
+    def _parse_binding_id(cls, value):
+        if isinstance(value, UUID):
+            return value
+        if isinstance(value, str):
+            try:
+                return UUID(value)
+            except ValueError as exc:
+                raise ValueError("resource_binding_id must be a UUID") from exc
+        return value
+
+
+class AwsS3MetadataObservation(AwsToolContract):
+    schema_version: Literal[1] = 1
+    tool: CapabilityRef
+    operation_id: str = Field(min_length=1, max_length=64)
+    project_id: UUID
+    resource_id: UUID
+    resource_binding_id: UUID
+    binding_revision: StrictInt = Field(ge=1)
+    connector_id: UUID
+    connector_revision: StrictInt = Field(ge=1)
+    account_id: str = Field(pattern=r"^\d{12}$")
+    region: str = Field(min_length=1, max_length=64)
+    bucket_name: str = Field(min_length=3, max_length=63)
+    versioning_status: Literal["enabled", "suspended", "not_enabled"]
+    mfa_delete_status: Literal["enabled", "disabled", "not_reported"]
+    request_count: StrictInt = Field(ge=1, le=8)
+    retrieved_at: datetime
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def _retrieved_at_is_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("metadata retrieval timestamp must include a timezone")
+        return value
+
+
+class AwsS3MetadataResult(AwsToolContract):
+    operation_id: str = Field(min_length=1, max_length=64)
+    resource_id: UUID
+    resource_binding_id: UUID
+    binding_revision: StrictInt = Field(ge=1)
+    account_id: str = Field(pattern=r"^\d{12}$")
+    region: str = Field(min_length=1, max_length=64)
+    bucket_name: str = Field(min_length=3, max_length=63)
+    versioning_status: Literal["enabled", "suspended", "not_enabled"]
+    mfa_delete_status: Literal["enabled", "disabled", "not_reported"]
+    request_count: StrictInt = Field(ge=1, le=8)
+    retrieved_at: datetime
+    artifact: ArtifactRef
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def _retrieved_at_is_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("metadata retrieval timestamp must include a timezone")
+        return value
+
+
 class AwsToolError(RuntimeError):
     """Fixed safe failure from a maintained AWS tool."""
 
@@ -136,6 +200,7 @@ class AwsToolError(RuntimeError):
             "aws_region_mismatch",
             "aws_resource_unavailable",
             "aws_invalid_metric_response",
+            "aws_invalid_metadata_response",
             "aws_request_limit_exceeded",
             "aws_output_limit_exceeded",
             "aws_unavailable",

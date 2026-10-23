@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import configparser
 import json
 import os
 import subprocess
@@ -15,7 +16,8 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 from httpx import AsyncByteStream
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from src.openship.artifacts.filesystem import LocalArtifactStore
@@ -32,8 +34,10 @@ from src.openship.capabilities.contracts import (
     ToolCommandRequest,
     ToolInvocationContext,
     canonical_digest,
+    decode_execution_config,
 )
 from src.openship.capabilities.definitions import (
+    TOOL_HANDLER_OVERRIDES,
     ToolDefinitionEntry,
     get_tool_definition,
     implementation_digest_for,
@@ -65,7 +69,7 @@ from src.openship.resources.models import (
     ResourceObservation,
 )
 from src.openship.runs.models import Outbox, Run, RunJob
-from src.openship.runs.queue import Claim, reconcile_expired
+from src.openship.runs.queue import Claim, claim_next, reconcile_expired
 from src.openship.runs.service import submit_tool_run
 from src.openship.tools.aws.checks import validate_caller_identity
 from src.openship.tools.aws.contracts import (
@@ -103,47 +107,72 @@ class _BodyStream(AsyncByteStream):
     ]
 )
 def database_sessions(request, tmp_path):
-    if request.param == "sqlite":
-        url = f"sqlite:///{tmp_path / 'cloud-observation.db'}"
-    else:
-        url = os.environ.get("TEST_POSTGRES_URL")
-        if not url:
-            pytest.skip(
-                "no TEST_POSTGRES_URL; cloud observation PostgreSQL proof is opt-in"
-            )
-        api_root = Path(__file__).parents[2]
-        ini = tmp_path / "cloud-observation-alembic.ini"
-        ini.write_text(
-            f"[alembic]\nscript_location = {api_root / 'alembic'}\nsqlalchemy.url = {url.replace('%', '%%')}\n",
-            encoding="utf-8",
-        )
-        upgraded = subprocess.run(
-            [sys.executable, "-m", "alembic", "-c", str(ini), "upgrade", "head"],
-            cwd=api_root,
-            env={"PYTHONPATH": str(api_root / "src"), "ALEMBIC_CONFIG": str(ini)},
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-        assert upgraded.returncode == 0, upgraded.stderr
-    engine = create_engine(url, pool_size=6, max_overflow=4)
-    if engine.dialect.name == "sqlite":
-        event.listen(
-            engine,
-            "connect",
-            lambda connection, _record: connection.execute("PRAGMA foreign_keys=ON"),
-        )
-    Base.metadata.create_all(engine)
-    sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-    if engine.dialect.name == "sqlite":
-        with sessions() as db:
-            db.add(ToolPolicyState(id=1, revision=1))
-            db.commit()
+    engine = None
+    postgres_admin = None
+    postgres_schema = None
     try:
+        if request.param == "sqlite":
+            url = f"sqlite:///{tmp_path / 'cloud-observation.db'}"
+        else:
+            raw_url = os.environ.get("TEST_POSTGRES_URL")
+            if not raw_url:
+                pytest.skip(
+                    "no TEST_POSTGRES_URL; cloud observation PostgreSQL proof is opt-in"
+                )
+            base_url = make_url(raw_url)
+            postgres_schema = f"cloud_observation_{uuid.uuid4().hex}"
+            postgres_admin = create_engine(base_url, pool_pre_ping=True)
+            with postgres_admin.begin() as connection:
+                connection.execute(text(f'CREATE SCHEMA "{postgres_schema}"'))
+            query = dict(base_url.query)
+            query["options"] = f"-csearch_path={postgres_schema}"
+            url = base_url.set(query=query).render_as_string(hide_password=False)
+
+            api_root = Path(__file__).parents[2]
+            ini = tmp_path / "cloud-observation-alembic.ini"
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read(api_root / "alembic.ini")
+            parser.set("alembic", "script_location", str(api_root / "alembic"))
+            parser.set("alembic", "sqlalchemy.url", url.replace("%", "%%"))
+            with ini.open("w", encoding="utf-8") as config_file:
+                parser.write(config_file)
+            upgraded = subprocess.run(
+                [sys.executable, "-m", "alembic", "-c", str(ini), "upgrade", "head"],
+                cwd=api_root,
+                env={
+                    "PYTHONPATH": str(api_root / "src"),
+                    "ALEMBIC_CONFIG": str(ini),
+                },
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            assert upgraded.returncode == 0, upgraded.stderr
+
+        engine = create_engine(url, pool_size=6, max_overflow=4)
+        if engine.dialect.name == "sqlite":
+            event.listen(
+                engine,
+                "connect",
+                lambda connection, _record: connection.execute("PRAGMA foreign_keys=ON"),
+            )
+        Base.metadata.create_all(engine)
+        sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+        if engine.dialect.name == "sqlite":
+            with sessions() as db:
+                db.add(ToolPolicyState(id=1, revision=1))
+                db.commit()
         yield sessions
     finally:
-        engine.dispose()
+        if engine is not None:
+            engine.dispose()
+        if postgres_admin is not None and postgres_schema is not None:
+            with postgres_admin.begin() as connection:
+                connection.execute(
+                    text(f'DROP SCHEMA IF EXISTS "{postgres_schema}" CASCADE')
+                )
+            postgres_admin.dispose()
 
 
 def _configure_test_keys(monkeypatch, tmp_path):
@@ -421,9 +450,14 @@ def _synthetic_transport(requests, *, on_request=None):
             )
         if request.url.host.startswith("s3."):
             assert request.method == "GET"
-            assert "location" in request.url.query.decode()
             assert request.headers["x-amz-expected-bucket-owner"] == ACCOUNT_ID
-            body = b'<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>'
+            query = request.url.query.decode()
+            if "location" in query:
+                body = b'<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>'
+            elif "versioning" in query:
+                body = b'<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status><MfaDelete>Disabled</MfaDelete></VersioningConfiguration>'
+            else:
+                raise AssertionError(f"unexpected S3 request path: {request.url.path}?{query}")
             return httpx.Response(
                 200,
                 headers={"content-type": "application/xml"},
@@ -770,6 +804,263 @@ async def test_synthetic_botocore_storage_observation_publishes_atomically(
 
     assert len(STORAGE_TYPES_V1) == 22
     assert storage_manifest.outputs[0].name == "s3-bucket-storage.json"
+
+
+@pytest.mark.parametrize(
+    "publication_change",
+    [
+        None,
+        "connector_revoked",
+        "binding_retired",
+        "policy_disabled_before_dispatch",
+        "policy_disabled_after_read",
+    ],
+    ids=[
+        "success",
+        "revoked-connector",
+        "retired-binding",
+        "disabled-before-dispatch",
+        "disabled-after-read",
+    ],
+)
+@pytest.mark.asyncio
+async def test_synthetic_botocore_metadata_observation_publishes_atomically(
+    database_sessions, monkeypatch, tmp_path, publication_change
+):
+    _configure_test_keys(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        settings,
+        "tool_enabled_ids",
+        "aws_check_connection,aws_s3_bucket_storage,aws_s3_bucket_metadata",
+    )
+    requests = []
+    transport_factory = _synthetic_transport(requests)
+    with database_sessions() as db:
+        user, project, conversation, connector, _credential, binding = _insert_aws_scope(
+            db
+        )
+        manifest = next(
+            item
+            for item in list_capability_manifests()
+            if item.id == "aws_s3_bucket_metadata"
+        )
+        metadata_ref = CapabilityRef(
+            id=manifest.id,
+            version=manifest.version,
+            manifest_digest=manifest.manifest_digest,
+        )
+        run = submit_tool_run(
+            db,
+            user.id,
+            conversation.id,
+            ToolCommandRequest(
+                client_request_id=uuid.uuid4(),
+                capability=metadata_ref,
+                arguments={"resource_binding_id": str(binding.id)},
+            ),
+        )
+        db.commit()
+        execution = decode_execution_config(run.execution_configuration)
+        assert execution.selected_resource_binding_refs == execution.resource_binding_refs
+        assert len(execution.selected_resource_binding_refs) == 1
+        claim = claim_next(db, worker_id="metadata-publication-worker")
+        assert claim is not None
+        context = ToolInvocationContext(
+            authorization=AuthorizationContext(
+                principal_id=user.id,
+                project_id=project.id,
+                conversation_id=conversation.id,
+                action="execute_tool",
+                target_id=str(run.id),
+            ),
+            execution=execution,
+            credential_resolver=lambda _name: None,
+            session_factory=database_sessions,
+        )
+        artifact_root = tmp_path / "s3-metadata-artifacts"
+        artifact_storage_id = uuid.uuid4()
+        context.artifact_store = LocalArtifactStore(artifact_root, artifact_storage_id)
+        context.artifact_store.initialize()
+        run_id = run.id
+        conversation_id = conversation.id
+        operation_session = database_sessions
+
+        if publication_change in {
+            "connector_revoked",
+            "binding_retired",
+            "policy_disabled_after_read",
+        }:
+            from src.openship.capabilities.definitions import get_tool_definition
+
+            original_handler = get_tool_definition(manifest).handler
+
+            async def change_scope_after_read(arguments, invocation, control):
+                observation = await original_handler(arguments, invocation, control)
+                with database_sessions() as mutation_db:
+                    if publication_change == "connector_revoked":
+                        row = mutation_db.query(Connector).filter_by(id=connector.id).one()
+                        row.revoked_at = datetime.now(UTC)
+                    elif publication_change == "binding_retired":
+                        row = mutation_db.query(ResourceBinding).filter_by(id=binding.id).one()
+                        row.state = "retired"
+                        row.retired_at = datetime.now(UTC)
+                    else:
+                        from src.openship.capabilities.policy import set_tool_policy
+
+                        monkeypatch.setattr(
+                            settings, "connector_operator_user_id", user.id
+                        )
+                        set_tool_policy(
+                            mutation_db,
+                            actor=mutation_db.get(User, user.id),
+                            capability_id=manifest.id,
+                            enabled=False,
+                            expected_revision=1,
+                        )
+                    mutation_db.commit()
+                return observation
+
+            monkeypatch.setitem(
+                TOOL_HANDLER_OVERRIDES,
+                "aws_s3_bucket_metadata",
+                change_scope_after_read,
+            )
+
+    if publication_change == "policy_disabled_before_dispatch":
+        from src.openship.capabilities.policy import set_tool_policy
+
+        monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
+        gateway = ToolGateway(operation_session)
+        _operation_id, admission_status = gateway._admit(
+            claim,
+            context,
+            "manual:metadata",
+            metadata_ref,
+            {"resource_binding_id": str(binding.id)},
+            (),
+        )
+        assert admission_status == "admitted"
+        with database_sessions() as mutation_db:
+            set_tool_policy(
+                mutation_db,
+                actor=mutation_db.get(User, user.id),
+                capability_id=manifest.id,
+                enabled=False,
+                expected_revision=1,
+            )
+            mutation_db.commit()
+
+    import src.openship.execution.gateway as gateway_module
+
+    monkeypatch.setattr(
+        gateway_module,
+        "AwsRoleBroker",
+        lambda factory: AwsRoleBroker(factory, transport_factory=transport_factory),
+    )
+    result = await ToolGateway(operation_session).execute_tool(
+        claim=claim,
+        context=context,
+        logical_call_id="manual:metadata",
+        ref=metadata_ref,
+        arguments={"resource_binding_id": str(binding.id)},
+        control=InvocationControl(),
+    )
+
+    expected_requests = 0 if publication_change == "policy_disabled_before_dispatch" else 5
+    assert len(requests) == expected_requests  # role, identity, location and versioning
+    s3_requests = [request for request in requests if request.url.host.startswith("s3.")]
+    if expected_requests:
+        assert [request.url.query.decode() for request in s3_requests] == [
+            "location",
+            "versioning",
+        ]
+        assert all(
+            request.headers["x-amz-expected-bucket-owner"] == ACCOUNT_ID
+            for request in s3_requests
+        )
+    else:
+        assert s3_requests == []
+
+    if publication_change is None:
+        assert result.status == "succeeded"
+        assert result.result["versioning_status"] == "enabled"
+        assert result.result["mfa_delete_status"] == "disabled"
+        assert result.result["request_count"] == 5
+        assert result.result["artifact"]["id"] == str(result.artifacts[0].id)
+    else:
+        assert result.status == "failed"
+        assert result.error.code == (
+            "connector_revoked"
+            if publication_change == "connector_revoked"
+            else "changed"
+            if publication_change == "binding_retired"
+            else "disabled"
+        )
+        assert not result.artifacts
+
+    with operation_session() as db:
+        operation = db.query(ToolOperation).filter_by(run_id=run_id).one()
+        attempt = (
+            db.query(ToolAttempt).filter_by(operation_id=operation.id).one_or_none()
+        )
+        observation = db.query(ResourceObservation).filter_by(operation_id=operation.id).one_or_none()
+        events = [
+            item.type
+            for item in db.query(Event)
+            .filter(Event.run_id == run_id)
+            .order_by(Event.sequence)
+            .all()
+        ]
+        outbox_types = [
+            item.type
+            for item in db.query(Outbox)
+            .filter(Outbox.conversation_id == conversation_id)
+            .all()
+        ]
+        if publication_change is None:
+            artifact = db.query(Artifact).filter_by(id=result.artifacts[0].id).one()
+            assert operation.status == "succeeded"
+            assert attempt.outcome == "succeeded"
+            assert artifact.kind == "cloud_observation"
+            assert artifact.display_name == "s3-bucket-metadata.json"
+            assert observation.source == "aws_s3_bucket_metadata"
+            assert observation.measurement_at is None
+            assert observation.outcome == "measured"
+            assert json.loads(observation.coverage_json) == {
+                "versioning_status": "enabled",
+                "mfa_delete_status": "disabled",
+                "request_count": 5,
+            }
+            assert observation.evidence_artifact_id == artifact.id
+            assert observation.evidence_sha256 == artifact.sha256
+            assert "resource.observed" in events
+            assert "resource.observed" in outbox_types
+            restarted_store = LocalArtifactStore(artifact_root, artifact_storage_id)
+            restarted_store.initialize()
+            with restarted_store.open_verified(artifact) as evidence_file:
+                evidence = json.load(evidence_file)
+            assert evidence["versioning_status"] == "enabled"
+            assert evidence["mfa_delete_status"] == "disabled"
+            assert "raw_response" not in evidence
+            assert "session_token" not in json.dumps(evidence)
+        else:
+            assert operation.status == "failed"
+            if publication_change == "policy_disabled_before_dispatch":
+                assert attempt is None
+            else:
+                assert attempt is not None
+                assert attempt.outcome == "failed"
+            assert observation is None
+            assert "resource.observed" not in events
+            assert "resource.observed" not in outbox_types
+            artifact = db.query(Artifact).filter_by(
+                originating_operation_id=operation.id
+            ).one_or_none()
+            if publication_change == "policy_disabled_before_dispatch":
+                assert artifact is None
+            else:
+                assert artifact is not None
+                assert artifact.status == "deleted"
 
 
 @pytest.mark.asyncio

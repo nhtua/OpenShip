@@ -75,7 +75,7 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
     db.commit()
 
     rows = db.query(ToolAvailability).all()
-    assert len(rows) == 7
+    assert len(rows) == 8
     assert all(row.worker_id == "availability-worker" for row in rows)
     assert all(not hasattr(row, "credential_binding_ref") for row in rows)
     fresh = read_tool_availability(db, now=now)
@@ -87,6 +87,7 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
         "aws_check_connection": (False, "disabled"),
         "aws_s3_bucket_storage": (False, "disabled"),
         "aws_s3_list_bound_buckets": (False, "disabled"),
+        "aws_s3_bucket_metadata": (False, "disabled"),
     }
     expired = read_tool_availability(db, now=now + timedelta(seconds=31))
     assert expired == {
@@ -97,5 +98,6 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
         "aws_check_connection": (False, "runtime_unavailable"),
         "aws_s3_bucket_storage": (False, "runtime_unavailable"),
         "aws_s3_list_bound_buckets": (False, "runtime_unavailable"),
+        "aws_s3_bucket_metadata": (False, "runtime_unavailable"),
     }
     db.close()

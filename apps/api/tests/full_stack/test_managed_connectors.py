@@ -292,7 +292,7 @@ def _run_browser_qualification(
         pytest.fail(f"real-stack connector browser qualification failed:\n{output[-8000:]}")
     summary = re.search(r"(?m)^\s*(\d+) passed(?:\s+\([^)]+\))?\s*$", output)
     skipped = re.search(r"(?m)^\s*(\d+) skipped(?:\s+\([^)]+\))?\s*$", output)
-    expected = 1 if test_filter else 3
+    expected = 1 if test_filter else 4
     assert summary is not None, "Playwright browser result did not report a passing test count"
     assert int(summary.group(1)) == expected, "Playwright browser lane ran an unexpected test count"
     assert skipped is None or int(skipped.group(1)) == 0, "Playwright browser lane skipped a required test"
@@ -446,7 +446,11 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
         "DATABASE_URL": database_url,
         "JWT_SECRET": "phase5-managed-full-stack-test-signing-key",
         "JWT_EXPIRY_HOURS": "24",
-        "TOOL_ENABLED_IDS": "brave_web_search,tavily_web_search",
+        "TOOL_ENABLED_IDS": (
+            "brave_web_search,tavily_web_search,workspace_list_files,workspace_read_file,"
+            "aws_check_connection,aws_s3_bucket_storage,aws_s3_bucket_metadata,"
+            "aws_s3_list_bound_buckets"
+        ),
         "CONNECTOR_INSTALLATION_ID": installation_id,
         "CONNECTOR_ENCRYPTION_KEY_FILE": str(encryption_path),
         "CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE": str(hmac_path),
@@ -941,9 +945,9 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
         assert revoked_run["status"] == "failed"
         revoked_operation = revoked_run["operations"][0]
         assert revoked_operation["status"] == "failed"
-        # Revoke hard-deletes the setup, so a pinned reference is now outside
-        # the project's visible connector scope when the worker rechecks it.
-        assert revoked_operation["error_code"] == "connector_scope_denied"
+        # Revocation keeps the historical Connector identity but makes it
+        # unavailable before publication, with a fixed revoked outcome.
+        assert revoked_operation["error_code"] == "connector_revoked"
         assert revoked_operation["result"] is None
         assert revoked_operation["artifacts"] == []
         calls_before_revoked_retry = len(_read_calls(call_log))
@@ -957,7 +961,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
             connector_id=global_brave["id"],
         )
         assert retry_status == 422
-        assert retry["error"]["code"] == "connector_scope_denied"
+        assert retry["error"]["code"] == "connector_revoked"
         time.sleep(0.2)
         assert len(_read_calls(call_log)) == calls_before_revoked_retry
 

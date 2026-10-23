@@ -92,7 +92,7 @@ def _available_tools(
             ) from None
         if not definition.model_selectable:
             continue
-        if manifest.id == "aws_s3_bucket_storage" and not getattr(
+        if manifest.id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"} and not getattr(
             execution, "selected_resource_binding_refs", ()
         ):
             continue

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import {
   E2E_CONVERSATIONS,
+  E2E_PROFILES,
   clearApiRoutes,
   mockApi,
   mockDurableApi,
@@ -28,6 +29,35 @@ async function openConnectorCreation(page: Page, name: string): Promise<void> {
   await page.locator(`[data-kind="${kind}"][data-visibility="global"] button`).first().click()
   await page.getByRole('dialog').getByRole('button', { name: `Add another ${name}` }).click()
 }
+
+test('installation operator changes built-in tool availability without a restart', async ({ page, request }) => {
+  const { token } = requireOperatorSetup()
+  const headers = { Authorization: `Bearer ${token}` }
+  await page.addInitScript((accessToken: string) => localStorage.setItem('access_token', accessToken), token)
+  await page.goto('/settings/global')
+  await expect(page.getByRole('heading', { name: 'Built-in tool availability' })).toBeVisible()
+
+  const metadataToggle = page.getByTestId('tool-policy-toggle-aws_s3_bucket_metadata')
+  await expect(metadataToggle).toBeChecked()
+  await metadataToggle.uncheck()
+  await expect(metadataToggle).not.toBeChecked()
+  await expect(metadataToggle).toBeEnabled()
+  await expect(metadataToggle).not.toBeChecked()
+
+  const disabledResponse = await request.get('/api/global-tool-policy', { headers })
+  expect(disabledResponse.status()).toBe(200)
+  const disabledPolicy = await disabledResponse.json() as { tools: Array<{ id: string; enabled: boolean }> }
+  expect(disabledPolicy.tools.find((tool) => tool.id === 'aws_s3_bucket_metadata')?.enabled).toBe(false)
+
+  await metadataToggle.check()
+  await expect(metadataToggle).toBeChecked()
+  await expect(metadataToggle).toBeEnabled()
+  await expect(metadataToggle).toBeChecked()
+  const enabledResponse = await request.get('/api/global-tool-policy', { headers })
+  expect(enabledResponse.status()).toBe(200)
+  const enabledPolicy = await enabledResponse.json() as { tools: Array<{ id: string; enabled: boolean }> }
+  expect(enabledPolicy.tools.find((tool) => tool.id === 'aws_s3_bucket_metadata')?.enabled).toBe(true)
+})
 
 test('operator configures shared search and chooses project defaults independently', async ({ page, request }) => {
   const { token, projectId } = requireOperatorSetup()
@@ -67,7 +97,7 @@ test('operator configures shared search and chooses project defaults independent
   })
 
   await page.goto('/connectors')
-  await expect(page.getByRole('heading', { name: 'Search connectors', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Global search connectors', exact: true })).toBeVisible()
 
   await openConnectorCreation(page, 'Brave Search')
   let dialog = page.getByRole('dialog')
@@ -315,22 +345,52 @@ test('AWS project setup binds an S3 bucket and sends only the selected target to
     input_schema: {}, output_schema: {}, effect: 'read_only_external' as const,
     enabled: true, available: true, unavailable_reason: null,
   }
+  const metadataCapability = {
+    ...storageCapability,
+    id: 'aws_s3_bucket_metadata', manifest_digest: 'd'.repeat(64),
+  }
+  const inventoryCapability = {
+    ...storageCapability,
+    id: 'aws_s3_list_bound_buckets', manifest_digest: 'e'.repeat(64),
+    effect: 'read_only_local' as const,
+  }
+  const toolProfiles = {
+    ...E2E_PROFILES,
+    profiles: E2E_PROFILES.profiles.map((profile) => profile.profile_id === 'primary-model'
+      ? { ...profile, capabilities: { tool_calls: true, parallel_tool_calls: false } }
+      : profile),
+  }
   const queued = await mockDurableApi(page, {
-    capabilities: [storageCapability],
+    capabilities: [storageCapability, metadataCapability, inventoryCapability],
+    profiles: toolProfiles,
     submittedToolRun: {
-      id: 'run-s3-observation', conversation_id: 'c1', status: 'queued', created_at: '', attempt: 0,
+      id: 'run-s3-observation', conversation_id: 'c1', status: 'completed', created_at: '', attempt: 0,
       kind: 'tool', graph_version: 2, model: null, usage: null, error: null, provider_attempts: [],
     },
   })
   await page.route(`**/api/projects/${projectId}/capabilities`, (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify([{
-      ...storageCapability,
-      permitted: true,
-      required_connector_kinds: ['aws'],
-      connector_readiness: { aws: 'ready' },
-    }]),
+    body: JSON.stringify([
+      {
+        ...storageCapability,
+        permitted: true,
+        required_connector_kinds: ['aws'],
+        connector_readiness: { aws: 'ready' },
+      },
+      {
+        ...metadataCapability,
+        permitted: true,
+        required_connector_kinds: ['aws'],
+        connector_readiness: { aws: 'ready' },
+      },
+      {
+        ...inventoryCapability,
+        permitted: true,
+        required_connector_kinds: [],
+        connector_readiness: {},
+      },
+    ]),
   }))
 
   await page.goto('/connectors')
@@ -375,4 +435,25 @@ test('AWS project setup binds an S3 bucket and sends only the selected target to
   await expect.poll(() => queued.submittedTools.length).toBe(1)
   expect(queued.submittedTools[0].payload.capability.id).toBe('aws_s3_bucket_storage')
   expect(queued.submittedTools[0].payload.arguments).toEqual({ resource_binding_id: 'binding-1' })
+
+  await page.getByRole('button', { name: 'Add tool' }).click()
+  await page.getByTestId('tool-choice').filter({ hasText: 'S3 bucket metadata' }).click()
+  await page.getByLabel('AWS resource binding').selectOption('binding-1')
+  await page.getByRole('button', { name: 'Inspect', exact: true }).click()
+  await expect.poll(() => queued.submittedTools.length).toBe(2)
+  expect(queued.submittedTools[1].payload.capability.id).toBe('aws_s3_bucket_metadata')
+  expect(queued.submittedTools[1].payload.arguments).toEqual({ resource_binding_id: 'binding-1' })
+
+  await page.getByLabel('S3 buckets available to tools').selectOption('binding-1')
+  await page.getByRole('button', { name: 'Add tool' }).click()
+  const automaticTools = page.getByTestId('automatic-tool-mode')
+  await expect(automaticTools).toBeEnabled()
+  await expect(automaticTools).toHaveAttribute('aria-checked', 'true')
+  await page.getByLabel('Message').fill('List the S3 buckets already bound to this project.')
+  await page.getByRole('button', { name: 'Send' }).click()
+  await expect.poll(() => queued.submitted.length).toBe(1)
+  expect(queued.submitted[0].payload).toMatchObject({
+    enable_tools: true,
+    resource_binding_selections: ['binding-1'],
+  })
 })

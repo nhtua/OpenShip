@@ -22,6 +22,8 @@ from src.openship.tools.aws.bound_inventory import (
 from src.openship.tools.aws.contracts import (
     AwsCheckArguments,
     AwsCheckResult,
+    AwsS3MetadataArguments,
+    AwsS3MetadataResult,
     AwsStorageArguments,
     AwsStorageResult,
 )
@@ -91,6 +93,24 @@ _BOUND_INVENTORY_SOURCE_FILES = (
     "workspace/lifecycle.py",
     "workspace/models.py",
     "workspace/projects.py",
+)
+_S3_METADATA_SOURCE_FILES = (
+    "capabilities/catalog.py",
+    "capabilities/contracts.py",
+    "capabilities/definitions.py",
+    "connectors/aws/broker.py",
+    "connectors/aws/clients.py",
+    "execution/aws_sdk.py",
+    "execution/aws_transport.py",
+    "execution/gateway.py",
+    "execution/publication.py",
+    "resources/models.py",
+    "runs/service.py",
+    "runs/agent_graph.py",
+    "tools/aws/checks.py",
+    "tools/aws/contracts.py",
+    "tools/aws/s3_metadata.py",
+    "tools/aws/s3_storage.py",
 )
 
 # These exact v1 manifests were admitted before managed Connectors. Keep them
@@ -285,6 +305,59 @@ def _bound_inventory_manifest() -> CapabilityManifestV2:
     return CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
 
 
+def _s3_metadata_implementation_digest() -> str:
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for relative in _S3_METADATA_SOURCE_FILES:
+        path = root / relative
+        name = relative.encode("utf-8")
+        body = path.read_bytes()
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(len(body).to_bytes(8, "big"))
+        digest.update(body)
+    return digest.hexdigest()
+
+
+def _s3_metadata_manifest() -> CapabilityManifestV2:
+    description = (
+        "Read the versioning and MFA Delete states for one explicitly bound S3 bucket. "
+        "The normalized observation is retained as immutable evidence."
+    )
+    fields = {
+        "schema_version": 2,
+        "id": "aws_s3_bucket_metadata",
+        "version": "1.0.0",
+        "implementation_digest": _s3_metadata_implementation_digest(),
+        "description": description,
+        "input_schema": AwsS3MetadataArguments.model_json_schema(),
+        "output_schema": AwsS3MetadataResult.model_json_schema(),
+        "effect": "read_only_external",
+        "enablement_requirements": ("operator_enabled", "connector_configured"),
+        "limits": {
+            "timeout_seconds": 30,
+            "max_requests": 8,
+            "max_http_response_bytes": 2 * 1024 * 1024,
+            "max_observation_bytes": 64 * 1024,
+            "max_model_result_bytes": 16 * 1024,
+        },
+        "outputs": (
+            OutputPolicy(name="s3-bucket-metadata.json", mutability="immutable").model_dump(
+                mode="json"
+            ),
+        ),
+        "connector_kinds": ("aws",),
+        "operations": (
+            "get_caller_identity",
+            "get_bucket_location",
+            "get_bucket_versioning",
+        ),
+        "target_kinds": ("aws_s3_bucket",),
+        "execution_kind": "maintained",
+    }
+    return CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
+
+
 def _aws_manifests():
     implementation_digest = _aws_implementation_digest()
     declarations = (
@@ -409,6 +482,7 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
         *_workspace_manifests(),
         *_aws_manifests(),
         _bound_inventory_manifest(),
+        _s3_metadata_manifest(),
     )
     registered = tuple(entry.manifest for entry in registered_tool_definitions())
     return (*builtins, *registered)

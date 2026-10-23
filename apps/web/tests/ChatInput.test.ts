@@ -40,6 +40,12 @@ const awsStorage: CapabilitySummary = {
   connector_readiness: { aws: 'ready' },
 }
 
+const awsMetadata: CapabilitySummary = {
+  ...awsStorage,
+  id: 'aws_s3_bucket_metadata',
+  manifest_digest: 'e'.repeat(64),
+}
+
 const resourceBinding = {
   resource_id: 'resource-1', uri: 'aws:s3://example-bucket', display_name: 'Example bucket',
   environment_id: 'environment-1', environment_name: 'production', binding_id: 'binding-1',
@@ -532,6 +538,35 @@ describe('ChatInput', () => {
     wrapper.unmount()
   })
 
+  it('attaches bucket metadata to a selected binding without a message field', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: modelProfileCatalog.profiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [awsMetadata],
+        resourceBindings: [resourceBinding],
+      },
+    })
+
+    await wrapper.get('[aria-label="Add tool"]').trigger('click')
+    const metadataChoice = wrapper.findAll('[data-testid="tool-choice"]')
+      .find((item) => item.text().includes('S3 bucket metadata'))!
+    await metadataChoice.trigger('click')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="AWS resource binding"]').exists()).toBe(true)
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('search')?.[0]?.[0]).toMatchObject({
+      capability: { id: 'aws_s3_bucket_metadata', version: '1.0.0' },
+      arguments: { resource_binding_id: 'binding-1' },
+    })
+    wrapper.unmount()
+  })
+
   it('includes explicitly selected bucket bindings in automatic tool turns', async () => {
     const wrapper = mount(ChatInput, {
       props: {
@@ -553,6 +588,35 @@ describe('ChatInput', () => {
 
     expect(wrapper.emitted('send')?.[0]).toEqual([
       'What is the storage usage?',
+      { enableTools: true, resourceBindingSelections: ['binding-1'] },
+    ])
+    wrapper.unmount()
+  })
+
+  it('makes metadata available to automatic mode only after selecting a bucket', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [awsMetadata],
+        resourceBindings: [resourceBinding],
+      },
+    })
+
+    await wrapper.get('[aria-label="Add tool"]').trigger('click')
+    expect(wrapper.get('[data-testid="automatic-tool-mode"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="tool-menu"]').trigger('keydown', { key: 'Escape' })
+    await wrapper.get('[data-testid="resource-binding-selection"]').setValue(['binding-1'])
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
+    await wrapper.get('textarea').setValue('Check this bucket versioning configuration.')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('send')?.[0]).toEqual([
+      'Check this bucket versioning configuration.',
       { enableTools: true, resourceBindingSelections: ['binding-1'] },
     ])
     wrapper.unmount()

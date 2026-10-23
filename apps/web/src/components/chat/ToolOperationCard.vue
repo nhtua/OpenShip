@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { Badge, Button } from '@/components/ui'
 import type { SearchResultItem, ToolOperationSummary } from '@/types'
 import S3StorageObservation from './S3StorageObservation.vue'
+import S3MetadataObservation from './S3MetadataObservation.vue'
 import AwsConnectionCheck from './AwsConnectionCheck.vue'
 
 const props = defineProps<{ operation: ToolOperationSummary }>()
@@ -15,12 +16,14 @@ const emit = defineEmits<{
 const expanded = ref(false)
 const fullSnippets = ref(false)
 const isStorageObservation = computed(() => props.operation.capability_id === 'aws_s3_bucket_storage')
+const isMetadataObservation = computed(() => props.operation.capability_id === 'aws_s3_bucket_metadata')
 const isConnectionCheck = computed(() => props.operation.capability_id === 'aws_check_connection')
 
 function toolLabel(id: string): string {
   if (id === 'brave_web_search') return 'Brave Search'
   if (id === 'tavily_web_search') return 'Tavily Search'
   if (id === 'aws_s3_bucket_storage') return 'S3 bucket storage'
+  if (id === 'aws_s3_bucket_metadata') return 'S3 bucket metadata'
   if (id === 'aws_check_connection') return 'AWS connection check'
   return id
 }
@@ -47,6 +50,7 @@ const canCancel = computed(() =>
   ['admitted', 'dispatching', 'running'].includes(props.operation.status),
 )
 const summary = computed(() => {
+  if (isMetadataObservation.value) return props.operation.result?.bucket_name ?? 'S3 bucket metadata'
   if (isStorageObservation.value) {
     return props.operation.result?.bucket_name ?? 'CloudWatch storage measurement'
   }
@@ -55,7 +59,9 @@ const summary = computed(() => {
   return text
 })
 const toggleLabel = computed(() =>
-  `${expanded.value ? 'Hide' : 'Show'} results for ${query.value || 'this search'}`,
+  isMetadataObservation.value
+    ? `${expanded.value ? 'Hide' : 'Show'} details for ${summary.value}`
+    : `${expanded.value ? 'Hide' : 'Show'} results for ${query.value || 'this search'}`,
 )
 
 const observedAt = computed(() => {
@@ -64,7 +70,7 @@ const observedAt = computed(() => {
   const date = new Date(value)
   return Number.isNaN(date.valueOf())
     ? ''
-    : `Searched ${date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+    : `${isMetadataObservation.value ? 'Retrieved' : 'Searched'} ${date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
 })
 
 function safeHref(value: string): string | null {
@@ -111,7 +117,7 @@ function toggleSnippets() {
           <span aria-hidden="true" class="shrink-0 text-muted-foreground">·</span>
           <span class="min-w-0 flex-1 truncate">{{ summary }}</span>
         </span>
-        <span v-if="operation.status === 'succeeded' && !isStorageObservation && !isConnectionCheck" class="shrink-0 text-xs text-muted-foreground">
+        <span v-if="operation.status === 'succeeded' && !isStorageObservation && !isMetadataObservation && !isConnectionCheck" class="shrink-0 text-xs text-muted-foreground">
           {{ results.length }} {{ results.length === 1 ? 'result' : 'results' }}
         </span>
         <Badge :variant="statusVariant" data-testid="operation-status" class="h-5 shrink-0 text-[10px]">
@@ -162,21 +168,27 @@ function toggleSnippets() {
         :artifacts="operation.artifacts"
         @download="(artifactId, name) => emit('download', artifactId, name)"
       />
+      <S3MetadataObservation
+        v-else-if="isMetadataObservation && operation.status === 'succeeded' && operation.result"
+        :result="operation.result"
+        :artifacts="operation.artifacts"
+        @download="(artifactId, name) => emit('download', artifactId, name)"
+      />
       <AwsConnectionCheck
         v-else-if="isConnectionCheck && operation.status === 'succeeded' && operation.result"
         :result="operation.result"
       />
 
-      <p v-else-if="!isStorageObservation && !isConnectionCheck && !query" class="mb-3 text-xs text-muted-foreground">
+      <p v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && !query" class="mb-3 text-xs text-muted-foreground">
         The search query is not available in this saved history.
       </p>
       <p
-        v-else-if="!isStorageObservation && !isConnectionCheck && operation.status === 'succeeded' && results.length === 0"
+        v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && operation.status === 'succeeded' && results.length === 0"
         class="py-2 text-sm text-muted-foreground"
       >
         No results returned.
       </p>
-      <ol v-else-if="!isStorageObservation && !isConnectionCheck && operation.status === 'succeeded'" class="space-y-3">
+      <ol v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && operation.status === 'succeeded'" class="space-y-3">
         <li v-for="item in results" :key="`${item.rank}-${item.url}`" class="min-w-0">
           <a
             v-if="safeHref(item.url)"
@@ -213,7 +225,7 @@ function toggleSnippets() {
           {{ fullSnippets ? 'Show shorter snippets' : 'Show full snippets' }}
         </Button>
         <div
-          v-if="!isStorageObservation"
+          v-if="!isStorageObservation && !isMetadataObservation"
           v-for="artifact in operation.artifacts.filter((item) => item.status === 'ready')"
           :key="artifact.id"
           class="flex min-w-0 items-center gap-2"

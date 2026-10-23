@@ -186,6 +186,8 @@ class AwsRoleBroker:
         run_id: uuid.UUID,
         control: InvocationControl,
         request_budget: AwsRequestBudget | None = None,
+        capability_id: str | None = None,
+        allowed_operations: tuple[str, ...] | None = None,
     ) -> AwsRoleAccess:
         if not isinstance(run_id, uuid.UUID):
             raise AwsBrokerError("aws_configuration_error")
@@ -228,6 +230,8 @@ class AwsRoleBroker:
                 configuration=binding.configuration,
                 session=session,
                 sdk_context=context,
+                capability_id=capability_id,
+                allowed_operations=allowed_operations,
             )
 
         assert future is not None
@@ -249,6 +253,8 @@ class AwsRoleBroker:
                 configuration=binding.configuration,
                 session=session,
                 sdk_context=context,
+                capability_id=capability_id,
+                allowed_operations=allowed_operations,
             )
 
         try:
@@ -295,6 +301,8 @@ class AwsRoleBroker:
                 configuration=full_binding.configuration,
                 session=session,
                 sdk_context=context,
+                capability_id=capability_id,
+                allowed_operations=allowed_operations,
             )
         except asyncio.CancelledError:
             failure = AwsBrokerError("aws_cancelled")

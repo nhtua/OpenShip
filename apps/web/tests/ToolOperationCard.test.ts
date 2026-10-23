@@ -148,4 +148,42 @@ describe('ToolOperationCard', () => {
     await wrapper.get('button[aria-label="Show results for this search"]').trigger('click')
     expect(wrapper.text()).toContain('The search query is not available in this saved history.')
   })
+
+  it('shows a compact metadata result and offers its exact retained evidence', async () => {
+    const wrapper = mount(ToolOperationCard, {
+      props: {
+        operation: operation({
+          capability_id: 'aws_s3_bucket_metadata',
+          query: null,
+          result: {
+            resource_id: 'resource-1',
+            resource_binding_id: 'binding-1',
+            binding_revision: 2,
+            account_id: '123456789012',
+            region: 'us-east-1',
+            bucket_name: 'example-bucket',
+            versioning_status: 'enabled',
+            mfa_delete_status: 'not_reported',
+            retrieved_at: '2026-10-23T12:00:00Z',
+            artifact: { id: 'metadata-artifact', sha256: 'c'.repeat(64), size_bytes: 256, media_type: 'application/json' },
+          },
+          artifacts: [{
+            id: 'metadata-artifact', sha256: 'c'.repeat(64), size_bytes: 256,
+            media_type: 'application/json', conversation_id: 'conversation-1',
+            project_id: 'project-1', name: 's3-bucket-metadata.json', source: 'aws_s3_bucket_metadata',
+            status: 'ready', created_at: '2026-10-23T12:00:00Z', mutability: 'immutable',
+          }],
+        }),
+      },
+    })
+
+    expect(wrapper.text()).toContain('S3 bucket metadata')
+    expect(wrapper.text()).toContain('example-bucket')
+    await wrapper.get('button[aria-label="Show details for example-bucket"]').trigger('click')
+    expect(wrapper.text()).toContain('Versioning Enabled')
+    expect(wrapper.text()).toContain('MFA Delete Not reported')
+    expect(wrapper.text()).not.toContain('raw_response')
+    await wrapper.get('button[aria-label="Download s3-bucket-metadata.json"]').trigger('click')
+    expect(wrapper.emitted('download')?.[0]).toEqual(['metadata-artifact', 's3-bucket-metadata.json'])
+  })
 })

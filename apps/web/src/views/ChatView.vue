@@ -209,6 +209,10 @@ watch(() => projects.currentProjectId, (projectId) => {
   void resources.loadProject(projectId)
 })
 
+watch(() => chat.resourceObservationEvent, (event) => {
+  if (event) void resources.loadObservations(event.project_id, event.resource_id)
+})
+
 async function createAndOpenConversation(newTitle: string): Promise<string | null> {
   const origin = route.fullPath
   const generation = routeLoadGeneration

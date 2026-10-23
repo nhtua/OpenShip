@@ -15,6 +15,7 @@ const toolLabels: Record<string, string> = {
   tavily_web_search: 'Tavily Search',
   aws_check_connection: 'AWS connection check',
   aws_s3_bucket_storage: 'S3 bucket storage',
+  aws_s3_bucket_metadata: 'S3 bucket metadata',
   workspace_list_files: 'List workspace files',
   workspace_read_file: 'Read workspace file',
   workspace_search_files: 'Search workspace files',

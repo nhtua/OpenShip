@@ -31,6 +31,7 @@ def test_tool_ids_and_connector_kinds_are_independent():
         "aws_check_connection",
         "aws_s3_bucket_storage",
         "aws_s3_list_bound_buckets",
+        "aws_s3_bucket_metadata",
     }
     assert manifests["brave_web_search"].connector_kinds == ("brave",)
     assert manifests["tavily_web_search"].connector_kinds == ("tavily",)

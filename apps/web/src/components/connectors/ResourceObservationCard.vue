@@ -5,6 +5,7 @@ import type { ResourceObservationSummary } from '@/types'
 
 const props = defineProps<{ observation: ResourceObservationSummary }>()
 const emit = defineEmits<{ download: [artifactId: string, name: string] }>()
+const isMetadata = computed(() => props.observation.source === 'aws_s3_bucket_metadata')
 
 const coverage = computed(() => {
   const raw = props.observation.coverage
@@ -21,9 +22,13 @@ const coverage = computed(() => {
       ? raw.reported_storage_subtotal_bytes
       : null,
     truncated: raw.truncated === true,
+    versioning: typeof raw.versioning_status === 'string' ? raw.versioning_status : 'not_reported',
+    mfaDelete: typeof raw.mfa_delete_status === 'string' ? raw.mfa_delete_status : 'not_reported',
+    requestCount: typeof raw.request_count === 'number' ? raw.request_count : null,
   }
 })
 const outcomeLabel = computed(() => {
+  if (isMetadata.value) return 'Metadata recorded'
   if (coverage.value.stale) return 'Stale measurement'
   if (props.observation.outcome === 'partial') return 'Partial coverage'
   if (props.observation.outcome === 'no_data') return 'No measurements returned'
@@ -55,10 +60,18 @@ function formatBytes(value: number | null): string {
       </Badge>
     </div>
     <dl class="grid gap-2 sm:grid-cols-2">
-      <div><dt class="text-muted-foreground">Source</dt><dd>{{ observation.source === 'aws_s3_bucket_storage' ? 'AWS CloudWatch daily storage metrics' : observation.source }}</dd></div>
+      <div><dt class="text-muted-foreground">Source</dt><dd>{{ isMetadata ? 'AWS S3 bucket versioning metadata' : observation.source === 'aws_s3_bucket_storage' ? 'AWS CloudWatch daily storage metrics' : observation.source }}</dd></div>
+      <template v-if="isMetadata">
+        <div><dt class="text-muted-foreground">Versioning</dt><dd>Versioning: {{ coverage.versioning.replaceAll('_', ' ') }}</dd></div>
+        <div><dt class="text-muted-foreground">MFA Delete</dt><dd>MFA Delete: {{ coverage.mfaDelete.replaceAll('_', ' ') }}</dd></div>
+        <div><dt class="text-muted-foreground">Measurement time</dt><dd>Not reported</dd></div>
+        <div><dt class="text-muted-foreground">AWS request count</dt><dd>{{ coverage.requestCount ?? 'Not reported' }}</dd></div>
+      </template>
+      <template v-else>
       <div><dt class="text-muted-foreground">Measurement time</dt><dd>{{ formatDate(observation.measurement_at) }}</dd></div>
       <div><dt class="text-muted-foreground">Reported storage subtotal</dt><dd>{{ formatBytes(coverage.subtotal) }}</dd></div>
       <div><dt class="text-muted-foreground">Coverage</dt><dd>{{ coverage.reported.length }} of {{ coverage.queried.length }} storage types · {{ coverage.missing.length }} missing · {{ coverage.partial.length }} partial</dd></div>
+      </template>
     </dl>
     <p v-if="coverage.missing.length" class="break-words text-muted-foreground">Missing types: {{ coverage.missing.join(', ') }}</p>
     <p v-if="coverage.partial.length" class="break-words text-muted-foreground">Partial types: {{ coverage.partial.join(', ') }}</p>
@@ -72,8 +85,8 @@ function formatBytes(value: number | null): string {
         type="button"
         size="sm"
         variant="outline"
-        aria-label="Download retained S3 storage evidence"
-        @click="emit('download', observation.evidence.id, 's3-bucket-storage.json')"
+        :aria-label="isMetadata ? 'Download retained S3 metadata evidence' : 'Download retained S3 storage evidence'"
+        @click="emit('download', observation.evidence.id, isMetadata ? 's3-bucket-metadata.json' : 's3-bucket-storage.json')"
       >
         Download retained evidence
       </Button>

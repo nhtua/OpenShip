@@ -35,14 +35,23 @@ const trigger = ref<HTMLButtonElement | null>(null)
 const menu = ref<HTMLElement | null>(null)
 const directCapabilities = computed(() => props.capabilities.filter((capability) =>
   capability.effect === 'read_only_external' &&
-  ['brave_web_search', 'tavily_web_search', 'aws_s3_bucket_storage'].includes(capability.id),
+  ['brave_web_search', 'tavily_web_search', 'aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(capability.id),
 ))
 
 function label(id: string): string {
   if (id === 'brave_web_search') return 'Brave Search'
   if (id === 'tavily_web_search') return 'Tavily Search'
   if (id === 'aws_s3_bucket_storage') return 'S3 bucket storage'
+  if (id === 'aws_s3_bucket_metadata') return 'S3 bucket metadata'
   return id
+}
+
+function requiresBucket(capability: CapabilitySummary | ProjectCapabilitySummary): boolean {
+  return ['aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(capability.id)
+}
+
+function missingActiveBucket(capability: CapabilitySummary | ProjectCapabilitySummary): boolean {
+  return requiresBucket(capability) && !props.resourceBindings.some((binding) => binding.state === 'active')
 }
 
 function unavailableReason(capability: CapabilitySummary | ProjectCapabilitySummary): string {
@@ -55,7 +64,7 @@ function unavailableReason(capability: CapabilitySummary | ProjectCapabilitySumm
   if (capability.unavailable_reason === 'policy_unavailable') {
     return 'Tool availability could not be confirmed'
   }
-  if (capability.id === 'aws_s3_bucket_storage' && !props.resourceBindings.some((binding) => binding.state === 'active')) {
+  if (missingActiveBucket(capability)) {
     return 'Bind an S3 bucket in Connectors first'
   }
   if (capability.permitted === false) return 'Not enabled for this installation'
@@ -83,7 +92,7 @@ function attach(capability: CapabilitySummary | ProjectCapabilitySummary) {
   if (
     props.disabled || capability.permitted === false ||
     capability.enabled === false || capability.available === false
-    || (capability.id === 'aws_s3_bucket_storage' && !props.resourceBindings.some((binding) => binding.state === 'active'))
+    || missingActiveBucket(capability)
   ) return
   emit('attach', {
     id: capability.id,
@@ -190,12 +199,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
         role="menuitem"
         data-testid="tool-choice"
         class="flex w-full items-start justify-between gap-3 rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-        :disabled="props.disabled || capability.permitted === false || capability.available === false || capability.enabled === false"
+        :disabled="props.disabled || capability.permitted === false || capability.available === false || capability.enabled === false || missingActiveBucket(capability)"
         @click="attach(capability)"
       >
         <span class="min-w-0">
           <span class="block font-medium">{{ label(capability.id) }}</span>
-        <span v-if="capability.permitted === false || capability.available === false || capability.enabled === false" class="mt-0.5 block text-xs text-muted-foreground">
+        <span v-if="capability.permitted === false || capability.available === false || capability.enabled === false || missingActiveBucket(capability)" class="mt-0.5 block text-xs text-muted-foreground">
             {{ unavailableReason(capability) }}
           </span>
         </span>

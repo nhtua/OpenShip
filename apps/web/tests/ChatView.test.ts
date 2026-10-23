@@ -5,7 +5,7 @@ import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useConnectorsStore } from '@/stores/connectors'
-import api, { connectorsApi, conversationsApi, projectsApi, runsApi, workspaceApi } from '@/services/api'
+import api, { connectorsApi, conversationsApi, projectsApi, resourcesApi, runsApi, workspaceApi } from '@/services/api'
 import type { Conversation, RunCard as RunCardType, ToolOperationSummary } from '@/types'
 import { useProjectsStore } from '@/stores/projects'
 import {
@@ -20,6 +20,13 @@ vi.mock('@/services/api', () => ({
   authApi: { login: vi.fn(), register: vi.fn(), logout: vi.fn() },
   projectsApi: {
     list: vi.fn(), create: vi.fn(), rename: vi.fn(), archive: vi.fn(), restore: vi.fn(),
+  },
+  resourcesApi: {
+    listEnvironments: vi.fn(),
+    listBindings: vi.fn(),
+    createEnvironment: vi.fn(),
+    createBinding: vi.fn(),
+    listObservations: vi.fn(),
   },
   conversationsApi: { list: vi.fn(), get: vi.fn(), archive: vi.fn(), restore: vi.fn() },
   connectorsApi: {
@@ -60,6 +67,7 @@ const mockProjectsApi = vi.mocked(projectsApi)
 const mockConversationsApi = vi.mocked(conversationsApi)
 const mockConnectorsApi = vi.mocked(connectorsApi)
 const mockRunsApi = vi.mocked(runsApi)
+const mockResourcesApi = vi.mocked(resourcesApi)
 const mockWorkspaceApi = vi.mocked(workspaceApi)
 
 const wait = 3000
@@ -147,6 +155,7 @@ describe('ChatView', () => {
       },
     } as never)
     mockWorkspaceApi.readFile.mockReset()
+    mockResourcesApi.listObservations.mockResolvedValue({ data: { items: [], next_cursor: null } } as never)
   })
 
   it('renders conversation history with the active selection', async () => {
@@ -171,6 +180,30 @@ describe('ChatView', () => {
     )
     expect(row.attributes('data-active')).toBe('true')
     expect(router.currentRoute.value.path).toBe('/conversation/c2')
+  })
+
+  it('refreshes resource observation history after a conversation publishes a resource event', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    const chat = useChatStore()
+    chat.currentConversation = {
+      ...(chat.currentConversation as Conversation),
+      id: 'c1',
+      project_id: 'project-1',
+    }
+    chat.processDurableEvent({
+      id: 'evt-resource-observed',
+      conversation_id: 'c1',
+      run_id: 'run-metadata',
+      sequence: 9,
+      type: 'resource.observed',
+      payload: { resource_id: 'resource-1', binding_id: 'binding-1' },
+      created_at: '2026-10-23T12:00:00Z',
+    } as never)
+
+    await vi.waitFor(() => {
+      expect(mockResourcesApi.listObservations).toHaveBeenCalledWith('project-1', 'resource-1')
+    })
+    wrapper.unmount()
   })
 
   it('opens a bookmarked conversation and its files without a sidebar click', async () => {

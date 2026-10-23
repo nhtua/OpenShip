@@ -500,7 +500,10 @@ def test_resource_migration_enforces_scope_immutability_and_retention(database_u
             {"id": _uuid_text(connection, observation_id)},
         ).scalar_one() == 1
         current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert current == "phase5a010"
+        # PostgreSQL rolls back the refused downgrade to the head. SQLite keeps
+        # the last successfully applied revision before the refusal.
+        expected_head = "phase5b013" if database_url.startswith("postgresql") else "phase5a010"
+        assert current == expected_head
     engine.dispose()
 
 
@@ -561,5 +564,8 @@ def test_purged_connector_credential_prevents_irreversible_downgrade(database_ur
     assert "purged credential bytes cannot be restored" in refused.stderr.lower()
     with engine.connect() as connection:
         current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert current == "phase5a012"
+        # PostgreSQL rolls back to the head; SQLite retains the last successful
+        # revision before the secret-purge downgrade refusal.
+        expected_head = "phase5b013" if database_url.startswith("postgresql") else "phase5a012"
+        assert current == expected_head
     engine.dispose()

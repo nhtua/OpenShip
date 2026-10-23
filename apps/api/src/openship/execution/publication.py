@@ -66,6 +66,7 @@ _ERROR_MESSAGES = {
     "aws_region_mismatch": "The bound S3 bucket is in a different AWS region.",
     "aws_resource_unavailable": "The selected AWS resource is not available in this project.",
     "aws_invalid_metric_response": "AWS returned an invalid storage metrics response.",
+    "aws_invalid_metadata_response": "AWS returned invalid S3 versioning metadata.",
     "aws_request_limit_exceeded": "The AWS request limit was exceeded.",
     "aws_output_limit_exceeded": "The AWS storage observation exceeded its size limit.",
     "invalid_response": "The search service returned an invalid response.",
