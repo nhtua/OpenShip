@@ -29,7 +29,7 @@ date: 2026-10-21
 | --- | --- | --- |
 | 5A.1 | 1–7 | Browser-managed global/project Brave and Tavily connectors, credential lifecycle, manual/qualified chat execution, restart recovery and isolation |
 | 5A.2 | 8–14 | Project-scoped AWS connector, bound S3 bucket, identity checks, storage observation, connector blockers and retained evidence |
-| 5B | 15–16 | Bounded local inventory and selected bucket metadata through the same contracts |
+| 5B | 15–16 | Managed built-in tool availability, bounded local inventory and selected bucket metadata through the same contracts; revised execution detail is in the 5B addendum |
 
 Execute tasks sequentially. Obtain accept/revise/stop at each acceptance gate before starting the next unit. Planning 5B does not authorize implementing it before 5A.2 acceptance.
 
@@ -37,13 +37,13 @@ Execute tasks sequentially. Obtain accept/revise/stop at each acceptance gate be
 
 - Preserve current authentication, owner-only personal projects, model/profile pinning, conversation titles, cancellation, reconnect, transcript history and file recovery.
 - Keep existing terminal statuses, including `completed`; add only `waiting_connector`.
-- Preserve readable manifest/configuration v1 and chat-v1/chat-v2/tool-v1 history. New managed execution uses manifest schema v2, execution configuration v2, chat graph v3 and tool graph v2.
+- Preserve readable manifest/configuration v1 and chat-v1/chat-v2/tool-v1 history. Accepted managed execution uses manifest schema v2, execution configurations v2/v3, chat graph v3 and tool graph v2; preserve the pinned preferred search provider in configuration v3.
 - Search capability IDs remain `brave_web_search` and `tavily_web_search`. Services remain independent.
 - Global means installation-wide eligibility for authenticated projects. Only the configured operator manages global search connectors; project owners set their own defaults. New Brave/Tavily connectors and imports are global-only. Retained legacy project-scoped search records remain available under their original authorization during explicit cutover; AWS remains project-scoped.
 - Execute distribution-owned handlers in the trusted worker. Portable connector packaging, third-party executables, CLI execution and generated-code credential handoff remain deferred.
 - Queue rows, checkpoints, transcripts, events, artifacts, browser reads and logs contain no credentials or secret-bearing provider responses.
 - Preserve shared capacity and ownership fences. No database locks across network or filesystem I/O.
-- No hidden retries, automatic replay of dispatched work, provider fallback, credential fallback, account discovery, object downloads or cloud writes.
+- Preserve the accepted single project search default: automatic mode prefers it and may try an eligible alternate search provider after a tool error; manual selection remains available. No hidden transport retries, automatic replay of dispatched work, credential fallback, account discovery, object downloads or cloud writes.
 - Live provider requests remain explicit opt-in qualification. Ordinary CI uses synthetic credentials and transports.
 
 ### Interfaces to establish
@@ -211,7 +211,7 @@ the Task 8 gate.
 
 **Requalification follow-up (2026-10-22):** The approved 5A.1 revisions have
 passed the real-stack/browser and PostgreSQL migration/lifecycle lanes with
-synthetic credentials. See the [requalification record](../testing/phase5a1-managed-connector-qualification.md)
+synthetic credentials. See the [requalification record](../../testing/phase5a1-managed-connector-qualification.md)
 for commands, evidence and limits. The user tested and accepted 5A.1 on
 2026-10-22, clearing the gate for Task 8 and 5A.2. Real AWS credentials and
 live provider calls remain separately opt-in; Task 8 onward uses synthetic
@@ -344,20 +344,24 @@ credentials and protocol-compatible transports until then.
 - [ ] With separate live opt-in, compare identity and storage observations with an independent read for the same dimensions/time; qualify renewal and safe denial behavior. No live AWS access was authorized for this qualification.
 - [x] Never test prohibited mutations against the user’s bucket. The registered SDK surface exposes only the documented read operations; no live mutation requests were made.
 - [x] Record the source, SDK/tool/configuration revisions, timestamps, limits and remaining qualification gaps.
-- [ ] Obtain accept/revise/stop at the 5A.2 gate.
+- [x] Obtain accept/revise/stop at the 5A.2 gate. The user tested the corrected AWS flow and explicitly accepted 5A.2 on 2026-10-23.
 
-**Gate:** Do not start 5B before 5A.2 acceptance.
+**Acceptance follow-up:** User testing exposed HTTP UUID validation, parent/binding insert order, premature check navigation, missing local AWS enablement and production transport URL handling. These fixes and their regression evidence are recorded in the [5A.2 qualification record](../../testing/phase5a2-aws-observation-qualification.md). User acceptance is distinct from the outstanding independent live comparison and PostgreSQL qualification items.
+
+**Gate:** 5A.2 acceptance is satisfied. On 2026-10-23 the user requested review of 5B against the accepted implementation and addition of managed tool discovery/enablement. The revised [5B implementation addendum](2026-10-23-phase5b-tool-availability-inventory-and-metadata.md) is prepared for review; 5B implementation has not started.
 
 ### Task 15 — Gated 5B inventory and metadata handlers
 
-**Files:** `tools/aws/{bound_inventory,s3_metadata}.py`, registered definitions and resource/browser projections.
+**Files:** The [5B addendum](2026-10-23-phase5b-tool-availability-inventory-and-metadata.md) owns the detailed files, interfaces, migration and test steps for Task 15.
 
 **Tests:** `tests/tools/test_bound_inventory.py`, `test_s3_metadata.py`.
 
-- [ ] Implement `aws_s3_list_bound_buckets` from owned local bindings, with page size 20/max 50 and an explicit stored-inventory source label. It performs no AWS discovery.
+- [ ] Register installed built-in tools automatically, expose operator enable/disable controls in Global Settings, derive availability from shared policy and project/Connector/target readiness, and retain `TOOL_ENABLED_IDS` only as an optional deployment restriction with an explicit upgrade path. Ordinary connector setup and policy changes must not require editing individual tool IDs or restarting services.
+- [ ] Implement `aws_s3_list_bound_buckets` from owned local bindings, with page size 20/max 50 and an explicit stored-inventory source label. It performs no AWS discovery and requires neither AWS credentials nor a live connection. Listing does not grant target-selection authority for cloud reads.
 - [ ] Implement `aws_s3_bucket_metadata` for one selected binding using location and versioning reads through the same broker/runner.
 - [ ] Add only the separately accepted bucket-scoped `s3:GetBucketVersioning` authority.
 - [ ] Use independent manifest digests and the common target, budget, observation and evidence contracts.
+- [ ] Preserve archived project/conversation history and resource bindings, retained non-secret Connector revisions, secret purging on revocation, one project search default, manual selection and eligible automatic alternate-provider retry.
 - [ ] Test foreign bindings/cursors, pagination bounds, missing resources, unsupported responses and inherited cancellation/revocation controls.
 
 **Commit deliverable:** Bounded read expansion without another backend or credential abstraction.
@@ -366,7 +370,8 @@ credentials and protocol-compatible transports until then.
 
 - [ ] Run PostgreSQL, synthetic-stack and browser scenarios for inventory/metadata.
 - [ ] Perform separately opted-in live read comparison and record the additional IAM authority.
-- [ ] Verify that enabling 5B neither broadens existing storage-tool manifests nor changes old admitted configuration.
+- [ ] Verify that enabling 5B does not broaden the storage tool's declared operations or rewrite old admitted configuration/refs. Shared-code changes may change current manifest digests; old exact refs must remain executable as recorded or fail visibly as changed.
+- [ ] Verify shared tool-policy updates without process restarts, legacy allowlist cutover, operator-only controls and policy changes racing with dispatch/publication.
 - [ ] Update acceptance/runbook records and obtain accept/revise/stop.
 - [ ] Declare Phase 5 complete only when its delivered units are accepted; otherwise identify 5B as undelivered.
 
@@ -412,4 +417,4 @@ Required acceptance evidence includes nonzero tests, zero required skips, synthe
 - Existing personal projects remain the project model; global reuse is demonstrated across distinct owners’ projects.
 - Native SDK transport integration is pinned and compatibility-tested. It does not claim compatibility with arbitrary future SDK versions or streaming operations.
 - Each acceptance unit includes its own operational documentation and qualification record.
-- 5A.1 is accepted and Tasks 8–14 are in sequential implementation. Keep schema, credential, gateway and worker changes on the shared interfaces above; stop at the 5A.2 acceptance gate before beginning 5B.
+- 5A.1 and 5A.2 are accepted. Keep schema, credential, gateway and worker changes on the accepted shared interfaces. Tasks 15–16 remain undelivered; review the revised 5B addendum before implementation and obtain separate 5B acceptance before declaring Phase 5 complete.

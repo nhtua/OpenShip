@@ -1,7 +1,9 @@
 import asyncio
 import gzip
 import importlib
+import logging
 
+import httpcore
 import httpx
 import pytest
 from httpx import AsyncByteStream
@@ -98,6 +100,63 @@ async def test_real_botocore_client_signs_and_parses_identity_through_adapter():
     assert b"Action=GetCallerIdentity" in requests[0].content
     assert "explicit-access-key" in requests[0].headers["authorization"]
     assert "explicit-secret-key" not in repr(requests[0].headers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service", ["sts", "s3"])
+async def test_native_sdk_requests_cross_the_production_destination_checks(
+    service, monkeypatch
+):
+    forwarded = []
+
+    async def respond(_pool, request):
+        forwarded.append(request)
+        body = (
+            _identity_xml() if service == "sts"
+            else b'<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'
+        )
+        return httpcore.Response(
+            200, headers={"content-type": "text/xml"}, content=_BodyStream(body)
+        )
+
+    monkeypatch.setattr(httpcore.AsyncConnectionPool, "handle_async_request", respond)
+    AwsSdkContext, AwsSdkAuth, _AwsSdkError = _sdk_types()
+    async with AwsSdkContext(
+        auth=AwsSdkAuth("explicit-access-key", "explicit-secret-key"),
+        region="us-east-1", control=_Control(),
+    ) as aws:
+        if service == "sts":
+            result = await aws.run(aws.client("sts").get_caller_identity)
+            assert result["Account"] == "123456789012"
+        else:
+            result = await aws.run(
+                aws.client("s3").get_bucket_location,
+                Bucket="example-bucket", ExpectedBucketOwner="123456789012",
+            )
+            assert result["LocationConstraint"] is None
+
+    assert len(forwarded) == 1
+    assert forwarded[0].url.host == f"{service}.us-east-1.amazonaws.com".encode()
+    if service == "s3":
+        assert forwarded[0].url.target == b"/example-bucket?location"
+
+
+@pytest.mark.asyncio
+async def test_application_debug_logging_does_not_log_signed_aws_requests(caplog):
+    async def respond(_request):
+        return httpx.Response(200, stream=_BodyStream(_identity_xml()))
+
+    with caplog.at_level(logging.DEBUG):
+        async with _context(respond) as aws:
+            await aws.run(aws.client("sts").get_caller_identity)
+
+    assert "explicit-session-token" not in caplog.text
+    assert "explicit-access-key" not in caplog.text
+    assert not any(
+        record.name.startswith(("botocore.", "boto3."))
+        and record.levelno < logging.WARNING
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

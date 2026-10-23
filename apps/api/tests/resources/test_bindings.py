@@ -3,10 +3,15 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from pydantic import ValidationError
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
 from src.openship.auth.models import User
+from src.openship.auth.routes import require_jwt
 from src.openship.connectors.contracts import ConnectorConfiguration
 from src.openship.connectors.models import (
     Connector,
@@ -14,9 +19,12 @@ from src.openship.connectors.models import (
     CredentialVersion,
 )
 from src.openship.connectors.service import delete_connector
-from src.openship.database.session import SessionLocal
+from src.openship.database.models import Base
+from src.openship.database.session import SessionLocal, get_db
 from src.openship.resources import service as resource_service
 from src.openship.resources.contracts import EnvironmentCreate, ResourceBindingCreate
+from src.openship.resources.models import ResourceBinding, ResourceObject
+from src.openship.resources.routes import router
 from src.openship.resources.service import (
     ResourceServiceError,
     create_environment,
@@ -29,6 +37,21 @@ ACCOUNT_ID = "123456789012"
 ROLE_ARN = f"arn:aws:iam::{ACCOUNT_ID}:role/ReadOnly"
 
 
+@pytest.fixture
+def resource_sessions(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'resource-bindings.db'}")
+    event.listen(
+        engine,
+        "connect",
+        lambda connection, _record: connection.execute("PRAGMA foreign_keys=ON"),
+    )
+    Base.metadata.create_all(engine)
+    try:
+        yield sessionmaker(bind=engine, autoflush=False)
+    finally:
+        engine.dispose()
+
+
 def _scope(db, label: str):
     user_id = uuid.uuid4()
     user = User(
@@ -38,7 +61,9 @@ def _scope(db, label: str):
         password_hash="test-only",
     )
     project = Project(id=uuid.uuid4(), owner_user_id=user_id, name=f"Project {label}")
-    db.add_all([user, project])
+    db.add(user)
+    db.flush()
+    db.add(project)
     db.flush()
     connector_id = uuid.uuid4()
     credential_id = uuid.uuid4()
@@ -71,7 +96,9 @@ def _scope(db, label: str):
         ciphertext=b"c" * 32,
         state="active",
     )
-    db.add_all([connector, credential])
+    db.add(connector)
+    db.flush()
+    db.add(credential)
     db.flush()
     db.add(
         ConnectorRevision(
@@ -131,6 +158,115 @@ def test_owned_environment_and_bucket_binding_are_local_identity_only():
         )
         assert [item.binding_id for item in items] == [binding.id]
         assert next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_binding_http_accepts_uuid_strings_and_persists_selected_target(resource_sessions):
+    with resource_sessions() as db:
+        user, project, connector = _scope(db, "http-create")
+        environment = create_environment(
+            db,
+            owner_id=user.id,
+            project_id=project.id,
+            request=EnvironmentCreate(name="development", display_name="Development"),
+        )
+        db.commit()
+
+        async def database():
+            yield db
+
+        async def authenticated_user():
+            return user
+
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_db] = database
+        app.dependency_overrides[require_jwt] = authenticated_user
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/projects/{project.id}/resources",
+                json={
+                    "environment_id": str(environment.id),
+                    "connector_id": str(connector.id),
+                    "connector_revision": 1,
+                    "bucket_name": "example-public-data",
+                    "display_name": "Public data",
+                },
+            )
+
+            assert response.status_code == 201, response.text
+            created = response.json()
+            assert created["environment_id"] == str(environment.id)
+            assert created["connector_id"] == str(connector.id)
+            assert created["connector_revision"] == 1
+            assert created["bucket_name"] == "example-public-data"
+            assert created["expected_owner"] == ACCOUNT_ID
+            assert created["region"] == "us-west-2"
+
+            listed = await client.get(f"/api/projects/{project.id}/resources")
+            assert listed.status_code == 200, listed.text
+            assert listed.json()["items"] == [created]
+
+
+def test_binding_and_resource_object_roll_back_together(resource_sessions):
+    with resource_sessions() as db:
+        user, project, connector = _scope(db, "rollback")
+        environment = create_environment(
+            db,
+            owner_id=user.id,
+            project_id=project.id,
+            request=EnvironmentCreate(name="development", display_name="Development"),
+        )
+        db.commit()
+
+        resource, binding = create_resource_binding(
+            db,
+            owner_id=user.id,
+            project_id=project.id,
+            request=ResourceBindingCreate(
+                environment_id=environment.id,
+                connector_id=connector.id,
+                connector_revision=1,
+                bucket_name="example-rollback-data",
+                display_name="Rollback data",
+            ),
+        )
+        resource_id, binding_id = resource.id, binding.id
+        db.rollback()
+
+    with resource_sessions() as db:
+        assert db.get(ResourceObject, resource_id) is None
+        assert db.get(ResourceBinding, binding_id) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("environment_id", "not-a-uuid"),
+        ("connector_id", "not-a-uuid"),
+        ("environment_id", 123),
+        ("connector_id", 123),
+        ("connector_revision", "1"),
+        ("connector_revision", True),
+        ("connector_revision", 0),
+    ],
+)
+def test_binding_request_rejects_invalid_ids_and_revisions(field, value):
+    payload = {
+        "environment_id": uuid.uuid4(),
+        "connector_id": uuid.uuid4(),
+        "connector_revision": 1,
+        "bucket_name": "example-public-data",
+        "display_name": "Public data",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError) as caught:
+        ResourceBindingCreate.model_validate(payload)
+
+    assert [error["loc"] for error in caught.value.errors()] == [(field,)]
 
 
 def test_binding_rejects_foreign_environment_and_duplicate_active_target():

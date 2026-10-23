@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import os
 import re
 import uuid
@@ -60,6 +61,9 @@ class AwsSdkContext:
             or not 1 <= max_workers <= _MAX_WORKERS
         ):
             raise AwsSdkError("aws_configuration_error")
+        # SDK debug output includes signed headers and secret-bearing STS bodies.
+        for namespace in ("boto3", "botocore"):
+            logging.getLogger(namespace).setLevel(logging.WARNING)
         self._auth = auth
         self.region = region
         self._control = control

@@ -1,11 +1,13 @@
 ---
 type: spec
 summary: Approved 5A.1 global Brave/Tavily Connectors with project-owned defaults, plus project-scoped AWS and extensible native-SDK S3 observations; maintenance authority remains in Phase 10.
-status: proposed
+status: partially-accepted
 date: 2026-10-21
 ---
 
 # Phase 5: Managed Connectors and S3 Observations
+
+**Delivery record:** The user accepted 5A.1 on 2026-10-22 and, after testing the corrected AWS connection/bucket/storage flow, accepted 5A.2 on 2026-10-23. On 2026-10-23 the user requested that 5B include installed built-in tool discovery and managed enablement as described in section 3.2. The revised [5B implementation plan](../plans/2026-10-23-phase5b-tool-availability-inventory-and-metadata.md) is awaiting review; 5B is not implemented or accepted. User acceptance does not establish completion of the independent live comparison or remaining PostgreSQL qualification evidence.
 
 ## 1. Intent, decisions and review boundary
 
@@ -18,15 +20,15 @@ The user wants OpenShip to inspect resources they actually own without depending
 - Configure a basic role for routine reads and an optional predefined maintenance role for supported changes. Normal execution must not require editing IAM on every run. Maintenance use, approvals and temporary grants belong to [Phase 10A/10B](../../roadmap.md#phase-10b--approved-temporary-maintenance-authority), not Phase 5.
 - Replace the staging-deployment health example with S3 bucket size. Read-only does not imply public/non-sensitive data or authorization to fetch object contents.
 - Extend the existing gateway, operations, runtime, semantic events and filesystem artifacts. The accepted [Phase 4 specification](./2026-10-19-phase4-execution-and-conversation-workspace-design.md) assigns managed Brave/Tavily credentials and browser setup to this phase as well.
-- Configure Brave and Tavily as installation-global Connectors in 5A.1; keep one project-owned search default and project-owned evidence. Automatic mode prefers that Connector, then may retry another available search provider after a tool error. Manual selections remain available and override the default. AWS access stays project-scoped. The approved 5A.1 implementation is tracked in the Project Settings addendum; AWS design decisions remain proposals.
+- Configure Brave and Tavily as installation-global Connectors in 5A.1; keep one project-owned search default and project-owned evidence. Automatic mode prefers that Connector, then may retry another available search provider after a tool error. Manual selections remain available and override the default. AWS access stays project-scoped. The accepted 5A.1 implementation is tracked in the Project Settings addendum; the initial AWS flow is accepted as 5A.2.
 - Keep credential management inside the existing trusted API/runtime. Independently portable Connector packaging or a separate lifecycle/service is deferred without assigning it a roadmap phase.
 - Developers add ordinary typed tool handlers using native provider SDKs and runtime-supplied authentication. Extend the existing tool registration contract; do not recreate every provider operation or expose a generic cloud RPC tool.
 
-**Proposed details for written-spec review:** The first AWS source is a dedicated machine IAM user's access key/secret, optionally temporary session credentials, used only to assume the configured basic role. This is the smallest localhost-compatible bootstrap without requiring AWS compute, an external IdP or certificate infrastructure. It is an alternative to the preferred keyless deployment pattern, not a claim that long-lived keys are preferable. Source keys have only the necessary role-assumption authority and no direct S3/CloudWatch read or mutation authority. Customer approval of this source is required before the implementation plan is finalized. GCP OIDC and IAM Roles Anywhere remain separately qualified follow-ups behind the same broker contract, not silently supported modes.
+**Accepted initial AWS source (5A.2):** The first AWS source is a dedicated machine IAM user's access key/secret, optionally temporary session credentials, used only to assume the configured basic role. This is the smallest localhost-compatible bootstrap without requiring AWS compute, an external IdP or certificate infrastructure. It is an alternative to the preferred keyless deployment pattern, not a claim that long-lived keys are preferable. Source keys have only the necessary role-assumption authority and no direct S3/CloudWatch read or mutation authority. GCP OIDC and IAM Roles Anywhere remain separately qualified follow-ups behind the same broker contract, not silently supported modes.
 
 An IAM user is not required by the architecture. The authentication source proves **who the workload is**; the basic role defines **what its session may do**. On AWS, an attached workload role can supply temporary credentials without a machine user. Outside AWS, configured federation or IAM Roles Anywhere can establish trust without long-lived AWS keys. A role ARN alone proves neither identity nor permission to assume it. Phase 5's proposed key source is one explicitly qualified deployment option; attached-role/federated/certificate sources need their own qualification, not an unconfigured SDK fallback. Section 5.2 describes the proposed bootstrap and renewal sequence.
 
-The user approved the 5A.1 Project Settings addendum for implementation. That approval does not accept 5A.1, authorize AWS implementation, real credential entry, cloud calls, maintenance-role execution or live destructive tests. The AWS proposal still requires its own review before implementation.
+The acceptance decisions above supersede the initial implementation gates for 5A.1 and 5A.2. Additional authentication sources, live qualification calls by an implementer, maintenance-role execution and destructive tests still require their own authorization; acceptance does not silently expand that scope.
 
 ## 2. Scope and acceptance units
 
@@ -63,7 +65,7 @@ No second scheduler, provider adapter hierarchy, event stream, resource inventor
 | §4, §13 | Encrypted credential versions, separately protected keys, rotation/revocation and coordinated recovery |
 | §11, §14 | Safe observation excerpts and retained evidence with source/time; external identifiers and logs are not executable instructions |
 
-The current gateway/admission/publication modules assume `SearchArguments`/`SearchObservation` for external tools, and model tool descriptions use a fixed search/workspace map. Replace those assumptions with a small maintained definition table containing the manifest, argument validator, handler and output validator/projector. Keep operation lifecycle, artifact publication and authorization common. This is not an importable plugin framework: only distribution-owned definitions execute in the trusted runtime.
+The pre-Phase-5 gateway/admission/publication modules assumed `SearchArguments`/`SearchObservation` for external tools, and model tool descriptions used a fixed search/workspace map. The accepted implementation replaces those assumptions with a small maintained definition table containing the manifest, argument validator, handler and output validator/projector. Phase 5B extends this table while keeping operation lifecycle, artifact publication and authorization common. This is not an importable plugin framework: only distribution-owned definitions execute in the trusted runtime.
 
 ### 3.1 Developer extension contract
 
@@ -86,6 +88,18 @@ Here `binding` is the gateway-resolved owned target, and `run` applies the commo
 The common AWS runner owns SDK client configuration, bounded transport integration, blocking-call scheduling, deadline/cancellation checks, request/byte accounting and safe errors. The SDK owns service definitions, serialization, signing and protocol parsing. The handler owns task semantics, target-derived parameters and interpretation of results. Adding another supported AWS read reuses the same authentication/runner path; it does not require a new credential backend, signing implementation or gateway branch for each API. SDK upgrades do not automatically register new capabilities or broaden a manifest's admitted operations.
 
 Only the initial checks/storage reads and accepted 5B reads are qualified here. Future credentialed CLI or sandboxed boto3 execution can consume the same credential-acquisition contract behind their own execution boundary; no such executor, credential handoff or sandbox support is delivered by this phase.
+
+### 3.2 Installed tool discovery and managed enablement
+
+The user requested this addition on 2026-10-23 after AWS testing exposed the need to edit `TOOL_ENABLED_IDS` and restart processes for each new maintained capability. Normal operation must discover installed distribution-owned built-in definitions automatically. Configuring a Connector makes its permitted tools eligible when project ownership, Connector state and any required target selection are satisfied. A developer adds a definition through the existing registry; operators do not maintain a parallel per-tool environment list.
+
+Use the existing designated installation operator for enable/disable controls in **Global Settings**. This policy governs tools, not Connector visibility: Brave/Tavily remain global and reusable; AWS remains project-scoped. Preserve one project search default and manual selections. A disabled tool or missing prerequisite must have a visible reason, and setup actions must not create an idle empty conversation instead of reporting a refusal.
+
+The API and worker must use the same authoritative effective policy. Policy and readiness updates become effective without process restarts; admission and dispatch/publication continue to enforce current authorization and disablement. Enabling a tool never resumes or replays an older dispatched request. Connector setup does not perform background credential probes.
+
+Retain `TOOL_ENABLED_IDS` only as an optional deployment restriction, with explicit documentation and migration of legacy allow/deny intent. The effective set is installed qualified definitions intersected with deployment restrictions, operator policy and authorized project/target eligibility. Global Settings must identify deployment-restricted tools; an operator policy toggle cannot bypass that ceiling. Moving a legacy installation to managed settings is a one-time cutover, not a requirement to edit the list for every connector or release.
+
+Discovery here is enumeration of installed trusted built-ins. Semantic/progressive discovery remains in Phase 11; external imports, MCP discovery, generated SDK methods and mutations are not enabled by this addition. The detailed migration and persistence choices in the revised 5B plan are implementation proposals for review.
 
 ## 4. Domain contracts and identity
 
@@ -213,7 +227,7 @@ Explain that S3 daily storage metrics may include noncurrent versions, multipart
 - `aws_s3_list_bound_buckets`: paginated local inventory of owned resource bindings, default 20/max 50; not AWS account-wide discovery or a claim of live existence. The response explicitly labels its source as stored bindings.
 - `aws_s3_bucket_metadata`: one selected bound bucket's location and versioning configuration using a bounded maintained API set, adding bucket-scoped `s3:GetBucketVersioning` only after this unit is approved. This cannot enable versioning or read objects. Observations use the same resource/operation/artifact publication path.
 
-5B gets separate manifest digests, permission documentation and a live read qualification. No new credential backend, resource registry or model abstraction is introduced. Additional metadata/log operations require their own accepted scope rather than arbitrary AWS calls.
+5B also delivers section 3.2's managed built-in tool availability. Local bound-bucket inventory requires no live AWS credentials and cannot grant additional cloud-read targets. Bucket metadata gets a separate manifest and operation profile, permission documentation and separately opted-in live read qualification. Preserve the accepted storage tool's operation set and historical exact-reference behavior when adding versioning reads. No new credential backend, resource registry or model abstraction is introduced. Additional metadata/log operations require their own accepted scope rather than arbitrary AWS calls.
 
 ## 9. API and browser
 

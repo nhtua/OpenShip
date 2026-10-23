@@ -42,8 +42,8 @@ class EnvironmentSummary(ResourceContract):
 
 
 class ResourceBindingCreate(ResourceContract):
-    environment_id: UUID
-    connector_id: UUID
+    environment_id: UUID = Field(strict=False)
+    connector_id: UUID = Field(strict=False)
     connector_revision: int = Field(ge=1)
     bucket_name: str = Field(min_length=3, max_length=63)
     display_name: str = Field(min_length=1, max_length=255)

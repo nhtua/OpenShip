@@ -1,3 +1,4 @@
+import httpcore
 import httpx
 import pytest
 
@@ -32,6 +33,12 @@ def test_aws_transport_rejects_noncommercial_or_unpinned_endpoints(endpoint):
         httpx.Request("GET", "http://sts.us-east-1.amazonaws.com/"),
         httpx.Request("GET", "https://sts.us-east-1.amazonaws.com:444/"),
         httpx.Request("GET", "https://s3.us-east-1.amazonaws.com/"),
+        httpx.Request("GET", "https://user@sts.us-east-1.amazonaws.com/"),
+        httpx.Request("GET", "https://:password@sts.us-east-1.amazonaws.com/"),
+        httpx.Request(
+            "GET", "https://sts.us-east-1.amazonaws.com/",
+            headers={"Host": "attacker.example"},
+        ),
         httpx.Request(
             "GET",
             "https://sts.us-east-1.amazonaws.com/",
@@ -48,6 +55,38 @@ async def test_aws_transport_rejects_unsupported_request_targets(invalid_request
         await transport.aclose()
 
     assert caught.value.code == "aws_destination_denied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "method", "target"),
+    [
+        ("https://sts.us-east-1.amazonaws.com", "POST", "/"),
+        ("https://monitoring.us-east-1.amazonaws.com", "POST", "/"),
+        ("https://s3.us-east-1.amazonaws.com", "GET", "/example-bucket?location"),
+    ],
+)
+async def test_aws_transport_forwards_normal_requests_without_url_credentials(
+    endpoint, method, target, monkeypatch
+):
+    forwarded = []
+
+    async def capture(_pool, request):
+        forwarded.append(request)
+        async def body():
+            yield b"ok"
+        return httpcore.Response(200, content=body())
+
+    monkeypatch.setattr(httpcore.AsyncConnectionPool, "handle_async_request", capture)
+    transport = AwsPinnedHttpTransport(endpoint)
+    async with httpx.AsyncClient(transport=transport, trust_env=False) as client:
+        response = await client.request(method, endpoint + target)
+
+    assert response.status_code == 200
+    assert response.content == b"ok"
+    assert len(forwarded) == 1
+    assert forwarded[0].method == method.encode()
+    assert forwarded[0].url.target == target.encode()
 
 
 @pytest.mark.asyncio

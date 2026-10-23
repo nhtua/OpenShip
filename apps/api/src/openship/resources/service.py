@@ -211,6 +211,9 @@ def create_resource_binding(
         display_name=request.display_name,
         created_by_user_id=owner_id,
     )
+    # Persist the parent before its binding; no ORM relationship orders the inserts.
+    db.add(resource)
+    db.flush()
     binding = ResourceBinding(
         project_id=project.id,
         resource_object_id=resource_id,
@@ -227,7 +230,7 @@ def create_resource_binding(
         state="active",
         created_by_user_id=owner_id,
     )
-    db.add_all([resource, binding])
+    db.add(binding)
     db.flush()
     return resource, binding
 

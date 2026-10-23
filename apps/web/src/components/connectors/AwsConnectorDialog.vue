@@ -176,12 +176,13 @@ watch(() => [props.open, props.projectId, props.connector?.id] as const, ([open]
   const identityChanged = previous !== undefined && (
     props.projectId !== previous[1] || props.connector?.id !== previous[2]
   )
-  if (identityChanged) emit('update:open', false)
-  if (open && !identityChanged) {
+  const changedWhileOpen = identityChanged && previous?.[0] === true
+  if (changedWhileOpen) emit('update:open', false)
+  if (open && !changedWhileOpen) {
     resetForOpen()
     void loadDetails()
   }
-  if (!open) detailGeneration += 1
+  if (!open || changedWhileOpen) detailGeneration += 1
 }, { immediate: true })
 
 async function save(): Promise<void> {

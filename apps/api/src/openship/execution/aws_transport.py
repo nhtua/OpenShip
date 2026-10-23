@@ -182,8 +182,8 @@ class AwsPinnedHttpTransport(httpx.AsyncBaseTransport):
             or request.url.scheme != "https"
             or request.url.host.lower() != self._host
             or request.url.port not in (None, 443)
-            or request.url.username is not None
-            or request.url.password is not None
+            or request.url.username
+            or request.url.password
             or request.url.fragment
             or host_header not in (self._host, f"{self._host}:443")
             or "proxy-authorization" in request.headers
@@ -342,7 +342,8 @@ class BoundedAwsHttpSession:
             raise AwsSdkError("aws_timeout")
         headers = dict(sdk_request.headers.items())
         headers["Accept-Encoding"] = "identity"
-        transport = self._transport_factory(sdk_request.url)
+        origin = urlsplit(sdk_request.url)._replace(path="", query="", fragment="").geturl()
+        transport = self._transport_factory(origin)
         try:
             async with httpx.AsyncClient(
                 transport=transport,

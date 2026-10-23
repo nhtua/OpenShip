@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import ConnectorSettingsView from '@/views/ConnectorSettingsView.vue'
-import { connectorsApi, projectsApi } from '@/services/api'
+import httpApi, { connectorsApi, projectsApi, runsApi } from '@/services/api'
 import { useChatStore } from '@/stores/chat'
 import { useProjectsStore } from '@/stores/projects'
 
@@ -27,11 +27,41 @@ vi.mock('@/services/api', () => ({
     replaceProjectCredential: vi.fn(),
     updateProjectConnector: vi.fn(),
     projectRequestStatus: vi.fn(),
+    getProjectConnector: vi.fn(),
   },
+  resourcesApi: {
+    listEnvironments: vi.fn().mockResolvedValue({ data: [] }),
+    listBindings: vi.fn().mockResolvedValue({ data: { items: [], next_cursor: null } }),
+  },
+  runsApi: { submitTool: vi.fn(), getOperations: vi.fn() },
 }))
 
 const api = vi.mocked(connectorsApi)
 const projectApi = vi.mocked(projectsApi)
+const requests = vi.mocked(httpApi)
+const runs = vi.mocked(runsApi)
+
+const awsConnector = {
+  id: 'project-aws', kind: 'aws', visibility: 'project', name: 'Project AWS',
+  status: 'configured', revision: 1, is_default: false,
+} as const
+const awsCheck = {
+  id: 'aws_check_connection', version: '1.0.0', manifest_digest: 'a'.repeat(64),
+  input_schema: {}, output_schema: {}, effect: 'read_only_external', permitted: true,
+  required_connector_kinds: ['aws'], connector_readiness: { aws: 'ready' },
+} as const
+const checkConversation = {
+  id: 'aws-check-conversation', title: 'AWS connection check', project_id: 'project-a',
+  created_at: '', updated_at: '',
+}
+
+async function clickAwsCheck(wrapper: Awaited<ReturnType<typeof mountCatalog>>['wrapper']) {
+  await wrapper.get('[aria-label="Configure Project AWS"]').trigger('click')
+  await flushPromises()
+  const button = document.body.querySelector<HTMLButtonElement>('[data-testid="check-aws-connection"]')!
+  button.click()
+  await flushPromises()
+}
 
 const globalBrave = {
   id: 'global-brave-1', kind: 'brave', visibility: 'global', name: 'Shared Brave',
@@ -61,6 +91,7 @@ async function mountCatalog() {
   await router.push('/connectors')
   await router.isReady()
   const wrapper = mount(ConnectorSettingsView, {
+    attachTo: document.body,
     global: {
       plugins: [pinia, router],
       stubs: { AppLayout: { template: '<div class="app-layout"><slot /></div>' } },
@@ -85,10 +116,76 @@ describe('Connectors catalog page', () => {
       data: { can_manage_global: false, credential_store_ready: true, unavailable_reason: null },
     } as never)
     api.listGlobalConnectors.mockResolvedValue({ data: [] } as never)
+    api.getProjectConnector.mockResolvedValue({ data: {
+      name: awsConnector.name,
+      configuration: {
+        schema_version: 1, kind: 'aws', region: 'us-east-1',
+        expected_account_id: '123456789012', basic_role_arn: 'arn:aws:iam::123456789012:role/ReadOnly',
+      },
+    } } as never)
+    requests.post.mockResolvedValue({ data: checkConversation } as never)
+    runs.getOperations.mockResolvedValue({ data: { items: [], next_cursor: null } } as never)
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    document.body.innerHTML = ''
+  })
+
+  it('does not create or redirect to an empty conversation when AWS checks are disabled', async () => {
+    api.listProjectConnectors.mockResolvedValue({ data: [awsConnector] } as never)
+    api.getProjectCapabilities.mockResolvedValue({ data: [{ ...awsCheck, permitted: false }] } as never)
+    const { wrapper, router } = await mountCatalog()
+
+    await clickAwsCheck(wrapper)
+
+    expect(router.currentRoute.value.name).toBe('connectors')
+    expect(requests.post).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toContain('disabled')
+    wrapper.unmount()
+  })
+
+  it('waits for AWS check admission before redirecting to its conversation', async () => {
+    api.listProjectConnectors.mockResolvedValue({ data: [awsConnector] } as never)
+    api.getProjectCapabilities.mockResolvedValue({ data: [awsCheck] } as never)
+    let accept!: (value: never) => void
+    runs.submitTool.mockReturnValueOnce(new Promise((resolve) => { accept = resolve }) as never)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { wrapper, router, pinia } = await mountCatalog()
+
+    await clickAwsCheck(wrapper)
+
+    expect(router.currentRoute.value.name).toBe('connectors')
+    expect(runs.submitTool).toHaveBeenCalledWith(checkConversation.id, {
+      client_request_id: expect.any(String),
+      capability: { id: awsCheck.id, version: awsCheck.version, manifest_digest: awsCheck.manifest_digest },
+      arguments: { connector_id: awsConnector.id },
+    })
+    accept({ data: { id: 'check-run', status: 'queued', graph_version: 2, operations: [] } } as never)
+    await flushPromises()
+
+    expect(router.currentRoute.value.params.conversationId).toBe(checkConversation.id)
+    expect(useChatStore(pinia).runCards.get(checkConversation.id)?.run_id).toBe('check-run')
+    wrapper.unmount()
+  })
+
+  it('shows a failed AWS check submission on Connectors and preserves the command for retry', async () => {
+    api.listProjectConnectors.mockResolvedValue({ data: [awsConnector] } as never)
+    api.getProjectCapabilities.mockResolvedValue({ data: [awsCheck] } as never)
+    runs.submitTool.mockRejectedValueOnce({ response: { status: 503, data: {
+      detail: { error: { code: 'submit_tool_failed', message: 'Tool command could not be submitted' } },
+    } } })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { wrapper, router, pinia } = await mountCatalog()
+
+    await clickAwsCheck(wrapper)
+
+    expect(router.currentRoute.value.name).toBe('connectors')
+    expect(wrapper.get('[role="alert"]').text()).toContain('Tool command could not be submitted')
+    expect(useChatStore(pinia).pendingToolRequests.size).toBe(1)
+    wrapper.unmount()
   })
 
   it('shows Global cards for both supported services before any configuration form is selected', async () => {

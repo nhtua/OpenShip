@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ConnectorCard from '@/components/connectors/ConnectorCard.vue'
@@ -127,14 +127,16 @@ async function checkAwsConnection(connectorId: string, resourceBindingId: string
     pageError.value = 'AWS connection checks are unavailable in this installation.'
     return
   }
+  if (!capability.permitted) {
+    pageError.value = 'AWS connection checks are disabled for this installation. Enable AWS tools and restart the API and worker.'
+    return
+  }
   awsCheckBusy.value = true
   pageError.value = null
   try {
     const conversation = await chat.createConversation('AWS connection check', projectId)
     if (!conversation) throw new Error('Conversation could not be created')
-    await router.push({ name: 'conversation', params: { conversationId: conversation.id } })
-    await nextTick()
-    await chat.submitToolSearch(conversation.id, {
+    const accepted = await chat.submitToolSearch(conversation.id, {
       capability: {
         id: capability.id,
         version: capability.version,
@@ -145,6 +147,11 @@ async function checkAwsConnection(connectorId: string, resourceBindingId: string
         ...(resourceBindingId ? { resource_binding_id: resourceBindingId } : {}),
       },
     })
+    if (!accepted) {
+      pageError.value = chat.error ?? 'The AWS connection check could not be queued. Reload the project and try again.'
+      return
+    }
+    await router.push({ name: 'conversation', params: { conversationId: conversation.id } })
   } catch {
     pageError.value = 'The AWS connection check could not be queued. Reload the project and try again.'
   } finally {

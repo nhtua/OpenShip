@@ -100,6 +100,12 @@ specification and AWS's [S3 metrics and dimensions](https://docs.aws.amazon.com/
 
 ## 3. Configure the project Connector
 
+Add `aws_check_connection` and `aws_s3_bucket_storage` to `TOOL_ENABLED_IDS`
+in the configuration used by both the API and runtime worker, preserving any
+existing tool IDs. Restart both processes after changing the setting.
+Configuring a Connector or binding a bucket does not enable these tools by
+itself. Disabled tools are omitted from the conversation's tool menu.
+
 In the project's Connector settings:
 
 1. Add an AWS Connector and enter its name, AWS region, expected 12-digit
@@ -114,6 +120,14 @@ In the project's Connector settings:
    does not discover buckets or prove the bucket still exists.
 5. Run the S3 storage observation for the selected binding. The storage check
    verifies account, bucket owner and region before reading CloudWatch metrics.
+
+In a conversation belonging to the same project, choose **+ → S3 bucket
+storage**, select the bound bucket and submit to run the observation directly.
+For automatic use, select the bucket in the composer's **S3 buckets** selector,
+enable **Let the model use tools automatically**, and ask about its storage.
+The bucket selector chooses targets; it does not attach or run a tool. The
+connection check runs explicitly from Connector settings and is excluded
+from the model's tool choices.
 
 The observation reports CloudWatch's daily bucket-size measurements, not a
 live object scan. Missing dimensions remain unknown, and values from different

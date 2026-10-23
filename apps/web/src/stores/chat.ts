@@ -1034,22 +1034,22 @@ export const useChatStore = defineStore('chat', () => {
   async function submitToolSearch(
     conversationId: string,
     command: Omit<ToolCommandRequest, 'client_request_id'>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const requestId = generateRequestId()
     const payload: ToolCommandRequest = { client_request_id: requestId, ...command }
     pendingToolRequests.value.set(requestId, { conversation_id: conversationId, payload })
     error.value = null
     isStreaming.value = true
     try {
-      await submitPendingToolRequest(requestId)
+      return await submitPendingToolRequest(requestId)
     } finally {
       isStreaming.value = false
     }
   }
 
-  async function submitPendingToolRequest(requestId: string): Promise<void> {
+  async function submitPendingToolRequest(requestId: string): Promise<boolean> {
     const pending = pendingToolRequests.value.get(requestId)
-    if (!pending?.conversation_id) return
+    if (!pending?.conversation_id) return false
     const convId = pending.conversation_id
     isSubmitting.value = true
     try {
@@ -1083,10 +1083,12 @@ export const useChatStore = defineStore('chat', () => {
           void hydrateRunCard(convId, event.run_id ?? run.id)
         }
       }).catch((streamError) => console.warn('Tool event stream failed', streamError))
+      return true
     } catch (err) {
       console.error('Failed to submit search command', err)
       error.value = safeMessage(err, 'Failed to submit search. Please retry the same command.')
       if (lifecycleConflictCode(err)) await refreshLifecycleAfterConflict(convId)
+      return false
     } finally {
       isSubmitting.value = false
     }
