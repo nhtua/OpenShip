@@ -11,12 +11,15 @@ function requireOperatorSetup(): { token: string; projectId: string } {
 }
 
 async function openConnectorCreation(page: Page, name: string): Promise<void> {
-  const addAnother = page.getByRole('button', { name: `Add another ${name}` })
-  if (await addAnother.count()) {
-    await addAnother.click()
+  const createCard = page.getByRole('button', { name: `Configure ${name}`, exact: true })
+  if (await createCard.count()) {
+    await createCard.click()
     return
   }
-  await page.getByRole('button', { name: `Configure ${name}` }).click()
+
+  const kind = name === 'Brave Search' ? 'brave' : 'tavily'
+  await page.locator(`[data-kind="${kind}"][data-visibility="global"] button`).first().click()
+  await page.getByRole('dialog').getByRole('button', { name: `Add another ${name}` }).click()
 }
 
 test('operator configures shared search and chooses project defaults independently', async ({ page, request }) => {
@@ -117,21 +120,22 @@ test('operator configures shared search and chooses project defaults independent
   await page.goto(`/projects/${projectId}/settings`)
   await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible()
   await expect(page.getByText('Choose a Global connector to replace this legacy Project default. Existing project access remains unchanged until you select one.')).toBeVisible()
-  await page.getByLabel('Search default').selectOption(tavily!.id)
-  await expect(page.getByLabel('Search default')).toHaveValue(tavily!.id)
+  const searchDefault = page.getByRole('combobox', { name: 'Search default' })
+  await searchDefault.selectOption(tavily!.id)
+  await expect(searchDefault).toHaveValue(tavily!.id)
 
   await page.getByTestId('project-selector-trigger').click()
   await page.getByRole('menuitemradio', { name: 'Shared Search Peer' }).click()
   await expect(page).toHaveURL(new RegExp(`/projects/${peerProject!.id}/settings$`))
   await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible()
-  await expect(page.getByLabel('Search default')).toHaveValue('')
-  await page.getByLabel('Search default').selectOption(brave!.id)
-  await expect(page.getByLabel('Search default')).toHaveValue(brave!.id)
+  await expect(searchDefault).toHaveValue('')
+  await searchDefault.selectOption(brave!.id)
+  await expect(searchDefault).toHaveValue(brave!.id)
 
   await page.getByTestId('project-selector-trigger').click()
   await page.getByRole('menuitemradio', { name: projects.find((project) => project.id === projectId)!.name }).click()
   await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`))
-  await expect(page.getByLabel('Search default')).toHaveValue(tavily!.id)
+  await expect(searchDefault).toHaveValue(tavily!.id)
 
   for (const [project, selectedService, selectedConnector] of [
     [projectId, 'tavily', tavily!.id],
@@ -186,7 +190,7 @@ test('a definite origin rejection clears the key without polling or resubmission
   await dialog.getByLabel('Connector name').fill('Rejected origin test')
   const key = dialog.getByLabel('Tavily Search API key')
   await key.fill('sample-rejected')
-  await dialog.getByRole('button', { name: 'Add global connector' }).click()
+  await dialog.getByRole('button', { name: /Add (global )?connector/ }).click()
   await expect(key).toHaveValue('')
   await expect(dialog.getByRole('status')).toContainText('This browser origin is not allowed to configure connectors')
   await expect(dialog.getByTestId('check-connector-request')).toHaveCount(0)
