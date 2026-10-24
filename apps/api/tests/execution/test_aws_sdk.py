@@ -6,6 +6,7 @@ import logging
 import httpcore
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from httpx import AsyncByteStream
 
 from src.openship.providers.errors import ProviderError
@@ -103,7 +104,7 @@ async def test_real_botocore_client_signs_and_parses_identity_through_adapter():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("service", ["sts", "s3"])
+@pytest.mark.parametrize("service", ["sts", "s3", "ec2"])
 async def test_native_sdk_requests_cross_the_production_destination_checks(
     service, monkeypatch
 ):
@@ -112,8 +113,11 @@ async def test_native_sdk_requests_cross_the_production_destination_checks(
     async def respond(_pool, request):
         forwarded.append(request)
         body = (
-            _identity_xml() if service == "sts"
+            _identity_xml()
+            if service == "sts"
             else b'<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'
+            if service == "s3"
+            else b'<DescribeInstancesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"><reservationSet/></DescribeInstancesResponse>'
         )
         return httpcore.Response(
             200, headers={"content-type": "text/xml"}, content=_BodyStream(body)
@@ -129,16 +133,70 @@ async def test_native_sdk_requests_cross_the_production_destination_checks(
             result = await aws.run(aws.client("sts").get_caller_identity)
             assert result["Account"] == "123456789012"
         else:
-            result = await aws.run(
-                aws.client("s3").get_bucket_location,
-                Bucket="example-bucket", ExpectedBucketOwner="123456789012",
-            )
-            assert result["LocationConstraint"] is None
+            if service == "s3":
+                result = await aws.run(
+                    aws.client("s3").get_bucket_location,
+                    Bucket="example-bucket", ExpectedBucketOwner="123456789012",
+                )
+                assert result["LocationConstraint"] is None
+            else:
+                result = await aws.run(
+                    aws.client("ec2", region="us-west-2").describe_instances,
+                )
+                assert result["Reservations"] == []
 
     assert len(forwarded) == 1
-    assert forwarded[0].url.host == f"{service}.us-east-1.amazonaws.com".encode()
+    expected_host = (
+        b"s3.us-east-1.amazonaws.com"
+        if service == "s3"
+        else b"ec2.us-west-2.amazonaws.com"
+        if service == "ec2"
+        else b"sts.us-east-1.amazonaws.com"
+    )
+    assert forwarded[0].url.host == expected_host
     if service == "s3":
         assert forwarded[0].url.target == b"/example-bucket?location"
+    if service == "ec2":
+        assert forwarded[0].url.target == b"/"
+
+
+@pytest.mark.parametrize(
+    ("service", "region", "expected_endpoint"),
+    [
+        ("cloudwatch", "us-east-1", "https://cloudwatch.us-east-1.amazonaws.com"),
+        ("ec2", "us-west-2", "https://ec2.us-west-2.amazonaws.com"),
+        ("iam", "us-east-1", "https://iam.amazonaws.com"),
+        ("rds", "eu-west-1", "https://rds.eu-west-1.amazonaws.com"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_botocore_endpoint_resolver_selects_service_and_region(service, region, expected_endpoint):
+    AwsSdkContext, AwsSdkAuth, _AwsSdkError = _sdk_types()
+    async with AwsSdkContext(
+        auth=AwsSdkAuth("explicit-access-key", "explicit-secret-key"),
+        region="us-east-1",
+        control=_Control(),
+        transport_factory=lambda _endpoint: httpx.MockTransport(lambda _request: httpx.Response(200)),
+    ) as aws:
+        client = aws.client(service, region=region)
+        assert client.meta.endpoint_url == expected_endpoint
+
+
+@pytest.mark.asyncio
+async def test_global_endpoint_uses_resolved_signing_region():
+    AwsSdkContext, AwsSdkAuth, _AwsSdkError = _sdk_types()
+    async with AwsSdkContext(
+        auth=AwsSdkAuth("explicit-access-key", "explicit-secret-key"),
+        region="us-east-1",
+        control=_Control(),
+        transport_factory=lambda _endpoint: httpx.MockTransport(
+            lambda _request: httpx.Response(200)
+        ),
+    ) as aws:
+        client = aws.client("iam", region="eu-west-1")
+
+    assert client.meta.endpoint_url == "https://iam.amazonaws.com"
+    assert client.meta.region_name == "us-east-1"
 
 
 @pytest.mark.asyncio
@@ -338,6 +396,66 @@ async def test_access_denial_is_classified_without_returning_provider_message(
     assert caught.value.code == expected_code
     assert "provider-error-message-sentinel" not in str(caught.value)
     assert "provider-error-message-sentinel" not in repr(caught.value)
+    if operation == "get_caller_identity":
+        assert caught.value.safe_message == (
+            "The AWS connector role does not have permission to perform this operation."
+        )
+
+
+@pytest.mark.parametrize(
+    "provider_code, expected_code",
+    [
+        ("NoSuchBucket", "aws_not_found"),
+        ("ResourceNotFoundException", "aws_not_found"),
+        ("ThrottlingException", "aws_throttled"),
+        ("SlowDown", "aws_throttled"),
+        ("InvalidParameterValue", "aws_invalid_parameters"),
+        ("ValidationException", "aws_invalid_parameters"),
+        ("UnknownOperationException", "aws_operation_not_supported"),
+    ],
+)
+def test_provider_errors_are_mapped_to_typed_secret_safe_codes(provider_code, expected_code):
+    from types import SimpleNamespace
+
+    sdk_module = importlib.import_module("src.openship.execution.aws_sdk")
+    client = SimpleNamespace(
+        meta=SimpleNamespace(
+            service_model=SimpleNamespace(service_name="s3")
+        )
+    )
+    method = SimpleNamespace(__name__="list_objects_v2", __self__=client)
+    error = ClientError(
+        {"Error": {"Code": provider_code, "Message": "provider secret sentinel"}},
+        "ListObjectsV2",
+    )
+
+    assert sdk_module._safe_client_error_code(method, error) == expected_code
+
+
+@pytest.mark.parametrize(
+    "status_code, expected_code",
+    [(403, "aws_access_denied"), (429, "aws_throttled")],
+)
+def test_http_authorization_and_throttle_statuses_are_classified(status_code, expected_code):
+    from types import SimpleNamespace
+
+    sdk_module = importlib.import_module("src.openship.execution.aws_sdk")
+    method = SimpleNamespace(
+        __name__="describe_instances",
+        __self__=SimpleNamespace(
+            meta=SimpleNamespace(
+                service_model=SimpleNamespace(service_name="ec2")
+            )
+        ),
+    )
+    error = ClientError(
+        {
+            "Error": {"Message": "provider secret sentinel"},
+            "ResponseMetadata": {"HTTPStatusCode": status_code},
+        },
+        "DescribeInstances",
+    )
+    assert sdk_module._safe_client_error_code(method, error) == expected_code
 
 
 @pytest.mark.asyncio

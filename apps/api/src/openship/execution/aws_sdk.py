@@ -24,7 +24,6 @@ _REGION = re.compile(
     r"^(?:(?:af|ap|ca|eu|il|me|mx|sa)-[a-z0-9-]+-\d|"
     r"us-(?!gov-|iso-|isob-|isof-|isoeast-)[a-z0-9-]+-\d)$"
 )
-_SERVICE_PREFIX = {"sts": "sts", "cloudwatch": "monitoring", "s3": "s3"}
 _MAX_WORKERS = 4
 _POLL_SECONDS = 0.05
 
@@ -73,7 +72,7 @@ class AwsSdkContext:
             max_workers=max_workers,
             thread_name_prefix="openship-aws-sdk",
         )
-        self._clients: dict[str, object] = {}
+        self._clients: dict[tuple[str, str], object] = {}
         self._running: dict[str, concurrent.futures.Future] = {}
         self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -86,13 +85,16 @@ class AwsSdkContext:
             request_budget=request_budget,
         )
 
-    def client(self, service: str):
-        if self._closed or service not in _SERVICE_PREFIX:
+    def client(self, service: str, *, region: str | None = None):
+        selected_region = region or self.region
+        if self._closed or not isinstance(service, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", service):
             raise AwsSdkError("aws_configuration_error")
-        existing = self._clients.get(service)
+        if not _REGION.fullmatch(selected_region):
+            raise AwsSdkError("aws_configuration_error")
+        key = (service, selected_region)
+        existing = self._clients.get(key)
         if existing is not None:
             return existing
-        endpoint = f"https://{_SERVICE_PREFIX[service]}.{self.region}.amazonaws.com"
         botocore_session = botocore.session.Session()
         config_store = botocore_session.get_component("config_store")
         config_store.set_config_provider("profile", ConstantProvider(value=None))
@@ -100,18 +102,40 @@ class AwsSdkContext:
         for name, value in {
             "config_file": os.devnull,
             "credentials_file": os.devnull,
-            "region": self.region,
+            "region": selected_region,
         }.items():
             botocore_session.set_config_variable(name, value)
+        endpoint_resolver = botocore_session.get_component("endpoint_resolver")
+        endpoint_metadata = endpoint_resolver.construct_endpoint(
+            service,
+            selected_region,
+            use_dualstack_endpoint=False,
+            use_fips_endpoint=False,
+        )
+        if (
+            not isinstance(endpoint_metadata, dict)
+            or endpoint_metadata.get("partition") != "aws"
+            or not isinstance(endpoint_metadata.get("hostname"), str)
+        ):
+            raise AwsSdkError("aws_operation_not_supported")
+        credential_scope = endpoint_metadata.get("credentialScope", {})
+        signing_region = (
+            credential_scope.get("region", selected_region)
+            if isinstance(credential_scope, dict)
+            else selected_region
+        )
+        if not isinstance(signing_region, str) or not _REGION.fullmatch(signing_region):
+            raise AwsSdkError("aws_operation_not_supported")
+        endpoint = f"https://{endpoint_metadata['hostname']}"
         session = boto3.session.Session(
             aws_access_key_id=self._auth.access_key_id,
             aws_secret_access_key=self._auth.secret_access_key,
             aws_session_token=self._auth.session_token,
-            region_name=self.region,
+            region_name=signing_region,
             botocore_session=botocore_session,
         )
         options = {
-            "region_name": self.region,
+            "region_name": signing_region,
             "signature_version": "v4",
             "proxies": {},
             "retries": {"mode": "standard", "total_max_attempts": 1},
@@ -126,7 +150,7 @@ class AwsSdkContext:
             options["s3"] = {"addressing_style": "path"}
         sdk_client = session.client(
             service,
-            region_name=self.region,
+            region_name=signing_region,
             endpoint_url=endpoint,
             verify=True,
             config=Config(**options),
@@ -136,7 +160,7 @@ class AwsSdkContext:
         # remain inside the SDK.
         sdk_client._endpoint.http_session.close()
         sdk_client._endpoint.http_session = self._http_session
-        self._clients[service] = sdk_client
+        self._clients[key] = sdk_client
         return sdk_client
 
     async def run(self, method, **parameters):
@@ -275,9 +299,11 @@ class AwsSdkContext:
 
 def _safe_client_error_code(method, error: ClientError) -> str:
     code = error.response.get("Error", {}).get("Code")
-    if not isinstance(code, str):
-        return "aws_unavailable"
-    if code in {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation"}:
+    response_metadata = error.response.get("ResponseMetadata", {})
+    status = response_metadata.get("HTTPStatusCode") if isinstance(response_metadata, dict) else None
+    if status == 403 or code in {
+        "AccessDenied", "AccessDeniedException", "UnauthorizedOperation", "Forbidden"
+    }:
         service_name = getattr(getattr(method.__self__, "meta", None), "service_model", None)
         if (
             getattr(service_name, "service_name", None) == "sts"
@@ -285,8 +311,29 @@ def _safe_client_error_code(method, error: ClientError) -> str:
         ):
             return "aws_trust_denied"
         return "aws_access_denied"
+    if status == 429:
+        return "aws_throttled"
+    if not isinstance(code, str):
+        return "aws_unavailable"
     if code in {"ExpiredToken", "ExpiredTokenException"}:
         return "aws_credentials_expired"
     if code in {"InvalidClientTokenId", "UnrecognizedClientException", "SignatureDoesNotMatch"}:
         return "aws_credentials_invalid"
+    if code in {
+        "NoSuchBucket", "NoSuchKey", "NoSuchEntity", "NotFound",
+        "ResourceNotFoundException", "DBInstanceNotFound", "InvalidInstanceID.NotFound",
+    }:
+        return "aws_not_found"
+    if code in {
+        "Throttling", "ThrottlingException", "RequestLimitExceeded", "TooManyRequestsException",
+        "SlowDown",
+    }:
+        return "aws_throttled"
+    if code in {
+        "InvalidParameter", "InvalidParameterValue", "InvalidParameterCombination",
+        "ValidationException", "MalformedQueryString", "SerializationException",
+    }:
+        return "aws_invalid_parameters"
+    if code in {"UnknownOperationException", "UnsupportedOperation", "NotImplemented"}:
+        return "aws_operation_not_supported"
     return "aws_unavailable"

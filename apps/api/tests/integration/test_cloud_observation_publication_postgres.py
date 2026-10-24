@@ -463,7 +463,7 @@ def _synthetic_transport(requests, *, on_request=None):
                 headers={"content-type": "application/xml"},
                 stream=_BodyStream(body),
             )
-        assert request.url.host.startswith("monitoring.")
+        assert request.url.host.startswith(("monitoring.", "cloudwatch."))
         payload = json.loads(request.content)
         assert request.headers["x-amz-target"].endswith("GetMetricData")
         assert len(payload["MetricDataQueries"]) == 22

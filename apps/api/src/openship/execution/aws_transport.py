@@ -26,9 +26,10 @@ AWS_MAX_REQUESTS = 8
 AWS_MAX_TIMEOUT_SECONDS = 30.0
 _CHUNK_BYTES = 64 * 1024
 _AWS_HOST = re.compile(
-    r"^(?:sts|monitoring|s3)\."
-    r"(?:(?:af|ap|ca|eu|il|me|mx|sa)-[a-z0-9-]+-\d|"
-    r"us-(?!gov-|iso-|isob-|isof-|isoeast-)[a-z0-9-]+-\d)\.amazonaws\.com$"
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\."
+    r"(?:(?:(?:af|ap|ca|eu|il|me|mx|sa)-[a-z0-9-]+-\d|"
+    r"us-(?!gov-|iso-|isob-|isof-|isoeast-)[a-z0-9-]+-\d)\.)?"
+    r"amazonaws\.com$"
 )
 
 _SAFE_MESSAGES = {
@@ -37,7 +38,7 @@ _SAFE_MESSAGES = {
     "aws_request_limit_exceeded": "The AWS request limit was exceeded.",
     "aws_timeout": "The AWS request exceeded its execution deadline.",
     "aws_cancelled": "The AWS request was cancelled.",
-    "aws_access_denied": "AWS denied access to this operation.",
+    "aws_access_denied": "The AWS connector role does not have permission to perform this operation.",
     "aws_trust_denied": "AWS denied the configured role assumption.",
     "aws_credentials_expired": "The AWS source credentials have expired.",
     "aws_credentials_invalid": "The AWS source credentials were rejected.",
@@ -48,6 +49,11 @@ _SAFE_MESSAGES = {
     "aws_invalid_response": "The AWS service returned an invalid response.",
     "aws_unavailable": "The AWS service is temporarily unavailable.",
     "aws_operation_not_supported": "The AWS operation is not supported by this runtime.",
+    "aws_not_found": "The requested AWS resource was not found or is not available to this role.",
+    "aws_throttled": "AWS is throttling this request. Try again shortly.",
+    "aws_invalid_parameters": "The AWS service rejected the operation parameters.",
+    "aws_unsupported_protocol": "The AWS operation uses a protocol this runtime cannot safely handle.",
+    "aws_unsupported_output": "The AWS operation returned data this runtime cannot safely publish.",
 }
 
 
@@ -139,7 +145,7 @@ class _HttpcoreResponseStream(httpx.AsyncByteStream):
 
 
 class AwsPinnedHttpTransport(httpx.AsyncBaseTransport):
-    """HTTPS transport restricted to regional STS, CloudWatch and S3 endpoints."""
+    """HTTPS transport restricted to resolver-selected commercial AWS endpoints."""
 
     def __init__(self, endpoint: str, *, resolver=None, backend=None):
         try:

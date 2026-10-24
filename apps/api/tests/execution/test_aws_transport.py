@@ -64,6 +64,8 @@ async def test_aws_transport_rejects_unsupported_request_targets(invalid_request
         ("https://sts.us-east-1.amazonaws.com", "POST", "/"),
         ("https://monitoring.us-east-1.amazonaws.com", "POST", "/"),
         ("https://s3.us-east-1.amazonaws.com", "GET", "/example-bucket?location"),
+        ("https://ec2.us-west-2.amazonaws.com", "POST", "/"),
+        ("https://iam.amazonaws.com", "POST", "/?Action=ListUsers"),
     ],
 )
 async def test_aws_transport_forwards_normal_requests_without_url_credentials(
@@ -105,14 +107,18 @@ async def test_aws_transport_pins_tcp_to_resolved_public_ip():
     backend = _Backend()
 
     async def resolve(host, port):
-        assert host == "sts.us-east-1.amazonaws.com"
+        assert host in {
+            "sts.us-east-1.amazonaws.com",
+            "ec2.us-west-2.amazonaws.com",
+            "iam.amazonaws.com",
+        }
         assert port == 443
         return ["93.184.216.34"]
 
     pinned = PinnedNetworkBackend(
-        "sts.us-east-1.amazonaws.com", backend=backend, resolver=resolve
+        "ec2.us-west-2.amazonaws.com", backend=backend, resolver=resolve
     )
-    await pinned.connect_tcp("sts.us-east-1.amazonaws.com", 443)
+    await pinned.connect_tcp("ec2.us-west-2.amazonaws.com", 443)
 
     assert backend.targets == [("93.184.216.34", 443)]
 

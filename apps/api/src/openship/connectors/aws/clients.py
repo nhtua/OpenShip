@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,11 @@ _CAPABILITY_READ_OPERATIONS = {
         "sts": frozenset({"get_caller_identity"}),
     },
 }
+_AWS_SERVICE_NAME = re.compile(r"^[a-z0-9-]{1,64}$")
+_AWS_REGION = re.compile(
+    r"^(?:(?:af|ap|ca|eu|il|me|mx|sa)-[a-z0-9-]+-\d|"
+    r"us-(?!gov-|iso-|isob-|isof-|isoeast-)[a-z0-9-]+-\d)$"
+)
 
 
 class AwsRoleAccess:
@@ -71,10 +77,16 @@ class AwsRoleAccess:
         self._run_lock = asyncio.Lock()
         self._closed = False
 
-    def client(self, service: str) -> _AwsServiceClient:
-        if service not in {"sts", "cloudwatch", "s3"}:
+    def client(self, service: str, *, region: str | None = None) -> _AwsServiceClient:
+        selected_region = region or self._configuration.region
+        if (
+            not isinstance(service, str)
+            or _AWS_SERVICE_NAME.fullmatch(service) is None
+            or not isinstance(selected_region, str)
+            or _AWS_REGION.fullmatch(selected_region) is None
+        ):
             raise AwsSdkError("aws_operation_not_supported")
-        return _AwsServiceClient(self, service)
+        return _AwsServiceClient(self, service, selected_region)
 
     @property
     def configuration(self) -> ConnectorConfiguration:
@@ -84,29 +96,41 @@ class AwsRoleAccess:
     def request_budget(self) -> AwsRequestBudget:
         return self._request_budget
 
-    async def run(self, operation: _AwsSdkMethod, **parameters):
+    async def run(self, operation: _AwsSdkMethod, *, descriptor=None, **parameters):
         if not isinstance(operation, _AwsSdkMethod) or operation.access is not self:
             raise AwsSdkError("aws_operation_not_supported")
         operation_profile = _CAPABILITY_READ_OPERATIONS.get(self._capability_id or "")
-        if operation_profile is not None:
+        if self._capability_id == "aws_read":
+            from .read_catalog import AwsReadOperation
+
+            operation_is_allowed = (
+                isinstance(descriptor, AwsReadOperation)
+                and descriptor.supported
+                and descriptor.service == operation.service
+                and descriptor.operation == operation.name
+                and self._allowed_operations is not None
+                and f"{operation.service}.{operation.name}" in self._allowed_operations
+            )
+        elif operation_profile is not None:
+            sdk_client = None
             operation_is_allowed = operation.name in operation_profile.get(
                 operation.service, frozenset()
             )
         elif self._capability_id is None:
+            sdk_client = None
             operation_is_allowed = operation.name in _ALLOWED_READ_OPERATIONS.get(
                 operation.service, frozenset()
             )
         else:
+            sdk_client = None
             operation_is_allowed = (
                 self._allowed_operations is not None
                 and operation.name in self._allowed_operations
             )
-        if (
-            not operation_is_allowed
-            or (
-                self._allowed_operations is not None
-                and operation.name not in self._allowed_operations
-            )
+        if not operation_is_allowed or (
+            self._capability_id != "aws_read"
+            and self._allowed_operations is not None
+            and operation.name not in self._allowed_operations
         ):
             raise AwsSdkError("aws_operation_not_supported")
         async with self._run_lock:
@@ -143,10 +167,19 @@ class AwsRoleAccess:
                     self._retired.discard(old_context)
                     await old_context.aclose()
             context = self._sdk_context
-            sdk_client = context.client(operation.service)
-            api_name = sdk_client.meta.method_to_api_mapping.get(operation.name)
-            if api_name not in sdk_client.meta.service_model.operation_names:
-                raise AwsSdkError("aws_operation_not_supported")
+            if self._capability_id == "aws_read":
+                sdk_client = context.client(operation.service, region=operation.region)
+                api_name = sdk_client.meta.method_to_api_mapping.get(operation.name)
+                if (
+                    api_name != descriptor.api_name
+                    or api_name not in sdk_client.meta.service_model.operation_names
+                ):
+                    raise AwsSdkError("aws_operation_not_supported")
+            else:
+                sdk_client = context.client(operation.service)
+                api_name = sdk_client.meta.method_to_api_mapping.get(operation.name)
+                if api_name not in sdk_client.meta.service_model.operation_names:
+                    raise AwsSdkError("aws_operation_not_supported")
             method = getattr(sdk_client, operation.name)
             self._active[context] = self._active.get(context, 0) + 1
         try:
@@ -177,27 +210,29 @@ class AwsRoleAccess:
 
 
 class _AwsServiceClient:
-    __slots__ = ("_access", "_service")
+    __slots__ = ("_access", "_region", "_service")
 
-    def __init__(self, access: AwsRoleAccess, service: str):
+    def __init__(self, access: AwsRoleAccess, service: str, region: str):
         self._access = access
         self._service = service
+        self._region = region
 
     def __getattr__(self, name: str) -> _AwsSdkMethod:
         if name.startswith("_"):
             raise AttributeError(name)
-        return _AwsSdkMethod(self._access, self._service, name)
+        return _AwsSdkMethod(self._access, self._service, self._region, name)
 
     def __repr__(self) -> str:
         return f"AwsServiceClient(service={self._service!r})"
 
 
 class _AwsSdkMethod:
-    __slots__ = ("access", "name", "service")
+    __slots__ = ("access", "name", "region", "service")
 
-    def __init__(self, access: AwsRoleAccess, service: str, name: str):
+    def __init__(self, access: AwsRoleAccess, service: str, region: str, name: str):
         self.access = access
         self.service = service
+        self.region = region
         self.name = name
 
     def __repr__(self) -> str:
