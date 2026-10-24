@@ -11,9 +11,12 @@ from .artifacts.routes import router as artifacts_router
 from .auth.routes import router as auth_router
 from .capabilities.routes import router as capabilities_router
 from .chat.routes import router as chat_router
+from .connectors.routes import router as connectors_router
 from .events.routes import router as events_router
 from .providers.routes import router as providers_router
+from .resources.routes import router as resources_router
 from .runs.routes import router as runs_router
+from .workspace.project_routes import router as project_router
 from .workspace.routes import router as workspace_router
 
 app = FastAPI(title="OpenShip API")
@@ -40,10 +43,13 @@ app.include_router(auth_router)
 app.include_router(artifacts_router)
 app.include_router(capabilities_router)
 app.include_router(chat_router)
+app.include_router(connectors_router)
 app.include_router(runs_router)
 app.include_router(workspace_router)
+app.include_router(project_router)
 app.include_router(events_router)
 app.include_router(providers_router)
+app.include_router(resources_router)
 
 
 @app.get("/health")

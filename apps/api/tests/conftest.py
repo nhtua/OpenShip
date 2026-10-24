@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 import src.openship.database.session as db_session
@@ -23,9 +24,7 @@ test_engine = create_engine(
     _TEST_DATABASE_URL,
     connect_args={"check_same_thread": False},
 )
-TestSessionLocal = sessionmaker(
-    autocommit=False, autoflush=False, bind=test_engine
-)
+TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 # Patch the module so that get_db() uses our test engine.
 db_session.engine = test_engine
@@ -46,11 +45,18 @@ def setup_db(request):
         or "test_provider_pinning" in test_path
         or "test_phase4_execution_migration" in test_path
         or "test_tool_admission_postgres" in test_path
+        or "test_connector_commands_postgres" in test_path
         or "test_tool_transcript_migration" in test_path
         or "test_workspace_migration_postgres" in test_path
+        or "test_project_lifecycle_postgres" in test_path
+        or "test_archive_lifecycle_postgres" in test_path
+        or "test_project_lifecycle_migration" in test_path
         or "test_workspace_retention_postgres" in test_path
         or "test_tool_transcript_postgres" in test_path
         or "test_agent_tool_loop_postgres" in test_path
+        or "test_phase5_resources_postgres" in test_path
+        or "test_cloud_observation_publication_postgres" in test_path
+        or "test_connector_resume_postgres" in test_path
     ):
         yield
         return
@@ -121,10 +127,71 @@ datefmt = %H:%M:%S
     yield
 
 
+@pytest.fixture(autouse=True)
+def cleanup_global_connector_fixtures(setup_db):
+    """Keep installation-global Connector fixtures isolated between tests."""
+    from src.openship.connectors.models import (
+        Connector,
+        ConnectorAvailability,
+        ConnectorRequestLedger,
+        ConnectorRevision,
+        CredentialVersion,
+        ProjectConnectorDefault,
+    )
+
+    db = TestSessionLocal()
+    try:
+        before = {
+            row[0]
+            for row in db.query(Connector.id)
+            .filter(Connector.visibility == "global")
+            .all()
+        }
+    except OperationalError:
+        db.rollback()
+        db.close()
+        yield
+        return
+    db.close()
+
+    yield
+
+    with TestSessionLocal() as db:
+        current = {
+            row[0]
+            for row in db.query(Connector.id)
+            .filter(Connector.visibility == "global")
+            .all()
+        }
+        created = current - before
+        if not created:
+            return
+        db.query(ConnectorAvailability).filter(
+            ConnectorAvailability.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(ProjectConnectorDefault).filter(
+            ProjectConnectorDefault.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(ConnectorRequestLedger).filter(
+            ConnectorRequestLedger.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(ConnectorRevision).filter(
+            ConnectorRevision.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(CredentialVersion).filter(
+            CredentialVersion.connector_id.in_(created)
+        ).delete(synchronize_session=False)
+        db.query(Connector).filter(Connector.id.in_(created)).delete(
+            synchronize_session=False
+        )
+        db.commit()
+
+
 @pytest.fixture
 def client():
     """Create a FastAPI test client."""
     from src.openship.main import app
+
     return TestClient(app)
 
 
@@ -133,15 +200,19 @@ def auth_token(client: TestClient, request) -> str:
     """Register a user and return an auth token."""
     # Use unique username per test to avoid conflicts
     import hashlib
+
     test_name = request.node.name
     short_id = hashlib.md5(test_name.encode()).hexdigest()[:8]
     username = f"tuser_{short_id}"
     email = f"tuser_{short_id}@example.com"
-    response = client.post("/api/auth/register", json={
-        "username": username,
-        "email": email,
-        "password": "password123",
-    })
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "username": username,
+            "email": email,
+            "password": "password123",
+        },
+    )
     assert response.status_code == 201, f"Failed to register user: {response.text}"
     return response.json()["access_token"]
 
@@ -150,6 +221,7 @@ def auth_token(client: TestClient, request) -> str:
 def authorized_client(client: TestClient, auth_token: str):
     """Return headers with Bearer token for authenticated requests."""
     return {"Authorization": f"Bearer {auth_token}"}
+
 
 # --- Model profile configuration helpers (non-secret; credentials stay in bindings) ---
 
@@ -184,7 +256,9 @@ def profile_spec(
         "model": FIXTURE_MODEL,
         "endpoint": endpoint or FIXTURE_ENDPOINT,
         "api_version": "chat-completions",
-        "credential_ref": CREDENTIAL_BINDING if credential_ref is None else credential_ref,
+        "credential_ref": CREDENTIAL_BINDING
+        if credential_ref is None
+        else credential_ref,
         "capabilities": {
             "streaming": True,
             "usage_reporting": True,
@@ -209,8 +283,12 @@ def configure_profiles(monkeypatch, specs, default_id: str):
     """Declare the installation's profiles for one test."""
     import json
 
-    monkeypatch.setattr("src.openship.config.settings.model_profiles_json", json.dumps(specs))
-    monkeypatch.setattr("src.openship.config.settings.model_default_profile_id", default_id)
+    monkeypatch.setattr(
+        "src.openship.config.settings.model_profiles_json", json.dumps(specs)
+    )
+    monkeypatch.setattr(
+        "src.openship.config.settings.model_default_profile_id", default_id
+    )
     monkeypatch.setenv(CREDENTIAL_BINDING, SENTINEL_CREDENTIAL)
 
 

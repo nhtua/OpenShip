@@ -1,15 +1,19 @@
+import uuid
+
 import pytest
 from fastapi import HTTPException, Request
 
 from src.openship.auth.models import User
 from src.openship.auth.routes import require_jwt
 from src.openship.capabilities.catalog import list_capabilities
-from src.openship.capabilities.routes import get_capabilities
+from src.openship.capabilities.routes import get_capabilities, get_project_capabilities
 from src.openship.capabilities.routes import router as capabilities_router
 from src.openship.config import settings
+from src.openship.connectors.selection import ConnectorSelectionError
 from src.openship.database.session import SessionLocal
 from src.openship.execution.models import ToolAvailability
 from src.openship.main import app
+from src.openship.workspace.models import Project
 
 
 def test_capability_catalog_requires_authentication():
@@ -54,12 +58,22 @@ def test_catalog_auth_and_secret_redaction(monkeypatch):
         "tavily_web_search",
         "workspace_list_files",
         "workspace_read_file",
+        "aws_check_connection",
+        "aws_s3_bucket_storage",
+        "aws_s3_bucket_metadata",
+        "aws_read_catalog",
+        "aws_read",
     }
     assert all(not item.available for item in summary)
     assert by_id["brave_web_search"].unavailable_reason == "runtime_unavailable"
     assert by_id["tavily_web_search"].unavailable_reason == "runtime_unavailable"
-    assert by_id["workspace_list_files"].unavailable_reason == "disabled"
-    assert by_id["workspace_read_file"].unavailable_reason == "disabled"
+    assert by_id["workspace_list_files"].unavailable_reason == "deployment_restricted"
+    assert by_id["workspace_read_file"].unavailable_reason == "deployment_restricted"
+    assert by_id["aws_check_connection"].unavailable_reason == "deployment_restricted"
+    assert by_id["aws_s3_bucket_storage"].unavailable_reason == "deployment_restricted"
+    assert by_id["aws_s3_bucket_metadata"].unavailable_reason == "deployment_restricted"
+    assert by_id["workspace_list_files"].deployment_restricted is True
+    assert by_id["aws_s3_bucket_metadata"].deployment_restricted is True
     assert sentinel not in body
     assert "credential_binding_ref" not in body
     assert "BRAVE_SEARCH_API_KEY" not in body
@@ -78,6 +92,45 @@ def test_catalog_only_checks_presence_not_key_values(monkeypatch):
     assert catalog["brave_web_search"].available is True
     assert catalog["brave_web_search"].unavailable_reason is None
     assert catalog["tavily_web_search"].available is False
-    assert catalog["tavily_web_search"].unavailable_reason == "disabled"
-    assert catalog["workspace_list_files"].unavailable_reason == "disabled"
-    assert catalog["workspace_read_file"].unavailable_reason == "disabled"
+    assert catalog["tavily_web_search"].unavailable_reason == "deployment_restricted"
+    assert catalog["workspace_list_files"].unavailable_reason == "deployment_restricted"
+    assert catalog["workspace_read_file"].unavailable_reason == "deployment_restricted"
+
+
+def test_project_catalog_reports_permission_separately_from_connector_readiness(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
+    def missing(*_args, **_kwargs):
+        raise ConnectorSelectionError("connector_required")
+
+    monkeypatch.setattr("src.openship.capabilities.routes.resolve_connector", missing)
+    db = SessionLocal()
+    user = User(
+        username=f"project-catalog-{uuid.uuid4().hex[:12]}",
+        email=f"project-catalog-{uuid.uuid4().hex}@example.test",
+        password_hash="test-only",
+    )
+    db.add(user)
+    db.flush()
+    project = Project(owner_user_id=user.id, name=f"Catalog {user.id}")
+    db.add(project)
+    db.commit()
+    try:
+        summary = {
+            item.id: item
+            for item in get_project_capabilities(project.id, user, db)
+        }["brave_web_search"]
+        assert summary.permitted is True
+        assert summary.required_connector_kinds == ("brave",)
+        assert summary.connector_readiness == {"brave": "required"}
+
+        monkeypatch.setattr(settings, "tool_enabled_ids", "")
+        disabled = {
+            item.id: item
+            for item in get_project_capabilities(project.id, user, db)
+        }["brave_web_search"]
+        assert disabled.permitted is False
+        assert disabled.connector_readiness == {"brave": "required"}
+    finally:
+        db.close()

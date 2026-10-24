@@ -2,7 +2,7 @@
 type: roadmap
 summary: Cumulative delivery phases that establish shared foundations with one working use case before expanding capabilities and deployment scale.
 status: proposed
-date: 2026-10-14
+date: 2026-10-21
 ---
 
 # OpenShip Delivery Roadmap
@@ -11,7 +11,7 @@ Build OpenShip through **small, end-to-end milestones**, rather than finishing e
 
 This roadmap is based on the [OpenShip Harness Architecture](./architects.md) in PR #18, at architecture revision `9fe9f37`, and was reviewed after delivery of Phases 1–3.
 
-**Delivery baseline:** Phases **1, 2, and 3 are complete**, as confirmed by the user. Phase 3 is delivered on [PR #22](https://github.com/nhtua/OpenShip/pull/22); delivery status does not imply that the PR has merged or that every provider/model tuple is live-qualified. The [provider support matrix](./provider-support.md) remains authoritative for qualification claims. **Phases 4–21 and the revisions below remain proposals.**
+**Delivery baseline:** Phases **1, 2, and 3 are complete**, as confirmed by the user. Phase 3 is delivered on [PR #22](https://github.com/nhtua/OpenShip/pull/22). **Phase 4 is implemented** in [PR #27](https://github.com/nhtua/OpenShip/pull/27), with a UI follow-up in PR #28; see the [acceptance record](./testing/phase4-acceptance.md) for measured evidence, remaining qualification limits and separate user acceptance. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **Phases 5–21 remain proposed delivery work.** The two-role direction described in Phase 10B was agreed with the user on 2026-10-21; that design decision does not imply implementation or acceptance of the increment.
 
 The [foundation review](./reviews/2026-10-14-roadmap-foundations-review.md) explains the dependency corrections and the responsibilities established by each remaining phase.
 
@@ -65,8 +65,8 @@ These are responsibility boundaries, not a requirement to implement future funct
 | --- | --- | --- |
 | Durable execution, HTTP commands, semantic events, provider pinning | Delivered in 2–3 | Tools in 4, workflow steps in 7, waits in 8, triggers in 13, composition in 15 |
 | Gateway authorization context and capability identity/version/digest | 4: current project-owner rules and one maintained tool | Connector operations in 5, imports/discovery in 11, MCP in 12, team roles in 20 |
-| Operation identity, fenced dispatch, bounded result publication | 4: one credential-free operation | Mutation reconciliation and conflict control in 10, Git/Terraform in 16–17 |
-| Artifact identity, ownership, immutable versions, bounded transfer, storage interface | 4: sample-log upload and tool result on durable local storage | Generated code/previews in 6, plans in 16, shared storage when multi-host operation requires it |
+| Operation identity, fenced dispatch, bounded result publication | 4: one maintained read operation | Mutation reconciliation and conflict control in 10, Git/Terraform in 16–17 |
+| Artifact identity, ownership, immutable versions, bounded transfer, storage interface | 4: uploaded files and search results on durable local storage | Generated code/previews in 6, plans in 16, shared storage when multi-host operation requires it |
 | Model/tool conversation loop | 4: one tool-capable provider/profile, one tool, bounded calls | Additional qualified profiles, discovery in 11, MCP in 12, agent steps in 15 |
 | Connector credentials, scoped target references, timestamped observations | 5: one staging target and one read operation | Mutation in 10, Terraform bindings in 16–17, drift and further clouds in 18 |
 | Workflow revision, step identity, compiler/runtime compatibility | 7: one sequential saved workflow | Wait nodes in 8, authoring in 9, additional node types in 15 |
@@ -87,13 +87,13 @@ Keep the phase IDs stable for references. Phases 4 onward are dependency-ordered
 | 1 | Authenticated browser chat runs locally — complete | — | S |
 | 2 | Conversations and run progress survive reconnects — complete | 1 | M |
 | 3 | The same workspace works across model providers — complete | 2 | S per adapter |
-| 4 | One isolated tool works through the gateway, then from chat | 3 | M per increment |
+| 4 | Trusted search and persistent conversation files — implemented | 3 | M per increment |
 | 5 | OpenShip inspects one real cloud environment safely | 4 | S–M |
 | 6 | Generated code produces controlled artifacts | 4 | S–M |
 | 7 | A saved, typed workflow can be run repeatedly | 4, 6 | M per increment |
 | 8 | Workflows wait for input or approval across restarts | 7 | S–M |
 | 9 | Conversation becomes a reviewed, reusable workflow | 5, 7, 8 | M |
-| 10 | One real external change is approved, applied, and verified | 5, 8, 9 | M |
+| 10 | One approved change, then scoped temporary maintenance authority | 5, 8, 9; 10B builds on 10A | M per increment |
 | 11 | Relevant tools and skills are discovered progressively | 4, 7, 9 | M per increment |
 | 12 | Local and remote MCP tools use the same policy boundary | 4, 5, 11 | M |
 | 13 | A webhook or schedule starts a durable read-only workflow | 7, 8 | M per increment |
@@ -196,6 +196,8 @@ historical data migrations remain part of the application.
 
 #### Phase 4 — Trusted Tools and Persistent Conversation Files
 
+**Status:** Implemented. Qualification evidence and separate acceptance decisions remain scoped by the [Phase 4 acceptance record](./testing/phase4-acceptance.md).
+
 **Milestone:** "OpenShip can use a bounded search tool in chat and continue working with files saved to the same conversation."
 
 **Build on:** The existing run worker, ownership fencing, provider contracts, and command/event API. Phase 4 establishes durable capability admission, bounded trusted-tool execution, immutable artifact snapshots and the first provider-neutral tool loop. Maintained tools execute in the existing runtime worker through the gateway; they do not need a sandbox.
@@ -229,22 +231,25 @@ historical data migrations remain part of the application.
 
 #### Phase 5 — First Read-Only Cloud Connector
 
-**Milestone:** "OpenShip can tell me what is happening in my real staging environment."
+**Milestone:** "OpenShip can discover and inspect AWS resources through my configured basic role and show evidence—for example, an S3 bucket stats report."
 
-**Build on:** Phase 4's gateway, tool loop, operation records, and artifacts. Add connector bindings and managed credentials through the gateway's existing capability contract; do not create a parallel provider-adapter or permission path for external services.
+**Build on:** Phase 4's gateway, tool loop, operation records, and artifacts. Add project-scoped connectors and managed credentials through the gateway's existing capability contract; do not create a parallel provider-adapter or permission path for external services.
 
-**Acceptance units:** **5A** binds one staging target and performs one health read end to end. **5B** adds inventory and bounded log reads through the same connector contract. Add other clouds in Phase 18.
+**Acceptance units:** **5A.1** establishes managed global/project search Connectors, shared use and isolation. **5A.2** delivered the accepted single-bucket storage demonstration. Its manual binding step is superseded by the user's 2026-10-23 direction for new execution: the basic role determines resource access, without registering or selecting individual resources in OpenShip. **5B** retains managed tool availability and replaces binding-based local inventory/metadata with live discovery and connector-scoped reads. CloudWatch daily storage metrics are timestamped observations, not an instantaneous object scan; missing or partial metrics are not zero. S3 is the report example, with EC2/RDS proving the same reader extends across services. Add other clouds in Phase 18. The [replacement design](./superpowers/specs/2026-10-23-phase5-aws-role-based-discovery-design.md) and [implementation plan](./superpowers/plans/2026-10-23-phase5-remove-bindings-and-enable-aws-discovery.md) capture the approved replacement, which is being implemented and still requires qualification and acceptance.
 
 **Build**
 
-- One maintained connector, preferably AWS unless the first user needs another platform.
-- Project/environment connector bindings with a stable target/resource reference, external account/region/identifier, management ownership where known, and timestamped observations. Phase 17 adds provisioning relationships to these records rather than introducing a competing resource identity.
-- Move provider credentials such as search API keys from operator-only Phase 4 bindings to a managed Connector/Connection lifecycle only when Phase 5 designs and accepts its ownership, encryption, rotation and recovery policy. Phase 4 stores no search credentials in the database or browser.
-- Credential broker with one configured credential source and short-lived delegated credentials where supported. Persist references; encrypt any stored credential material with a separately protected key, and document rotation, revocation, and backup/recovery before accepting real credentials.
-- Narrow health, inventory, and log-read operations.
+- One maintained AWS connector, initially using S3 bucket-storage observations rather than an EC2/ECS deployment-health example.
+- A dedicated organization-owned workload identity, independent of an employee's personal credentials. For AWS prefer an IAM role and temporary sessions; retain the human initiator separately for audit. A role ARN is an identifier, not authentication: the configured credential source must prove a trusted identity before AWS issues a session. An IAM user is not required by the architecture; AWS-attached roles, federation and certificate sources are deployment alternatives requiring separate qualification. The proposed first localhost source is a dedicated assume-role-only machine key; declare its storage, standing authority, expiry and renewal/rotation behavior.
+- Project-owned connector configuration pins the source, basic role and expected execution account. New reads choose resource names/ARNs and regions at execution time, with no environment or resource binding prerequisite. Timestamped observations retain target and connector identities as evidence; historical resource/binding rows remain readable without becoming an access whitelist. Phase 17 adds provisioning relationships only when needed.
+- Managed Brave/Tavily Connectors with explicit `global|project` visibility. Configure global search once for reuse across authorized projects, with operator-only management; project owners manage their own project Connectors. AWS remains project-scoped. Pin the selected Connector revision per run, preserve project-owned evidence, resolve defaults/ambiguity explicitly and never fall back silently. Migrate Phase 4 operator keys only on explicit request with declared scope; Phase 4 stores no search credentials in the database or browser.
+- Internal credential broker in the existing worker, with one configured AWS source and short-lived delegated credentials where supported. The setup API encrypts secrets in PostgreSQL; queued runs carry references; the worker authorizes scope/revision/target, decrypts the selected secret and supplies a restricted key or authenticated SDK context to a trusted tool. Keep AWS bootstrap keys inside acquisition code. Protect encryption keys separately and document rotation, revocation and recovery before accepting real credentials. This is a trusted-process boundary, not malicious-tool isolation.
+- Developer extension through the existing tool definition table and a shared SDK read catalog/reader. Generate supported read operation schemas from versioned AWS/Botocore metadata rather than adding a handwritten handler for every API method. Native boto3/botocore clients own provider protocols; the existing runner preserves bounded transport, cancellation, accounting and safe publication. AWS evaluates each request's permissions. Keep unsupported operations distinct from denied permissions and reject mutations before dispatch; do not promise every SDK operation is qualified.
+- Retain 5B's installed built-in tool discovery and shared operator enable/disable controls in Global Settings without restarting API/worker. Derive readiness from the connector and runtime, without requiring a resource selection. Keep `TOOL_ENABLED_IDS` as an optional deployment restriction with an explicit legacy cutover; ordinary setup must not require adding each tool ID or AWS API method. Phase 11 still owns plugin discovery/imports; the new AWS API catalog does not import plugins. See the [replacement 5B plan](./superpowers/plans/2026-10-23-phase5-remove-bindings-and-enable-aws-discovery.md).
+- Validated read operations with targets chosen by the agent or supplied by the user, bounded requests/results and honest coverage/freshness. A denied discovery call does not block an independently permitted named-resource read. The bucket stats example needs no object-content download, cloud mutation, deployment or log provisioning.
 - Secret-safe audit records and evidence-linked responses.
 
-**User demonstration:** Ask OpenShip to inspect a staging deployment and explain its observed health.
+**User demonstration:** First configure one global search Connector and use it from separate projects, then verify a project Connector is unavailable outside its project and non-operators cannot change globals. Configure the AWS connector's basic role without creating resource bindings, discover S3 buckets, and ask for a bucket stats report. Inspect metric time, coverage, permission gaps and exact evidence; demonstrate the same reader with EC2/RDS and reopen the conversation after restart. Compare selected live results independently only with separate authorization.
 
 **Exit gates**
 
@@ -252,11 +257,13 @@ historical data migrations remain part of the application.
 - Credentials cannot perform a representative prohibited mutation.
 - Credentials do not appear in model context, browser responses, logs, or persisted checkpoints.
 - Expired or missing access produces a recoverable blocked state.
-- Every observation identifies its target, source, and observation time.
-- Altered target/connector references cannot cross project or delegated scope. Untrusted cloud/log content cannot change gateway policy or receive credentials.
+- Every observation identifies its target, source, measurement time and retrieval time. Bucket-size results disclose stale, missing and partial storage-type coverage rather than claiming an exact current total.
+- Altered connector references cannot cross project authority. Requested resource access is evaluated by AWS under the pinned basic-role session, including any permitted shared resource; discovery does not promise a complete permission inventory. Untrusted cloud/log content cannot change gateway policy or receive credentials.
+- Global search reuse does not copy secrets or grant cross-project management/evidence access; selection/defaults, global revocation and scope-bound credential storage are verified.
+- A test-only additional SDK handler reuses the same authentication and execution controls without changing credential acquisition; SDK upgrades do not automatically expose new agent capabilities.
 - Credential expiry/revocation blocks new dispatches; recovering the connector does not silently replay a potentially dispatched operation.
 
-**Not yet:** Remediation or generic credentialed shell access.
+**Not yet:** Remediation, maintenance-role execution, permission-elevation approvals, generic credentialed shell/generated-code access or independently portable Connector packaging/lifecycles. Portable components are deferred without assigning a roadmap phase. Phase 5 qualifies only basic read authority in trusted built-in tools; the two-role model below is not a reason to build an unused permission manager here. Later sandbox/CLI executors may reuse credential acquisition only after their own execution and secret-handoff qualification.
 
 **Important distinction:** Short-lived credentials reduce exposure; they do not automatically remove standing permissions or make issued cloud tokens universally revocable.
 
@@ -388,9 +395,11 @@ historical data migrations remain part of the application.
 
 **Milestone:** "OpenShip proposes one real change, waits for my approval, applies it, and verifies the result."
 
-**Build on:** Phase 4 operation identity/fencing, Phase 5 target/credential bindings, and Phase 8 decisions. Extend the operation lifecycle with mutation-specific dispatch uncertainty, reconciliation, and conflict control before enabling one staging write.
+**Build on:** Phase 4 operation identity/fencing, Phase 5 connector/credential pinning and observed target identities, and Phase 8 decisions. Extend the operation lifecycle with mutation-specific dispatch uncertainty, reconciliation, and conflict control before enabling one staging write. Concrete mutation targets remain part of each approval; they do not require Phase 5 resource registration.
 
 **Start small:** One operation on one explicit resource through a maintained connector. Reversing it is a new authorized operation; recovery never assumes an automatic rollback.
+
+**Acceptance units:** **10A** delivers the first concrete approved mutation and its reconciliation/verification path. **10B** builds on 10A and Phase 8 decisions to generalize approved, temporary use of a predefined maintenance role. The first mutation already requires concrete action approval and valid cloud authority; 10B does not defer those controls.
 
 **Build**
 
@@ -417,6 +426,37 @@ historical data migrations remain part of the application.
 **Not yet:** Production autonomy, arbitrary cloud writes, or automatic rollback promises.
 
 **Release checkpoint:** The architecture's investigation → proposal → approval → change → verification scenario works end to end.
+
+##### Phase 10B — Approved Temporary Maintenance Authority
+
+**Agreed direction (2026-10-21):** Configure two AWS role bindings once, rather than changing IAM permissions during normal workflow or conversation execution:
+
+- **Basic role:** Preauthorized low-risk read operations.
+- **Maintenance role:** Optional, administrator-created role covering a predefined set of changes. It is not automatically an administrator role or unrestricted read/write access. Its use requires approval of the concrete action and temporary grant.
+
+**Milestone:** "When a task needs configured maintenance authority, I can approve its temporary use without editing AWS IAM for every run."
+
+**Build**
+
+- Persist an access request bound to the execution identity, initiator, project/environment, connector/role revision, exact target/actions, operation/input digest, eligible approver and validity window. Reuse Phase 8 decision identity/atomic consumption and the existing gateway/credential broker; do not introduce another permission or execution path.
+- After valid approval, obtain temporary credentials for the already configured role. Where supported, a session policy further restricts the role's authority; it cannot add permissions the role lacks. The model cannot choose arbitrary role ARNs, retrieve credentials or change IAM policy.
+- Recheck current grant, actor eligibility, connector scope, cancellation, run ownership and exact action approval before each privileged dispatch. Ordinary low-risk reads continue without repeated approval. A grant is not conversation-wide permission to perform any action allowed by the role.
+- Missing maintenance configuration or insufficient predefined permissions blocks only the affected task and gives an authorized administrator a configuration action. The conversation remains usable. Configuration changes neither approve nor silently replay the action.
+- Close grants on completion, cancellation, expiry or revocation, stop new dispatches and preserve audit/recovery evidence. Credential renewal cannot extend the approved authority window. Use short sessions and document provider-specific limits on invalidating already-issued credentials.
+
+**User demonstration:** Run a supported change covered by the configured maintenance role; approve the exact action, observe temporary role use and verification, then demonstrate rejection, expiry and a missing-role blocker without editing IAM in the normal success path.
+
+**Additional exit gates**
+
+- Basic credentials cannot perform the representative maintenance action. Maintenance credentials are never issued merely because the model requested them or the connector exists.
+- Changed targets/actions/role revisions, stale or repeated approvals, unauthorized approvers and expired grants fail closed. Concurrent replies consume one decision; restart/restore preserves the grant identity without blind redispatch.
+- Approval of role use and approval of the operation have distinct meanings, even if one review screen binds and approves both. Additional actions require their own admitted authority and applicable approval.
+- Post-expiry/revocation dispatch is denied, and an already-dispatched or uncertain effect follows 10A reconciliation. The UI does not claim that closing a local grant instantly revokes every cloud token or undoes an effect.
+- Team deployments qualify approver eligibility and membership revocation through Phase 20A; owner-only operation does not silently authorize a multi-user deployment.
+
+**Security limitation:** If OpenShip's trusted broker can assume the maintenance role at any time, application approval gates provide approval-gated temporary access—not a zero-standing-privilege guarantee against compromise of that broker. An optional independently controlled access broker, such as Apono, can enforce a stronger grant boundary later. It is not a required dependency per cloud provider, and each enabled environment still requires explicit trust/configuration and qualification.
+
+**Not yet:** Dynamic IAM role/policy creation, arbitrary privilege escalation, an Apono-equivalent permission-management platform or mandatory third-party access services. These remain separate proposals justified by a real deployment.
 
 ### Wave D — Capabilities and Reactive Automation
 
@@ -804,7 +844,9 @@ These distinctions should remain explicit throughout implementation:
 - **Sandbox isolation does not compensate for overpowered cloud credentials.**
 - **Git history does not roll back infrastructure.**
 - **"Read-only" is enforced by backend authority, not a tool's label.**
+- **A predefined maintenance role is configured once; per-action approval unlocks its temporary use, not new IAM permissions or unrestricted conversation-wide authority.**
+- **An agent workload identity does not replace the human initiator/approver in the audit trail.**
 
 Stronger isolation providers, additional brokers, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
 
-**Next commitment:** Complete the remaining Phase 4C acceptance evidence and present the user with the implementable result for accept, revise, or stop. Phase 4 implementation does not accept Phase 4 itself or authorize Phase 5/6 work. Keep the Phase 5 Connector and Phase 6 sandbox/mutable-file boundaries above as the handoff for their later designs.
+**Next commitment:** Review the proposed Phase 5 managed-Connector/S3 specification against the delivered Phase 4 contracts, settle its first credential-source qualification, then review the implementation plan before authorizing product changes. The user has requested Phase 5 design/planning, not implementation. Preserve Phase 4's recorded acceptance/qualification limits and Phase 6's sandbox/mutable-file boundary. The agreed Phase 10B two-role direction does not authorize escalation work in Phase 5.

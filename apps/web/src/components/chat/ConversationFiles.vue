@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import Icon from '@/components/common/Icon.vue'
 import type { ArtifactSummary, ConversationWorkspaceSummary } from '@/types'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   conversationId: string
   workspace: ConversationWorkspaceSummary | null
   files: ArtifactSummary[]
@@ -16,7 +16,10 @@ const props = defineProps<{
   selectedNextOffset: number | null
   readingArtifactId: string | null
   deletingArtifactId: string | null
-}>()
+  readOnly?: boolean
+}>(), {
+  readOnly: false,
+})
 
 const emit = defineEmits<{
   'load-more': [conversationId: string]
@@ -72,6 +75,11 @@ function statusLabel(status: ArtifactSummary['status']): string {
 
 function canDelete(file: ArtifactSummary): boolean {
   return file.status === 'ready' || file.status === 'unavailable'
+}
+
+function requestDelete(file: ArtifactSummary): void {
+  if (props.readOnly || !canDelete(file)) return
+  emit('delete-file', props.conversationId, file.id)
 }
 
 function isJsonFile(file: ArtifactSummary): boolean {
@@ -141,13 +149,13 @@ function isJsonFile(file: ArtifactSummary): boolean {
             <Icon name="download" />
           </button>
           <button
-            v-if="canDelete(file)"
+            v-if="canDelete(file) && !props.readOnly"
             type="button"
             class="inline-flex size-7 items-center justify-center rounded text-destructive hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             :aria-label="`Delete ${file.name}`"
             :title="`Delete ${file.name}`"
             :disabled="deletingArtifactId === file.id"
-            @click="emit('delete-file', conversationId, file.id)"
+            @click="requestDelete(file)"
           >
             <Icon
               :name="deletingArtifactId === file.id ? 'spinner' : 'trash'"

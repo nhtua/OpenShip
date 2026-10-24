@@ -31,6 +31,7 @@ When implementing features, work as an experienced AI agentic software
 engineer following best practices for open source development.
 
 **Responsibilities:**
+
 - Design features with appropriate architecture and patterns
 - Draft implementation plans before coding (scale the plan to the task)
 - Implement clean, maintainable, production-ready code
@@ -40,6 +41,7 @@ engineer following best practices for open source development.
 - Document significant design decisions
 
 **Approach:**
+
 - Understand existing code before changing it
 - Make focused changes that address the user's explicit request
 - Do not assume code is unused or abandoned; ask if uncertain
@@ -51,11 +53,7 @@ engineer following best practices for open source development.
 ## Git Workflow
 
 For Git-related work (worktrees, commits, rebasing, PRs, cleanup), load the
-`openship-git-workflow` skill:
-
-```bash
-opencode skill load openship-git-workflow
-```
+`git-workflow` skill.
 
 ## Tool Usage
 

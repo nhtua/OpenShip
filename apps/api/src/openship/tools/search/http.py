@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
-import socket
 import ssl
 import zlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
 import httpcore
 import httpx
-from httpcore._backends.auto import AutoBackend
 
+from src.openship.execution.network import PinnedNetworkBackend as _PinnedNetworkBackend
 from src.openship.providers.errors import ProviderError
 
 BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
@@ -32,6 +30,13 @@ _CHUNK_BYTES = 64 * 1024
 
 _SAFE_MESSAGES = {
     "missing_credentials": "The selected search tool is missing its operator credential.",
+    "connector_required": "Choose a search Connector before using this service.",
+    "connector_ambiguous": "Choose one eligible search Connector explicitly.",
+    "connector_scope_denied": "The selected search Connector is not available in this project.",
+    "connector_expired": "The selected search Connector credential has expired.",
+    "connector_revoked": "The selected search Connector has been revoked.",
+    "connector_unavailable": "The selected search Connector is currently unavailable.",
+    "credential_store_unavailable": "Search credential storage is unavailable.",
     "authentication_error": "The search service rejected the configured credential.",
     "rate_limited": "The search service is rate limiting this request.",
     "quota_exhausted": "The search service account has exhausted its configured quota.",
@@ -78,77 +83,16 @@ def _endpoint_parts(endpoint: str) -> tuple[str, str]:
     return host, parsed.path
 
 
-async def _resolve_addresses(host: str, port: int) -> list[str]:
-    records = await asyncio.get_running_loop().getaddrinfo(
-        host, port, type=socket.SOCK_STREAM
-    )
-    return [record[4][0] for record in records]
-
-
-def _host_text(host: str | bytes) -> str:
-    if isinstance(host, bytes):
-        try:
-            return host.decode("ascii").lower().rstrip(".")
-        except UnicodeDecodeError:
-            return ""
-    return host.lower().rstrip(".")
-
-
-class PinnedNetworkBackend:
-    """Resolve one approved host, reject non-public answers, and connect by IP.
-
-    The HTTP core still receives the original URL hostname and therefore uses
-    it for TLS SNI/certificate validation and the HTTP Host header. Only the
-    socket's connect address is pinned to the validated resolver answer.
-    """
+class PinnedNetworkBackend(_PinnedNetworkBackend):
+    """Keep the search transport's fixed failure policy on the shared backend."""
 
     def __init__(self, allowed_host: str, *, backend=None, resolver=None):
-        self.allowed_host = allowed_host.lower()
-        self._backend = backend or AutoBackend()
-        self._resolver = resolver or _resolve_addresses
-
-    async def connect_tcp(
-        self,
-        host: str,
-        port: int,
-        timeout: float | None = None,
-        local_address: str | None = None,
-        socket_options: Iterable[tuple] | None = None,
-    ):
-        if _host_text(host) != self.allowed_host or port != 443:
-            raise SearchToolError("provider_unavailable")
-        try:
-            resolved = self._resolver(self.allowed_host, port)
-            if hasattr(resolved, "__await__"):
-                resolved = await resolved
-            addresses = list(dict.fromkeys(resolved))
-            parsed = [ipaddress.ip_address(address) for address in addresses]
-        except (OSError, TypeError, ValueError):
-            raise SearchToolError("provider_unavailable") from None
-        if not parsed or any(not address.is_global for address in parsed):
-            raise SearchToolError("provider_unavailable")
-
-        last_error = None
-        for address in parsed:
-            try:
-                return await self._backend.connect_tcp(
-                    str(address),
-                    port,
-                    timeout=timeout,
-                    local_address=local_address,
-                    socket_options=socket_options,
-                )
-            except (httpcore.ConnectError, httpcore.TimeoutException, OSError) as exc:
-                last_error = exc
-        if isinstance(last_error, httpcore.TimeoutException):
-            raise httpcore.ConnectTimeout("search connection timed out") from None
-        raise httpcore.ConnectError("search connection failed") from None
-
-    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
-        raise SearchToolError("provider_unavailable")
-
-    async def sleep(self, seconds: float) -> None:
-        await self._backend.sleep(seconds)
+        super().__init__(
+            allowed_host,
+            backend=backend,
+            resolver=resolver,
+            policy_error=lambda: SearchToolError("provider_unavailable"),
+        )
 
 
 class _HttpcoreResponseStream(httpx.AsyncByteStream):

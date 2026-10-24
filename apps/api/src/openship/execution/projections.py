@@ -13,8 +13,7 @@ from sqlalchemy.orm import Session
 from src.openship.artifacts.contracts import ArtifactSummary
 from src.openship.artifacts.models import Artifact
 from src.openship.capabilities.contracts import ToolFailure
-from src.openship.tools.search.contracts import SearchArguments, SearchToolResult
-from src.openship.workspace.schemas import WorkspaceListResult, WorkspaceReadResult
+from src.openship.capabilities.definitions import get_tool_definition_by_id
 
 from .models import ToolAttempt
 
@@ -57,15 +56,15 @@ class ToolAttemptSummary(BaseModel):
 def operation_summary(operation) -> OperationSummary:
     """Project only safe operation metadata; args, credentials and raw bodies stay private."""
     query = None
-    if operation.capability_id in {"brave_web_search", "tavily_web_search"}:
-        try:
-            arguments = SearchArguments.model_validate_json(operation.arguments_json)
-            query = arguments.query
-        except (TypeError, ValueError):
-            # Malformed or historical private arguments are not copied into
-            # the public read model. The result projection may still have its
-            # own independently validated query after a successful run.
-            pass
+    try:
+        definition = get_tool_definition_by_id(operation.capability_id)
+        if definition.query_projector is not None:
+            arguments = definition.validate_arguments(json.loads(operation.arguments_json))
+            query = definition.query_projector(arguments)
+    except (LookupError, TypeError, ValueError, json.JSONDecodeError):
+        # Malformed or historical private arguments are not copied into the
+        # public read model.
+        pass
     return OperationSummary(
         id=operation.id,
         run_id=operation.run_id,
@@ -117,17 +116,17 @@ def project_operation(db: Session, operation) -> OperationSummary:
     error_code = operation.error_code
     if operation.status == "succeeded":
         try:
-            result_models = {
-                "brave_web_search": SearchToolResult,
-                "tavily_web_search": SearchToolResult,
-                "workspace_list_files": WorkspaceListResult,
-                "workspace_read_file": WorkspaceReadResult,
-            }
-            result_model = result_models.get(operation.capability_id)
-            if result_model is None:
-                raise ValueError("operation capability has no public result contract")
-            result = result_model.model_validate_json(operation.result_json).model_dump(mode="json")
-        except (TypeError, ValueError):
+            historical_model = _historical_aws_result_model(operation)
+            if historical_model is not None:
+                result = historical_model.model_validate_json(
+                    operation.result_json
+                ).model_dump(mode="json")
+            else:
+                definition = get_tool_definition_by_id(operation.capability_id)
+                result = definition.validate_public_result(
+                    json.loads(operation.result_json)
+                )
+        except (LookupError, TypeError, ValueError):
             from src.openship.execution.publication import _ERROR_MESSAGES
 
             status = "interrupted"
@@ -162,6 +161,25 @@ def project_operation(db: Session, operation) -> OperationSummary:
         status=status,
         error_code=error_code,
     )
+
+
+def _historical_aws_result_model(operation):
+    """Keep completed pre-discovery AWS results readable after helper v2."""
+    if operation.capability_version != "1.0.0":
+        return None
+    from src.openship.tools.aws.contracts import (
+        AwsBoundInventoryResultV1,
+        AwsCheckResultV1,
+        AwsS3MetadataResult,
+        AwsStorageResult,
+    )
+
+    return {
+        "aws_check_connection": AwsCheckResultV1,
+        "aws_s3_list_bound_buckets": AwsBoundInventoryResultV1,
+        "aws_s3_bucket_storage": AwsStorageResult,
+        "aws_s3_bucket_metadata": AwsS3MetadataResult,
+    }.get(operation.capability_id)
 
 
 def tool_attempt_summary(attempt) -> ToolAttemptSummary:

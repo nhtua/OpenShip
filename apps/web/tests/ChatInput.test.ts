@@ -33,6 +33,24 @@ const toolCapableProfiles: ModelProfileItem[] = modelProfileCatalog.profiles.map
   capabilities: { ...profile.capabilities, tool_calls: profile.profile_id === 'primary-fixture' },
 }))
 
+const awsStorage: CapabilitySummary = {
+  id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'd'.repeat(64),
+  input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true,
+  available: true, unavailable_reason: null, required_connector_kinds: ['aws'],
+  connector_readiness: { aws: 'ready' },
+}
+
+const awsMetadata: CapabilitySummary = {
+  ...awsStorage,
+  id: 'aws_s3_bucket_metadata',
+  manifest_digest: 'e'.repeat(64),
+}
+
+const awsConnector = {
+  id: 'aws-1', kind: 'aws', visibility: 'project', name: 'Read only account',
+  status: 'configured', revision: 1, is_default: false,
+}
+
 describe('ChatInput', () => {
   it('shows keyboard instructions in the placeholder only at desktop widths', async () => {
     const matchMedia = vi.spyOn(window, 'matchMedia')
@@ -100,6 +118,83 @@ describe('ChatInput', () => {
     expect(wrapper.find('[data-testid="attached-tool"]').exists()).toBe(false)
     expect(wrapper.emitted('send')?.[0]).toEqual(['nearest star system', { enableTools: true }])
     expect(wrapper.emitted('search')).toBeFalsy()
+  })
+
+  it('requires and submits an AWS connector choice when the project has multiple roles', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [{
+          id: 'aws_read',
+          version: '1.0.0',
+          manifest_digest: 'e'.repeat(64),
+          input_schema: {},
+          output_schema: {},
+          effect: 'read_only_external',
+          permitted: true,
+          required_connector_kinds: ['aws'],
+          connector_readiness: { aws: 'ambiguous' },
+        }],
+        connectors: [
+          { id: 'aws-one', kind: 'aws', visibility: 'project', name: 'Read role one', status: 'configured', revision: 1, is_default: false },
+          { id: 'aws-two', kind: 'aws', visibility: 'project', name: 'Read role two', status: 'configured', revision: 1, is_default: false },
+        ],
+        submissionError: null,
+      },
+    })
+
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="automatic-aws-connector-selection"]').exists()).toBe(true)
+    await wrapper.get('textarea').setValue('List buckets I can read.')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-testid="automatic-aws-connector-selection"]').setValue('aws-two')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('send')?.[0]).toEqual([
+      'List buckets I can read.',
+      { enableTools: true, connectorSelections: { aws: 'aws-two' } },
+    ])
+  })
+
+  it('explains an installation ceiling and keeps restricted manual choices disabled', async () => {
+    const restricted = {
+      ...capabilities[0],
+      enabled: false,
+      available: false,
+      permitted: false,
+      deployment_restricted: true,
+      unavailable_reason: 'deployment_restricted' as const,
+      policy_enabled: true,
+      required_connector_kinds: ['brave'] as const,
+      connector_readiness: { brave: 'ready' as const },
+    }
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [restricted],
+        submissionError: null,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    const automaticMode = wrapper.get('[data-testid="automatic-tool-mode"]')
+    expect((automaticMode.element as HTMLButtonElement).disabled).toBe(true)
+    expect(automaticMode.text()).toContain('TOOL_ENABLED_IDS')
+    const manualChoice = wrapper.get('[data-testid="tool-choice"]')
+    expect((manualChoice.element as HTMLButtonElement).disabled).toBe(true)
+    expect(manualChoice.text()).toContain('Restricted by TOOL_ENABLED_IDS')
+    wrapper.unmount()
   })
 
   it('hides the active-run warning but still blocks tool submission', async () => {
@@ -210,6 +305,140 @@ describe('ChatInput', () => {
     ])
   })
 
+  it('keeps manual connector selection explicit when it differs from the project default', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities,
+        connectors: [
+          { id: 'brave-one', kind: 'brave', visibility: 'global', name: 'Brave One', status: 'configured', revision: 1, is_default: false },
+          { id: 'brave-two', kind: 'brave', visibility: 'global', name: 'Brave Two', status: 'configured', revision: 1, is_default: false },
+          { id: 'tavily-default', kind: 'tavily', visibility: 'global', name: 'Tavily Default', status: 'configured', revision: 1, is_default: true },
+        ],
+        defaultConnectorIds: { tavily: 'tavily-default' },
+        submissionError: null,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    await wrapper.get('button[data-testid="tool-choice"]').trigger('click')
+    await wrapper.get('select[aria-label="Search connector"]').setValue('brave-two')
+    await wrapper.get('textarea').setValue('use my selected Brave connector')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('search')?.[0]?.[0]).toMatchObject({
+      capability: { id: 'brave_web_search', version: '1.0.0' },
+      connector_selections: { brave: 'brave-two' },
+    })
+  })
+
+  it('allows automatic mode for a sole ready Connector without requiring a project default', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [{
+          id: 'tavily_web_search', version: '2.0.0', manifest_digest: 'b'.repeat(64),
+          input_schema: {}, output_schema: {}, effect: 'read_only_external', permitted: true,
+          required_connector_kinds: ['tavily'], connector_readiness: { tavily: 'ready' },
+        }],
+        connectors: [{
+          id: 'tavily-global', kind: 'tavily', visibility: 'global', name: 'Tavily',
+          status: 'configured', revision: 1, is_default: false,
+        }],
+        defaultConnectorIds: {},
+        submissionError: null,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    expect(wrapper.get('[data-testid="automatic-tool-mode"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('textarea').setValue('search with the configured Tavily connector')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('send')?.[0]).toEqual([
+      'search with the configured Tavily connector',
+      { enableTools: true },
+    ])
+  })
+
+  it('keeps automatic mode disabled when multiple Connectors need a project default', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [{
+          id: 'tavily_web_search', version: '2.0.0', manifest_digest: 'b'.repeat(64),
+          input_schema: {}, output_schema: {}, effect: 'read_only_external', permitted: true,
+          required_connector_kinds: ['tavily'], connector_readiness: { tavily: 'ambiguous' },
+        }],
+        connectors: [
+          {
+            id: 'tavily-global-one', kind: 'tavily', visibility: 'global', name: 'Tavily One',
+            status: 'configured', revision: 1, is_default: false,
+          },
+          {
+            id: 'tavily-global-two', kind: 'tavily', visibility: 'global', name: 'Tavily Two',
+            status: 'configured', revision: 1, is_default: false,
+          },
+        ],
+        defaultConnectorIds: {},
+        submissionError: null,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    expect(wrapper.get('[data-testid="automatic-tool-mode"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Select a project Connector when more than one is eligible.')
+  })
+
+  it('keeps automatic mode available when one permitted provider is ready and another is not', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [
+          {
+            id: 'brave_web_search', version: '2.0.0', manifest_digest: 'a'.repeat(64),
+            input_schema: {}, output_schema: {}, effect: 'read_only_external', permitted: true,
+            required_connector_kinds: ['brave'], connector_readiness: { brave: 'required' },
+          },
+          {
+            id: 'tavily_web_search', version: '2.0.0', manifest_digest: 'b'.repeat(64),
+            input_schema: {}, output_schema: {}, effect: 'read_only_external', permitted: true,
+            required_connector_kinds: ['tavily'], connector_readiness: { tavily: 'ready' },
+          },
+        ],
+        connectors: [{
+          id: 'tavily-global', kind: 'tavily', visibility: 'global', name: 'Tavily',
+          status: 'configured', revision: 1, is_default: false,
+        }],
+        defaultConnectorIds: {},
+        submissionError: null,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    expect(wrapper.get('[data-testid="automatic-tool-mode"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('lets the user turn off default automatic tool use for subsequent messages', async () => {
     const wrapper = mount(ChatInput, {
       props: {
@@ -318,5 +547,129 @@ describe('ChatInput', () => {
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
     await wrapper.setProps({ submissionError: 'Failed to submit message. Please try again.' })
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('keep this draft')
+  })
+
+  it('attaches S3 storage to a direct bucket target through the selected AWS connector', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: modelProfileCatalog.profiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [awsStorage],
+        connectors: [awsConnector],
+      },
+    })
+
+    await wrapper.get('[aria-label="Add tool"]').trigger('click')
+    const storageChoice = wrapper.findAll('[data-testid="tool-choice"]').find((item) => item.text().includes('S3'))!
+    await storageChoice.trigger('click')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    await wrapper.get('[data-testid="aws-bucket-name"]').setValue('example-bucket')
+    await wrapper.get('[data-testid="aws-bucket-region"]').setValue('us-east-1')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('search')?.[0]?.[0]).toMatchObject({
+      capability: { id: 'aws_s3_bucket_storage', version: '1.0.0' },
+      arguments: { connector_id: 'aws-1', bucket_name: 'example-bucket', region: 'us-east-1' },
+      connector_selections: { aws: 'aws-1' },
+    })
+    wrapper.unmount()
+  })
+
+  it('attaches bucket metadata to a direct bucket target without a message field', async () => {
+    const secondAwsConnector = { ...awsConnector, id: 'aws-2', name: 'Audit role' }
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: modelProfileCatalog.profiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [awsMetadata],
+        connectors: [awsConnector, secondAwsConnector],
+      },
+    })
+
+    await wrapper.get('[aria-label="Add tool"]').trigger('click')
+    const metadataChoice = wrapper.findAll('[data-testid="tool-choice"]')
+      .find((item) => item.text().includes('S3 bucket metadata'))!
+    await metadataChoice.trigger('click')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect((wrapper.get('button[type="submit"]').element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.get('[aria-label="AWS connector"]').setValue('aws-2')
+    await wrapper.get('[data-testid="aws-bucket-name"]').setValue('example-bucket')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('search')?.[0]?.[0]).toMatchObject({
+      capability: { id: 'aws_s3_bucket_metadata', version: '1.0.0' },
+      arguments: { connector_id: 'aws-2', bucket_name: 'example-bucket' },
+      connector_selections: { aws: 'aws-2' },
+    })
+    wrapper.unmount()
+  })
+
+  it('requires an explicit AWS connector in automatic mode when several roles are eligible', async () => {
+    const secondAwsConnector = { ...awsConnector, id: 'aws-2', name: 'Audit role' }
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [{
+          ...awsStorage,
+          id: 'aws_read',
+          connector_readiness: { aws: 'ambiguous' },
+        }],
+        connectors: [awsConnector, secondAwsConnector],
+      },
+    })
+
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
+    await wrapper.get('[aria-label="AWS connector for automatic tools"]').setValue('aws-2')
+    await wrapper.get('textarea').setValue('What is the storage usage?')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('send')?.[0]).toEqual([
+      'What is the storage usage?',
+      { enableTools: true, connectorSelections: { aws: 'aws-2' } },
+    ])
+    wrapper.unmount()
+  })
+
+  it('keeps direct AWS reads available to automatic mode without registered buckets', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [{
+          ...awsMetadata,
+          id: 'aws_read',
+          required_connector_kinds: ['aws'],
+          connector_readiness: { aws: 'ready' },
+        }],
+        connectors: [awsConnector],
+      },
+    })
+
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
+    await wrapper.get('textarea').setValue('Check this bucket versioning configuration.')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('send')?.[0]).toEqual([
+      'Check this bucket versioning configuration.',
+      { enableTools: true },
+    ])
+    wrapper.unmount()
   })
 })

@@ -80,13 +80,15 @@ Chat uses explicitly declared model profiles and durable run commands. Configure
 `MODEL_PROFILES_JSON` and `MODEL_DEFAULT_PROFILE_ID` in `.env`; credentials are
 read from the bindings each profile names. See [provider setup](docs/provider-support.md).
 The worker generates the conversation title from the first model response.
-For search, set `TOOL_ENABLED_IDS` to `brave_web_search`,
-`tavily_web_search`, or both, and configure only the selected tools' keys in the
-worker environment. Search can be attached explicitly from the chat composer or
-invoked by an enabled model profile. The Conversation files panel lists exact
-saved artifact versions for reading, download, and deletion. The browser never
-accepts provider credentials; see the [artifact storage runbook](docs/operations/artifact-storage.md)
-for workspace retention and recovery.
+Enable installed tools in Global Settings and configure their Connectors on the
+Connectors page. Search can be attached explicitly from the chat composer or
+used by an enabled model profile. `TOOL_ENABLED_IDS` remains an optional
+deployment ceiling for existing installations; see the [tool availability
+runbook](docs/operations/tool-availability.md) before changing it. The
+Conversation files panel lists exact saved artifact versions for reading,
+download, and deletion. The browser never accepts provider credentials; see the
+[artifact storage runbook](docs/operations/artifact-storage.md) for workspace
+retention and recovery.
 
 ### Web Client (Vue.js)
 

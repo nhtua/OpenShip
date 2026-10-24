@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 
 from ..auth.models import Base
@@ -26,7 +26,12 @@ class Conversation(Base):
     title = Column(String(255), default="New Conversation")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    archived_at = Column(DateTime(timezone=True), nullable=True)
     next_event_sequence = Column(Integer, nullable=False, server_default="0")
+
+    __table_args__ = (
+        Index("uq_conversations_project_id", "project_id", "id", unique=True),
+    )
 
 
 class Message(Base):

@@ -13,7 +13,8 @@ from typing_extensions import TypedDict
 
 from src.openship.capabilities.contracts import (
     CapabilityRef,
-    ExecutionConfig,
+    ExecutionConfigLike,
+    decode_execution_config,
 )
 from src.openship.execution.gateway import ToolGateway
 from src.openship.providers.errors import ProviderError
@@ -51,9 +52,9 @@ def _command_from(state: ToolState):
         ) from None
 
 
-def _execution_from(state: ToolState) -> ExecutionConfig:
+def _execution_from(state: ToolState) -> ExecutionConfigLike:
     try:
-        return ExecutionConfig.model_validate_json(state["execution_configuration"])
+        return decode_execution_config(state["execution_configuration"])
     except (KeyError, TypeError, ValueError, ValidationError) as exc:
         raise ProviderError(
             "configuration_error",

@@ -14,6 +14,9 @@ export default defineConfig({
     },
   },
   server: {
+    // Keep the browser origin aligned with CONNECTOR_BROWSER_ORIGINS; silently
+    // choosing another port would make write-only setup fail origin checks.
+    strictPort: true,
     // In E2E tests, don't proxy /api — Playwright route mocking handles it
     proxy: isE2E
       ? undefined

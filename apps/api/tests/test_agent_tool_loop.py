@@ -14,7 +14,10 @@ from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
+    ConnectorRef,
     ExecutionConfig,
+    ExecutionConfigV2,
+    ExecutionConfigV3,
     LoopLimits,
     PublishedToolResult,
     ToolFailure,
@@ -74,6 +77,45 @@ def _execution(*, loop_limits=None):
     )
 
 
+def _managed_execution(*, loop_limits=None, kinds=("brave",), preferred_search_kind=None):
+    manifests = {item.id: item for item in list_capability_manifests()}
+    capability_ids = {
+        "brave": "brave_web_search",
+        "tavily": "tavily_web_search",
+    }
+    refs = tuple(
+        CapabilityRef(
+            id=manifests[capability_ids[kind]].id,
+            version=manifests[capability_ids[kind]].version,
+            manifest_digest=manifests[capability_ids[kind]].manifest_digest,
+        )
+        for kind in kinds
+    )
+    connector_refs = tuple(
+        ConnectorRef(
+            id=uuid.uuid4(),
+            kind=kind,
+            configuration_revision=1,
+            visibility="project",
+            credential_version_id=uuid.uuid4(),
+        )
+        for kind in kinds
+    )
+    execution_type = ExecutionConfigV3 if preferred_search_kind is not None else ExecutionConfigV2
+    execution_fields = {
+        "graph_kind": "chat",
+        "graph_version": 3,
+        "allowed_capabilities": refs,
+        "connector_refs": connector_refs,
+        "loop_limits": loop_limits or LoopLimits(),
+    }
+    if preferred_search_kind is not None:
+        execution_fields["preferred_search_kind"] = preferred_search_kind
+    return execution_type(
+        **execution_fields,
+    )
+
+
 def _running_chat_tool_run(execution):
     suffix = uuid.uuid4().hex
     with TestSessionLocal() as db:
@@ -96,7 +138,7 @@ def _running_chat_tool_run(execution):
             client_request_id=str(uuid.uuid4()),
             status="running",
             kind="chat",
-            graph_version=2,
+            graph_version=execution.graph_version,
             fence=1,
             execution_configuration=execution.model_dump_json(),
         )
@@ -116,14 +158,15 @@ def _running_chat_tool_run(execution):
 
 
 class _CountingGateway:
-    def __init__(self, *, result=None, after_execute=None):
+    def __init__(self, *, result=None, results=None, after_execute=None):
         self.calls = []
         self.result = result
+        self.results = list(results or [])
         self.after_execute = after_execute
 
     async def execute_tool(self, **request):
         self.calls.append(request)
-        result = self.result or PublishedToolResult(
+        result = (self.results.pop(0) if self.results else None) or self.result or PublishedToolResult(
             operation_id=uuid.uuid4(),
             status="succeeded",
             result={
@@ -234,7 +277,7 @@ def _agent_case(
         profile,
         control=control,
     )
-    graph = resolve_graph("chat", 2)(
+    graph = resolve_graph("chat", execution.graph_version)(
         checkpointer=None,
         gateway_factory=lambda: selected_gateway,
         invocation_factory=lambda _state: invocation,
@@ -336,8 +379,132 @@ def test_chat_v2_runs_two_sequential_tool_calls_and_publishes_only_final_text(mo
     assert [attempt.reserved_output_tokens for attempt in attempts] == [4000, 4000, 4000]
 
 
-def test_chat_v2_graph_is_registered_before_worker_dispatch():
+def test_chat_tool_graph_versions_are_registered_before_worker_dispatch():
     assert callable(resolve_graph("chat", 2))
+    assert callable(resolve_graph("chat", 3))
+
+
+def test_chat_v3_managed_graph_runs_search_inside_the_bounded_tool_loop(monkeypatch):
+    execution = _managed_execution()
+    graph, state, transport, gateway, run_id = _agent_case(
+        monkeypatch,
+        [
+            {"chunks": [_tool_turn("managed-call-1", "managed query")]},
+            {
+                "chunks": [
+                    sdk_chunk(content="Managed search completed.", finish_reason="stop")
+                ]
+            },
+        ],
+        execution=execution,
+        enabled_tools="brave_web_search",
+    )
+
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+
+    assert result["assistant_response"] == "Managed search completed."
+    assert transport.requests == 2
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0]["ref"].id == "brave_web_search"
+    with TestSessionLocal() as db:
+        run = db.get(Run, run_id)
+        transcript = (
+            db.query(RunTranscriptRecord)
+            .filter_by(run_id=run_id)
+            .order_by(RunTranscriptRecord.ordinal)
+            .all()
+        )
+        attempts = db.query(ProviderAttempt).filter_by(run_id=run_id).all()
+    assert run.graph_version == 3
+    assert [json.loads(row.message_json)["role"] for row in transcript] == [
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert [attempt.model_turn_ordinal for attempt in attempts] == [0, 1]
+
+
+def test_chat_v3_can_retry_an_alternate_search_after_the_default_provider_errors(monkeypatch):
+    execution = _managed_execution(
+        kinds=("tavily", "brave"), preferred_search_kind="tavily"
+    )
+    gateway = _CountingGateway(
+        results=[
+            PublishedToolResult(
+                operation_id=uuid.uuid4(),
+                status="failed",
+                error=ToolFailure(
+                    code="provider_unavailable",
+                    message="Search is temporarily unavailable.",
+                ),
+            ),
+            PublishedToolResult(
+                operation_id=uuid.uuid4(),
+                status="succeeded",
+                result={
+                    "query": "fallback query",
+                    "results": [{"title": "Fallback source", "url": "https://example.test/"}],
+                },
+            ),
+        ]
+    )
+    graph, state, transport, _gateway, run_id = _agent_case(
+        monkeypatch,
+        [
+            {"chunks": [_tool_turn("preferred-search", "preferred query", name="tavily_web_search")]},
+            {"chunks": [_tool_turn("fallback-search", "fallback query", name="brave_web_search")]},
+            {"chunks": [sdk_chunk(content="The alternate provider found a source.", finish_reason="stop")]},
+        ],
+        execution=execution,
+        gateway=gateway,
+    )
+
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+
+    assert result["assistant_response"] == "The alternate provider found a source."
+    assert transport.requests == 3
+    assert [call["ref"].id for call in gateway.calls] == [
+        "tavily_web_search",
+        "brave_web_search",
+    ]
+    failure_message = json.loads(transport.seen[1]["messages"][-1]["content"])
+    assert failure_message["status"] == "failed"
+    assert failure_message["error"] == {
+        "code": "provider_unavailable",
+        "message": "Search is temporarily unavailable.",
+    }
+
+
+def test_default_first_chat_prompt_requests_alternate_provider_after_error():
+    from src.openship.runs.worker import _chat_system_prompt
+
+    prompt = _chat_system_prompt(is_first=False, preferred_search_kind="tavily")
+
+    assert "use Tavily Search first" in prompt
+    assert "If that search returns an error" in prompt
+    assert "retry with another available search provider" in prompt
+    assert "Explicit manual connector selections take precedence" in prompt
+
+
+def test_chat_v3_uses_a_persisted_execution_deadline():
+    execution = _managed_execution()
+    run_id, user_id, _project_id, _conversation_id, lease_until = (
+        _running_chat_tool_run(execution)
+    )
+    claim = Claim(run_id, 1, lease_until, "loop-worker", user_id)
+
+    with TestSessionLocal() as db:
+        window = begin_execution_window(
+            db,
+            claim,
+            deadline_seconds=240,
+            graph_thread_id=f"{run_id}-attempt-1",
+        )
+        run = db.get(Run, run_id)
+
+    assert window is not None
+    assert window[1] - window[0] == timedelta(seconds=240)
+    assert run.graph_thread_id == f"{run_id}-attempt-1"
 
 
 def test_chat_v2_can_choose_a_workspace_read_tool_without_search_credentials(monkeypatch):

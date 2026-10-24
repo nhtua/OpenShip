@@ -18,15 +18,18 @@ from ..capabilities.catalog import resolve_capability
 from ..capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
-    ExecutionConfig,
     canonical_digest,
+    decode_execution_config,
 )
+from ..capabilities.definitions import (
+    get_tool_definition,
+    get_tool_definition_by_id,
+)
+from ..capabilities.policy import ToolPolicyError, require_current_tool_policy
 from ..chat.models import Conversation
 from ..config import settings
 from ..runs.models import Run, RunJob
 from ..runs.queue import Claim
-from ..tools.search.contracts import SearchArguments
-from ..workspace.schemas import WorkspaceListArguments, WorkspaceReadArguments
 from .errors import CapabilityError
 from .models import ExecutionSlot, ToolOperation
 
@@ -98,8 +101,8 @@ def admit_operation(
     if conversation is None:
         raise _refused(409, "lease_lost", "This worker no longer owns the active run")
     run = require_live_claim(db, claim, lock=True)
-    is_manual_tool = run.kind == "tool" and run.graph_version == 1
-    is_chat_tool = run.kind == "chat" and run.graph_version == 2
+    is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2, 3)
+    is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3, 4)
     if not (is_manual_tool or is_chat_tool):
         raise _refused(
             409,
@@ -107,10 +110,14 @@ def admit_operation(
             "This run does not support maintained tool execution",
         )
     try:
-        pinned = ExecutionConfig.model_validate_json(run.execution_configuration or "{}")
+        pinned = decode_execution_config(run.execution_configuration or "{}")
     except (TypeError, ValueError):
         raise _refused(409, "changed", "The pinned tool execution settings are unavailable") from None
-    if ref not in pinned.allowed_capabilities:
+    if (
+        pinned.graph_kind != run.kind
+        or pinned.graph_version != run.graph_version
+        or ref not in pinned.allowed_capabilities
+    ):
         raise _refused(403, "unsupported_capability", "This tool is not authorized for this run")
     if (
         conversation is None
@@ -124,18 +131,24 @@ def admit_operation(
         raise _refused(404, "operation_not_found", "The requested operation is not available")
 
     effective_inputs = list(inputs)
-    if ref.id == "workspace_read_file":
+    try:
+        candidate_definition = get_tool_definition_by_id(ref.id)
+        candidate_arguments = candidate_definition.validate_arguments(arguments)
+        referenced_artifacts = candidate_definition.input_artifact_ids(candidate_arguments)
+    except (LookupError, TypeError, ValueError):
+        referenced_artifacts = ()
+    for referenced_artifact_id in referenced_artifacts:
         try:
-            read_arguments = WorkspaceReadArguments.model_validate(arguments)
-        except ValueError:
-            read_arguments = None
-        if read_arguments is not None and not any(
-            item.id == read_arguments.artifact_id for item in effective_inputs
-        ):
+            already_selected = any(
+                item.id == referenced_artifact_id for item in effective_inputs
+            )
+        except AttributeError:
+            already_selected = False
+        if not already_selected:
             target = (
                 db.query(Artifact)
                 .filter(
-                    Artifact.id == read_arguments.artifact_id,
+                    Artifact.id == referenced_artifact_id,
                     Artifact.conversation_id == run.conversation_id,
                     Artifact.project_id == run.project_id,
                 )
@@ -177,19 +190,27 @@ def admit_operation(
         return existing
 
     try:
-        manifest = resolve_capability(ref, settings.enabled_tool_ids)
-        argument_models = {
-            "brave_web_search": SearchArguments,
-            "tavily_web_search": SearchArguments,
-            "workspace_list_files": WorkspaceListArguments,
-            "workspace_read_file": WorkspaceReadArguments,
-        }
-        argument_model = argument_models.get(manifest.id)
-        if argument_model is None:
-            raise _refused(422, "unsupported_tool", "This tool is not supported by this execution version")
-        normalized = argument_model.model_validate(arguments).model_dump(mode="json")
+        policy = require_current_tool_policy(
+            db,
+            frozenset({ref.id}),
+            pinned_revision=run.tool_policy_revision,
+            lock=True,
+        )
+        manifest = resolve_capability(ref, policy.effective_ids)
+        definition = get_tool_definition(manifest)
+        normalized = definition.validate_arguments(arguments).model_dump(mode="json")
+    except ToolPolicyError as refused:
+        if refused.code == "tool_policy_unavailable":
+            raise _refused(
+                503, refused.code, "Managed tool availability is unavailable"
+            ) from None
+        raise _refused(
+            422, "disabled", "The requested tool is disabled for this installation"
+        ) from None
     except CapabilityError as refused:
         raise _refused(422, refused.code, str(refused)) from refused
+    except LookupError as refused:
+        raise _refused(422, "unsupported_tool", "This tool is not supported by this execution version") from refused
     except ValueError as invalid:
         raise _refused(422, "invalid_tool_arguments", "Tool arguments are invalid") from invalid
 
@@ -214,6 +235,7 @@ def admit_operation(
             "capability": ref.model_dump(mode="json"),
             "arguments": normalized,
             "inputs": input_refs,
+            "tool_policy_revision": policy.revision,
             "execution_configuration_digest": canonical_digest(
                 json.loads(run.execution_configuration) if run.execution_configuration else {}
             ),
@@ -232,9 +254,10 @@ def admit_operation(
         arguments_digest=canonical_digest(normalized),
         request_digest=raw_digest,
         input_artifact_refs=json.dumps(input_refs, sort_keys=True, separators=(",", ":")),
-        credential_binding_ref=manifest.credential_binding_ref,
+        credential_binding_ref=getattr(manifest, "credential_binding_ref", None),
         configuration_revision=manifest.manifest_digest,
         execution_bundle_digest=bundle_digest,
+        tool_policy_revision=policy.revision,
         status="admitted",
     )
     db.add(operation)

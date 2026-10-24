@@ -12,8 +12,13 @@ import httpx
 from src.openship.tools.search import http as search_http
 
 
-def _record_call(call_log: Path, provider: str, query: str) -> None:
-    record = (json.dumps({"provider": provider, "query": query}) + "\n").encode("utf-8")
+def _record_call(
+    call_log: Path, provider: str, query: str, credential_label: str | None = None
+) -> None:
+    call = {"provider": provider, "query": query}
+    if credential_label is not None:
+        call["credential_label"] = credential_label
+    record = (json.dumps(call) + "\n").encode("utf-8")
     descriptor = os.open(call_log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
         os.write(descriptor, record)
@@ -41,19 +46,40 @@ class SyntheticSearchTransport(httpx.AsyncBaseTransport):
             if request.method != "GET" or request.url.path != "/res/v1/web/search":
                 raise httpx.UnsupportedProtocol("unexpected Brave request")
             query = request.url.params.get("q", "")
+            presented_key = request.headers.get("X-Subscription-Token", "")
         elif provider == "api.tavily.com":
             if request.method != "POST" or request.url.path != "/search":
                 raise httpx.UnsupportedProtocol("unexpected Tavily request")
             body = json.loads(await request.aread())
             query = body.get("query", "")
+            authorization = request.headers.get("Authorization", "")
+            presented_key = authorization.removeprefix("Bearer ")
         else:
             raise httpx.UnsupportedProtocol("unexpected search provider")
 
         call_log = Path(os.environ["SYNTHETIC_SEARCH_CALL_LOG"])
-        _record_call(call_log, provider, query)
+        credential_map_json = os.environ.get("SYNTHETIC_SEARCH_CREDENTIALS_JSON")
+        if credential_map_json:
+            credential_map = json.loads(credential_map_json)
+            credential_label = next(
+                (label for label, expected in credential_map.items() if expected == presented_key),
+                "unmatched",
+            )
+            _record_call(call_log, provider, query, credential_label)
+            if credential_label == "unmatched":
+                return httpx.Response(
+                    401,
+                    headers={"content-type": "application/json"},
+                    stream=_SyntheticBody({"error": "synthetic credential rejected"}),
+                    request=request,
+                )
+        else:
+            _record_call(call_log, provider, query)
 
         if query == "cancel-me" or query == "cancel full-stack dispatch":
             await asyncio.sleep(3600)
+        elif query.startswith("hold:"):
+            await asyncio.sleep(float(os.environ.get("SYNTHETIC_HOLD_SECONDS", "1")))
 
         if provider == "api.search.brave.com":
             payload = {

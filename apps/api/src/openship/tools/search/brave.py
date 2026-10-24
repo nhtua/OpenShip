@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import CapabilityRef
+from src.openship.connectors.credentials.broker import ConnectorCredentialError
 from src.openship.providers.errors import ProviderError
 from src.openship.tools.search.contracts import (
     SearchArguments,
@@ -52,7 +53,11 @@ def _truncate_utf8(value: str, maximum: int) -> tuple[str, bool]:
     return raw[:maximum].decode("utf-8", "ignore"), True
 
 
-def _reference() -> CapabilityRef:
+def _reference(context) -> CapabilityRef:
+    pinned = getattr(context.execution, "allowed_capabilities", ())
+    for reference in pinned:
+        if reference.id == "brave_web_search":
+            return reference
     manifest = next(
         item for item in list_capability_manifests() if item.id == "brave_web_search"
     )
@@ -71,6 +76,8 @@ async def search_brave(
     """Issue one Brave web search and return a bounded normalized observation."""
     try:
         credential = context.credential_resolver(_CREDENTIAL_BINDING)
+    except ConnectorCredentialError as refused:
+        raise SearchToolError(refused.code) from None
     except Exception:  # noqa: BLE001 - resolver failures may contain secret/config details.
         raise SearchToolError("missing_credentials") from None
     if (
@@ -158,7 +165,7 @@ async def search_brave(
             continue
         items.append(item)
 
-    manifest_ref = _reference()
+    manifest_ref = _reference(context)
     try:
         return SearchObservation(
             schema_version=1,

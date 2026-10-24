@@ -53,7 +53,7 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
     db.commit()
 
     rows = db.query(ToolAvailability).all()
-    assert len(rows) == 4
+    assert len(rows) == 9
     assert all(row.worker_id == "availability-worker" for row in rows)
     assert all(not hasattr(row, "credential_binding_ref") for row in rows)
     fresh = read_tool_availability(db, now=now)
@@ -62,6 +62,11 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
         "tavily_web_search": (False, "missing_credentials"),
         "workspace_list_files": (False, "disabled"),
         "workspace_read_file": (False, "disabled"),
+        "aws_check_connection": (False, "disabled"),
+        "aws_s3_bucket_storage": (False, "disabled"),
+        "aws_s3_bucket_metadata": (False, "disabled"),
+        "aws_read_catalog": (False, "disabled"),
+        "aws_read": (False, "disabled"),
     }
     expired = read_tool_availability(db, now=now + timedelta(seconds=31))
     assert expired == {
@@ -69,5 +74,10 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
         "tavily_web_search": (False, "runtime_unavailable"),
         "workspace_list_files": (False, "runtime_unavailable"),
         "workspace_read_file": (False, "runtime_unavailable"),
+        "aws_check_connection": (False, "runtime_unavailable"),
+        "aws_s3_bucket_storage": (False, "runtime_unavailable"),
+        "aws_s3_bucket_metadata": (False, "runtime_unavailable"),
+        "aws_read_catalog": (False, "runtime_unavailable"),
+        "aws_read": (False, "runtime_unavailable"),
     }
     db.close()

@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from src.openship.artifacts.models import ArtifactQuota
 from src.openship.artifacts.service import reserve_artifact
 from src.openship.auth.models import User
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import list_legacy_search_manifests
 from src.openship.capabilities.contracts import CapabilityRef, ExecutionConfig
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
@@ -112,7 +112,7 @@ datefmt = %H:%M:%S
 
 def _tool_run(db, *, status="running", expired=True, dispatched=False):
     manifest = next(
-        item for item in list_capability_manifests() if item.id == "brave_web_search"
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
     )
     ref = CapabilityRef(
         id=manifest.id,

@@ -156,7 +156,7 @@ jobs:
   # exercise the real API/runtime/filesystem boundary without vendor keys.
   api-full-stack:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       matrix:
         python-version: ["3.11", "3.13"]
@@ -178,12 +178,24 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: apps/web
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: apps/web
       - uses: astral-sh/setup-uv@v2
         with:
           enable-cache: true
       - run: cd apps/api && uv sync --extra dev
       - name: Run synthetic full-stack qualification
-        timeout-minutes: 10
+        timeout-minutes: 15
         shell: bash
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://openship@localhost:5432/lane
@@ -191,7 +203,7 @@ jobs:
         run: |
           cd apps/api
           set -o pipefail
-          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/full-stack.xml -m full_stack tests/full_stack/test_manual_search.py
+          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=180 --junitxml=/tmp/full-stack.xml -m full_stack tests/full_stack/test_manual_search.py tests/full_stack/test_managed_connectors.py
           python - /tmp/full-stack.xml <<'PY'
           import sys
           import xml.etree.ElementTree as ET

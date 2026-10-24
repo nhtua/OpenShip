@@ -50,7 +50,10 @@ class Artifact(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        CheckConstraint("kind IN ('search_result', 'upload')", name="ck_artifacts_kind"),
+        CheckConstraint(
+            "kind IN ('search_result', 'upload', 'cloud_observation')",
+            name="ck_artifacts_kind",
+        ),
         CheckConstraint(
             "media_type IN ('application/json', 'text/plain')", name="ck_artifacts_media_type"
         ),
@@ -61,6 +64,13 @@ class Artifact(Base):
         ),
         CheckConstraint("mutability = 'immutable'", name="ck_artifacts_mutability"),
         UniqueConstraint("relative_storage_key", name="uq_artifacts_storage_key"),
+        Index(
+            "uq_artifacts_project_conversation_id",
+            "project_id",
+            "conversation_id",
+            "id",
+            unique=True,
+        ),
         Index("ix_artifacts_conversation_created", "conversation_id", "created_at", "id"),
         Index("ix_artifacts_project_status", "project_id", "status"),
         Index(

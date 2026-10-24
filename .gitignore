@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+/secrets/
 
 # Node.js / Vue3
 node_modules/
@@ -41,6 +42,7 @@ Thumbs.db
 
 # Worktrees
 .worktrees/
+/apps/api/var/artifacts/
 
 # Logs
 *.log

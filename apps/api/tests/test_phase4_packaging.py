@@ -62,7 +62,7 @@ def test_production_web_container_routes_api_and_sse_to_fastapi():
     assert "proxy_buffering off;" in nginx
 
 
-def test_examples_keep_search_optional_and_secret_values_empty():
+def test_examples_leave_tool_availability_managed_and_search_secrets_empty():
     root_example = (REPO_ROOT / ".env.example").read_text()
     api_example = (REPO_ROOT / "apps/api/.env.example").read_text()
     for example in (root_example, api_example):
@@ -71,7 +71,7 @@ def test_examples_keep_search_optional_and_secret_values_empty():
             for line in example.splitlines()
             if line and not line.lstrip().startswith("#") and "=" in line
         )
-        assert values["TOOL_ENABLED_IDS"] == ""
+        assert "TOOL_ENABLED_IDS" not in values
         assert values["BRAVE_SEARCH_API_KEY"] == ""
         assert values["TAVILY_API_KEY"] == ""
 

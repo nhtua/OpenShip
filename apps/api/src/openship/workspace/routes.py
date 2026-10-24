@@ -2,6 +2,7 @@ import base64
 import uuid
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_
@@ -14,7 +15,9 @@ from ..artifacts.models import Artifact
 from ..artifacts.routes import configured_store
 from ..auth.models import User
 from ..auth.routes import require_jwt
+from ..chat.lifecycle import list_owned_conversations
 from ..chat.models import Conversation, Message
+from ..chat.schemas import conversation_response
 from ..database.session import get_db
 from .schemas import WorkspaceReadArguments
 from .service import WorkspaceServiceError, ensure_workspace
@@ -246,33 +249,25 @@ async def read_conversation_workspace_file(
 async def list_conversations(
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
+    state: Literal["active", "archived"] = "active",
 ):
-    """List all conversations for the current user."""
-    # Count messages per conversation
-    message_counts = (
-        db.query(Message.conversation_id, func.count().label("count"))
-        .filter(Message.conversation_id.in_(
-            db.query(Conversation.id).filter(Conversation.user_id == user.id)
-        ))
-        .group_by(Message.conversation_id)
-        .all()
-    )
-    count_map = {row.conversation_id: row.count for row in message_counts}
-
-    conversations = (
-        db.query(Conversation)
-        .filter(Conversation.user_id == user.id)
-        .order_by(Conversation.updated_at.desc())
-        .all()
-    )
+    """List the same lifecycle scopes as the chat API, with message counts."""
+    scopes = list_owned_conversations(db, owner_id=user.id, state=state)
+    conversation_ids = [conversation.id for conversation, _project in scopes]
+    count_map = {}
+    if conversation_ids:
+        message_counts = (
+            db.query(Message.conversation_id, func.count().label("count"))
+            .filter(Message.conversation_id.in_(conversation_ids))
+            .group_by(Message.conversation_id)
+            .all()
+        )
+        count_map = {row.conversation_id: row.count for row in message_counts}
 
     return [
         {
-            "id": str(conv.id),
-            "title": conv.title,
-            "created_at": conv.created_at.isoformat(),
-            "updated_at": conv.updated_at.isoformat(),
-            "message_count": count_map.get(conv.id, 0),
+            **conversation_response(conversation, project).model_dump(mode="json"),
+            "message_count": count_map.get(conversation.id, 0),
         }
-        for conv in conversations
+        for conversation, project in scopes
     ]

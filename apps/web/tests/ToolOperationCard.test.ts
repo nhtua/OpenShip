@@ -148,4 +148,83 @@ describe('ToolOperationCard', () => {
     await wrapper.get('button[aria-label="Show results for this search"]').trigger('click')
     expect(wrapper.text()).toContain('The search query is not available in this saved history.')
   })
+
+  it('shows a compact metadata result and offers its exact retained evidence', async () => {
+    const wrapper = mount(ToolOperationCard, {
+      props: {
+        operation: operation({
+          capability_id: 'aws_s3_bucket_metadata',
+          query: null,
+          result: {
+            resource_id: 'resource-1',
+            resource_binding_id: 'binding-1',
+            binding_revision: 2,
+            account_id: '123456789012',
+            region: 'us-east-1',
+            bucket_name: 'example-bucket',
+            versioning_status: 'enabled',
+            mfa_delete_status: 'not_reported',
+            retrieved_at: '2026-10-23T12:00:00Z',
+            artifact: { id: 'metadata-artifact', sha256: 'c'.repeat(64), size_bytes: 256, media_type: 'application/json' },
+          },
+          artifacts: [{
+            id: 'metadata-artifact', sha256: 'c'.repeat(64), size_bytes: 256,
+            media_type: 'application/json', conversation_id: 'conversation-1',
+            project_id: 'project-1', name: 's3-bucket-metadata.json', source: 'aws_s3_bucket_metadata',
+            status: 'ready', created_at: '2026-10-23T12:00:00Z', mutability: 'immutable',
+          }],
+        }),
+      },
+    })
+
+    expect(wrapper.text()).toContain('S3 bucket metadata')
+    expect(wrapper.text()).toContain('example-bucket')
+    await wrapper.get('button[aria-label="Show details for example-bucket"]').trigger('click')
+    expect(wrapper.text()).toContain('Versioning Enabled')
+    expect(wrapper.text()).toContain('MFA Delete Not reported')
+    expect(wrapper.text()).not.toContain('raw_response')
+    await wrapper.get('button[aria-label="Download s3-bucket-metadata.json"]').trigger('click')
+    expect(wrapper.emitted('download')?.[0]).toEqual(['metadata-artifact', 's3-bucket-metadata.json'])
+  })
+
+  it('renders generic AWS read provenance and bounded preview as text with exact evidence download', async () => {
+    const wrapper = mount(ToolOperationCard, {
+      props: {
+        operation: operation({
+          capability_id: 'aws_read',
+          query: null,
+          result: {
+            operation_id: 'aws-operation-1',
+            connector_id: 'aws-connector-1',
+            connector_revision: 2,
+            account_id: '123456789012',
+            service: 's3',
+            operation: 'list_buckets',
+            region: 'us-east-1',
+            retrieved_at: '2026-10-24T12:00:00Z',
+            outcome: 'partial',
+            preview: { Buckets: [{ Name: '<script>unsafe</script>' }] },
+            preview_truncated: true,
+            next_cursor: 'opaque-cursor',
+          },
+          artifacts: [{
+            id: 'aws-artifact', sha256: 'd'.repeat(64), size_bytes: 900,
+            media_type: 'application/json', conversation_id: 'conversation-1',
+            project_id: 'project-1', name: 'aws-read.json', source: 'aws_read',
+            status: 'ready', created_at: '2026-10-24T12:00:00Z', mutability: 'immutable',
+          }],
+        }),
+      },
+    })
+
+    expect(wrapper.text()).toContain('AWS read')
+    expect(wrapper.text()).toContain('s3.list_buckets')
+    await wrapper.get('button[aria-label="Show details for s3.list_buckets"]').trigger('click')
+    expect(wrapper.text()).toContain('123456789012')
+    expect(wrapper.text()).toContain('More results are available to continue reading')
+    expect(wrapper.find('script').exists()).toBe(false)
+    expect(wrapper.text()).toContain('<script>unsafe</script>')
+    await wrapper.get('button[aria-label="Download aws-read.json"]').trigger('click')
+    expect(wrapper.emitted('download')?.[0]).toEqual(['aws-artifact', 'aws-read.json'])
+  })
 })

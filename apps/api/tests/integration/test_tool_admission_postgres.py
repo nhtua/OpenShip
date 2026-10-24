@@ -16,7 +16,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from src.openship.auth.models import User
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import (
+    list_legacy_search_manifests,
+)
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
@@ -130,7 +132,9 @@ def _new_owned_conversation(db, label):
 
 
 def _command():
-    manifest = list_capability_manifests()[0]
+    manifest = next(
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
+    )
     return ToolCommandRequest(
         client_request_id=uuid.uuid4(),
         capability=CapabilityRef(
@@ -186,7 +190,9 @@ def test_competing_workers_share_one_slot_and_expired_fence_cannot_release_it(pg
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     monkeypatch.setattr(settings, "tool_concurrency", 1)
     db = pg_sessions()
-    manifest = list_capability_manifests()[0]
+    manifest = next(
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
+    )
     ref = CapabilityRef(id=manifest.id, version=manifest.version, manifest_digest=manifest.manifest_digest)
     runs = []
     claims = []
