@@ -1,6 +1,7 @@
 import json
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -21,7 +22,9 @@ class TurnSubmitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(..., min_length=1, max_length=10000)
-    client_request_id: str = Field(..., description="UUID generated once per browser send, for idempotency")
+    client_request_id: str = Field(
+        ..., description="UUID generated once per browser send, for idempotency"
+    )
     # A browser names a profile and nothing else: no endpoint, no model, no SDK
     # argument. Omitting the profile means the installation's default.
     provider_profile_id: str | None = Field(default=None, max_length=128)
@@ -30,6 +33,12 @@ class TurnSubmitRequest(BaseModel):
     fallback_profile_ids: list[str] | None = None
     enable_tools: StrictBool = False
     artifact_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
+    resource_binding_selections: list[uuid.UUID] = Field(
+        default_factory=list, max_length=10
+    )
+    connector_selections: dict[Literal["brave", "tavily", "aws"], uuid.UUID] = Field(
+        default_factory=dict, max_length=3
+    )
 
     @field_validator("artifact_ids")
     @classmethod
@@ -38,9 +47,19 @@ class TurnSubmitRequest(BaseModel):
             raise ValueError("artifact_ids must be distinct")
         return value
 
+    @field_validator("resource_binding_selections")
+    @classmethod
+    def _unique_resource_binding_selections(
+        cls, value: list[uuid.UUID]
+    ) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("resource_binding_selections must be distinct")
+        return value
+
 
 class ModelSummary(BaseModel):
     """What a run was pinned to — never a credential or an SDK setting."""
+
     profile_id: str
     label: str
     adapter: str
@@ -58,6 +77,7 @@ class ModelSummary(BaseModel):
 
 class UsageSummary(BaseModel):
     """Provider-reported counts. Missing stays missing; nothing is estimated."""
+
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
@@ -68,6 +88,7 @@ class UsageSummary(BaseModel):
 
 class ErrorSummary(BaseModel):
     """A normalized failure: a code and fixed copy, never a provider body."""
+
     code: str
     message: str
     retry_after_seconds: float | None = None
@@ -75,6 +96,7 @@ class ErrorSummary(BaseModel):
 
 class AttemptSummary(BaseModel):
     """One bounded request a worker made for a run."""
+
     ordinal: int
     profile_id: str
     adapter: str
@@ -86,6 +108,18 @@ class AttemptSummary(BaseModel):
     usage: UsageSummary | None = None
     started_at: str | None = None
     ended_at: str | None = None
+
+
+class ConnectorBlockerSummary(BaseModel):
+    id: uuid.UUID
+    request_id: uuid.UUID
+    reason: str
+    configuration_digest: str
+    expires_at: datetime
+    connector_kind: str
+    connector_visibility: str
+    connector_revision: int
+    connector_id: uuid.UUID
 
 
 class RunResponse(BaseModel):
@@ -102,22 +136,37 @@ class RunResponse(BaseModel):
     provider_attempts: list[AttemptSummary] = Field(default_factory=list)
     operations: list[OperationSummary] = Field(default_factory=list)
     operations_next_cursor: str | None = None
+    connector_blocker: ConnectorBlockerSummary | None = None
 
-    @field_serializer('id')
+    @field_serializer("id")
     def serialize_id(self, value: uuid.UUID) -> str:
         return str(value)
 
-    @field_serializer('conversation_id')
+    @field_serializer("conversation_id")
     def serialize_conversation_id(self, value: uuid.UUID) -> str:
         return str(value)
 
-    @field_serializer('created_at')
+    @field_serializer("created_at")
     def serialize_created_at(self, value: datetime) -> str:
         return value.isoformat()
 
 
 class RunCancelRequest(BaseModel):
     pass
+
+
+class ConnectorResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    blocker_id: uuid.UUID
+    request_id: uuid.UUID
+    expected_configuration_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ConnectorDismissRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    blocker_id: uuid.UUID
 
 
 def _served_model(attempts) -> str | None:
@@ -136,7 +185,11 @@ def _served_model(attempts) -> str | None:
 def _serving_attempt(attempts):
     """The successful request that actually served the run, if recorded."""
     return next(
-        (attempt for attempt in reversed(tuple(attempts)) if attempt.outcome == "succeeded"),
+        (
+            attempt
+            for attempt in reversed(tuple(attempts))
+            if attempt.outcome == "succeeded"
+        ),
         None,
     )
 
@@ -156,7 +209,10 @@ def _model_projection(snapshot: str | None, attempts=()) -> ModelSummary | None:
         fallbacks = config.get("fallbacks", ())
         profiles = (primary, *fallbacks)
         fallback_ids = tuple(profile["id"] for profile in fallbacks)
-        labels = {profile["id"]: profile["label"] for profile in (primary, *config.get("fallbacks", ()))}
+        labels = {
+            profile["id"]: profile["label"]
+            for profile in (primary, *config.get("fallbacks", ()))
+        }
     except (json.JSONDecodeError, TypeError, KeyError, ValueError):
         # A snapshot can outlive the schema that wrote it. Its normalized
         # failure remains readable even when its provider metadata does not.
@@ -165,12 +221,24 @@ def _model_projection(snapshot: str | None, attempts=()) -> ModelSummary | None:
     serving_context_tokens = None
     if serving is not None:
         serving_profile = next(
-            (profile for profile in profiles if profile.get("id") == serving.profile_id),
+            (
+                profile
+                for profile in profiles
+                if profile.get("id") == serving.profile_id
+            ),
             None,
         )
         capabilities = serving_profile.get("capabilities") if serving_profile else None
-        context_tokens = capabilities.get("context_tokens") if isinstance(capabilities, dict) else None
-        if isinstance(context_tokens, int) and not isinstance(context_tokens, bool) and context_tokens > 0:
+        context_tokens = (
+            capabilities.get("context_tokens")
+            if isinstance(capabilities, dict)
+            else None
+        )
+        if (
+            isinstance(context_tokens, int)
+            and not isinstance(context_tokens, bool)
+            and context_tokens > 0
+        ):
             serving_context_tokens = context_tokens
     return ModelSummary(
         profile_id=profile_id,
@@ -182,10 +250,14 @@ def _model_projection(snapshot: str | None, attempts=()) -> ModelSummary | None:
         # stay separate here: a provider that answered from an alias it was
         # handed would otherwise be indistinguishable from one that answered
         # from the model the operator named.
-        actual_model=serving.actual_model if serving and serving.actual_model else _served_model(attempts),
+        actual_model=serving.actual_model
+        if serving and serving.actual_model
+        else _served_model(attempts),
         destination_label=destination_label(endpoint),
         serving_profile_id=serving.profile_id if serving else None,
-        serving_label=labels.get(serving.profile_id, serving.profile_id) if serving else None,
+        serving_label=labels.get(serving.profile_id, serving.profile_id)
+        if serving
+        else None,
         serving_adapter=serving.adapter if serving else None,
         serving_destination_label=serving.destination_label if serving else None,
         fallback_profile_ids=fallback_ids,
@@ -201,7 +273,10 @@ def _usage_projection(recorded: str | None) -> UsageSummary | None:
 def _error_projection(code: str | None) -> ErrorSummary | None:
     if not code:
         return None
-    return ErrorSummary(code=code, message=SAFE_MESSAGES.get(code, "The model provider reported a failure."))
+    return ErrorSummary(
+        code=code,
+        message=SAFE_MESSAGES.get(code, "The model provider reported a failure."),
+    )
 
 
 def _attempt_projection(attempt: ProviderAttempt) -> AttemptSummary:
@@ -220,7 +295,9 @@ def _attempt_projection(attempt: ProviderAttempt) -> AttemptSummary:
     )
 
 
-def project_run_response(run: Run, attempts=(), operation_page=None) -> RunResponse:
+def project_run_response(
+    run: Run, attempts=(), operation_page=None, blocker=None
+) -> RunResponse:
     """The public shape of a run: only what a browser is allowed to see."""
     return RunResponse(
         id=run.id,
@@ -236,4 +313,19 @@ def project_run_response(run: Run, attempts=(), operation_page=None) -> RunRespo
         provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
         operations=list(operation_page.items) if operation_page else [],
         operations_next_cursor=operation_page.next_cursor if operation_page else None,
+        connector_blocker=(
+            ConnectorBlockerSummary(
+                id=blocker.id,
+                request_id=blocker.request_id,
+                reason=blocker.reason,
+                configuration_digest=blocker.configuration_digest,
+                expires_at=blocker.expires_at,
+                connector_kind=blocker.connector_kind,
+                connector_visibility=blocker.connector_visibility,
+                connector_revision=blocker.connector_revision,
+                connector_id=blocker.connector_id,
+            )
+            if blocker is not None
+            else None
+        ),
     )

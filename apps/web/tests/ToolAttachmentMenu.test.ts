@@ -136,4 +136,90 @@ describe('ToolAttachmentMenu', () => {
     expect(wrapper.text()).not.toContain('workspace_list_files')
     wrapper.unmount()
   })
+
+  it('offers S3 storage as a direct maintained tool but keeps identity checks out of the model menu', async () => {
+    const awsStorage: CapabilitySummary = {
+      id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'd'.repeat(64),
+      input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true,
+      available: true, unavailable_reason: null,
+    }
+    const identityCheck: CapabilitySummary = { ...awsStorage, id: 'aws_check_connection' }
+    const wrapper = mount(ToolAttachmentMenu, {
+      props: {
+        capabilities: [...capabilities, awsStorage, identityCheck],
+        selectedCapabilityId: null,
+        disabled: false,
+      },
+    })
+
+    await wrapper.get('[aria-label="Add tool"]').trigger('click')
+    expect(wrapper.text()).toContain('S3 bucket storage')
+    expect(wrapper.text()).not.toContain('aws_check_connection')
+    const storage = wrapper.findAll('[data-testid="tool-choice"]').find((item) => item.text().includes('S3'))!
+    await storage.trigger('click')
+    expect(wrapper.emitted('attach')?.[0]).toEqual([{
+      id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'd'.repeat(64),
+    }])
+    wrapper.unmount()
+  })
+
+  it('shows disabled and deployment-restricted tools with a useful reason', async () => {
+    const restricted = {
+      ...capabilities[0],
+      id: 'tavily_web_search',
+      enabled: false,
+      available: false,
+      permitted: false,
+      deployment_restricted: true,
+      unavailable_reason: 'deployment_restricted' as const,
+      policy_enabled: true,
+      required_connector_kinds: ['tavily'] as const,
+      connector_readiness: { tavily: 'ready' as const },
+    }
+    const wrapper = mount(ToolAttachmentMenu, {
+      props: { capabilities: [restricted], selectedCapabilityId: null, disabled: false },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+
+    const choice = wrapper.get('[data-testid="tool-choice"]')
+    expect((choice.element as HTMLButtonElement).disabled).toBe(true)
+    expect(choice.text()).toContain('Restricted by TOOL_ENABLED_IDS')
+    expect(wrapper.emitted('attach')).toBeFalsy()
+    wrapper.unmount()
+  })
+
+  it('offers direct AWS read helpers without requiring a saved bucket binding', async () => {
+    const metadata: CapabilitySummary = {
+      id: 'aws_s3_bucket_metadata',
+      version: '1.0.0',
+      manifest_digest: 'd'.repeat(64),
+      input_schema: {},
+      output_schema: {},
+      effect: 'read_only_external',
+      enabled: true,
+      available: true,
+      unavailable_reason: null,
+      required_connector_kinds: ['aws'],
+      connector_readiness: { aws: 'ready' },
+    }
+    const wrapper = mount(ToolAttachmentMenu, {
+      props: {
+        capabilities: [...capabilities, metadata],
+        selectedCapabilityId: null,
+        disabled: false,
+      },
+    })
+
+    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
+    const choice = wrapper.findAll('[data-testid="tool-choice"]')
+      .find((item) => item.text().includes('S3 bucket metadata'))!
+    expect(choice.attributes('disabled')).toBeUndefined()
+    await choice.trigger('click')
+    expect(wrapper.emitted('attach')?.[0]).toEqual([{
+      id: 'aws_s3_bucket_metadata', version: '1.0.0', manifest_digest: 'd'.repeat(64),
+    }])
+
+    wrapper.unmount()
+  })
 })

@@ -1,6 +1,7 @@
 """Durable model-free tool command and admission behavior."""
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -14,10 +15,19 @@ from src.openship.capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
     ExecutionConfig,
+    ExecutionConfigV4,
     ToolCommandRequest,
 )
+from src.openship.capabilities.models import ToolPolicyOverride
 from src.openship.chat.models import Conversation, Message
 from src.openship.config import settings
+from src.openship.connectors.contracts import ConnectorConfiguration
+from src.openship.connectors.models import (
+    Connector,
+    ConnectorRevision,
+    CredentialVersion,
+)
+from src.openship.connectors.selection import ConnectorSelectionError
 from src.openship.database.session import SessionLocal
 from src.openship.execution.admission import (
     acquire_execution_slot,
@@ -71,7 +81,19 @@ def _command(client_request_id=None, *, capability=None, arguments=None):
     )
 
 
+def _no_managed_search_connectors(monkeypatch):
+    def missing(*_args, **_kwargs):
+        raise ConnectorSelectionError("connector_required")
+
+    monkeypatch.setattr("src.openship.runs.service.resolve_connector", missing)
+    monkeypatch.setattr(
+        "src.openship.runs.service._connector_rows_for_project",
+        lambda *_args, **_kwargs: 0,
+    )
+
+
 def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     monkeypatch.setattr(settings, "workflow_run_timeout_seconds", 900)
     db = SessionLocal()
@@ -101,7 +123,137 @@ def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
         db.close()
 
 
+def test_aws_read_manual_command_uses_pinned_connector_and_binding_free_config(monkeypatch):
+    monkeypatch.setattr(settings, "tool_enabled_ids", "aws_read")
+    db = SessionLocal()
+    try:
+        user, project, conversation = _principals(db)[0]
+        db.merge(ToolPolicyOverride(capability_id="aws_read", enabled=True))
+        db.flush()
+        connector_id = uuid.uuid4()
+        credential_id = uuid.uuid4()
+        configuration = ConnectorConfiguration(
+            kind="aws",
+            region="us-east-1",
+            expected_account_id="123456789012",
+            basic_role_arn="arn:aws:iam::123456789012:role/readonly",
+        )
+        connector = Connector(
+            id=connector_id,
+            kind="aws",
+            visibility="project",
+            project_id=project.id,
+            name="Read only role",
+            current_revision=1,
+            enabled=True,
+            managed_by_user_id=user.id,
+            created_by_user_id=user.id,
+        )
+        db.add(connector)
+        db.flush()
+        db.add(
+            CredentialVersion(
+                id=credential_id,
+                connector_id=connector_id,
+                visibility="project",
+                project_id=project.id,
+                kind="aws_bootstrap",
+                schema_version=1,
+                key_id="test-v1",
+                nonce=b"n" * 12,
+                ciphertext=b"c" * 32,
+                state="active",
+            )
+        )
+        db.flush()
+        db.add(
+            ConnectorRevision(
+                connector_id=connector_id,
+                revision=1,
+                schema_version=1,
+                visibility="project",
+                project_id=project.id,
+                configuration_json=configuration.canonical_bytes().decode(),
+                configuration_digest=configuration.digest(),
+                credential_version_id=credential_id,
+                created_by_user_id=user.id,
+            )
+        )
+        db.flush()
+        manifest = next(
+            item for item in list_capability_manifests() if item.id == "aws_read"
+        )
+        capability = CapabilityRef(
+            id=manifest.id,
+            version=manifest.version,
+            manifest_digest=manifest.manifest_digest,
+        )
+        command = ToolCommandRequest(
+            client_request_id=uuid.uuid4(),
+            capability=capability,
+            arguments={
+                "connector_id": str(connector_id),
+                "service": "s3",
+                "operation": "list_buckets",
+                "parameters": {},
+            },
+            connector_selections={"aws": str(connector_id)},
+        )
+
+        run = submit_tool_run(db, user.id, conversation.id, command)
+        db.commit()
+        payload = json.loads(run.execution_configuration)
+        execution = ExecutionConfigV4.model_validate_json(run.execution_configuration)
+
+        assert run.kind == "tool"
+        assert run.graph_version == 3
+        assert payload["schema_version"] == 4
+        assert execution.allowed_capabilities == (capability,)
+        assert execution.connector_refs[0].id == connector_id
+        assert execution.aws_read_catalog_digest == manifest.aws_read_catalog_digest
+        assert "resource_binding_refs" not in payload
+        assert "selected_resource_binding_refs" not in payload
+    finally:
+        db.close()
+
+
+def test_aws_read_manual_command_rejects_mismatched_connector_ids(monkeypatch):
+    monkeypatch.setattr(settings, "tool_enabled_ids", "aws_read")
+    db = SessionLocal()
+    try:
+        user, _project, conversation = _principals(db)[0]
+        db.merge(ToolPolicyOverride(capability_id="aws_read", enabled=True))
+        db.flush()
+        manifest = next(
+            item for item in list_capability_manifests() if item.id == "aws_read"
+        )
+        command = ToolCommandRequest(
+            client_request_id=uuid.uuid4(),
+            capability=CapabilityRef(
+                id=manifest.id,
+                version=manifest.version,
+                manifest_digest=manifest.manifest_digest,
+            ),
+            arguments={
+                "connector_id": str(uuid.uuid4()),
+                "service": "s3",
+                "operation": "list_buckets",
+                "parameters": {},
+            },
+            connector_selections={"aws": uuid.uuid4()},
+        )
+
+        with pytest.raises(HTTPException) as error:
+            submit_tool_run(db, user.id, conversation.id, command)
+
+        assert error.value.status_code == 422
+        assert error.value.detail["error"]["code"] == "connector_scope_denied"
+    finally:
+        db.close()
+
+
 def test_exact_tool_command_replay_precedes_current_enablement(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:
@@ -120,6 +272,7 @@ def test_exact_tool_command_replay_precedes_current_enablement(monkeypatch):
 
 
 def test_changed_or_foreign_command_key_is_not_replayed(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:
@@ -149,6 +302,7 @@ def test_changed_or_foreign_command_key_is_not_replayed(monkeypatch):
 
 
 def test_only_one_active_manual_run_is_admitted(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:
@@ -272,6 +426,7 @@ def test_tool_command_accepts_json_uuid_and_preserves_historical_chat_contract()
 
 
 def test_tool_submission_route_is_authenticated_and_model_free(monkeypatch):
+    _no_managed_search_connectors(monkeypatch)
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     try:

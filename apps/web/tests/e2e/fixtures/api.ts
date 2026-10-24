@@ -7,9 +7,13 @@ import type { Page, Route } from '@playwright/test'
 
 export interface E2EConversation {
   id: string
+  project_id?: string
   title: string
   created_at: string
   updated_at: string
+  archived_at: string | null
+  project_archived_at: string | null
+  project_name: string
 }
 
 export interface E2EMessage {
@@ -31,15 +35,23 @@ export const E2E_TOKEN = 'e2e-test-token-not-a-real-credential'
 export const E2E_CONVERSATIONS: E2EConversation[] = [
   {
     id: 'c1',
+    project_id: 'project-e2e',
     title: 'Deploy pipeline',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T10:00:00Z',
+    archived_at: null,
+    project_archived_at: null,
+    project_name: 'Personal project',
   },
   {
     id: 'c2',
+    project_id: 'project-e2e',
     title: 'Scale up web',
     created_at: '2026-01-02T00:00:00Z',
     updated_at: '2026-01-02T10:00:00Z',
+    archived_at: null,
+    project_archived_at: null,
+    project_name: 'Personal project',
   },
 ]
 
@@ -85,6 +97,10 @@ export function makeConversations(count: number): E2EConversation[] {
     title: i === 0 ? 'A'.repeat(300) : `Conversation ${i + 1}`,
     created_at: `2026-01-01T00:00:0${i % 10}Z`,
     updated_at: '2026-01-01T10:00:00Z',
+    project_id: 'project-e2e',
+    archived_at: null,
+    project_archived_at: null,
+    project_name: 'Personal project',
   }))
 }
 
@@ -140,6 +156,16 @@ export async function mockApi(
     messages = E2E_MESSAGES,
   } = options
 
+  const asConversation = (conversation: E2EConversation): E2EConversation => ({
+    project_id: 'project-e2e',
+    archived_at: null,
+    project_archived_at: null,
+    project_name: 'Personal project',
+    ...conversation,
+  })
+  const activeConversations = conversations.map(asConversation)
+  const archivedConversations: E2EConversation[] = []
+
   const json = (route: Route, status: number, body: unknown): Promise<void> =>
     route.fulfill({
       status,
@@ -164,10 +190,54 @@ export async function mockApi(
 
   await page.route('**/api/auth/logout', (route) => json(route, 200, {}))
 
-  await page.route('**/api/workspace/conversations', (route) =>
-    conversationsStatus !== 200
-      ? json(route, conversationsStatus, { detail: 'Server exploded' })
-      : json(route, 200, conversations),
+  await page.route('**/api/workspace/conversations*', (route) => {
+    if (conversationsStatus !== 200) return json(route, conversationsStatus, { detail: 'Server exploded' })
+    const state = new URL(route.request().url()).searchParams.get('state') ?? 'active'
+    return json(route, 200, state === 'archived' ? archivedConversations : activeConversations)
+  })
+
+  await page.route('**/api/projects*', (route) =>
+    route.request().method() === 'GET'
+      ? json(route, 200, [{ id: 'project-e2e', name: 'Personal project', archived_at: null }])
+      : json(route, 405, { detail: 'Method not allowed' }),
+  )
+  await page.route('**/api/projects/project-e2e/connectors', (route) =>
+    route.request().method() === 'GET'
+      ? json(route, 200, [
+          { id: 'global-brave', kind: 'brave', visibility: 'global', name: 'Shared Brave', status: 'configured', revision: 1, is_default: true },
+          { id: 'project-tavily', kind: 'tavily', visibility: 'project', name: 'Project Tavily', status: 'configured', revision: 1, is_default: true },
+        ])
+      : json(route, 201, { id: 'created-connector', status: 'configured', revision: 1 }),
+  )
+  await page.route('**/api/projects/project-e2e/connector-defaults/*', (route) => {
+    const kind = new URL(route.request().url()).pathname.split('/').at(-1) ?? 'brave'
+    return route.request().method() === 'GET'
+      ? json(route, 200, { service: kind, connector_id: kind === 'brave' ? 'global-brave' : 'project-tavily', revision: 1 })
+      : json(route, 200, { service: kind, connector_id: route.request().postDataJSON()?.connector_id ?? null, revision: 2 })
+  })
+  await page.route('**/api/projects/project-e2e/capabilities', (route) =>
+    json(route, 200, E2E_SEARCH_CAPABILITIES.map((capability) => ({
+      ...capability,
+      permitted: true,
+      required_connector_kinds: [capability.id.startsWith('brave') ? 'brave' : 'tavily'],
+      connector_readiness: { [capability.id.startsWith('brave') ? 'brave' : 'tavily']: 'ready' },
+    }))),
+  )
+  await page.route('**/api/connectors/setup-context', (route) =>
+    json(route, 200, {
+      can_manage_global: false,
+      credential_store_ready: true,
+      unavailable_reason: null,
+    }),
+  )
+  await page.route('**/api/global-connectors', (route) =>
+    json(route, 403, { error: { code: 'global_management_forbidden', message: 'Global Connector management is not available to this account' } }),
+  )
+  await page.route('**/api/global-connectors/requests/*', (route) =>
+    json(route, 404, { error: { code: 'connector_not_found', message: 'Connector or request not found' } }),
+  )
+  await page.route('**/api/projects/project-e2e/connector-requests/*', (route) =>
+    json(route, 404, { error: { code: 'connector_not_found', message: 'Connector or request not found' } }),
   )
 
   // ChatView loads the persistent-files panel for the selected conversation.
@@ -202,13 +272,41 @@ export async function mockApi(
     if (route.request().method() !== 'POST') {
       return json(route, 405, { detail: 'Method not allowed' })
     }
-    const body = (route.request().postDataJSON() ?? {}) as { title?: string }
-    return json(route, 201, {
+    const body = (route.request().postDataJSON() ?? {}) as { title?: string; project_id?: string }
+    const created = asConversation({
       id: 'c-new',
+      project_id: body.project_id ?? 'project-e2e',
       title: body.title || 'New Conversation',
       created_at: '2026-01-03T00:00:00Z',
       updated_at: '2026-01-03T00:00:00Z',
+      archived_at: null,
+      project_archived_at: null,
+      project_name: 'Personal project',
     })
+    activeConversations.unshift(created)
+    return json(route, 201, created)
+  })
+
+  await page.route(/\/api\/conversations\/[^/?]+$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue()
+    const id = new URL(route.request().url()).pathname.split('/').at(-1)
+    const conversation = [...activeConversations, ...archivedConversations].find((item) => item.id === id)
+    return conversation
+      ? json(route, 200, conversation)
+      : json(route, 404, { detail: 'Conversation not found' })
+  })
+
+  await page.route(/\/api\/conversations\/([^/]+)\/(archive|restore)$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.continue()
+    const [, id, action] = new URL(route.request().url()).pathname.match(/\/api\/conversations\/([^/]+)\/(archive|restore)$/) ?? []
+    const source = action === 'archive' ? activeConversations : archivedConversations
+    const destination = action === 'archive' ? archivedConversations : activeConversations
+    const index = source.findIndex((item) => item.id === id)
+    if (index < 0) return json(route, 404, { detail: 'Conversation not found' })
+    const [conversation] = source.splice(index, 1)
+    const updated = { ...conversation, archived_at: action === 'archive' ? new Date().toISOString() : null }
+    destination.unshift(updated)
+    return json(route, 200, updated)
   })
 
   await mockDurableApi(page, {
@@ -849,6 +947,19 @@ export async function mockDurableApi(
     capabilitiesStatus !== 200
       ? json(route, capabilitiesStatus, { detail: 'Search tools unavailable' })
       : json(route, 200, capabilities),
+  )
+  await page.route('**/api/projects/project-e2e/capabilities', (route) =>
+    capabilitiesStatus !== 200
+      ? json(route, capabilitiesStatus, { detail: 'Project search tools unavailable' })
+      : json(route, 200, capabilities.map((capability) => {
+          const kind = capability.id.startsWith('brave') ? 'brave' : 'tavily'
+          return {
+            ...capability,
+            permitted: capability.enabled,
+            required_connector_kinds: [kind],
+            connector_readiness: { [kind]: 'ready' },
+          }
+        })),
   )
 
   // The run read. Registered before the command routes below, which is what

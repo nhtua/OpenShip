@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { CapabilityRef, CapabilitySummary } from '@/types'
+import type {
+  CapabilityRef,
+  CapabilitySummary,
+  ProjectCapabilitySummary,
+} from '@/types'
 
 interface Props {
-  capabilities: CapabilitySummary[]
+  capabilities: Array<CapabilitySummary | ProjectCapabilitySummary>
   selectedCapabilityId: string | null
   disabled: boolean
   catalogError?: string | null
@@ -28,17 +32,29 @@ const trigger = ref<HTMLButtonElement | null>(null)
 const menu = ref<HTMLElement | null>(null)
 const directCapabilities = computed(() => props.capabilities.filter((capability) =>
   capability.effect === 'read_only_external' &&
-  ['brave_web_search', 'tavily_web_search'].includes(capability.id),
+  ['brave_web_search', 'tavily_web_search', 'aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(capability.id),
 ))
 
 function label(id: string): string {
   if (id === 'brave_web_search') return 'Brave Search'
   if (id === 'tavily_web_search') return 'Tavily Search'
+  if (id === 'aws_s3_bucket_storage') return 'S3 bucket storage'
+  if (id === 'aws_s3_bucket_metadata') return 'S3 bucket metadata'
   return id
 }
 
-function unavailableReason(capability: CapabilitySummary): string {
-  if (!capability.enabled || capability.unavailable_reason === 'disabled') return 'Disabled in tool settings'
+function unavailableReason(capability: CapabilitySummary | ProjectCapabilitySummary): string {
+  if (capability.unavailable_reason === 'deployment_restricted') {
+    return 'Restricted by TOOL_ENABLED_IDS'
+  }
+  if (capability.unavailable_reason === 'disabled_by_operator') {
+    return 'Disabled in Global Settings'
+  }
+  if (capability.unavailable_reason === 'policy_unavailable') {
+    return 'Tool availability could not be confirmed'
+  }
+  if (capability.permitted === false) return 'Not enabled for this installation'
+  if (capability.enabled === false || capability.unavailable_reason === 'disabled') return 'Disabled in tool settings'
   if (capability.unavailable_reason === 'missing_credentials') return 'Add a search provider connection'
   if (capability.unavailable_reason === 'runtime_unavailable') return 'Search service is not configured'
   return 'Unavailable in this installation'
@@ -58,8 +74,11 @@ async function toggle() {
   }
 }
 
-function attach(capability: CapabilitySummary) {
-  if (props.disabled || !capability.enabled || !capability.available) return
+function attach(capability: CapabilitySummary | ProjectCapabilitySummary) {
+  if (
+    props.disabled || capability.permitted === false ||
+    capability.enabled === false || capability.available === false
+  ) return
   emit('attach', {
     id: capability.id,
     version: capability.version,
@@ -156,7 +175,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
         Attach one tool to run it directly
       </p>
       <p v-if="!directCapabilities.length" class="px-2 pb-2 text-xs text-muted-foreground">
-        No directly attachable search tools are configured.
+        No directly attachable tools are configured.
       </p>
       <button
         v-for="capability in directCapabilities"
@@ -165,12 +184,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
         role="menuitem"
         data-testid="tool-choice"
         class="flex w-full items-start justify-between gap-3 rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-        :disabled="props.disabled || !capability.available || !capability.enabled"
+        :disabled="props.disabled || capability.permitted === false || capability.available === false || capability.enabled === false"
         @click="attach(capability)"
       >
         <span class="min-w-0">
           <span class="block font-medium">{{ label(capability.id) }}</span>
-          <span v-if="!capability.available || !capability.enabled" class="mt-0.5 block text-xs text-muted-foreground">
+        <span v-if="capability.permitted === false || capability.available === false || capability.enabled === false" class="mt-0.5 block text-xs text-muted-foreground">
             {{ unavailableReason(capability) }}
           </span>
         </span>

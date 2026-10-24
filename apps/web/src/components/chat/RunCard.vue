@@ -11,9 +11,21 @@ import type {
 interface Props {
   card: RunCard
   hasActions?: boolean
+  canResumeConnector?: boolean
+  connectorActionBusy?: boolean
 }
 
-const props = withDefaults(defineProps<Props>(), { hasActions: false })
+const props = withDefaults(defineProps<Props>(), {
+  hasActions: false,
+  canResumeConnector: false,
+  connectorActionBusy: false,
+})
+const emit = defineEmits<{
+  'resume-connector': []
+  'dismiss-connector': []
+  'setup-connector': []
+  'resubmit-connector': []
+}>()
 const kind = computed(() => props.card.kind ?? 'chat')
 const expanded = ref(false)
 const now = ref(Date.now())
@@ -26,6 +38,8 @@ const statusLabel = computed(() => {
       return 'Queued'
     case 'running':
       return 'Running'
+    case 'waiting_connector':
+      return 'Waiting for connector'
     case 'paused':
       return 'Paused'
     case 'failed':
@@ -43,6 +57,8 @@ const statusVariant = computed(() => {
   switch (props.card.status) {
     case 'running':
       return 'default'
+    case 'waiting_connector':
+      return 'outline'
     case 'failed':
       return 'destructive'
     case 'cancelled':
@@ -232,6 +248,62 @@ onBeforeUnmount(() => {
         ({{ card.error_code }})
       </span>
     </div>
+
+    <section
+      v-if="card.status === 'waiting_connector' && card.connector_blocker"
+      data-testid="connector-blocker"
+      class="grid gap-2 border-t border-border px-3 py-3"
+      aria-label="Connector setup required"
+    >
+      <p class="text-xs text-muted-foreground">
+        {{ card.connector_blocker.connector_kind.toUpperCase() }} setup is needed before this request can run. No provider or cloud request was sent.
+      </p>
+      <p class="text-xs text-muted-foreground">
+        Waiting for revision {{ card.connector_blocker.connector_revision }} · Expires {{ new Date(card.connector_blocker.expires_at).toLocaleString() }}
+      </p>
+      <p v-if="!canResumeConnector" class="text-xs text-muted-foreground">
+        The current connector revision does not match this request. Resubmit it as a new turn after setup.
+      </p>
+      <div class="flex flex-wrap gap-2">
+        <button
+          v-if="canResumeConnector"
+          type="button"
+          data-testid="resume-connector"
+          class="rounded-md border border-input px-2.5 py-1.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          :disabled="connectorActionBusy"
+          @click="emit('resume-connector')"
+        >
+          Resume request
+        </button>
+        <button
+          type="button"
+          data-testid="setup-connector"
+          class="rounded-md border border-input px-2.5 py-1.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          :disabled="connectorActionBusy"
+          @click="emit('setup-connector')"
+        >
+          Open connector setup
+        </button>
+        <button
+          type="button"
+          data-testid="resubmit-connector"
+          class="rounded-md border border-input px-2.5 py-1.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          :disabled="connectorActionBusy"
+          @click="emit('resubmit-connector')"
+        >
+          Resubmit in composer
+        </button>
+        <button
+          type="button"
+          data-testid="dismiss-connector"
+          class="rounded-md border border-input px-2.5 py-1.5 text-xs font-medium text-destructive hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          :disabled="connectorActionBusy"
+          @click="emit('dismiss-connector')"
+        >
+          Cancel wait
+        </button>
+      </div>
+    </section>
   </div>
 </template>
 

@@ -20,6 +20,7 @@ export const PRIME_ICON_NAMES = [
   'chevron-up',
   'chevron-down',
   'times',
+  'ellipsis-v',
   'refresh',
   'folder-open',
   'sun',

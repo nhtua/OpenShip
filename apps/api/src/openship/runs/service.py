@@ -13,45 +13,116 @@ from sqlalchemy.orm import Session
 
 from ..artifacts.contracts import ArtifactRef
 from ..artifacts.models import Artifact
-from ..capabilities.catalog import list_capability_manifests, resolve_capability
+from ..capabilities.catalog import (
+    legacy_credential_binding,
+    list_capability_manifests,
+    list_legacy_search_manifests,
+    resolve_capability,
+)
 from ..capabilities.contracts import (
     CapabilityRef,
+    ConnectorRef,
     ExecutionConfig,
+    ExecutionConfigV2,
+    ExecutionConfigV3,
+    ExecutionConfigV4,
     LoopLimits,
     ToolCommandRequest,
     canonical_digest,
 )
+from ..capabilities.definitions import get_tool_definition
+from ..capabilities.policy import read_effective_tool_policy
+from ..chat.lifecycle import ConversationLifecycleError, get_owned_conversation_scope
 from ..chat.models import Conversation, Message
 from ..config import settings
+from ..connectors.aws.read_catalog import load_aws_read_catalog
+from ..connectors.models import (
+    Connector,
+    ConnectorRevision,
+    CredentialVersion,
+    ProjectConnectorDefault,
+)
+from ..connectors.selection import ConnectorSelectionError, resolve_connector
 from ..execution.errors import CapabilityError
 from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
+from ..resources.models import ConnectorBlocker
 from ..runs.models import Event, Outbox, Run, RunJob
-from ..tools.search.contracts import SearchArguments
+from ..workspace.lifecycle import (
+    ArchiveStateError,
+    archive_http_error,
+    assert_active_conversation,
+)
 from .queue import fenced_update_run
 
 
-def require_owned_conversation(db: Session, user_id: uuid.UUID, conversation_id: str) -> Conversation:
+def require_owned_conversation(
+    db: Session, user_id: uuid.UUID, conversation_id: str
+) -> Conversation:
     """Validate that user owns the conversation. Raises 404 if not."""
     try:
         conv_id = uuid.UUID(conversation_id)
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_conversation_id", "message": "Invalid conversation ID format"}},
+            detail={
+                "error": {
+                    "code": "invalid_conversation_id",
+                    "message": "Invalid conversation ID format",
+                }
+            },
         )
 
-    conv = db.query(Conversation).filter(
-        Conversation.id == conv_id,
-        Conversation.user_id == user_id,
-    ).with_for_update().first()
+    conv = (
+        db.query(Conversation)
+        .filter(
+            Conversation.id == conv_id,
+            Conversation.user_id == user_id,
+        )
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
     if not conv:
         raise HTTPException(
             status_code=404,
-            detail={"error": {"code": "conversation_not_found", "message": "Conversation not found"}},
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": "Conversation not found",
+                }
+            },
         )
     return conv
+
+
+def _lock_active_conversation_scope(
+    db: Session, *, user_id: uuid.UUID, conversation_id: uuid.UUID
+) -> Conversation:
+    """Refresh and lock conversation → project before admitting fresh work."""
+    try:
+        conversation, project = get_owned_conversation_scope(
+            db,
+            owner_id=user_id,
+            conversation_id=conversation_id,
+            for_update=True,
+        )
+    except ConversationLifecycleError:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": "Conversation not found",
+                }
+            },
+        ) from None
+    try:
+        assert_active_conversation(conversation, project)
+    except ArchiveStateError as exc:
+        raise archive_http_error(exc) from None
+    return conversation
 
 
 def _selection_of(run: Run) -> tuple[str | None, list[str]]:
@@ -65,15 +136,22 @@ def _selection_of(run: Run) -> tuple[str | None, list[str]]:
     )
 
 
-def _selection_conflicts(run: Run, provider_profile_id: str | None, fallback_profile_ids) -> bool:
+def _selection_conflicts(
+    run: Run, provider_profile_id: str | None, fallback_profile_ids
+) -> bool:
     """Only an explicit selection that differs from the run's own is a conflict."""
     pinned_profile, pinned_fallbacks = _selection_of(run)
     if provider_profile_id is not None and provider_profile_id != pinned_profile:
         return True
-    return fallback_profile_ids is not None and list(fallback_profile_ids) != pinned_fallbacks
+    return (
+        fallback_profile_ids is not None
+        and list(fallback_profile_ids) != pinned_fallbacks
+    )
 
 
-def _resolve_selection(provider_profile_id: str | None, fallback_profile_ids) -> RunModelConfig:
+def _resolve_selection(
+    provider_profile_id: str | None, fallback_profile_ids
+) -> RunModelConfig:
     """Freeze what this run will execute, or explain why it cannot.
 
     Today's credentials are not consulted here: a run is queued against the
@@ -81,7 +159,9 @@ def _resolve_selection(provider_profile_id: str | None, fallback_profile_ids) ->
     """
     try:
         registry = load_profiles(settings)
-        return registry.pin_selection(provider_profile_id, tuple(fallback_profile_ids or ()))
+        return registry.pin_selection(
+            provider_profile_id, tuple(fallback_profile_ids or ())
+        )
     except ProviderError as refused:
         raise HTTPException(
             status_code=422,
@@ -89,38 +169,62 @@ def _resolve_selection(provider_profile_id: str | None, fallback_profile_ids) ->
         ) from refused
 
 
-def _turn_submission_digest(content: str, enable_tools: bool, artifact_ids) -> str:
+def _turn_submission_digest(
+    content: str,
+    enable_tools: bool,
+    artifact_ids,
+    connector_selections=None,
+) -> str:
     """Hash only client-controlled chat semantics, never current configuration."""
-    return canonical_digest(
-        {
-            "content": content,
-            "enable_tools": enable_tools,
-            "artifact_ids": [str(item) for item in artifact_ids],
-        }
-    )
+    canonical = {
+        "content": content,
+        "enable_tools": enable_tools,
+        "artifact_ids": [str(item) for item in artifact_ids],
+        "connector_selections": {
+            kind: str(connector_id)
+            for kind, connector_id in sorted((connector_selections or {}).items())
+        },
+    }
+    return canonical_digest(canonical)
 
 
-def _owned_artifact_refs(db: Session, conversation: Conversation, artifact_ids) -> tuple[ArtifactRef, ...]:
+def _owned_artifact_refs(
+    db: Session, conversation: Conversation, artifact_ids
+) -> tuple[ArtifactRef, ...]:
     requested = tuple(uuid.UUID(str(item)) for item in artifact_ids)
     if len(requested) != len(set(requested)):
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_artifact_selection", "message": "Selected artifacts must be distinct"}},
+            detail={
+                "error": {
+                    "code": "invalid_artifact_selection",
+                    "message": "Selected artifacts must be distinct",
+                }
+            },
         )
     if not requested:
         return ()
-    rows = db.query(Artifact).filter(
-        Artifact.id.in_(requested),
-        Artifact.conversation_id == conversation.id,
-        Artifact.project_id == conversation.project_id,
-        Artifact.status == "ready",
-        Artifact.mutability == "immutable",
-    ).all()
+    rows = (
+        db.query(Artifact)
+        .filter(
+            Artifact.id.in_(requested),
+            Artifact.conversation_id == conversation.id,
+            Artifact.project_id == conversation.project_id,
+            Artifact.status == "ready",
+            Artifact.mutability == "immutable",
+        )
+        .all()
+    )
     by_id = {row.id: row for row in rows}
     if len(by_id) != len(requested):
         raise HTTPException(
             status_code=404,
-            detail={"error": {"code": "artifact_not_found", "message": "One or more selected artifacts are not available in this conversation"}},
+            detail={
+                "error": {
+                    "code": "artifact_not_found",
+                    "message": "One or more selected artifacts are not available in this conversation",
+                }
+            },
         )
     return tuple(
         ArtifactRef(
@@ -134,30 +238,295 @@ def _owned_artifact_refs(db: Session, conversation: Conversation, artifact_ids) 
     )
 
 
-def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[ArtifactRef, ...]) -> ExecutionConfig:
+def _connector_rows_for_project(
+    db: Session, project_id: uuid.UUID, service: str
+) -> int:
+    return (
+        db.query(Connector)
+        .filter(
+            Connector.kind == service,
+            ((Connector.visibility == "global") & Connector.project_id.is_(None))
+            | (
+                (Connector.visibility == "project")
+                & (Connector.project_id == project_id)
+            ),
+        )
+        .count()
+    )
+
+
+def _connector_reference(resolved) -> ConnectorRef:
+    return ConnectorRef(
+        id=resolved.connector_id,
+        kind=resolved.kind,
+        configuration_revision=resolved.revision,
+        visibility=resolved.visibility,
+        credential_version_id=resolved.credential_version_id,
+    )
+
+
+def _aws_connector_reference(
+    db: Session,
+    *,
+    project_id: uuid.UUID,
+    connector_id: uuid.UUID,
+    revision_number: int | None = None,
+) -> ConnectorRef:
+    connector = (
+        db.query(Connector)
+        .filter(
+            Connector.id == connector_id,
+            Connector.kind == "aws",
+            Connector.visibility == "project",
+            Connector.project_id == project_id,
+        )
+        .first()
+    )
+    if connector is None or connector.revoked_at is not None or not connector.enabled:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "aws_resource_unavailable",
+                    "message": "The selected AWS Connector is not available for this project",
+                }
+            },
+        )
+    revision_number = revision_number or connector.current_revision
+    revision = (
+        db.query(ConnectorRevision)
+        .filter(
+            ConnectorRevision.connector_id == connector.id,
+            ConnectorRevision.project_id == project_id,
+            ConnectorRevision.visibility == "project",
+            ConnectorRevision.revision == revision_number,
+        )
+        .first()
+    )
+    if revision is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "aws_resource_unavailable",
+                    "message": "The selected AWS Connector revision is not available",
+                }
+            },
+        )
+    credential = (
+        db.query(CredentialVersion)
+        .filter(
+            CredentialVersion.id == revision.credential_version_id,
+            CredentialVersion.connector_id == connector.id,
+            CredentialVersion.project_id == project_id,
+            CredentialVersion.visibility == "project",
+            CredentialVersion.kind == "aws_bootstrap",
+            CredentialVersion.state == "active",
+            CredentialVersion.revoked_at.is_(None),
+        )
+        .first()
+    )
+    if credential is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "aws_resource_unavailable",
+                    "message": "The selected AWS Connector credential is unavailable",
+                }
+            },
+        )
+    return ConnectorRef(
+        id=connector.id,
+        kind="aws",
+        configuration_revision=revision.revision,
+        visibility="project",
+        credential_version_id=credential.id,
+    )
+
+
+def _legacy_search_ref(capability_id: str) -> CapabilityRef:
+    manifest = next(
+        item for item in list_legacy_search_manifests() if item.id == capability_id
+    )
+    return CapabilityRef(
+        id=manifest.id,
+        version=manifest.version,
+        manifest_digest=manifest.manifest_digest,
+    )
+
+
+def _tool_chat_execution(
+    db: Session,
+    project_id: uuid.UUID,
+    model_config: RunModelConfig,
+    artifact_refs: tuple[ArtifactRef, ...],
+    connector_selections: dict[str, uuid.UUID],
+):
     if model_config.fallbacks:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "unsupported_capability", "message": "Tool-enabled chat does not support model fallbacks in this phase"}},
+            detail={
+                "error": {
+                    "code": "unsupported_capability",
+                    "message": "Tool-enabled chat does not support model fallbacks in this phase",
+                }
+            },
         )
     profiles = (model_config.primary,)
     for profile in profiles:
         if profile.adapter != "openai" or not profile.capabilities.tool_calls:
             raise HTTPException(
                 status_code=422,
-                detail={"error": {"code": "unsupported_capability", "message": "Tool-enabled chat requires a qualified OpenAI profile with tool-call support"}},
+                detail={
+                    "error": {
+                        "code": "unsupported_capability",
+                        "message": "Tool-enabled chat requires a qualified OpenAI profile with tool-call support",
+                    }
+                },
             )
         if profile.capabilities.parallel_tool_calls:
             raise HTTPException(
                 status_code=422,
-                detail={"error": {"code": "unsupported_capability", "message": "Tool-enabled chat requires sequential tool-call support"}},
+                detail={
+                    "error": {
+                        "code": "unsupported_capability",
+                        "message": "Tool-enabled chat requires sequential tool-call support",
+                    }
+                },
             )
 
-    enabled_ids = settings.enabled_tool_ids
+    policy = read_effective_tool_policy(db, lock=True)
+    if not policy.state_available:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "code": "tool_policy_unavailable",
+                    "message": "Managed tool availability is unavailable",
+                }
+            },
+        )
+    enabled_ids = policy.effective_ids
+    aws_discovery_ids = {"aws_read_catalog", "aws_read"} & enabled_ids
     refs: list[CapabilityRef] = []
     binding_refs: list[str] = []
+    connector_refs: list[ConnectorRef] = []
+    explicit_services = set(connector_selections)
+    managed_services: set[str] = set()
+    preferred_search_kind = None
+    aws_connector_ref = None
+    if aws_discovery_ids:
+        try:
+            resolved_aws = resolve_connector(
+                db,
+                project_id=project_id,
+                service="aws",
+                selected_id=connector_selections.get("aws"),
+            )
+        except ConnectorSelectionError as refused:
+            if (
+                "aws" in explicit_services
+                or refused.code != "connector_required"
+                or _connector_rows_for_project(db, project_id, "aws") > 0
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": {
+                            "code": refused.code,
+                            "message": "Choose one eligible AWS Connector for this project",
+                        }
+                    },
+                ) from refused
+        else:
+            aws_connector_ref = _connector_reference(resolved_aws)
     for manifest in list_capability_manifests():
         if manifest.id not in enabled_ids:
+            continue
+        try:
+            definition = get_tool_definition(manifest)
+        except LookupError as refused:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": {
+                        "code": "unsupported_capability",
+                        "message": "A maintained tool definition is unavailable",
+                    }
+                },
+            ) from refused
+        if not definition.model_selectable:
+            continue
+        if manifest.id in {"aws_read_catalog", "aws_read"}:
+            if aws_connector_ref is None:
+                continue
+            ref = CapabilityRef(
+                id=manifest.id,
+                version=manifest.version,
+                manifest_digest=manifest.manifest_digest,
+            )
+            try:
+                resolve_capability(ref, enabled_ids)
+            except CapabilityError as refused:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": {"code": refused.code, "message": str(refused)}},
+                ) from refused
+            refs.append(ref)
+            connector_refs.append(aws_connector_ref)
+            continue
+        if manifest.id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
+            # These direct-target helpers are explicitly attached through the
+            # manual tool-command path. Automatic AWS reads use aws_read.
+            continue
+        if manifest.id in {"brave_web_search", "tavily_web_search"}:
+            service = "brave" if manifest.id == "brave_web_search" else "tavily"
+            selected_id = connector_selections.get(service)
+            try:
+                resolved = resolve_connector(
+                    db,
+                    project_id=project_id,
+                    service=service,
+                    selected_id=selected_id,
+                )
+            except ConnectorSelectionError as refused:
+                if service in explicit_services:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": {
+                                "code": refused.code,
+                                "message": "The selected search Connector is not available for this project",
+                            }
+                        },
+                    ) from refused
+                if (
+                    refused.code == "connector_required"
+                    and _connector_rows_for_project(db, project_id, service) == 0
+                    and db.query(ProjectConnectorDefault)
+                    .filter(
+                        ProjectConnectorDefault.project_id == project_id,
+                        ProjectConnectorDefault.service == service,
+                    )
+                    .first()
+                    is None
+                    and not managed_services
+                ):
+                    refs.append(_legacy_search_ref(manifest.id))
+                    binding = legacy_credential_binding(manifest.id)
+                    if binding:
+                        binding_refs.append(binding)
+                continue
+            refs.append(
+                CapabilityRef(
+                    id=manifest.id,
+                    version=manifest.version,
+                    manifest_digest=manifest.manifest_digest,
+                )
+            )
+            connector_refs.append(_connector_reference(resolved))
+            managed_services.add(service)
             continue
         ref = CapabilityRef(
             id=manifest.id,
@@ -172,24 +541,135 @@ def _tool_chat_execution(model_config: RunModelConfig, artifact_refs: tuple[Arti
                 detail={"error": {"code": refused.code, "message": str(refused)}},
             ) from refused
         refs.append(ref)
-        if manifest.credential_binding_ref:
-            binding_refs.append(manifest.credential_binding_ref)
+        credential_binding_ref = getattr(manifest, "credential_binding_ref", None)
+        if credential_binding_ref:
+            binding_refs.append(credential_binding_ref)
     if not refs:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "unsupported_capability", "message": "Enable at least one maintained tool before using tool-enabled chat"}},
+            detail={
+                "error": {
+                    "code": "unsupported_capability",
+                    "message": "Enable at least one maintained tool before using tool-enabled chat",
+                }
+            },
         )
 
-    return ExecutionConfig(
-        graph_kind="chat",
-        graph_version=2,
-        allowed_capabilities=tuple(refs),
-        selected_artifacts=artifact_refs,
-        credential_binding_refs=tuple(binding_refs),
-        loop_limits=LoopLimits(deadline_seconds=min(
-            settings.workflow_run_timeout_seconds,
-            int(model_config.limits.run_timeout_seconds),
-        )),
+    search_connector_refs = [
+        item for item in connector_refs if item.kind in {"brave", "tavily"}
+    ]
+    if connector_refs:
+        connector_refs = list({item.id: item for item in connector_refs}.values())
+    if search_connector_refs:
+        managed_capability_ids = {
+            "brave_web_search" if ref.kind == "brave" else "tavily_web_search"
+            for ref in search_connector_refs
+        }
+        refs = [
+            ref
+            for ref in refs
+            if ref.id not in {"brave_web_search", "tavily_web_search"}
+            or ref.id in managed_capability_ids
+        ]
+        active_default = (
+            db.query(ProjectConnectorDefault)
+            .filter(ProjectConnectorDefault.project_id == project_id)
+            .first()
+        )
+        explicit_service = (
+            next(iter(explicit_services)) if len(explicit_services) == 1 else None
+        )
+        explicit_preference = (
+            explicit_service if explicit_service in managed_services else None
+        )
+        preferred_search_kind = explicit_preference or (
+            active_default.service
+            if active_default is not None
+            and active_default.connector_id is not None
+            and active_default.service in managed_services
+            else None
+        )
+        if preferred_search_kind is not None:
+            preferred_id = (
+                "brave_web_search"
+                if preferred_search_kind == "brave"
+                else "tavily_web_search"
+            )
+            refs.sort(key=lambda ref: ref.id != preferred_id)
+
+    has_aws_discovery = any(
+        ref.id in {"aws_read_catalog", "aws_read"} for ref in refs
+    )
+    if has_aws_discovery:
+        loop_limits = LoopLimits(
+            deadline_seconds=min(
+                settings.workflow_run_timeout_seconds,
+                int(model_config.limits.run_timeout_seconds),
+                180,
+            ),
+            max_tool_calls=12,
+            max_model_turns=13,
+            max_generation_attempts=15,
+            max_output_tokens_per_request=1000,
+            max_total_output_tokens=15000,
+        )
+        execution_fields = {
+            "graph_kind": "chat",
+            "graph_version": 4,
+            "allowed_capabilities": tuple(refs),
+            "selected_artifacts": artifact_refs,
+            "connector_refs": tuple(connector_refs),
+            "loop_limits": loop_limits,
+        }
+        return (
+            ExecutionConfigV4(
+                **execution_fields,
+                credential_binding_refs=tuple(binding_refs),
+                preferred_search_kind=preferred_search_kind,
+                aws_read_catalog_digest=load_aws_read_catalog().digest,
+            ),
+            policy.revision,
+        )
+
+    if search_connector_refs:
+        execution_fields = {
+            "graph_kind": "chat",
+            "graph_version": 3,
+            "allowed_capabilities": tuple(refs),
+            "selected_artifacts": artifact_refs,
+            "connector_refs": tuple(connector_refs),
+            "loop_limits": LoopLimits(
+                deadline_seconds=min(
+                    settings.workflow_run_timeout_seconds,
+                    int(model_config.limits.run_timeout_seconds),
+                )
+            ),
+        }
+        if preferred_search_kind is not None:
+            return (
+                ExecutionConfigV3(
+                    **execution_fields,
+                    preferred_search_kind=preferred_search_kind,
+                ),
+                policy.revision,
+            )
+        return ExecutionConfigV2(**execution_fields), policy.revision
+
+    return (
+        ExecutionConfig(
+            graph_kind="chat",
+            graph_version=2,
+            allowed_capabilities=tuple(refs),
+            selected_artifacts=artifact_refs,
+            credential_binding_refs=tuple(binding_refs),
+            loop_limits=LoopLimits(
+                deadline_seconds=min(
+                    settings.workflow_run_timeout_seconds,
+                    int(model_config.limits.run_timeout_seconds),
+                )
+            ),
+        ),
+        policy.revision,
     )
 
 
@@ -203,6 +683,8 @@ def submit_turn(
     fallback_profile_ids=None,
     enable_tools: bool = False,
     artifact_ids=(),
+    connector_selections: dict[str, uuid.UUID] | None = None,
+    resource_binding_selections=(),
 ) -> Run:
     """Submit a chat turn as a durable, queued run.
 
@@ -212,6 +694,16 @@ def submit_turn(
     change to the installation's default cannot change what it runs.
     """
     conv = require_owned_conversation(db, user_id, conversation_id)
+    if resource_binding_selections:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "resource_binding_retired",
+                    "message": "AWS tool requests no longer accept resource bindings; use the project's AWS Connector role",
+                }
+            },
+        )
 
     # Validate client_request_id format
     try:
@@ -219,15 +711,30 @@ def submit_turn(
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_client_request_id", "message": "Invalid client_request_id format"}},
+            detail={
+                "error": {
+                    "code": "invalid_client_request_id",
+                    "message": "Invalid client_request_id format",
+                }
+            },
         )
 
     try:
-        submission_digest = _turn_submission_digest(content, enable_tools, artifact_ids)
+        submission_digest = _turn_submission_digest(
+            content,
+            enable_tools,
+            artifact_ids,
+            connector_selections,
+        )
     except (TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_turn_request", "message": "The submitted chat request is invalid"}},
+            detail={
+                "error": {
+                    "code": "invalid_turn_request",
+                    "message": "The submitted chat request is invalid",
+                }
+            },
         ) from exc
 
     # Check for existing run with same client_request_id (idempotency)
@@ -237,51 +744,90 @@ def submit_turn(
         if existing.conversation_id != conv.id:
             raise HTTPException(
                 status_code=409,
-                detail={"error": {"code": "client_request_id_conflict",
-                        "message": "client_request_id already used for different conversation"}},
+                detail={
+                    "error": {
+                        "code": "client_request_id_conflict",
+                        "message": "client_request_id already used for different conversation",
+                    }
+                },
             )
         # Check if content differs (would be a conflict)
-        existing_msg = db.query(Message).filter(
-            Message.run_id == existing.id,
-            Message.role == "user",
-        ).first()
+        existing_msg = (
+            db.query(Message)
+            .filter(
+                Message.run_id == existing.id,
+                Message.role == "user",
+            )
+            .first()
+        )
         if existing_msg and existing_msg.content != content:
             raise HTTPException(
                 status_code=409,
-                detail={"error": {"code": "client_request_id_conflict",
-                        "message": "client_request_id already used with different content"}},
+                detail={
+                    "error": {
+                        "code": "client_request_id_conflict",
+                        "message": "client_request_id already used with different content",
+                    }
+                },
             )
         if existing.submission_digest is not None:
             if existing.submission_digest != submission_digest:
                 raise HTTPException(
                     status_code=409,
-                    detail={"error": {"code": "client_request_id_conflict", "message": "client_request_id already used with a different chat request"}},
+                    detail={
+                        "error": {
+                            "code": "client_request_id_conflict",
+                            "message": "client_request_id already used with a different chat request",
+                        }
+                    },
                 )
         elif enable_tools or artifact_ids:
             raise HTTPException(
                 status_code=409,
-                detail={"error": {"code": "client_request_id_conflict", "message": "client_request_id already used with a different chat request"}},
+                detail={
+                    "error": {
+                        "code": "client_request_id_conflict",
+                        "message": "client_request_id already used with a different chat request",
+                    }
+                },
             )
         # The replay's selection is compared against what the run pinned, never
         # against today's profiles: an exact replay returns the original run.
         if _selection_conflicts(existing, provider_profile_id, fallback_profile_ids):
             raise HTTPException(
                 status_code=409,
-                detail={"error": {"code": "selection_conflict",
-                        "message": "client_request_id already used with a different model selection"}},
+                detail={
+                    "error": {
+                        "code": "selection_conflict",
+                        "message": "client_request_id already used with a different model selection",
+                    }
+                },
             )
         return existing
 
+    # Exact idempotent replays above are reads of the previously accepted run.
+    # Only fresh work needs an active scope, locked in conversation → project
+    # order so an archive and admission serialize on the same rows.
+    conv = _lock_active_conversation_scope(db, user_id=user_id, conversation_id=conv.id)
+
     # Check for an active run on this conversation (one active run per conversation)
-    active = db.query(Run).filter(
-        Run.conversation_id == conv.id,
-        Run.status.in_(["created", "queued", "running"]),
-    ).first()
+    active = (
+        db.query(Run)
+        .filter(
+            Run.conversation_id == conv.id,
+            Run.status.in_(["created", "queued", "running"]),
+        )
+        .first()
+    )
     if active:
         raise HTTPException(
             status_code=409,
-            detail={"error": {"code": "run_already_active",
-                    "message": "Another run is already active on this conversation"}},
+            detail={
+                "error": {
+                    "code": "run_already_active",
+                    "message": "Another run is already active on this conversation",
+                }
+            },
         )
 
     # Resolve and validate the selection before anything is queued
@@ -290,9 +836,38 @@ def submit_turn(
     if artifact_refs and not enable_tools:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "unsupported_capability", "message": "Selected artifacts require tool-enabled chat in this phase"}},
+            detail={
+                "error": {
+                    "code": "unsupported_capability",
+                    "message": "Selected artifacts require tool-enabled chat in this phase",
+                }
+            },
         )
-    execution = _tool_chat_execution(config, artifact_refs) if enable_tools else None
+    execution_and_policy = (
+        _tool_chat_execution(
+            db,
+            conv.project_id,
+            config,
+            artifact_refs,
+            connector_selections or {},
+        )
+        if enable_tools
+        else None
+    )
+    execution, tool_policy_revision = (
+        execution_and_policy if execution_and_policy is not None else (None, None)
+    )
+    admitted_context_ids = ()
+    if execution is not None and getattr(execution, "connector_refs", ()):
+        admitted_context_ids = tuple(
+            row[0]
+            for row in (
+                db.query(Message.id)
+                .filter(Message.conversation_id == conv.id)
+                .order_by(Message.created_at.asc(), Message.id.asc())
+                .all()
+            )
+        )
     selection = json.dumps(
         {
             "profile_id": provider_profile_id,
@@ -311,8 +886,11 @@ def submit_turn(
         fence=0,
         model_selection=selection,
         model_configuration=config.model_dump_json(),
-        graph_version=2 if execution is not None else 1,
-        execution_configuration=execution.model_dump_json() if execution is not None else None,
+        graph_version=execution.graph_version if execution is not None else 1,
+        execution_configuration=execution.model_dump_json()
+        if execution is not None
+        else None,
+        tool_policy_revision=tool_policy_revision,
         submission_digest=submission_digest,
     )
     db.add(run)
@@ -327,6 +905,12 @@ def submit_turn(
     )
     db.add(msg)
     db.flush()
+
+    if admitted_context_ids:
+        execution = execution.model_copy(
+            update={"admitted_context_message_ids": (*admitted_context_ids, msg.id)}
+        )
+        run.execution_configuration = execution.model_dump_json()
 
     # Create queue job
     job = RunJob(
@@ -345,7 +929,9 @@ def submit_turn(
         run_id=run.id,
         sequence=seq,
         type="turn_submitted",
-        payload=json.dumps({"content": content, "client_request_id": client_request_id}),
+        payload=json.dumps(
+            {"content": content, "client_request_id": client_request_id}
+        ),
     )
     db.add(event)
     conv.next_event_sequence = seq + 1
@@ -355,7 +941,9 @@ def submit_turn(
         conversation_id=conv.id,
         event_id=event.id,
         type="turn_submitted",
-        payload=json.dumps({"run_id": str(run.id), "client_request_id": client_request_id}),
+        payload=json.dumps(
+            {"run_id": str(run.id), "client_request_id": client_request_id}
+        ),
     )
     db.add(outbox)
 
@@ -376,6 +964,10 @@ def _tool_command_digest(command: ToolCommandRequest) -> str:
         {
             "capability": command.capability.model_dump(mode="json"),
             "arguments": command.arguments,
+            "connector_selections": {
+                kind: str(connector_id)
+                for kind, connector_id in sorted(command.connector_selections.items())
+            },
         }
     )
 
@@ -391,21 +983,29 @@ def submit_tool_run(
     try:
         command_digest = _tool_command_digest(command)
     except (TypeError, ValueError) as exc:
-        raise _tool_command_error(422, "invalid_tool_arguments", "Tool arguments are invalid") from exc
+        raise _tool_command_error(
+            422, "invalid_tool_arguments", "Tool arguments are invalid"
+        ) from exc
     try:
         conversation_uuid = uuid.UUID(str(conversation_id))
     except (TypeError, ValueError) as exc:
-        raise _tool_command_error(422, "invalid_conversation_id", "Invalid conversation ID format") from exc
+        raise _tool_command_error(
+            422, "invalid_conversation_id", "Invalid conversation ID format"
+        ) from exc
 
     # Request identifiers are globally unique. Check ownership before exposing
     # whether the key exists, then compare the complete command snapshot.
     existing = db.query(Run).filter(Run.client_request_id == request_id).first()
     if existing is not None:
-        existing_conversation = db.query(Conversation).filter(
-            Conversation.id == existing.conversation_id
-        ).first()
+        existing_conversation = (
+            db.query(Conversation)
+            .filter(Conversation.id == existing.conversation_id)
+            .first()
+        )
         if existing_conversation is None or existing_conversation.user_id != user_id:
-            raise _tool_command_error(404, "conversation_not_found", "Conversation not found")
+            raise _tool_command_error(
+                404, "conversation_not_found", "Conversation not found"
+            )
         if existing.conversation_id != conversation_uuid:
             raise _tool_command_error(
                 409,
@@ -420,12 +1020,17 @@ def submit_tool_run(
             )
         return existing
 
-    conversation = db.query(Conversation).filter(
-        Conversation.id == conversation_uuid,
-        Conversation.user_id == user_id,
-    ).with_for_update().first()
-    if conversation is None:
-        raise _tool_command_error(404, "conversation_not_found", "Conversation not found")
+    try:
+        conversation, project = get_owned_conversation_scope(
+            db,
+            owner_id=user_id,
+            conversation_id=conversation_uuid,
+            for_update=True,
+        )
+    except ConversationLifecycleError:
+        raise _tool_command_error(
+            404, "conversation_not_found", "Conversation not found"
+        ) from None
 
     # Recheck after locking the conversation. On PostgreSQL this serializes
     # chat/tool admission for the same conversation across both command paths.
@@ -445,10 +1050,19 @@ def submit_tool_run(
             )
         return existing
 
-    active = db.query(Run).filter(
-        Run.conversation_id == conversation.id,
-        Run.status.in_(("created", "queued", "running")),
-    ).first()
+    try:
+        assert_active_conversation(conversation, project)
+    except ArchiveStateError as exc:
+        raise archive_http_error(exc) from None
+
+    active = (
+        db.query(Run)
+        .filter(
+            Run.conversation_id == conversation.id,
+            Run.status.in_(("created", "queued", "running")),
+        )
+        .first()
+    )
     if active is not None:
         raise _tool_command_error(
             409,
@@ -456,26 +1070,183 @@ def submit_tool_run(
             "Another run is already active on this conversation",
         )
 
+    policy = read_effective_tool_policy(db, lock=True)
+    if not policy.state_available:
+        raise _tool_command_error(
+            503,
+            "tool_policy_unavailable",
+            "Managed tool availability is unavailable",
+        )
     try:
-        manifest = resolve_capability(command.capability, settings.enabled_tool_ids)
-        normalized_arguments = SearchArguments.model_validate(command.arguments)
+        manifest = resolve_capability(command.capability, policy.effective_ids)
+        definition = get_tool_definition(manifest)
+        normalized_arguments = definition.validate_arguments(command.arguments)
     except CapabilityError as refused:
         raise _tool_command_error(422, refused.code, str(refused)) from refused
+    except LookupError as refused:
+        raise _tool_command_error(
+            422, "unsupported_tool", "This tool command is not supported"
+        ) from refused
     except ValueError as invalid:
-        raise _tool_command_error(422, "invalid_tool_arguments", "Tool arguments are invalid") from invalid
+        raise _tool_command_error(
+            422, "invalid_tool_arguments", "Tool arguments are invalid"
+        ) from invalid
 
-    if manifest.id not in ("brave_web_search", "tavily_web_search"):
-        raise _tool_command_error(422, "unsupported_tool", "This tool command is not supported")
+    execution_ref = command.capability
+    connector_refs: tuple[ConnectorRef, ...] = ()
+    binding_refs: tuple[str, ...] = ()
+    if manifest.schema_version == 2 and command.capability.id in {
+        "brave_web_search",
+        "tavily_web_search",
+    }:
+        service = "brave" if command.capability.id == "brave_web_search" else "tavily"
+        selected_id = command.connector_selections.get(service)
+        try:
+            selected = resolve_connector(
+                db,
+                project_id=conversation.project_id,
+                service=service,
+                selected_id=selected_id,
+            )
+        except ConnectorSelectionError as refused:
+            if selected_id is not None:
+                raise _tool_command_error(
+                    422,
+                    refused.code,
+                    "The selected search Connector is not available for this project",
+                ) from refused
+            active_default = (
+                db.query(ProjectConnectorDefault)
+                .filter(ProjectConnectorDefault.project_id == conversation.project_id)
+                .first()
+            )
+            legacy_fallback = (
+                refused.code == "connector_required"
+                and _connector_rows_for_project(db, conversation.project_id, service)
+                == 0
+                and (active_default is None or active_default.service != service)
+            )
+            if not legacy_fallback:
+                raise _tool_command_error(
+                    422,
+                    refused.code,
+                    "Choose an eligible search Connector before using this tool",
+                ) from refused
+            execution_ref = _legacy_search_ref(command.capability.id)
+            binding = legacy_credential_binding(command.capability.id)
+            binding_refs = (binding,) if binding else ()
+        else:
+            connector_refs = (_connector_reference(selected),)
 
-    execution = ExecutionConfig(
-        graph_kind="tool",
-        graph_version=1,
-        loop_limits=LoopLimits(deadline_seconds=settings.workflow_run_timeout_seconds),
-        allowed_capabilities=(command.capability,),
-        credential_binding_refs=(manifest.credential_binding_ref,)
-        if manifest.credential_binding_ref
-        else (),
-    )
+    if manifest.schema_version == 3 and command.capability.id in {
+        "aws_read_catalog",
+        "aws_read",
+    }:
+        arguments = normalized_arguments.model_dump(mode="python")
+        selected_id = command.connector_selections.get("aws")
+        argument_connector_id = arguments.get("connector_id")
+        if (
+            selected_id is not None
+            and argument_connector_id is not None
+            and selected_id != argument_connector_id
+        ):
+            raise _tool_command_error(
+                422,
+                "connector_scope_denied",
+                "The AWS operation must use the selected project Connector",
+            )
+        selected_id = selected_id or argument_connector_id
+        try:
+            selected = resolve_connector(
+                db,
+                project_id=conversation.project_id,
+                service="aws",
+                selected_id=selected_id,
+            )
+        except ConnectorSelectionError as refused:
+            raise _tool_command_error(
+                422,
+                refused.code,
+                "Choose one eligible AWS Connector for this project",
+            ) from refused
+        connector_refs = (_connector_reference(selected),)
+        if command.capability.id == "aws_read":
+            arguments["connector_id"] = selected.connector_id
+            normalized_arguments = definition.validate_arguments(arguments)
+
+    if command.capability.id == "aws_check_connection":
+        arguments = normalized_arguments.model_dump(mode="python")
+        selected_id = command.connector_selections.get("aws")
+        if selected_id is not None and selected_id != arguments["connector_id"]:
+            raise _tool_command_error(
+                422,
+                "connector_scope_denied",
+                "The AWS identity check must use the selected project Connector",
+            )
+        connector_ref = _aws_connector_reference(
+            db,
+            project_id=conversation.project_id,
+            connector_id=arguments["connector_id"],
+        )
+        connector_refs = (connector_ref,)
+    elif command.capability.id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
+        arguments = normalized_arguments.model_dump(mode="python")
+        selected_id = command.connector_selections.get("aws")
+        if selected_id is not None and selected_id != arguments["connector_id"]:
+            raise _tool_command_error(
+                422,
+                "connector_scope_denied",
+                "The S3 read must use the selected project Connector",
+            )
+        connector_ref = _aws_connector_reference(
+            db,
+            project_id=conversation.project_id,
+            connector_id=arguments["connector_id"],
+        )
+        connector_refs = (connector_ref,)
+
+    if manifest.schema_version == 3 and command.capability.id in {
+        "aws_read_catalog",
+        "aws_read",
+    }:
+        execution = ExecutionConfigV4(
+            graph_kind="tool",
+            graph_version=3,
+            loop_limits=LoopLimits(
+                deadline_seconds=min(settings.workflow_run_timeout_seconds, 180)
+            ),
+            allowed_capabilities=(execution_ref,),
+            connector_refs=connector_refs,
+            aws_read_catalog_digest=manifest.aws_read_catalog_digest,
+        )
+        graph_version = 3
+    elif connector_refs:
+        execution = ExecutionConfigV2(
+            graph_kind="tool",
+            graph_version=2,
+            loop_limits=LoopLimits(
+                deadline_seconds=settings.workflow_run_timeout_seconds
+            ),
+            allowed_capabilities=(execution_ref,),
+            connector_refs=connector_refs,
+        )
+        graph_version = 2
+    else:
+        execution = ExecutionConfig(
+            graph_kind="tool",
+            graph_version=1,
+            loop_limits=LoopLimits(
+                deadline_seconds=settings.workflow_run_timeout_seconds
+            ),
+            allowed_capabilities=(execution_ref,),
+            credential_binding_refs=binding_refs
+            or (
+                (manifest.credential_binding_ref,)
+                if getattr(manifest, "credential_binding_ref", None)
+                else ()
+            ),
+        )
+        graph_version = 1
     run = Run(
         conversation_id=conversation.id,
         project_id=conversation.project_id,
@@ -483,15 +1254,16 @@ def submit_tool_run(
         command_digest=command_digest,
         tool_command_json=json.dumps(
             {
-                "capability": command.capability.model_dump(mode="json"),
+                "capability": execution_ref.model_dump(mode="json"),
                 "arguments": normalized_arguments.model_dump(mode="json"),
             },
             sort_keys=True,
             separators=(",", ":"),
         ),
         kind="tool",
-        graph_version=1,
+        graph_version=graph_version,
         execution_configuration=execution.model_dump_json(),
+        tool_policy_revision=policy.revision,
         status="queued",
         attempt=0,
         fence=0,
@@ -508,7 +1280,7 @@ def submit_tool_run(
             "schema_version": 1,
             "run_id": str(run.id),
             "client_request_id": request_id,
-            "capability": command.capability.model_dump(mode="json"),
+            "capability": execution_ref.model_dump(mode="json"),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -599,7 +1371,8 @@ def bind_run_model_config(db: Session, run: Run, fence: int) -> RunModelConfig:
     try:
         registry = load_profiles(settings)
         pinned = registry.pin_selection(
-            selection.get("profile_id"), tuple(selection.get("fallback_profile_ids") or ())
+            selection.get("profile_id"),
+            tuple(selection.get("fallback_profile_ids") or ()),
         )
     except ProviderError as refused:
         raise ProviderError(
@@ -645,7 +1418,9 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_run_id", "message": "Invalid run ID format"}},
+            detail={
+                "error": {"code": "invalid_run_id", "message": "Invalid run ID format"}
+            },
         )
 
     identity = db.query(Run.conversation_id).filter(Run.id == rid).first()
@@ -654,10 +1429,15 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
             status_code=404,
             detail={"error": {"code": "run_not_found", "message": "Run not found"}},
         )
-    conv = db.query(Conversation).filter(
-        Conversation.id == identity.conversation_id,
-        Conversation.user_id == user_id,
-    ).with_for_update().first()
+    conv = (
+        db.query(Conversation)
+        .filter(
+            Conversation.id == identity.conversation_id,
+            Conversation.user_id == user_id,
+        )
+        .with_for_update()
+        .first()
+    )
     if not conv:
         raise HTTPException(
             status_code=404,
@@ -687,15 +1467,19 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
     # sees the terminal run promptly and any late gateway publication fails
     # its live-claim check.
     prior_fence = run.fence
-    run.status = "cancelled"
-    run.ended_at = datetime.now(UTC)
-    run.fence += 1
-    job = (
-        db.query(RunJob)
-        .filter(RunJob.run_id == rid)
+    blocker = (
+        db.query(ConnectorBlocker)
+        .filter(ConnectorBlocker.run_id == rid, ConnectorBlocker.state == "waiting")
         .with_for_update()
         .first()
     )
+    if blocker is not None:
+        blocker.state = "cancelled"
+        blocker.closed_at = datetime.now(UTC)
+    run.status = "cancelled"
+    run.ended_at = datetime.now(UTC)
+    run.fence += 1
+    job = db.query(RunJob).filter(RunJob.run_id == rid).with_for_update().first()
     if job is not None:
         job.fence = run.fence
         job.owner_id = None
@@ -747,7 +1531,9 @@ def get_run(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_run_id", "message": "Invalid run ID format"}},
+            detail={
+                "error": {"code": "invalid_run_id", "message": "Invalid run ID format"}
+            },
         )
 
     run = db.query(Run).filter(Run.id == rid).first()
@@ -758,10 +1544,14 @@ def get_run(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
         )
 
     # Verify ownership through conversation
-    conv = db.query(Conversation).filter(
-        Conversation.id == run.conversation_id,
-        Conversation.user_id == user_id,
-    ).first()
+    conv = (
+        db.query(Conversation)
+        .filter(
+            Conversation.id == run.conversation_id,
+            Conversation.user_id == user_id,
+        )
+        .first()
+    )
     if not conv:
         raise HTTPException(
             status_code=404,

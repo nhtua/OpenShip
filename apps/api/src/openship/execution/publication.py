@@ -23,6 +23,10 @@ from src.openship.capabilities.contracts import (
     ToolFailure,
     canonical_json,
 )
+from src.openship.capabilities.definitions import (
+    ToolDefinitionEntry,
+    get_tool_definition_by_id,
+)
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.events.service import Event
@@ -42,6 +46,13 @@ from .models import ExecutionSlot, ToolAttempt, ToolOperation
 
 _ERROR_MESSAGES = {
     "missing_credentials": "The selected search tool is missing its operator credential.",
+    "connector_required": "Choose a search Connector before using this service.",
+    "connector_ambiguous": "Choose one eligible search Connector explicitly.",
+    "connector_scope_denied": "The selected search Connector is not available in this project.",
+    "connector_expired": "The selected search Connector credential has expired.",
+    "connector_revoked": "The selected search Connector has been revoked.",
+    "connector_unavailable": "The selected search Connector is currently unavailable.",
+    "credential_store_unavailable": "Search credential storage is unavailable.",
     "disabled": "The requested tool is disabled for this installation.",
     "changed": "The requested tool definition changed after this request was admitted.",
     "authentication_error": "The search service rejected the configured credential.",
@@ -49,6 +60,33 @@ _ERROR_MESSAGES = {
     "quota_exhausted": "The search service account has exhausted its configured quota.",
     "provider_timeout": "The search service did not respond within the allowed time.",
     "provider_unavailable": "The search service is temporarily unavailable.",
+    "aws_unavailable": "The AWS service is temporarily unavailable.",
+    "aws_account_mismatch": "The AWS role belongs to a different account than the Connector.",
+    "aws_identity_mismatch": "The AWS role identity does not match the Connector.",
+    "aws_region_mismatch": "The S3 bucket region could not be resolved safely.",
+    "aws_resource_unavailable": "The selected AWS Connector is not available in this project.",
+    "aws_invalid_metric_response": "AWS returned an invalid storage metrics response.",
+    "aws_invalid_metadata_response": "AWS returned invalid S3 versioning metadata.",
+    "aws_request_limit_exceeded": "The AWS request limit was exceeded.",
+    "aws_output_limit_exceeded": "The AWS storage observation exceeded its size limit.",
+    "aws_access_denied": "The AWS connector role does not have permission to perform this operation.",
+    "aws_trust_denied": "AWS denied the configured role assumption. Check the source key and role trust policy.",
+    "aws_credentials_expired": "The AWS source credentials have expired.",
+    "aws_credentials_invalid": "The AWS source credentials were rejected.",
+    "aws_timeout": "The AWS request exceeded its execution deadline.",
+    "aws_cancelled": "The AWS request was cancelled.",
+    "aws_destination_denied": "The AWS destination was rejected by network policy.",
+    "aws_redirect": "The AWS service returned an unsupported redirect.",
+    "aws_configuration_error": "The AWS Connector configuration is unavailable.",
+    "aws_not_found": "The requested AWS resource was not found or is not available to this role.",
+    "aws_throttled": "AWS is throttling this request. Try again shortly.",
+    "aws_invalid_parameters": "The AWS service rejected the operation parameters.",
+    "aws_operation_not_supported": "This AWS read operation is not supported by OpenShip.",
+    "aws_unsupported_protocol": "This AWS operation uses a protocol OpenShip cannot safely handle.",
+    "aws_unsupported_output": "The AWS operation returned data OpenShip cannot safely publish.",
+    "aws_invalid_response": "AWS returned an invalid response.",
+    "aws_invalid_cursor": "The AWS continuation cursor is invalid or has expired. Start a fresh read.",
+    "aws_catalog_mismatch": "The AWS read catalog changed. Start a fresh operation.",
     "invalid_response": "The search service returned an invalid response.",
     "output_limit_exceeded": "The search response exceeded the allowed size.",
     "cancelled": "The search was cancelled before it completed.",
@@ -146,7 +184,9 @@ def _search_arguments(operation: ToolOperation) -> SearchArguments:
         raise ToolPublicationError("invalid_tool_output") from exc
 
 
-def validate_search_observation(operation: ToolOperation, observation) -> SearchObservation:
+def validate_search_observation(
+    operation: ToolOperation, observation
+) -> SearchObservation:
     """Enforce the exact pinned capability/query contract at the dispatch boundary."""
     try:
         normalized = SearchObservation.model_validate(observation)
@@ -239,24 +279,36 @@ def _attempt_and_operation(
     return conversation, operation, attempt
 
 
-def mark_tool_running(db: Session, claim: Claim, attempt_id: uuid.UUID) -> ToolOperation:
+def mark_tool_running(
+    db: Session, claim: Claim, attempt_id: uuid.UUID
+) -> ToolOperation:
     """Commit the running transition and its event before the external call."""
-    _attempt_locator = db.query(ToolAttempt).filter(ToolAttempt.id == attempt_id).first()
+    _attempt_locator = (
+        db.query(ToolAttempt).filter(ToolAttempt.id == attempt_id).first()
+    )
     if _attempt_locator is None:
         raise ToolPublicationError("execution_interrupted")
-    _operation_locator = db.query(ToolOperation).filter(
-        ToolOperation.id == _attempt_locator.operation_id
-    ).first()
+    _operation_locator = (
+        db.query(ToolOperation)
+        .filter(ToolOperation.id == _attempt_locator.operation_id)
+        .first()
+    )
     if _operation_locator is None:
         raise ToolPublicationError("execution_interrupted")
     conversation = _lock_conversation(db, _operation_locator.conversation_id)
     require_live_claim(db, claim, lock=True)
-    operation = db.query(ToolOperation).filter(
-        ToolOperation.id == _operation_locator.id
-    ).with_for_update().first()
-    attempt = db.query(ToolAttempt).filter(
-        ToolAttempt.id == attempt_id
-    ).with_for_update().first()
+    operation = (
+        db.query(ToolOperation)
+        .filter(ToolOperation.id == _operation_locator.id)
+        .with_for_update()
+        .first()
+    )
+    attempt = (
+        db.query(ToolAttempt)
+        .filter(ToolAttempt.id == attempt_id)
+        .with_for_update()
+        .first()
+    )
     if (
         operation is None
         or attempt is None
@@ -292,6 +344,8 @@ def mark_tool_dispatching(
     max_output_bytes: int,
     *,
     reserve_output: bool = True,
+    artifact_kind: str = "search_result",
+    artifact_name: str | None = None,
 ) -> tuple[ToolOperation, ToolAttempt, Artifact | None]:
     """Reserve immutable output and commit one physical dispatch intent."""
     locator = db.query(ToolOperation).filter(ToolOperation.id == operation_id).first()
@@ -299,16 +353,24 @@ def mark_tool_dispatching(
         raise ToolPublicationError("execution_interrupted")
     conversation = _lock_conversation(db, locator.conversation_id)
     require_live_claim(db, claim, lock=True)
-    operation = db.query(ToolOperation).filter(
-        ToolOperation.id == operation_id
-    ).with_for_update().first()
-    slot = db.query(ExecutionSlot).filter(
-        ExecutionSlot.id == slot_id,
-        ExecutionSlot.operation_id == operation_id,
-        ExecutionSlot.run_id == claim.run_id,
-        ExecutionSlot.fence == claim.fence,
-        ExecutionSlot.owner_id == claim.worker_id,
-    ).with_for_update().first()
+    operation = (
+        db.query(ToolOperation)
+        .filter(ToolOperation.id == operation_id)
+        .with_for_update()
+        .first()
+    )
+    slot = (
+        db.query(ExecutionSlot)
+        .filter(
+            ExecutionSlot.id == slot_id,
+            ExecutionSlot.operation_id == operation_id,
+            ExecutionSlot.run_id == claim.run_id,
+            ExecutionSlot.fence == claim.fence,
+            ExecutionSlot.owner_id == claim.worker_id,
+        )
+        .with_for_update()
+        .first()
+    )
     if operation is None or operation.status != "admitted" or slot is None:
         raise ToolPublicationError("lease_lost")
 
@@ -323,19 +385,27 @@ def mark_tool_dispatching(
     )
     artifact = None
     if reserve_output:
-        arguments = _search_arguments(operation)
+        if artifact_kind == "search_result":
+            arguments = _search_arguments(operation)
+            display_name = search_artifact_filename(arguments.query)
+            maximum = settings.artifact_search_reservation_bytes
+        elif artifact_kind == "cloud_observation" and artifact_name:
+            display_name = artifact_name
+            maximum = settings.artifact_cloud_observation_reservation_bytes
+        else:
+            raise ToolPublicationError("invalid_tool_output")
         artifact = reserve_artifact(
             db,
             conversation_id=operation.conversation_id,
             project_id=operation.project_id,
             max_bytes=min(
                 max(1, max_output_bytes),
-                settings.artifact_search_reservation_bytes,
+                maximum,
                 64 * 1024,
             ),
-            kind="search_result",
+            kind=artifact_kind,
             request_key=str(operation.id),
-            display_name=search_artifact_filename(arguments.query),
+            display_name=display_name,
             media_type="application/json",
             source="tool",
             originating_run_id=operation.run_id,
@@ -386,9 +456,12 @@ def mark_tool_failed(
         raise ToolPublicationError("execution_interrupted")
     conversation = _lock_conversation(db, locator.conversation_id)
     require_live_claim(db, claim, lock=True)
-    operation = db.query(ToolOperation).filter(
-        ToolOperation.id == operation_id
-    ).with_for_update().first()
+    operation = (
+        db.query(ToolOperation)
+        .filter(ToolOperation.id == operation_id)
+        .with_for_update()
+        .first()
+    )
     if operation is None:
         raise ToolPublicationError("execution_interrupted")
     if operation.status in ("succeeded", "failed", "cancelled", "interrupted"):
@@ -398,10 +471,15 @@ def mark_tool_failed(
 
     attempt = None
     if attempt_id is not None:
-        attempt = db.query(ToolAttempt).filter(
-            ToolAttempt.id == attempt_id,
-            ToolAttempt.operation_id == operation.id,
-        ).with_for_update().first()
+        attempt = (
+            db.query(ToolAttempt)
+            .filter(
+                ToolAttempt.id == attempt_id,
+                ToolAttempt.operation_id == operation.id,
+            )
+            .with_for_update()
+            .first()
+        )
         if attempt is None or attempt.fence != claim.fence:
             raise ToolPublicationError("lease_lost")
         if attempt.outcome == "started":
@@ -409,18 +487,27 @@ def mark_tool_failed(
             attempt.error_code = code
             attempt.finished_at = _utc_now()
 
-    for slot in db.query(ExecutionSlot).filter(
-        ExecutionSlot.operation_id == operation.id,
-        ExecutionSlot.run_id == claim.run_id,
-        ExecutionSlot.fence == claim.fence,
-        ExecutionSlot.owner_id == claim.worker_id,
-    ).with_for_update().all():
+    for slot in (
+        db.query(ExecutionSlot)
+        .filter(
+            ExecutionSlot.operation_id == operation.id,
+            ExecutionSlot.run_id == claim.run_id,
+            ExecutionSlot.fence == claim.fence,
+            ExecutionSlot.owner_id == claim.worker_id,
+        )
+        .with_for_update()
+        .all()
+    ):
         if not release_execution_slot(db, claim, slot.id):
             raise ToolPublicationError("lease_lost")
-    output_rows = db.query(Artifact.id).filter(
-        Artifact.originating_operation_id == operation.id,
-        Artifact.status == "staging",
-    ).all()
+    output_rows = (
+        db.query(Artifact.id)
+        .filter(
+            Artifact.originating_operation_id == operation.id,
+            Artifact.status == "staging",
+        )
+        .all()
+    )
     for (artifact_id,) in output_rows:
         release_artifact_reservation(db, artifact_id)
 
@@ -454,13 +541,17 @@ def mark_tool_failed(
     )
 
 
-def project_published_result(db: Session, operation: ToolOperation) -> PublishedToolResult:
+def project_published_result(
+    db: Session, operation: ToolOperation
+) -> PublishedToolResult:
     """Read a completed operation without ever re-dispatching its external effect."""
     if operation.status == "succeeded":
         try:
-            result = json.loads(operation.result_json)
+            result = get_tool_definition_by_id(
+                operation.capability_id
+            ).validate_public_result(json.loads(operation.result_json))
             artifact_ids = json.loads(operation.output_artifact_ids or "[]")
-        except (TypeError, json.JSONDecodeError):
+        except (LookupError, TypeError, ValueError, json.JSONDecodeError):
             return PublishedToolResult(
                 operation_id=operation.id,
                 status="interrupted",
@@ -475,10 +566,14 @@ def project_published_result(db: Session, operation: ToolOperation) -> Published
                 parsed_id = uuid.UUID(artifact_id)
             except (TypeError, ValueError):
                 continue
-            artifact = db.query(Artifact).filter(
-                Artifact.id == parsed_id,
-                Artifact.status == "ready",
-            ).first()
+            artifact = (
+                db.query(Artifact)
+                .filter(
+                    Artifact.id == parsed_id,
+                    Artifact.status == "ready",
+                )
+                .first()
+            )
             if artifact is not None:
                 artifacts.append(
                     ArtifactRef(
@@ -495,7 +590,11 @@ def project_published_result(db: Session, operation: ToolOperation) -> Published
             artifacts=tuple(artifacts),
         )
     if operation.status in ("failed", "cancelled", "interrupted"):
-        code = operation.error_code if operation.error_code in _ERROR_MESSAGES else "execution_interrupted"
+        code = (
+            operation.error_code
+            if operation.error_code in _ERROR_MESSAGES
+            else "execution_interrupted"
+        )
         return PublishedToolResult(
             operation_id=operation.id,
             status=operation.status,
@@ -518,25 +617,47 @@ def publish_tool_result(
     attempt_id: uuid.UUID,
     observation,
     staged_outputs: tuple[StagedArtifact, ...],
+    definition: ToolDefinitionEntry | None = None,
 ) -> PublishedToolResult:
     """Atomically expose artifact readiness, operation output and completion events."""
     conversation, operation, attempt = _attempt_and_operation(db, claim, attempt_id)
     if operation.status != "running" or attempt.outcome != "started":
         raise ToolPublicationError("lease_lost")
-    normalized = validate_search_observation(operation, observation)
-    snapshot = _observation_bytes(normalized)
+    generic_publication = (
+        definition is not None and definition.external_publication_hook is not None
+    )
+    normalized = (
+        validate_search_observation(operation, observation)
+        if definition is None
+        else definition.validate_handler_result(operation, observation)
+    )
+    evidence = (
+        normalized if definition is None else definition.project_evidence(normalized)
+    )
+    if hasattr(evidence, "model_dump"):
+        evidence = evidence.model_dump(mode="json")
+    snapshot = (
+        _observation_bytes(normalized)
+        if not generic_publication
+        else canonical_json(evidence)
+    )
     if len(snapshot) > 64 * 1024:
         raise ToolPublicationError("output_limit_exceeded")
     if len(staged_outputs) != 1:
         raise ToolPublicationError("invalid_tool_output")
     staged = staged_outputs[0]
-    if staged.observed.sha256 != hashlib.sha256(snapshot).hexdigest() or staged.observed.size_bytes != len(snapshot):
+    if staged.observed.sha256 != hashlib.sha256(
+        snapshot
+    ).hexdigest() or staged.observed.size_bytes != len(snapshot):
         raise ToolPublicationError("invalid_tool_output")
     slot_id = _slot_id_for_operation(db, operation.id, claim)
 
-    artifact = db.query(Artifact).filter(
-        Artifact.id == staged.artifact_id
-    ).with_for_update().first()
+    artifact = (
+        db.query(Artifact)
+        .filter(Artifact.id == staged.artifact_id)
+        .with_for_update()
+        .first()
+    )
     if (
         artifact is None
         or artifact.status != "staging"
@@ -545,7 +666,14 @@ def publish_tool_result(
         or artifact.conversation_id != operation.conversation_id
         or artifact.project_id != operation.project_id
         or artifact.media_type != "application/json"
-        or artifact.display_name != search_artifact_filename(normalized.query)
+        or artifact.kind
+        != ("search_result" if not generic_publication else definition.artifact_kind)
+        or artifact.display_name
+        != (
+            search_artifact_filename(normalized.query)
+            if not generic_publication
+            else definition.artifact_name
+        )
     ):
         raise ToolPublicationError("artifact_publication_failed")
     ready = mark_artifact_ready(db, artifact.id, staged.observed)
@@ -555,9 +683,23 @@ def publish_tool_result(
         size_bytes=ready.size_bytes,
         media_type=ready.media_type,
     )
-    result_model = build_model_result(operation, normalized, artifact_ref)
-    result_data = result_model.model_dump(mode="json")
+    if not generic_publication:
+        result_model = build_model_result(operation, normalized, artifact_ref)
+        result_data = result_model.model_dump(mode="json")
+    else:
+        if definition.external_publication_hook is None:
+            raise ToolPublicationError("invalid_tool_output")
+        published_value = definition.external_publication_hook(
+            db, operation, normalized, artifact_ref
+        )
+        result_data = definition.project_result(published_value)
     result_bytes = canonical_json(result_data)
+    if len(result_bytes) > int(
+        (definition.manifest.limits if definition is not None else {}).get(
+            "max_model_result_bytes", 16 * 1024
+        )
+    ):
+        raise ToolPublicationError("output_limit_exceeded")
     now = _utc_now()
     operation.status = "succeeded"
     operation.error_code = None
@@ -587,6 +729,51 @@ def publish_tool_result(
             "name": ready.display_name,
         },
     )
+    if generic_publication:
+        from src.openship.resources.models import ResourceObservation
+
+        db.flush()
+        resource_observation = (
+            db.query(ResourceObservation)
+            .filter(
+                ResourceObservation.operation_id == operation.id,
+                ResourceObservation.project_id == operation.project_id,
+                ResourceObservation.conversation_id == operation.conversation_id,
+            )
+            .one_or_none()
+        )
+        if resource_observation is None:
+            raise ToolPublicationError("invalid_tool_output")
+        if resource_observation.schema_version == 1:
+            event_type = "resource.observed"
+            payload = {
+                "schema_version": 1,
+                "observation_id": str(resource_observation.id),
+                "resource_id": str(resource_observation.resource_object_id),
+                "binding_id": str(resource_observation.resource_binding_id),
+                "operation_id": str(operation.id),
+                "outcome": resource_observation.outcome,
+                "retrieved_at": resource_observation.retrieved_at.isoformat(),
+                "artifact_id": str(ready.id),
+            }
+        else:
+            event_type = "cloud.observed"
+            payload = {
+                "schema_version": 1,
+                "observation_id": str(resource_observation.id),
+                "operation_id": str(operation.id),
+                "connector_id": str(resource_observation.connector_id),
+                "connector_revision": resource_observation.connector_revision,
+                "account_id": resource_observation.account_id,
+                "service": resource_observation.service,
+                "operation": resource_observation.operation,
+                "region": resource_observation.region,
+                "target": json.loads(resource_observation.target_json),
+                "outcome": resource_observation.outcome,
+                "retrieved_at": resource_observation.retrieved_at.isoformat(),
+                "artifact_id": str(ready.id),
+            }
+        _event(db, conversation, operation.run_id, event_type, payload)
     _event(
         db,
         conversation,
@@ -616,70 +803,24 @@ def publish_local_tool_result(
     claim: Claim,
     attempt_id: uuid.UUID,
     result,
+    definition: ToolDefinitionEntry,
 ) -> PublishedToolResult:
-    """Persist one bounded local read result without reserving an output artifact."""
+    """Persist one bounded local result through its registered projection hook."""
     conversation, operation, attempt = _attempt_and_operation(db, claim, attempt_id)
     if operation.status != "running" or attempt.outcome != "started":
         raise ToolPublicationError("lease_lost")
     try:
-        if operation.capability_id == "workspace_list_files":
-            normalized = WorkspaceListResult.model_validate(result)
-            expected_workspace = (
-                db.query(ConversationWorkspace)
-                .filter(ConversationWorkspace.conversation_id == operation.conversation_id)
-                .first()
-            )
-            if (
-                expected_workspace is None
-                or normalized.workspace_id != expected_workspace.id
-                or any(
-                    db.query(Artifact.id)
-                    .filter(
-                        Artifact.id == item.id,
-                        Artifact.conversation_id == operation.conversation_id,
-                        Artifact.project_id == operation.project_id,
-                        Artifact.status == "ready",
-                        Artifact.sha256 == item.sha256,
-                        Artifact.size_bytes == item.size_bytes,
-                    )
-                    .first()
-                    is None
-                    for item in normalized.items
-                )
-            ):
-                raise ValueError("workspace list result changed its pinned scope")
-        elif operation.capability_id == "workspace_read_file":
-            normalized = WorkspaceReadResult.model_validate(result)
-            expected_workspace = (
-                db.query(ConversationWorkspace)
-                .filter(ConversationWorkspace.conversation_id == operation.conversation_id)
-                .first()
-            )
-            artifact = (
-                db.query(Artifact)
-                .filter(
-                    Artifact.id == normalized.artifact_id,
-                    Artifact.conversation_id == operation.conversation_id,
-                    Artifact.project_id == operation.project_id,
-                    Artifact.status == "ready",
-                )
-                .first()
-            )
-            if (
-                expected_workspace is None
-                or normalized.workspace_id != expected_workspace.id
-                or normalized.version_id != normalized.artifact_id
-                or artifact is None
-                or normalized.sha256 != artifact.sha256
-                or normalized.size_bytes != artifact.size_bytes
-                or len(normalized.content.encode("utf-8")) > 16 * 1024
-            ):
-                raise ValueError("workspace read result changed its pinned scope")
-        else:
-            raise ValueError("local result capability is unsupported")
-        result_data = normalized.model_dump(mode="json")
+        validated = (
+            definition.publication_hook(db, operation, result)
+            if definition.publication_hook is not None
+            else result
+        )
+        result_data = definition.project_result(validated)
         result_bytes = canonical_json(result_data)
-        if len(result_bytes) > 16 * 1024:
+        max_result_bytes = int(
+            definition.manifest.limits.get("max_model_result_bytes", 16 * 1024)
+        )
+        if len(result_bytes) > max_result_bytes:
             raise ToolPublicationError("output_limit_exceeded")
     except ToolPublicationError:
         raise
@@ -724,13 +865,87 @@ def publish_local_tool_result(
     )
 
 
-def _slot_id_for_operation(db: Session, operation_id: uuid.UUID, claim: Claim) -> uuid.UUID:
-    slot = db.query(ExecutionSlot).filter(
-        ExecutionSlot.operation_id == operation_id,
-        ExecutionSlot.run_id == claim.run_id,
-        ExecutionSlot.fence == claim.fence,
-        ExecutionSlot.owner_id == claim.worker_id,
-    ).with_for_update().first()
+def validate_workspace_result(db: Session, operation: ToolOperation, result):
+    """Check workspace results still point to artifacts in the active conversation."""
+    try:
+        if operation.capability_id == "workspace_list_files":
+            normalized = WorkspaceListResult.model_validate(result)
+            expected_workspace = (
+                db.query(ConversationWorkspace)
+                .filter(
+                    ConversationWorkspace.conversation_id == operation.conversation_id
+                )
+                .first()
+            )
+            if (
+                expected_workspace is None
+                or normalized.workspace_id != expected_workspace.id
+                or any(
+                    db.query(Artifact.id)
+                    .filter(
+                        Artifact.id == item.id,
+                        Artifact.conversation_id == operation.conversation_id,
+                        Artifact.project_id == operation.project_id,
+                        Artifact.status == "ready",
+                        Artifact.sha256 == item.sha256,
+                        Artifact.size_bytes == item.size_bytes,
+                    )
+                    .first()
+                    is None
+                    for item in normalized.items
+                )
+            ):
+                raise ValueError("workspace list result changed its pinned scope")
+            return normalized
+        if operation.capability_id == "workspace_read_file":
+            normalized = WorkspaceReadResult.model_validate(result)
+            expected_workspace = (
+                db.query(ConversationWorkspace)
+                .filter(
+                    ConversationWorkspace.conversation_id == operation.conversation_id
+                )
+                .first()
+            )
+            artifact = (
+                db.query(Artifact)
+                .filter(
+                    Artifact.id == normalized.artifact_id,
+                    Artifact.conversation_id == operation.conversation_id,
+                    Artifact.project_id == operation.project_id,
+                    Artifact.status == "ready",
+                )
+                .first()
+            )
+            if (
+                expected_workspace is None
+                or normalized.workspace_id != expected_workspace.id
+                or normalized.version_id != normalized.artifact_id
+                or artifact is None
+                or normalized.sha256 != artifact.sha256
+                or normalized.size_bytes != artifact.size_bytes
+                or len(normalized.content.encode("utf-8")) > 16 * 1024
+            ):
+                raise ValueError("workspace read result changed its pinned scope")
+            return normalized
+        raise ValueError("workspace publication hook received an unrelated operation")
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ToolPublicationError("invalid_tool_output") from exc
+
+
+def _slot_id_for_operation(
+    db: Session, operation_id: uuid.UUID, claim: Claim
+) -> uuid.UUID:
+    slot = (
+        db.query(ExecutionSlot)
+        .filter(
+            ExecutionSlot.operation_id == operation_id,
+            ExecutionSlot.run_id == claim.run_id,
+            ExecutionSlot.fence == claim.fence,
+            ExecutionSlot.owner_id == claim.worker_id,
+        )
+        .with_for_update()
+        .first()
+    )
     if slot is None:
         raise ToolPublicationError("lease_lost")
     return slot.id

@@ -32,11 +32,20 @@ from src.openship.artifacts.service import (
 )
 from src.openship.auth.models import User
 from src.openship.auth.routes import require_jwt
+from src.openship.chat.lifecycle import (
+    ConversationLifecycleError,
+    get_owned_conversation_scope,
+)
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.database.session import get_db
 from src.openship.events.service import append_event
 from src.openship.runs.models import Outbox
+from src.openship.workspace.lifecycle import (
+    ArchiveStateError,
+    archive_http_error,
+    assert_active_conversation,
+)
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
 _CHUNK_SIZE = 64 * 1024
@@ -65,6 +74,29 @@ def _owned_conversation(db: Session, user_id: uuid.UUID, conversation_id: str) -
     ).first()
     if conversation is None:
         raise _error(404, "conversation_not_found", "Conversation not found")
+    return conversation
+
+
+def _active_conversation_scope(
+    db: Session, user_id: uuid.UUID, conversation_id: str
+) -> Conversation:
+    try:
+        parsed = uuid.UUID(str(conversation_id))
+    except (TypeError, ValueError) as exc:
+        raise _error(422, "invalid_conversation_id", "Invalid conversation ID format") from exc
+    try:
+        conversation, project = get_owned_conversation_scope(
+            db,
+            owner_id=user_id,
+            conversation_id=parsed,
+            for_update=True,
+        )
+    except ConversationLifecycleError:
+        raise _error(404, "conversation_not_found", "Conversation not found") from None
+    try:
+        assert_active_conversation(conversation, project)
+    except ArchiveStateError as exc:
+        raise archive_http_error(exc) from None
     return conversation
 
 
@@ -226,7 +258,10 @@ async def upload_artifact(
     user: User = Depends(require_jwt),
 ):
     """Stream a bounded raw upload into an immutable conversation artifact."""
-    conversation = _owned_conversation(db, user.id, conversation_id)
+    # Reserve under the same conversation → project lock order used by archive.
+    # Commit the reservation before reading the request body; the final check
+    # below reacquires these locks after streaming.
+    conversation = _active_conversation_scope(db, user.id, conversation_id)
     key = request.headers.get("idempotency-key")
     if not key:
         raise _error(400, "missing_idempotency_key", "Idempotency-Key is required")
@@ -286,6 +321,10 @@ async def upload_artifact(
             project_id=conversation.project_id,
             conversation_id=conversation.id,
         )
+        # The upload may span a project or conversation archive. Refresh both
+        # rows under lock after streaming, then publish and commit while the
+        # scope remains protected from a concurrent archive.
+        _active_conversation_scope(db, user.id, str(conversation.id))
         store.publish_file(staged, artifact.relative_storage_key)
         artifact.size_bytes = size
         artifact.sha256 = observed_sha256

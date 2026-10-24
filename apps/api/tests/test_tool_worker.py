@@ -9,10 +9,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.openship.artifacts.filesystem import LocalArtifactStore
+from src.openship.artifacts.filesystem import ArtifactStorageError, LocalArtifactStore
 from src.openship.artifacts.models import Artifact, ArtifactQuota
 from src.openship.auth.models import User
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import (
+    list_capability_manifests,
+    list_legacy_search_manifests,
+)
 from src.openship.capabilities.contracts import (
     CapabilityRef,
     ExecutionConfig,
@@ -37,7 +40,7 @@ from src.openship.workspace.models import Project
 
 def _tool_run(db, *, operation_status="admitted", dispatched=False, expired=True):
     manifest = next(
-        item for item in list_capability_manifests() if item.id == "brave_web_search"
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
     )
     ref = CapabilityRef(
         id=manifest.id,
@@ -54,7 +57,9 @@ def _tool_run(db, *, operation_status="admitted", dispatched=False, expired=True
     project = Project(owner_user_id=user.id, name="Tool recovery")
     db.add(project)
     db.flush()
-    conversation = Conversation(user_id=user.id, project_id=project.id, title="Untitled")
+    conversation = Conversation(
+        user_id=user.id, project_id=project.id, title="Untitled"
+    )
     db.add(conversation)
     db.flush()
     run = Run(
@@ -74,7 +79,11 @@ def _tool_run(db, *, operation_status="admitted", dispatched=False, expired=True
     )
     db.add(run)
     db.flush()
-    lease_until = datetime.now(UTC) - timedelta(seconds=1) if expired else datetime.now(UTC) + timedelta(minutes=1)
+    lease_until = (
+        datetime.now(UTC) - timedelta(seconds=1)
+        if expired
+        else datetime.now(UTC) + timedelta(minutes=1)
+    )
     job = RunJob(
         run_id=run.id,
         fence=7,
@@ -118,6 +127,34 @@ def _tool_run(db, *, operation_status="admitted", dispatched=False, expired=True
     return user, project, conversation, run, job, operation, attempt
 
 
+def test_worker_logs_artifact_storage_readiness_failure(caplog, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.openship.runs import worker as worker_module
+    from src.openship.runs.worker import Worker
+
+    class UnavailableStore:
+        def verify(self):
+            raise ArtifactStorageError(
+                "artifact storage identity marker is unavailable"
+            )
+
+    monkeypatch.setattr(worker_module, "configured_store", lambda: UnavailableStore())
+    worker = Worker.__new__(Worker)
+    worker.Session = SessionLocal
+    project_id, conversation_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    context = worker._tool_context(
+        claim=None,
+        run=SimpleNamespace(id=uuid.uuid4(), project_id=project_id),
+        conversation=SimpleNamespace(id=conversation_id, user_id=user_id),
+        execution=ExecutionConfig(graph_kind="tool", graph_version=1),
+    )
+
+    assert context.artifact_store is None
+    assert "Conversation artifact storage is unavailable" in caplog.text
+    assert "identity marker is unavailable" in caplog.text
+
+
 def _submit_search_run(db):
     manifest = next(
         item for item in list_capability_manifests() if item.id == "brave_web_search"
@@ -137,7 +174,9 @@ def _submit_search_run(db):
     project = Project(owner_user_id=user.id, name="Tool runtime")
     db.add(project)
     db.flush()
-    conversation = Conversation(user_id=user.id, project_id=project.id, title="Untitled")
+    conversation = Conversation(
+        user_id=user.id, project_id=project.id, title="Untitled"
+    )
     db.add(conversation)
     db.flush()
     run = submit_tool_run(
@@ -151,7 +190,15 @@ def _submit_search_run(db):
         ),
     )
     db.commit()
-    return user, project, conversation, run, ref
+    legacy_manifest = next(
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
+    )
+    legacy_ref = CapabilityRef(
+        id=legacy_manifest.id,
+        version=legacy_manifest.version,
+        manifest_digest=legacy_manifest.manifest_digest,
+    )
+    return user, project, conversation, run, legacy_ref
 
 
 def test_expired_tool_run_without_dispatch_requeues_safely():
@@ -189,7 +236,9 @@ def test_expired_dispatched_tool_is_interrupted_and_never_requeued():
         db.refresh(job)
         db.refresh(operation)
         db.refresh(attempt)
-        assert reclaimed == 1
+        # Reconciliation is installation-wide, so another stale lease may be
+        # reclaimed during the same pass in a shared test database.
+        assert reclaimed >= 1
         assert run.status == "failed"
         assert run.error_code == "execution_interrupted"
         assert operation.status == "interrupted"
@@ -198,14 +247,21 @@ def test_expired_dispatched_tool_is_interrupted_and_never_requeued():
         assert attempt.error_code == "execution_interrupted"
         assert job.owner_id is None
         assert job.lease_until is None
-        event = db.query(Event).filter(
-            Event.run_id == run.id, Event.type == "tool.failed"
-        ).one()
+        event = (
+            db.query(Event)
+            .filter(Event.run_id == run.id, Event.type == "tool.failed")
+            .one()
+        )
         assert json.loads(event.payload)["error_code"] == "execution_interrupted"
-        assert db.query(Outbox).filter(
-            Outbox.conversation_id == conversation.id,
-            Outbox.event_id == event.id,
-        ).count() == 1
+        assert (
+            db.query(Outbox)
+            .filter(
+                Outbox.conversation_id == conversation.id,
+                Outbox.event_id == event.id,
+            )
+            .count()
+            == 1
+        )
     finally:
         db.close()
 
@@ -264,16 +320,25 @@ def test_cancel_fences_run_and_tool_operation_with_one_outbox_transaction(
             assert attempt.error_code == "execution_interrupted"
             slot = db.query(ExecutionSlot).filter(ExecutionSlot.id == slot_id).one()
             assert slot.operation_id is None
-        run_event = db.query(Event).filter(
-            Event.run_id == run.id, Event.type == "run_cancelled"
-        ).one()
-        tool_event = db.query(Event).filter(
-            Event.run_id == run.id, Event.type == "tool.cancelled"
-        ).one()
-        assert db.query(Outbox).filter(
-            Outbox.conversation_id == conversation.id,
-            Outbox.event_id.in_((run_event.id, tool_event.id)),
-        ).count() == 2
+        run_event = (
+            db.query(Event)
+            .filter(Event.run_id == run.id, Event.type == "run_cancelled")
+            .one()
+        )
+        tool_event = (
+            db.query(Event)
+            .filter(Event.run_id == run.id, Event.type == "tool.cancelled")
+            .one()
+        )
+        assert (
+            db.query(Outbox)
+            .filter(
+                Outbox.conversation_id == conversation.id,
+                Outbox.event_id.in_((run_event.id, tool_event.id)),
+            )
+            .count()
+            == 2
+        )
         assert db.query(Message).filter(Message.run_id == run.id).count() == 0
     finally:
         db.close()
@@ -330,8 +395,8 @@ def test_persisted_tool_deadline_is_reused_after_a_pre_dispatch_reclaim():
 def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
     monkeypatch, tmp_path
 ):
+    from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
     from src.openship.chat.routes import get_conversation_messages
-    from src.openship.execution.gateway import MAINTAINED_TOOL_HANDLERS
     from src.openship.runs import dispatch as dispatch_module
     from src.openship.runs import worker as worker_module
     from src.openship.runs.worker import Worker
@@ -339,7 +404,9 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     db = SessionLocal()
     user, _project, conversation, tool_run, ref = _submit_search_run(db)
-    db.query(RunJob).filter(RunJob.run_id != tool_run.id).delete(synchronize_session=False)
+    db.query(RunJob).filter(RunJob.run_id != tool_run.id).delete(
+        synchronize_session=False
+    )
     db.commit()
     claim = claim_next(db, worker_id="manual-tool-worker", lease_seconds=30)
     assert claim is not None and claim.run_id == tool_run.id
@@ -372,7 +439,7 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
             provider_metadata={},
         )
 
-    monkeypatch.setitem(MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     worker = Worker(
         worker_id=claim.worker_id,
         session_factory=SessionLocal,
@@ -382,12 +449,12 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
         assert worker.process_job(claim)
         db.expire_all()
         stored_tool_run = db.get(Run, tool_run.id)
-        operation = db.query(ToolOperation).filter(
-            ToolOperation.run_id == tool_run.id
-        ).one()
-        attempt = db.query(ToolAttempt).filter(
-            ToolAttempt.operation_id == operation.id
-        ).one()
+        operation = (
+            db.query(ToolOperation).filter(ToolOperation.run_id == tool_run.id).one()
+        )
+        attempt = (
+            db.query(ToolAttempt).filter(ToolAttempt.operation_id == operation.id).one()
+        )
         assert stored_tool_run.status == "completed"
         assert stored_tool_run.provider_started_at is None
         assert stored_tool_run.execution_started_at is not None
@@ -396,9 +463,12 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
         assert attempt.outcome == "succeeded"
         assert calls == ["terraform deployment plan"]
         assert db.query(Message).filter(Message.run_id == tool_run.id).count() == 0
-        assert db.query(ProviderAttempt).filter(
-            ProviderAttempt.run_id == tool_run.id
-        ).count() == 0
+        assert (
+            db.query(ProviderAttempt)
+            .filter(ProviderAttempt.run_id == tool_run.id)
+            .count()
+            == 0
+        )
         tool_events = db.query(Event).filter(Event.run_id == tool_run.id).all()
         assert any(event.type == "tool.completed" for event in tool_events)
         assert any(event.type == "run.succeeded" for event in tool_events)
@@ -415,7 +485,9 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
             str(uuid.uuid4()),
             provider_profile_id="primary-fixture",
         )
-        db.query(RunJob).filter(RunJob.run_id != chat_run.id).delete(synchronize_session=False)
+        db.query(RunJob).filter(RunJob.run_id != chat_run.id).delete(
+            synchronize_session=False
+        )
         db.commit()
         chat_claim = claim_next(db, worker_id="first-chat-worker", lease_seconds=30)
         assert chat_claim is not None and chat_claim.run_id == chat_run.id
@@ -435,17 +507,27 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
         def fake_chat_factory(_checkpointer, invocation_factory=None):
             return FakeChatGraph()
 
-        monkeypatch.setitem(dispatch_module._GRAPH_FACTORIES, ("chat", 1), fake_chat_factory)
+        monkeypatch.setitem(
+            dispatch_module._GRAPH_FACTORIES, ("chat", 1), fake_chat_factory
+        )
         assert worker.process_job(chat_claim)
         db.expire_all()
         assert prompt_was_first == [True]
         assert "choose one provider" in system_prompts[0]
-        assert "do not repeat the same search" in system_prompts[0]
+        assert (
+            "do not repeat an equivalent successful search" in system_prompts[0].lower()
+        )
         assert db.get(Conversation, conversation.id).title == "After manual search"
-        assert db.query(Message).filter(
-            Message.run_id == chat_run.id,
-            Message.role == "assistant",
-        ).one().content == "Review the plan."
+        assert (
+            db.query(Message)
+            .filter(
+                Message.run_id == chat_run.id,
+                Message.role == "assistant",
+            )
+            .one()
+            .content
+            == "Review the plan."
+        )
         history = asyncio.run(get_conversation_messages(conversation.id, db, user))
         assert [
             (message["role"], message["run_id"])
@@ -463,7 +545,7 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
 def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
     monkeypatch, tmp_path
 ):
-    from src.openship.execution.gateway import MAINTAINED_TOOL_HANDLERS
+    from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
     from src.openship.runs.worker import Worker
 
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
@@ -477,7 +559,9 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
 
     store = LocalArtifactStore(tmp_path / "cancel-artifacts", uuid.uuid4())
     store.initialize()
-    monkeypatch.setattr("src.openship.runs.worker.credential_value", lambda _binding: "test-key")
+    monkeypatch.setattr(
+        "src.openship.runs.worker.credential_value", lambda _binding: "test-key"
+    )
     monkeypatch.setattr("src.openship.runs.worker.configured_store", lambda: store)
     started = threading.Event()
     supervisor_observed_owner = threading.Event()
@@ -488,7 +572,7 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
             await asyncio.sleep(0.01)
             control.raise_if_stopped()
 
-    monkeypatch.setitem(MAINTAINED_TOOL_HANDLERS, "brave_web_search", waiting_search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", waiting_search)
     worker = Worker(
         worker_id=claim.worker_id,
         session_factory=SessionLocal,
@@ -498,7 +582,10 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
 
     def track_supervisor_ownership(db_session, run_id, fence):
         ownership_lost = original_ownership_lost(db_session, run_id, fence)
-        if threading.current_thread() is not threading.main_thread() and not ownership_lost:
+        if (
+            threading.current_thread() is not threading.main_thread()
+            and not ownership_lost
+        ):
             supervisor_observed_owner.set()
         return ownership_lost
 
@@ -523,16 +610,23 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
         operation = db.query(ToolOperation).filter(ToolOperation.run_id == run.id).one()
         assert stored_run.status == "cancelled"
         assert operation.status == "interrupted"
-        output = db.query(Artifact).filter(
-            Artifact.originating_operation_id == operation.id
-        ).one()
+        output = (
+            db.query(Artifact)
+            .filter(Artifact.originating_operation_id == operation.id)
+            .one()
+        )
         assert output.status == "deleted"
         assert output.reserved_bytes == 0
-        assert db.query(ArtifactQuota).filter(
-            ArtifactQuota.conversation_id == conversation.id,
-            ArtifactQuota.scope == "conversation",
-            ArtifactQuota.reserved_bytes > 0,
-        ).count() == 0
+        assert (
+            db.query(ArtifactQuota)
+            .filter(
+                ArtifactQuota.conversation_id == conversation.id,
+                ArtifactQuota.scope == "conversation",
+                ArtifactQuota.reserved_bytes > 0,
+            )
+            .count()
+            == 0
+        )
         assert db.query(Message).filter(Message.run_id == run.id).count() == 0
     finally:
         if thread.is_alive():
@@ -545,7 +639,7 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
 def test_pre_dispatch_worker_restart_reuses_deadline_and_executes_once(
     monkeypatch, tmp_path
 ):
-    from src.openship.execution.gateway import MAINTAINED_TOOL_HANDLERS
+    from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
     from src.openship.runs.worker import Worker
 
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
@@ -593,7 +687,7 @@ def test_pre_dispatch_worker_restart_reuses_deadline_and_executes_once(
             provider_metadata={},
         )
 
-    monkeypatch.setitem(MAINTAINED_TOOL_HANDLERS, "brave_web_search", search)
+    monkeypatch.setitem(TOOL_HANDLER_OVERRIDES, "brave_web_search", search)
     worker = Worker(
         worker_id=replacement_claim.worker_id,
         session_factory=SessionLocal,

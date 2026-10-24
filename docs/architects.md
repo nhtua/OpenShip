@@ -2,7 +2,7 @@
 type: architecture
 summary: Proposed high-level design for the self-hosted OpenShip harness, conversational workflows, capability registry, and secure execution.
 status: proposed
-date: 2026-10-01
+date: 2026-10-21
 ---
 
 # OpenShip Harness Architecture
@@ -225,6 +225,7 @@ Each trigger specifies its type, configuration parameters, optional input mappin
 | Artifact | Immutable document, diagram, code, report, or log version with access policy and provenance. |
 | Connector binding | Project/environment reference to an external account, endpoint, and credential policy; stores references rather than raw secrets. |
 | Resource object / binding | Desired abstract resource and mappings to concrete provider resources, with observation history. |
+| Temporary access request / grant | Later-phase authority to use a predefined connector role for selected actions/targets and a bounded duration; references approval, initiator, execution identity and run/operation. Does not itself create cloud IAM permissions. |
 
 Conversation IDs, run IDs, workflow-definition IDs, and LangGraph thread IDs are distinct. Persist their relationships explicitly. Each workflow run receives a stable graph thread identity; checkpoints are not overloaded as the entire application data model.
 
@@ -285,6 +286,12 @@ Refresh capability selection as the task moves between stages. Evict irrelevant 
 | Skill | `SKILL.md`, metadata, optional references, scripts, assets. | Instructions loaded when relevant; scripts run through sandbox capabilities. |
 | Workflow | Human-readable source, validated graph specification, lockfile. | A reusable process with typed inputs, outputs, steps, and waits. |
 | Connector | Authentication/account/endpoint configuration and credential policy. | Supplies access to tools; does not itself grant unrestricted authority. |
+
+Connectors have explicit `global` or `project` visibility. Global search Connectors can be configured once and used across authorized projects; project Connectors, including the Phase 5 AWS role configuration, remain confined to their project. AWS reads take direct targets at execution time; no OpenShip resource binding grants or restricts access. Global availability does not expose secrets, grant configuration-management rights or share another project's outputs/evidence. Resolve one eligible Connector and pin its revision in the consuming project before execution. The Phase 5 design uses a configured operator account for global management and existing project owners for project management, without introducing team-role administration.
+
+Phase 5 implements credential acquisition as an internal module in the existing trusted runtime. The API encrypts managed secrets; queued runs carry references; the worker checks current scope/revision/policy, decrypts the selected credential and supplies an invocation-scoped key or authenticated SDK context to a distribution-owned tool. AWS bootstrap credentials stay in the credential module; observation tools use only temporary execution-role credentials. The tool calls the provider directly. The credential module does not proxy provider operations, and its restricted interface is not an isolation boundary against malicious code inside the worker. Independently portable Connector packaging/lifecycles are deferred without assigning a delivery phase.
+
+Developer extensibility uses the existing capability registry: register a typed handler, its Connector requirement, supported operations/targets, limits and result projection. Native provider SDKs own service models, serialization, signing and parsing; shared runtime execution controls own authenticated client construction, bounded transport, cancellation and accounting. New AWS handlers reuse the same credential path rather than implementing authentication or a provider-compatible protocol layer. Future CLI or generated-code executors need their own qualified sandbox/credential handoff; Phase 5 does not enable them.
 
 Use the [Agent Skills format](https://agentskills.io/specification) for portable packaging and on-demand instruction/reference loading. OpenShip adds registry and policy metadata around the package; an imported skill's `allowed-tools` declaration remains a request, not an authorization grant.
 
@@ -462,7 +469,40 @@ Preauthorized low-risk reads need no repeated prompts. Mutations, destructive ac
 
 For Terraform, show a saved plan and its backend/environment, approve its digest, and apply that exact plan through the credentialed profile. Revalidate relevant state/policy before apply; a stale plan requires a new review instead of unreviewed replanning.
 
-Manage secrets separately from workflows. Start with an encrypted instance credential store whose key is protected separately from database backups; provide a broker interface for Vault/cloud secret managers. Prefer short-lived delegated credentials over long-lived secrets. Never put raw credentials in model context, embeddings, conversation history, checkpoints, Git, or browser payloads.
+Manage secrets separately from workflows. Start with an encrypted instance credential store whose key is protected separately from database backups; provide a broker interface for Vault/cloud secret managers. Prefer short-lived delegated credentials over long-lived secrets. Never put raw credentials in model context, embeddings, conversation history, checkpoints, Git, or browser read responses. A dedicated authenticated write-only setup form may submit credentials over TLS; it never reads them back or persists them in browser storage, chat drafts or retry queues.
+
+### Workload identity and predefined connector roles
+
+**Agreed direction (2026-10-21):** OpenShip uses a dedicated, organization-owned workload identity rather than an employee's personal cloud credentials. This preserves connector continuity when team members leave. Record the executing workload identity separately from the human initiator and approver; a shared agent identity must not erase accountability or bypass project/actor authorization.
+
+For AWS, prefer IAM roles and temporary role sessions. An AWS role is identified by an ARN, not a service-account email, and a role identifier alone grants no access. A configured trust policy and authenticated workload credential source establish who may assume it; its permissions policy establishes what it can do. OpenShip may run on AWS, GCP or localhost. The hosting identity and target-cloud role need not be from the same provider, but each supported federation or credential source needs explicit setup and qualification. Short-lived credentials renew through that source; an expired pasted token cannot renew itself.
+
+An IAM user is not an architectural requirement. An AWS-hosted workload can obtain temporary credentials through an attached role; an external workload can use explicitly configured federation or IAM Roles Anywhere. A dedicated machine user's assume-role-only key is the proposed first localhost bootstrap, with its standing authority and rotation costs disclosed. Choosing that bootstrap does not silently qualify other sources or allow an ambient SDK credential fallback. Authentication-source credentials prove workload identity; the configured execution role determines its session's permitted cloud operations.
+
+Configure two role bindings as the initial AWS authorization model:
+
+| Binding | Purpose | Runtime gate |
+| --- | --- | --- |
+| Basic | Administrator-defined low-risk reads | Existing project/connector/gateway policy; no repeated prompts within delegated authority |
+| Maintenance (optional) | Administrator-defined set of supported changes; not automatically unrestricted administrator access | Concrete action approval plus a scoped, time-bounded grant before privileged dispatch |
+
+**Phase 5 direction update (2026-10-23):** AWS resources do not need manual
+registration, environment assignment or binding before discovery/reads. The
+project authorizes the connector, and AWS evaluates each supported request
+under its basic-role session. Observations retain target identities without
+granting access or creating a resource whitelist. A denied discovery call
+does not prohibit a permitted direct read of a named target. The proposed
+[replacement design](./superpowers/specs/2026-10-23-phase5-aws-role-based-discovery-design.md)
+uses a shared SDK read catalog/reader, with unsupported operations distinct
+from AWS permission denials. Maintenance authority remains in Phase 10B.
+
+Create and configure these cloud roles once. Normal workflow/conversation execution does not require the user to edit IAM permissions. When a supported task needs the maintenance role, present the exact target/action and authority window; after eligible approval, the broker obtains temporary credentials for that existing role. Permission to use a role is not permission to invoke every operation it allows. Approval of the action and its authority grant remain separate bindings, even when one review screen captures both.
+
+If the maintenance role is absent or lacks the requested permission, block the affected task with an administrator configuration action, not the entire conversation. Never modify IAM policy automatically to authorize the agent. Connector reconfiguration does not approve or replay the pending action; revalidate current scope and decisions, and reconcile any potentially dispatched operation before proceeding.
+
+Phase 5 implements only the basic read path. Roadmap Phase 10A supplies the first approved mutation; [Phase 10B](./roadmap.md#phase-10b--approved-temporary-maintenance-authority) adds the durable temporary-authority lifecycle using the same gateway, broker and Phase 8 decision mechanism. It binds execution identity, initiator, connector/role revision, project/environment, exact targets/actions, operation digest, approver and expiry. Completion/cancellation/expiry/revocation closes the local grant and blocks further privileged dispatch; renewal cannot outlive that window. Team approver eligibility additionally requires the Phase 20A membership/role qualification.
+
+This design is approval-gated temporary access. If the trusted broker can assume the maintenance role without an independent external grant, it retains standing ability to acquire that authority. It is not a zero-standing-privilege guarantee against broker compromise, and closing a local grant does not universally invalidate issued cloud credentials. An optional external access broker such as Apono can strengthen that separation later; OpenShip does not require that vendor or build a general-purpose IAM management platform. External grants still pass through OpenShip's normal action policy, and each target environment requires explicit integration/trust configuration.
 
 ### Just-in-Time Permission Management
 
@@ -473,7 +513,7 @@ Connectors can implement Just-in-Time (JIT) permission management, where credent
 - **Azure:** Use managed identities with just-in-time role assignments, or service principal tokens with scope-limited claims
 - **Custom services:** Use brokered token services that issue short-lived signed credentials valid for specific operations and durations
 
-The credential broker can integrate with these JIT services to issue credentials dynamically when a tool requires them, rather than relying on standing permissions. This reduces the risk of credential theft and limits lateral movement in case of compromise.
+The credential broker can integrate with these JIT services to acquire scoped credentials when a tool requires them. Short-lived issuance and true just-in-time entitlement creation are different guarantees: assuming a predefined role may retain standing assumption authority, while a separately controlled grant service can enforce entitlement changes. Declare the guarantee of each configured integration rather than inferring zero standing privilege from token expiry alone.
 
 Keep credentials in the broker/maintained connector when possible. If a CLI needs one, supply it only to that credentialed execution, revoke/expire it promptly, and avoid logging environment/configuration contents. Publication applies redaction, sensitivity classification, limits, and access policy. Redaction is defense in depth, not permission to expose secrets to arbitrary code.
 

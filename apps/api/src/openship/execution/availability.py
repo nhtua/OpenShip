@@ -13,7 +13,10 @@ from sqlalchemy.orm import Session
 
 from src.openship.artifacts.filesystem import ArtifactStorageError
 from src.openship.artifacts.maintenance import configured_store
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import (
+    legacy_credential_binding,
+    list_capability_manifests,
+)
 from src.openship.execution.models import ToolAvailability
 from src.openship.providers.credentials import credential_binding_present
 
@@ -45,8 +48,11 @@ def observe_tool_availability(
     for manifest in list_capability_manifests():
         if manifest.id not in enabled_ids:
             available, reason = False, "disabled"
-        elif manifest.credential_binding_ref is None:
-            if manifest.effect == "read_only_local":
+        elif (
+            getattr(manifest, "credential_binding_ref", None)
+            or legacy_credential_binding(manifest.id)
+        ) is None:
+            if "conversation_workspace" in manifest.enablement_requirements:
                 try:
                     configured_store().verify()
                     available, reason = True, None
@@ -56,7 +62,10 @@ def observe_tool_availability(
                 available, reason = True, None
         else:
             try:
-                available = bool(credential_check(manifest.credential_binding_ref))
+                binding = getattr(manifest, "credential_binding_ref", None) or legacy_credential_binding(
+                    manifest.id
+                )
+                available = bool(credential_check(binding))
                 reason = None if available else "missing_credentials"
             except Exception:  # noqa: BLE001 - never expose resolver details in readiness.
                 available, reason = False, "configuration_error"

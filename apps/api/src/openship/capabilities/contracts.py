@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Literal
+from contextlib import suppress
+from typing import Any, Literal, TypeAlias
 from uuid import UUID
 
 from pydantic import (
@@ -78,6 +79,108 @@ class CapabilityManifest(FrozenModel):
         return self
 
 
+class CapabilityManifestV2(FrozenModel):
+    """Version 2 replaces installation variable names with connector kinds."""
+
+    schema_version: Literal[2] = 2
+    id: str = Field(pattern=TOOL_ID_PATTERN)
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    implementation_digest: str = Field(pattern=SHA256_PATTERN)
+    manifest_digest: str = Field(pattern=SHA256_PATTERN)
+    description: str = Field(min_length=1, max_length=1024)
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    effect: Literal["read_only_external", "read_only_local"]
+    enablement_requirements: tuple[str, ...] = ()
+    limits: dict[str, int | float | str]
+    outputs: tuple[OutputPolicy, ...]
+    connector_kinds: tuple[str, ...] = ()
+    operations: tuple[str, ...] = ()
+    target_kinds: tuple[str, ...] = ()
+    execution_kind: Literal["maintained"] = "maintained"
+
+    @field_validator("connector_kinds", "operations", "target_kinds")
+    @classmethod
+    def _unique_nonempty_names(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value or value.strip() != value for value in values):
+            raise ValueError("manifest names must be nonempty and trimmed")
+        if len(values) != len(set(values)):
+            raise ValueError("manifest names must be unique")
+        return values
+
+    @model_validator(mode="after")
+    def _digest_matches_manifest(self) -> CapabilityManifestV2:
+        if self.effect == "read_only_external" and not self.connector_kinds:
+            raise ValueError("external v2 capabilities require a connector kind")
+        unsigned = self.model_dump(mode="json", exclude={"manifest_digest"})
+        if canonical_digest(unsigned) != self.manifest_digest:
+            raise ValueError("manifest_digest does not match the canonical manifest")
+        return self
+
+
+class CapabilityManifestV3(CapabilityManifestV2):
+    """Version 3 pins AWS discovery capabilities to one installed read catalog."""
+
+    schema_version: Literal[3] = 3
+    aws_read_catalog_digest: str | None = Field(default=None, pattern=SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _aws_catalog_is_pinned(self) -> CapabilityManifestV3:
+        if self.id in {"aws_read", "aws_read_catalog"}:
+            if self.aws_read_catalog_digest is None:
+                raise ValueError(
+                    "AWS discovery capabilities require a read catalog digest"
+                )
+            if "aws" not in self.connector_kinds:
+                raise ValueError(
+                    "AWS discovery capabilities require an AWS connector kind"
+                )
+            if not self.operations:
+                raise ValueError(
+                    "AWS discovery capabilities require a pinned operation set"
+                )
+        elif self.aws_read_catalog_digest is not None:
+            raise ValueError(
+                "read catalog digests are only valid for AWS discovery capabilities"
+            )
+        return self
+
+
+CapabilityManifestLike: TypeAlias = (
+    CapabilityManifest | CapabilityManifestV2 | CapabilityManifestV3
+)
+
+
+def _json_object(
+    payload: str | bytes | dict[str, Any], *, label: str
+) -> dict[str, Any]:
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError(f"{label} is invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise TypeError(f"{label} must be a JSON object")
+    return payload
+
+
+def decode_capability_manifest(
+    payload: str | bytes | dict[str, Any],
+) -> CapabilityManifestLike:
+    raw = _json_object(payload, label="capability manifest")
+    encoded = payload if isinstance(payload, (str, bytes)) else canonical_json(raw)
+    version = raw.get("schema_version")
+    if version == 1:
+        return CapabilityManifest.model_validate_json(encoded)
+    if version == 2:
+        return CapabilityManifestV2.model_validate_json(encoded)
+    if version == 3:
+        return CapabilityManifestV3.model_validate_json(encoded)
+    raise ValueError("unsupported capability manifest version")
+
+
 class CapabilitySummary(FrozenModel):
     id: str = Field(pattern=TOOL_ID_PATTERN)
     version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
@@ -86,10 +189,47 @@ class CapabilitySummary(FrozenModel):
     output_schema: dict[str, Any]
     effect: Literal["read_only_external", "read_only_local"]
     enabled: StrictBool
+    deployment_restricted: StrictBool = False
     available: StrictBool
     unavailable_reason: (
-        Literal["disabled", "missing_credentials", "runtime_unavailable"] | None
+        Literal[
+            "disabled",
+            "deployment_restricted",
+            "missing_credentials",
+            "runtime_unavailable",
+        ]
+        | None
     ) = None
+
+
+class ProjectCapabilitySummary(FrozenModel):
+    """Project permission and Connector readiness are separate projections."""
+
+    id: str = Field(pattern=TOOL_ID_PATTERN)
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    manifest_digest: str = Field(pattern=SHA256_PATTERN)
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    effect: Literal["read_only_external", "read_only_local"]
+    permitted: StrictBool
+    policy_enabled: StrictBool = True
+    deployment_restricted: StrictBool = False
+    unavailable_reason: (
+        Literal[
+            "disabled_by_operator",
+            "deployment_restricted",
+            "runtime_unavailable",
+            "connector_required",
+            "connector_ambiguous",
+            "target_required",
+            "policy_unavailable",
+        ]
+        | None
+    ) = None
+    required_connector_kinds: tuple[str, ...] = ()
+    connector_readiness: dict[
+        str, Literal["ready", "required", "ambiguous", "unavailable"]
+    ] = Field(default_factory=dict)
 
 
 class ExecutionLimits(FrozenModel):
@@ -121,6 +261,86 @@ class ExecutionConfig(FrozenModel):
     settings: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
+class ConnectorRef(FrozenModel):
+    """A pinned connector configuration and its write-only credential version."""
+
+    id: UUID
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    configuration_revision: int = Field(ge=1)
+    visibility: Literal["global", "project"]
+    credential_version_id: UUID
+
+
+class ResourceBindingRef(FrozenModel):
+    """An immutable owned target and the connector revision authorized for it."""
+
+    id: UUID
+    revision: int = Field(ge=1)
+    connector_id: UUID
+    connector_revision: int = Field(ge=1)
+
+
+class ExecutionConfigV2(FrozenModel):
+    schema_version: Literal[2] = 2
+    graph_kind: Literal["chat", "tool"]
+    graph_version: int = Field(ge=1)
+    allowed_capabilities: tuple[CapabilityRef, ...] = ()
+    selected_artifacts: tuple[ArtifactRef, ...] = ()
+    connector_refs: tuple[ConnectorRef, ...] = ()
+    resource_binding_refs: tuple[ResourceBindingRef, ...] = ()
+    selected_resource_binding_refs: tuple[ResourceBindingRef, ...] = ()
+    admitted_context_message_ids: tuple[UUID, ...] = ()
+    limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
+    loop_limits: LoopLimits = Field(default_factory=LoopLimits)
+
+
+class ExecutionConfigV3(ExecutionConfigV2):
+    """Version 3 adds a pinned preferred search provider to managed chat."""
+
+    schema_version: Literal[3] = 3
+    preferred_search_kind: Literal["brave", "tavily"] | None = None
+
+
+class ExecutionConfigV4(FrozenModel):
+    """Binding-free managed execution snapshot used by role-based AWS reads."""
+
+    schema_version: Literal[4] = 4
+    graph_kind: Literal["chat", "tool"]
+    graph_version: int = Field(ge=1)
+    allowed_capabilities: tuple[CapabilityRef, ...] = ()
+    selected_artifacts: tuple[ArtifactRef, ...] = ()
+    connector_refs: tuple[ConnectorRef, ...] = ()
+    credential_binding_refs: tuple[str, ...] = ()
+    admitted_context_message_ids: tuple[UUID, ...] = ()
+    preferred_search_kind: Literal["brave", "tavily"] | None = None
+    aws_read_catalog_digest: str = Field(pattern=SHA256_PATTERN)
+    limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
+    loop_limits: LoopLimits = Field(default_factory=LoopLimits)
+
+
+ExecutionConfigLike: TypeAlias = (
+    ExecutionConfig | ExecutionConfigV2 | ExecutionConfigV3 | ExecutionConfigV4
+)
+
+
+def decode_execution_config(
+    payload: str | bytes | dict[str, Any],
+) -> ExecutionConfigLike:
+    """Decode only the exact persisted configuration versions this runtime supports."""
+    raw = _json_object(payload, label="execution configuration")
+    encoded = payload if isinstance(payload, (str, bytes)) else canonical_json(raw)
+    version = raw.get("schema_version")
+    if version == 1:
+        return ExecutionConfig.model_validate_json(encoded)
+    if version == 2:
+        return ExecutionConfigV2.model_validate_json(encoded)
+    if version == 3:
+        return ExecutionConfigV3.model_validate_json(encoded)
+    if version == 4:
+        return ExecutionConfigV4.model_validate_json(encoded)
+    raise ValueError("unsupported execution configuration version")
+
+
 class AuthorizationContext(FrozenModel):
     principal_id: UUID
     project_id: UUID
@@ -133,6 +353,9 @@ class ToolCommandRequest(FrozenModel):
     client_request_id: UUID
     capability: CapabilityRef
     arguments: dict[str, Any]
+    connector_selections: dict[Literal["brave", "tavily", "aws"], UUID] = Field(
+        default_factory=dict, max_length=3
+    )
 
     @field_validator("client_request_id", mode="before")
     @classmethod
@@ -146,15 +369,35 @@ class ToolCommandRequest(FrozenModel):
                 raise ValueError("client_request_id must be a UUID") from exc
         return value
 
+    @field_validator("connector_selections", mode="before")
+    @classmethod
+    def _parse_connector_selections(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        parsed = {}
+        for kind, connector_id in value.items():
+            if not isinstance(kind, str) or kind not in {"brave", "tavily", "aws"}:
+                raise ValueError("connector selection kind is invalid")
+            if isinstance(connector_id, str):
+                try:
+                    connector_id = UUID(connector_id)
+                except ValueError as exc:
+                    raise ValueError("connector selection ID must be a UUID") from exc
+            parsed[kind] = connector_id
+        return parsed
+
 
 class ToolInvocationContext:
     """Runtime-only authority and resolvers; never place this in graph state."""
 
     __slots__ = (
+        "_aws_accesses",
         "artifact_store",
         "authorization",
+        "aws_access_factory",
         "credential_resolver",
         "execution",
+        "operation_id",
         "session_factory",
     )
 
@@ -165,12 +408,23 @@ class ToolInvocationContext:
         credential_resolver,
         artifact_store=None,
         session_factory=None,
+        operation_id=None,
+        aws_access_factory=None,
     ):
         self.authorization = authorization
         self.execution = execution
         self.credential_resolver = credential_resolver
         self.artifact_store = artifact_store
         self.session_factory = session_factory
+        self.operation_id = operation_id
+        self.aws_access_factory = aws_access_factory
+        self._aws_accesses = []
+
+    async def close_runtime_accesses(self) -> None:
+        accesses, self._aws_accesses = tuple(self._aws_accesses), []
+        for access in accesses:
+            with suppress(Exception):
+                await access.aclose()
 
 
 class ToolFailure(FrozenModel):

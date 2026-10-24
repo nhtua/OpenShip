@@ -219,7 +219,9 @@ def test_manual_search_survives_restart_and_cancel_is_not_redispatched(tmp_path)
             assert conversation.status_code == 201
             conversation_id = conversation.json()["id"]
 
-            capabilities_response = client.get("/api/capabilities")
+            # The first request validates the pinned Botocore operation catalog;
+            # allow for that cold initialization on slower CI Python versions.
+            capabilities_response = client.get("/api/capabilities", timeout=20)
             assert capabilities_response.status_code == 200
             capabilities = {item["id"]: item for item in capabilities_response.json()}
             deadline = time.monotonic() + 20
@@ -228,7 +230,7 @@ def test_manual_search_survives_restart_and_cancel_is_not_redispatched(tmp_path)
                 for item in ("brave_web_search", "tavily_web_search")
             ):
                 time.sleep(0.1)
-                capabilities_response = client.get("/api/capabilities")
+                capabilities_response = client.get("/api/capabilities", timeout=20)
                 capabilities = {item["id"]: item for item in capabilities_response.json()}
             assert capabilities["brave_web_search"]["available"] is True
             assert capabilities["tavily_web_search"]["available"] is True
@@ -265,7 +267,12 @@ def test_manual_search_survives_restart_and_cancel_is_not_redispatched(tmp_path)
             api_process, base_url = _start_api(api_root, workdir, env, port)
             with httpx.Client(base_url=base_url, timeout=5) as restarted:
                 restarted.headers["Authorization"] = f"Bearer {token}"
-                snapshot = restarted.get(f"/api/conversations/{conversation_id}/snapshot")
+                # This is the first durable-history read on the restarted API;
+                # allow time for a fresh database connection on slower CI hosts.
+                snapshot = restarted.get(
+                    f"/api/conversations/{conversation_id}/snapshot",
+                    timeout=20,
+                )
                 assert snapshot.status_code == 200
                 for artifact_id, expected_bytes in downloaded_before_restart.items():
                     restored = restarted.get(f"/api/artifacts/{artifact_id}/content")

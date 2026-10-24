@@ -64,10 +64,13 @@ class Run(Base):
     # Digest of the original user-visible submission semantics. Null means
     # this run predates tool-mode request pinning and must remain unknown.
     submission_digest = Column(String(64), nullable=True)
+    # Revision of the shared tool policy when a tool-enabled run was queued.
+    # Null keeps pre-Phase-5B history explicitly unknown.
+    tool_policy_revision = Column(Integer, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('created', 'queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out', 'stale')",
+            "status IN ('created', 'queued', 'running', 'waiting_connector', 'completed', 'failed', 'cancelled', 'timed_out', 'stale')",
             name="ck_runs_status",
         ),
         CheckConstraint("kind IN ('chat', 'tool')", name="ck_runs_kind"),
@@ -76,6 +79,13 @@ class Run(Base):
         Index("ix_runs_project_id", "project_id"),
         Index("ix_runs_status", "status"),
         Index("ix_runs_ended_at", "ended_at"),
+        Index(
+            "uq_runs_project_conversation_id",
+            "project_id",
+            "conversation_id",
+            "id",
+            unique=True,
+        ),
     )
 
 

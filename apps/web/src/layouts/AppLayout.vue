@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Conversation } from '@/types'
+import type { Conversation, ProjectSummary } from '@/types'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { SidebarInset, SidebarProvider } from '@/components/ui'
@@ -23,6 +23,10 @@ const props = withDefaults(
     showConversationFiles?: boolean
     conversationFilesOpen?: boolean
     conversationFileCount?: number
+    projects?: ProjectSummary[]
+    currentProjectId?: string | null
+    createProjectError?: string | null
+    projectCreating?: boolean
   }>(),
   {
     title: 'New Conversation',
@@ -34,14 +38,22 @@ const props = withDefaults(
     showConversationFiles: false,
     conversationFilesOpen: false,
     conversationFileCount: 0,
+    projects: () => [],
+    currentProjectId: null,
+    createProjectError: null,
+    projectCreating: false,
   },
 )
 
 const emit = defineEmits<{
   createConversation: [title: string]
   selectConversation: [id: string]
+  archiveConversation: [id: string]
+  showArchivedConversations: []
   signOut: []
   toggleConversationFiles: []
+  selectProject: [id: string]
+  createProject: [name: string]
 }>()
 </script>
 
@@ -53,9 +65,17 @@ const emit = defineEmits<{
         :current-conversation-id="props.currentConversationId"
         :busy="props.busy"
         :username="props.username"
+        :projects="props.projects"
+        :current-project-id="props.currentProjectId"
+        :create-project-error="props.createProjectError"
+        :project-creating="props.projectCreating"
         @create-conversation="emit('createConversation', $event)"
         @select-conversation="emit('selectConversation', $event)"
+        @archive-conversation="emit('archiveConversation', $event)"
+        @show-archived-conversations="emit('showArchivedConversations')"
         @sign-out="emit('signOut')"
+        @select-project="emit('selectProject', $event)"
+        @create-project="emit('createProject', $event)"
       />
       <SidebarInset class="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <AppHeader

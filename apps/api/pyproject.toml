@@ -15,6 +15,8 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pyjwt>=2.8.0",
     "bcrypt>=4.0.0",
+    "boto3>=1.43.114,<1.44.0",
+    "cryptography>=42.0.0",
     "openai>=1.10.0",
     "httpx>=0.26.0",
     "httpcore>=1.0.0,<2",
@@ -49,6 +51,8 @@ target-version = "py311"
 ignore = ["B008"]
 
 [tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+pythonpath = ["."]
 markers = [
     "postgres: requires a real PostgreSQL database named by TEST_POSTGRES_URL",
     "provider_live: contacts a real provider; opt-in via explicit OPENSHIP_LIVE_* selector",
@@ -61,4 +65,5 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.10",
+    "watchdog[watchmedo]>=6.0.0",
 ]

@@ -41,6 +41,7 @@ class ToolOperation(Base):
     credential_binding_ref = Column(String(128), nullable=True)
     configuration_revision = Column(String(64), nullable=False)
     execution_bundle_digest = Column(String(64), nullable=False)
+    tool_policy_revision = Column(Integer, nullable=True)
     status = Column(String(24), nullable=False, server_default="admitted")
     error_code = Column(String(64), nullable=True)
     result_json = Column(Text, nullable=True)
@@ -52,6 +53,13 @@ class ToolOperation(Base):
 
     __table_args__ = (
         UniqueConstraint("run_id", "logical_call_id", name="uq_tool_operations_run_logical_call"),
+        Index(
+            "uq_tool_operations_project_conversation_id",
+            "project_id",
+            "conversation_id",
+            "id",
+            unique=True,
+        ),
         CheckConstraint(
             "status IN ('admitted', 'dispatching', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')",
             name="ck_tool_operations_status",

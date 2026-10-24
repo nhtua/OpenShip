@@ -15,13 +15,14 @@ from sqlalchemy.orm import sessionmaker
 from src.openship.artifacts.filesystem import LocalArtifactStore
 from src.openship.artifacts.models import Artifact
 from src.openship.auth.models import User
-from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.catalog import list_legacy_search_manifests
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
     CapabilityRef,
     ExecutionConfig,
     ToolInvocationContext,
 )
+from src.openship.capabilities.definitions import TOOL_HANDLER_OVERRIDES
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.events.service import Event
@@ -119,7 +120,7 @@ async def test_postgres_publishes_ready_artifact_result_and_events_in_one_commit
 ):
     monkeypatch.setattr(settings, "tool_enabled_ids", "brave_web_search")
     manifest = next(
-        item for item in list_capability_manifests() if item.id == "brave_web_search"
+        item for item in list_legacy_search_manifests() if item.id == "brave_web_search"
     )
     ref = CapabilityRef(
         id=manifest.id,
@@ -214,16 +215,23 @@ async def test_postgres_publishes_ready_artifact_result_and_events_in_one_commit
     import src.openship.execution.gateway as gateway_module
 
     monkeypatch.setitem(
-        gateway_module.MAINTAINED_TOOL_HANDLERS,
+        TOOL_HANDLER_OVERRIDES,
         "brave_web_search",
         fake_search,
     )
     original_publish = gateway_module.publish_tool_result
     uncommitted_state = []
 
-    def inspect_before_commit(db, active_claim, attempt_id, observation, staged_outputs):
+    def inspect_before_commit(
+        db, active_claim, attempt_id, observation, staged_outputs, definition=None
+    ):
         result = original_publish(
-            db, active_claim, attempt_id, observation, staged_outputs
+            db,
+            active_claim,
+            attempt_id,
+            observation,
+            staged_outputs,
+            definition=definition,
         )
         reader = pg_sessions()
         try:

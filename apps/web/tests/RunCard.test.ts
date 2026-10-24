@@ -39,6 +39,58 @@ describe('RunCard', () => {
     expect(wrapper.text()).toContain('Running')
   })
 
+  it('explains a pre-dispatch connector wait and exposes resume, setup, resubmit, and cancel actions', async () => {
+    const wrapper = mount(RunCard, {
+      props: {
+        card: card({
+          run_id: 'run-waiting',
+          status: 'waiting_connector',
+          connector_blocker: {
+            id: 'blocker-1', request_id: 'request-1', reason: 'credential_unavailable',
+            configuration_digest: 'a'.repeat(64), expires_at: '2026-10-23T00:00:00Z',
+            connector_kind: 'aws', connector_visibility: 'project', connector_revision: 2,
+            connector_id: 'connector-1',
+          },
+        }),
+        canResumeConnector: true,
+      },
+    })
+
+    expect(wrapper.get('[data-testid="run-summary"]').text()).toContain('Waiting for connector')
+    expect(wrapper.get('[data-testid="connector-blocker"]').text()).toContain('No provider or cloud request was sent')
+    await wrapper.get('[data-testid="resume-connector"]').trigger('click')
+    await wrapper.get('[data-testid="setup-connector"]').trigger('click')
+    await wrapper.get('[data-testid="resubmit-connector"]').trigger('click')
+    await wrapper.get('[data-testid="dismiss-connector"]').trigger('click')
+
+    expect(wrapper.emitted('resume-connector')).toHaveLength(1)
+    expect(wrapper.emitted('setup-connector')).toHaveLength(1)
+    expect(wrapper.emitted('resubmit-connector')).toHaveLength(1)
+    expect(wrapper.emitted('dismiss-connector')).toHaveLength(1)
+  })
+
+  it('does not offer exact resume when current connector settings do not match the blocker', () => {
+    const wrapper = mount(RunCard, {
+      props: {
+        card: card({
+          run_id: 'run-changed',
+          status: 'waiting_connector',
+          connector_blocker: {
+            id: 'blocker-1', request_id: 'request-1', reason: 'credential_unavailable',
+            configuration_digest: 'a'.repeat(64), expires_at: '2026-10-23T00:00:00Z',
+            connector_kind: 'aws', connector_visibility: 'project', connector_revision: 1,
+            connector_id: 'connector-1',
+          },
+        }),
+        canResumeConnector: false,
+      },
+    })
+
+    expect(wrapper.find('[data-testid="resume-connector"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="connector-blocker"]').text()).toContain('Resubmit it as a new turn')
+    expect(wrapper.find('[data-testid="resubmit-connector"]').exists()).toBe(true)
+  })
+
   it('shows only duration, context use, and provider-reported total tokens when collapsed', async () => {
     const usage: Usage = {
       input_tokens: 613,

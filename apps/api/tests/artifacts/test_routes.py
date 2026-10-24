@@ -11,17 +11,117 @@ from starlette.requests import Request
 
 from src.openship.artifacts.contracts import ArtifactRef
 from src.openship.artifacts.routes import (
+    delete_artifact,
     download_artifact_content,
+    get_artifact,
+    list_artifacts,
     router,
     upload_artifact,
 )
 from src.openship.artifacts.service import mark_artifact_ready, reserve_artifact
 from src.openship.auth.models import User
 from src.openship.auth.routes import require_jwt
+from src.openship.chat.lifecycle import archive_conversation
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.database.session import SessionLocal
 from src.openship.workspace.models import Project
+
+
+def test_archive_during_upload_rejects_publication_and_preserves_existing_files(
+    tmp_path, monkeypatch
+):
+    from src.openship import artifacts as artifact_package
+    from src.openship.artifacts.filesystem import LocalArtifactStore
+    from src.openship.artifacts.models import Artifact
+
+    storage_id = uuid.uuid4()
+    root = Path(tmp_path / "artifacts")
+    monkeypatch.setattr(settings, "artifact_root", root)
+    monkeypatch.setattr(settings, "artifact_storage_id", storage_id)
+    store = LocalArtifactStore(root, storage_id)
+    store.initialize()
+    db = SessionLocal()
+    try:
+        user, _project, conversation = _owned_conversation(db)
+        original_bytes = b"keep this file through archive"
+        original = asyncio.run(
+            upload_artifact(
+                str(conversation.id),
+                _request(
+                    (original_bytes,),
+                    key=str(uuid.uuid4()),
+                    body_digest=hashlib.sha256(original_bytes).digest(),
+                ),
+                db,
+                user,
+            )
+        )
+        original_id = json.loads(original.body)["id"]
+
+        actual_read_upload = artifact_package.routes._read_upload
+
+        async def archive_after_stream(request, maximum):
+            result = await actual_read_upload(request, maximum)
+            with SessionLocal() as archive_db:
+                archive_conversation(
+                    archive_db,
+                    owner_id=user.id,
+                    conversation_id=conversation.id,
+                )
+                archive_db.commit()
+            return result
+
+        monkeypatch.setattr(artifact_package.routes, "_read_upload", archive_after_stream)
+        new_bytes = b"must not be published"
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(
+                upload_artifact(
+                    str(conversation.id),
+                    _request(
+                        (new_bytes,),
+                        key=str(uuid.uuid4()),
+                        body_digest=hashlib.sha256(new_bytes).digest(),
+                    ),
+                    db,
+                    user,
+                )
+            )
+        assert refused.value.status_code == 409
+        assert refused.value.detail["error"]["code"] == "conversation_archived"
+
+        rows = (
+            db.query(Artifact)
+            .filter(Artifact.conversation_id == conversation.id)
+            .order_by(Artifact.created_at, Artifact.id)
+            .all()
+        )
+        old_artifact = next(item for item in rows if str(item.id) == original_id)
+        assert old_artifact.status == "ready"
+        with store.open_verified(old_artifact) as content_file:
+            assert content_file.read() == original_bytes
+        assert all(item.status != "ready" for item in rows if item.id != old_artifact.id)
+
+        visible = asyncio.run(list_artifacts(str(conversation.id), 50, None, db, user))
+        assert any(item["id"] == original_id and item["status"] == "ready" for item in visible["items"])
+        metadata = asyncio.run(get_artifact(original_id, db, user))
+        assert metadata["status"] == "ready"
+        content = asyncio.run(download_artifact_content(original_id, db, user))
+        assert content.status_code == 200
+        assert content.headers["content-length"] == str(len(original_bytes))
+        with store.open_verified(old_artifact) as content_file:
+            assert content_file.read() == original_bytes
+
+        with pytest.raises(HTTPException) as delete_refused:
+            asyncio.run(delete_artifact(original_id, db, user))
+        assert delete_refused.value.status_code == 409
+        assert delete_refused.value.detail["error"]["code"] == "conversation_archived"
+        db.expire_all()
+        assert db.get(Artifact, uuid.UUID(original_id)).status == "ready"
+        with store.open_verified(db.get(Artifact, uuid.UUID(original_id))) as content_file:
+            assert content_file.read() == original_bytes
+    finally:
+        db.close()
 
 
 def _request(body_chunks, *, key, body_digest, name="report.txt", media_type="text/plain"):

@@ -14,7 +14,11 @@ class UnsupportedGraphVersion(ValueError):
 _GRAPH_FACTORIES: dict[tuple[str, int], Callable] = {
     ("chat", 1): build_chat_graph,
     ("chat", 2): build_agent_graph,
+    ("chat", 3): build_agent_graph,
+    ("chat", 4): build_agent_graph,
     ("tool", 1): build_tool_graph,
+    ("tool", 2): build_tool_graph,
+    ("tool", 3): build_tool_graph,
 }
 
 

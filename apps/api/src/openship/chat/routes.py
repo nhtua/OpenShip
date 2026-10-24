@@ -1,43 +1,44 @@
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing_extensions import TypedDict
 
 from ..auth.models import User
 from ..auth.routes import require_jwt
+from ..chat.lifecycle import (
+    ConversationLifecycleError,
+    archive_conversation,
+    get_owned_conversation_scope,
+    list_owned_conversations,
+    restore_conversation,
+)
 from ..chat.models import Conversation, Message
-from ..chat.schemas import ConversationResponse
+from ..chat.schemas import ConversationResponse, conversation_response
 from ..database.session import get_db
-from ..workspace.models import Project
+from ..workspace.lifecycle import ArchiveStateError, archive_http_error
+from ..workspace.projects import ProjectLifecycleError, select_project_for_conversation
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
-class ConversationCreateRequest(TypedDict):
-    title: str
+class ConversationCreateRequest(BaseModel):
+    title: str = "New Conversation"
+    project_id: uuid.UUID | None = None
 
 
 @router.get("/conversations")
 async def list_conversations(
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
+    state: Literal["active", "archived"] = "active",
 ):
-    user_conversations = (
-        db.query(Conversation)
-        .filter(Conversation.user_id == user.id)
-        .order_by(Conversation.updated_at.desc())
-        .all()
-    )
-
     return [
-        ConversationResponse(
-            id=str(conv.id),
-            title=conv.title,
-            created_at=conv.created_at.isoformat(),
-            updated_at=conv.updated_at.isoformat(),
+        conversation_response(conversation, project)
+        for conversation, project in list_owned_conversations(
+            db, owner_id=user.id, state=state
         )
-        for conv in user_conversations
     ]
 
 
@@ -47,28 +48,132 @@ async def create_conversation(
     db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
-    # Find user's default project
-    project = db.query(Project).filter(
-        Project.owner_user_id == user.id
-    ).first()
-    if not project:
-        return {"error": {"code": "project_not_found", "message": f"No project found for user {user.id}"}}
+    try:
+        project = select_project_for_conversation(
+            db,
+            owner_id=user.id,
+            project_id=req.project_id,
+        )
+    except ArchiveStateError as exc:
+        db.rollback()
+        raise archive_http_error(exc) from None
+    except ProjectLifecycleError as exc:
+        db.rollback()
+        status_code = 409 if exc.code == "project_required" else 404
+        message = (
+            "Choose a project before creating a conversation"
+            if exc.code == "project_required"
+            else "Project not found"
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "error": {
+                    "code": exc.code,
+                    "message": message,
+                }
+            },
+        ) from None
 
     conv = Conversation(
         user_id=user.id,
         project_id=project.id,
-        title=req.get("title", "New Conversation"),
+        title=req.title,
     )
     db.add(conv)
     db.commit()
     db.refresh(conv)
 
-    return ConversationResponse(
-        id=str(conv.id),
-        title=conv.title,
-        created_at=conv.created_at.isoformat(),
-        updated_at=conv.updated_at.isoformat(),
-    )
+    return conversation_response(conv, project)
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
+async def get_conversation(
+    conversation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    try:
+        conversation, project = get_owned_conversation_scope(
+            db,
+            owner_id=user.id,
+            conversation_id=conversation_id,
+        )
+    except ConversationLifecycleError:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": "Conversation not found",
+                }
+            },
+        ) from None
+    return conversation_response(conversation, project)
+
+
+@router.post(
+    "/conversations/{conversation_id}/archive", response_model=ConversationResponse
+)
+async def archive_conversation_route(
+    conversation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    try:
+        conversation, project = archive_conversation(
+            db,
+            owner_id=user.id,
+            conversation_id=conversation_id,
+        )
+        db.commit()
+        return conversation_response(conversation, project)
+    except ArchiveStateError as exc:
+        db.rollback()
+        raise archive_http_error(exc) from None
+    except ConversationLifecycleError:
+        db.rollback()
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": "Conversation not found",
+                }
+            },
+        ) from None
+
+
+@router.post(
+    "/conversations/{conversation_id}/restore", response_model=ConversationResponse
+)
+async def restore_conversation_route(
+    conversation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    try:
+        conversation, project = restore_conversation(
+            db,
+            owner_id=user.id,
+            conversation_id=conversation_id,
+        )
+        db.commit()
+        return conversation_response(conversation, project)
+    except ArchiveStateError as exc:
+        db.rollback()
+        raise archive_http_error(exc) from None
+    except ConversationLifecycleError:
+        db.rollback()
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": "Conversation not found",
+                }
+            },
+        ) from None
 
 
 @router.get("/conversations/{conversation_id}/messages")

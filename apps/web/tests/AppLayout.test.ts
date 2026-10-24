@@ -35,8 +35,24 @@ describe('AppLayout', () => {
     expect(wrapper.findAll('[aria-current="page"]').length).toBe(1)
   })
 
+  it('forwards archived conversation recovery from the history menu', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', { conversations: [] })
+    document.body.appendChild(wrapper.element)
+    await wrapper.get('button[aria-label="Conversation history actions"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    const archivedItem = document.body.querySelector('[role="menuitem"]')
+    expect(archivedItem?.textContent).toContain('Archived conversations')
+    archivedItem?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('showArchivedConversations')).toEqual([[]])
+  })
+
   it('opens a project dropdown with the current workspace selected', async () => {
-    const { wrapper } = await mountWithRouter(AppLayout, '/')
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Personal Workspace' }],
+      currentProjectId: 'project-1',
+    })
     const trigger = wrapper.get('[data-testid="project-selector-trigger"]')
 
     expect(trigger.attributes('aria-expanded')).toBe('false')
@@ -49,8 +65,60 @@ describe('AppLayout', () => {
     expect(menu.find('[aria-checked="true"]').text()).toContain('Personal Workspace')
   })
 
+  it('emits an owned project selection from the project menu', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [
+        { id: 'project-1', name: 'Production' },
+        { id: 'project-2', name: 'Sandbox' },
+      ],
+      currentProjectId: 'project-1',
+    })
+    await wrapper.get('[data-testid="project-selector-trigger"]').trigger('click')
+    await wrapper.findAll('[role="menuitemradio"]')[1].trigger('click')
+
+    expect(wrapper.emitted('selectProject')).toEqual([['project-2']])
+  })
+
+  it('offers project creation and emits the trimmed name', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Production' }],
+      currentProjectId: 'project-1',
+    })
+    await wrapper.get('[data-testid="project-selector-trigger"]').trigger('click')
+    await wrapper.get('[data-testid="create-project-trigger"]').trigger('click')
+    await wrapper.get('input[aria-label="New project name"]').setValue('  Sandbox  ')
+    await wrapper.get('button[aria-label="Create project"]').trigger('click')
+
+    expect(wrapper.emitted('createProject')).toEqual([['Sandbox']])
+  })
+
+  it('keeps the project creation form open after selecting Create project', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Production' }],
+      currentProjectId: 'project-1',
+    })
+    await wrapper.get('[data-testid="project-selector-trigger"]').trigger('click')
+    await wrapper.get('[data-testid="create-project-trigger"]').trigger('click')
+
+    expect(wrapper.get('[role="dialog"][aria-label="Create project"]').exists()).toBe(true)
+    expect(wrapper.get('input[aria-label="New project name"]').exists()).toBe(true)
+  })
+
+  it('links Settings to the currently selected project', async () => {
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Production' }],
+      currentProjectId: 'project-1',
+    })
+
+    expect(wrapper.get('a[aria-label="Project Settings"]').attributes('href'))
+      .toBe('/projects/project-1/settings')
+  })
+
   it('closes the project dropdown on outside click and Escape', async () => {
-    const { wrapper } = await mountWithRouter(AppLayout, '/')
+    const { wrapper } = await mountWithRouter(AppLayout, '/', {
+      projects: [{ id: 'project-1', name: 'Personal Workspace' }],
+      currentProjectId: 'project-1',
+    })
     const trigger = wrapper.get('[data-testid="project-selector-trigger"]')
 
     await trigger.trigger('click')

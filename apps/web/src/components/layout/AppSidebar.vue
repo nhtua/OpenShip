@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { Conversation } from '@/types'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { Conversation, ProjectSummary } from '@/types'
 import { Button, Icon } from '@/components/ui'
 import {
   Sidebar,
@@ -12,6 +12,15 @@ import {
   SidebarMenuItem,
 } from '@/components/ui'
 import { useSidebar } from '@/components/ui/sidebar/utils'
+import { RouterLink } from 'vue-router'
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from 'reka-ui'
+import ConversationActionsMenu from '@/components/chat/ConversationActionsMenu.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -19,29 +28,50 @@ const props = withDefaults(
     currentConversationId?: string | null
     busy?: boolean
     username?: string | null
+    projects?: ProjectSummary[]
+    currentProjectId?: string | null
+    createProjectError?: string | null
+    projectCreating?: boolean
   }>(),
   {
     conversations: () => [],
     currentConversationId: null,
     busy: false,
     username: null,
+    projects: () => [],
+    currentProjectId: null,
+    createProjectError: null,
+    projectCreating: false,
   },
 )
 
 const emit = defineEmits<{
   createConversation: [title: string]
   selectConversation: [id: string]
+  archiveConversation: [id: string]
+  showArchivedConversations: []
   signOut: []
+  selectProject: [id: string]
+  createProject: [name: string]
 }>()
 
 const { setOpen, state } = useSidebar()
 
 const showUserMenu = ref(false)
 const showAllConversations = ref(false)
+const conversationHistoryTrigger = ref<HTMLButtonElement | null>(null)
+const focusHistoryAfterArchiveId = ref<string | null>(null)
 const showProjectMenu = ref(false)
 const projectTrigger = ref<HTMLButtonElement | null>(null)
 const projectMenu = ref<HTMLElement | null>(null)
-const currentProjectOption = ref<HTMLButtonElement | null>(null)
+const projectCreateDialog = ref<HTMLElement | null>(null)
+const projectNameInput = ref<HTMLInputElement | null>(null)
+const showCreateProject = ref(false)
+const newProjectName = ref('')
+const projectNameError = ref<string | null>(null)
+const currentProject = computed(() =>
+  props.projects.find((project) => project.id === props.currentProjectId) ?? props.projects[0] ?? null,
+)
 
 function expandSidebar() {
   setOpen(true)
@@ -55,11 +85,16 @@ function toggleConversations() {
   showAllConversations.value = !showAllConversations.value
 }
 
+function archiveConversation(id: string): void {
+  focusHistoryAfterArchiveId.value = id
+  emit('archiveConversation', id)
+}
+
 async function toggleProjectMenu() {
   showProjectMenu.value = !showProjectMenu.value
   if (showProjectMenu.value) {
     await nextTick()
-    currentProjectOption.value?.focus()
+    projectMenu.value?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus()
   }
 }
 
@@ -68,7 +103,41 @@ function closeProjectMenu(returnFocus = false) {
   if (returnFocus) void nextTick(() => projectTrigger.value?.focus())
 }
 
+async function openCreateProject() {
+  closeProjectMenu()
+  showCreateProject.value = true
+  projectNameError.value = null
+  await nextTick()
+  projectNameInput.value?.focus()
+}
+
+function closeCreateProject(returnFocus = false) {
+  showCreateProject.value = false
+  newProjectName.value = ''
+  projectNameError.value = null
+  if (returnFocus) void nextTick(() => projectTrigger.value?.focus())
+}
+
+function submitProjectCreation() {
+  const name = newProjectName.value.trim()
+  if (!name) {
+    projectNameError.value = 'Enter a project name.'
+    return
+  }
+  if (name.length > 255) {
+    projectNameError.value = 'Project names can have at most 255 characters.'
+    return
+  }
+  projectNameError.value = null
+  emit('createProject', name)
+}
+
 function onProjectMenuKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && showCreateProject.value) {
+    event.preventDefault()
+    closeCreateProject(true)
+    return
+  }
   if (event.key !== 'Escape' || !showProjectMenu.value) return
   event.preventDefault()
   closeProjectMenu(true)
@@ -77,12 +146,26 @@ function onProjectMenuKeydown(event: KeyboardEvent) {
 function onDocumentClick(event: MouseEvent) {
   const target = event.target
   if (!(target instanceof Node)) return
-  if (projectMenu.value?.contains(target) || projectTrigger.value?.contains(target)) return
+  if (
+    projectMenu.value?.contains(target) ||
+    projectCreateDialog.value?.contains(target) ||
+    projectTrigger.value?.contains(target)
+  ) return
   closeProjectMenu()
+  closeCreateProject()
 }
 
 onMounted(() => document.addEventListener('click', onDocumentClick))
 onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
+watch(() => props.currentProjectId, (next, previous) => {
+  if (next !== previous && showCreateProject.value) closeCreateProject()
+})
+watch(() => props.conversations.map((conversation) => conversation.id), (ids) => {
+  const removedId = focusHistoryAfterArchiveId.value
+  if (!removedId || ids.includes(removedId)) return
+  focusHistoryAfterArchiveId.value = null
+  void nextTick(() => conversationHistoryTrigger.value?.focus())
+}, { flush: 'post' })
 
 /** Max conversations shown before expand is needed. */
 const COLLAPSED_CONVERSATION_LIMIT = 8
@@ -117,7 +200,6 @@ const extraCount = computed(() => {
       </span>
     </SidebarHeader>
 
-    <!-- The project menu currently has one option; project switching follows multi-project support. -->
     <div
       class="relative shrink-0 border-b border-sidebar-border px-3 py-2 group-data-[collapsible=icon]:hidden"
       @keydown="onProjectMenuKeydown"
@@ -135,7 +217,7 @@ const extraCount = computed(() => {
         @click="toggleProjectMenu"
       >
         <Icon name="box" class="size-3 shrink-0" />
-        <span class="min-w-0 flex-1 truncate">Personal Workspace</span>
+        <span class="min-w-0 flex-1 truncate">{{ currentProject?.name ?? 'No project available' }}</span>
         <Icon name="chevron-down" class="size-3 shrink-0 text-sidebar-foreground/60" />
       </button>
       <div
@@ -148,17 +230,66 @@ const extraCount = computed(() => {
         class="absolute left-2 right-2 top-full z-40 mt-1 rounded-lg border border-sidebar-border bg-popover p-1 text-popover-foreground shadow-lg"
       >
         <button
-          ref="currentProjectOption"
+          v-for="project in props.projects"
+          :key="project.id"
           type="button"
           role="menuitemradio"
-          aria-checked="true"
-          class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium text-primary hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          @click="closeProjectMenu(true)"
+          :aria-checked="project.id === currentProject?.id"
+          :class="project.id === currentProject?.id ? 'text-primary' : 'text-popover-foreground'"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @click="emit('selectProject', project.id); closeProjectMenu(true)"
         >
           <Icon name="box" class="size-3 shrink-0" />
-          <span class="min-w-0 flex-1 truncate">Personal Workspace</span>
-          <Icon name="check" class="size-3 shrink-0" />
+          <span class="min-w-0 flex-1 truncate">{{ project.name }}</span>
+          <Icon v-if="project.id === currentProject?.id" name="check" class="size-3 shrink-0" />
         </button>
+        <p v-if="!props.projects.length" class="px-2 py-2 text-xs text-muted-foreground">No owned projects are available.</p>
+        <div class="my-1 border-t border-border" />
+        <button
+          type="button"
+          role="menuitem"
+          data-testid="create-project-trigger"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @click.stop="openCreateProject"
+        >
+          <Icon name="plus" class="size-3 shrink-0" />
+          <span>Create project</span>
+        </button>
+      </div>
+      <div
+        v-if="showCreateProject"
+        ref="projectCreateDialog"
+        role="dialog"
+        aria-label="Create project"
+        class="absolute left-2 right-2 top-full z-40 mt-1 grid gap-2 rounded-lg border border-sidebar-border bg-popover p-3 text-popover-foreground shadow-lg"
+        @keydown="onProjectMenuKeydown"
+      >
+        <label for="new-project-name" class="text-sm font-medium">New project name</label>
+        <input
+          id="new-project-name"
+          ref="projectNameInput"
+          v-model="newProjectName"
+          aria-label="New project name"
+          maxlength="255"
+          class="h-9 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :disabled="props.projectCreating"
+          @keydown.enter.prevent="submitProjectCreation"
+        />
+        <p v-if="projectNameError || props.createProjectError" role="alert" class="text-xs text-destructive">
+          {{ projectNameError ?? props.createProjectError }}
+        </p>
+        <div class="flex justify-end gap-2">
+          <Button type="button" variant="ghost" size="sm" :disabled="props.projectCreating" @click="closeCreateProject(true)">Cancel</Button>
+          <Button
+            type="button"
+            size="sm"
+            aria-label="Create project"
+            :disabled="props.projectCreating"
+            @click="submitProjectCreation"
+          >
+            {{ props.projectCreating ? 'Creating…' : 'Create project' }}
+          </Button>
+        </div>
       </div>
     </div>
 
@@ -193,6 +324,37 @@ const extraCount = computed(() => {
 
         <!-- Conversation history (expanded mode only) -->
         <div class="mt-1 px-2 group-data-[collapsible=icon]:px-0">
+          <div class="flex items-center justify-between px-3 py-1 group-data-[collapsible=icon]:hidden">
+            <span class="text-xs font-medium text-sidebar-foreground/60">Conversations</span>
+            <DropdownMenuRoot>
+              <DropdownMenuTrigger as-child>
+                <button
+                  ref="conversationHistoryTrigger"
+                  type="button"
+                  aria-label="Conversation history actions"
+                  title="Conversation history actions"
+                  class="inline-flex size-8 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                >
+                  <Icon name="ellipsis-v" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuPortal>
+                <DropdownMenuContent
+                  align="end"
+                  side="bottom"
+                  :side-offset="4"
+                  class="z-50 min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none"
+                >
+                  <DropdownMenuItem
+                    class="flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-accent"
+                    @select="emit('showArchivedConversations')"
+                  >
+                    Archived conversations
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenuPortal>
+            </DropdownMenuRoot>
+          </div>
           <div
             v-if="props.busy && props.conversations.length === 0"
             class="px-3 py-2 text-xs text-sidebar-foreground/60"
@@ -210,11 +372,12 @@ const extraCount = computed(() => {
               <SidebarMenuItem
                 v-for="conv in visibleConversations"
                 :key="conv.id"
+                class="group/conv flex items-center gap-1"
               >
                 <SidebarMenuButton
                   :is-active="conv.id === props.currentConversationId"
                   :disabled="props.busy"
-                  class="text-[13px]"
+                  class="w-auto min-w-0 flex-1 text-[13px]"
                   :title="conv.title"
                   :aria-label="`Open conversation ${conv.title}`"
                   @click="emit('selectConversation', conv.id)"
@@ -225,6 +388,12 @@ const extraCount = computed(() => {
                     :class="conv.id === props.currentConversationId ? 'font-semibold text-primary' : ''"
                   >{{ conv.title }}</span>
                 </SidebarMenuButton>
+                <ConversationActionsMenu
+                  :conversation-id="conv.id"
+                  :title="conv.title"
+                  :disabled="props.busy"
+                  @archive="archiveConversation"
+                />
               </SidebarMenuItem>
             </SidebarMenu>
 
@@ -312,14 +481,13 @@ const extraCount = computed(() => {
           </button>
         </SidebarMenuItem>
         <SidebarMenuItem>
-          <button
-            type="button"
-            disabled
+          <RouterLink
+            to="/connectors"
             class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
           >
             <Icon name="link" />
             <span>Connectors</span>
-          </button>
+          </RouterLink>
         </SidebarMenuItem>
         <SidebarMenuItem>
           <button
@@ -362,14 +530,24 @@ const extraCount = computed(() => {
           </button>
         </SidebarMenuItem>
         <SidebarMenuItem>
-          <button
-            type="button"
-            disabled
+          <RouterLink
+            v-if="props.currentProjectId"
+            :to="{ name: 'project-settings', params: { projectId: props.currentProjectId } }"
+            aria-label="Project Settings"
             class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0 disabled:pointer-events-none disabled:opacity-50"
           >
             <Icon name="cog" />
             <span>Settings</span>
-          </button>
+          </RouterLink>
+          <RouterLink
+            v-else
+            to="/settings/global"
+            aria-label="Global Settings"
+            class="flex w-full items-center gap-3 rounded-md border-1 border-transparent px-3 py-2 text-sm outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&>i]:shrink-0"
+          >
+            <Icon name="cog" />
+            <span>Settings</span>
+          </RouterLink>
         </SidebarMenuItem>
       </SidebarMenu>
 

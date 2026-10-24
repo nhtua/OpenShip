@@ -1,17 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { artifactsApi, workspaceApi } from '@/services/api'
+import { artifactsApi, conversationsApi, workspaceApi } from '@/services/api'
 import { useArtifactsStore } from '@/stores/artifacts'
+import { useChatStore } from '@/stores/chat'
 import type { ConversationWorkspacePage, WorkspaceFileRead } from '@/types'
 
 vi.mock('@/services/api', () => ({
   default: { get: vi.fn(), post: vi.fn(), delete: vi.fn() },
   artifactsApi: { list: vi.fn(), download: vi.fn(), delete: vi.fn() },
+  conversationsApi: { list: vi.fn(), get: vi.fn(), archive: vi.fn(), restore: vi.fn() },
   workspaceApi: { get: vi.fn(), readFile: vi.fn() },
 }))
 
 const mockWorkspace = vi.mocked(workspaceApi)
 const mockArtifacts = vi.mocked(artifactsApi)
+const mockConversations = vi.mocked(conversationsApi)
 
 function page(conversationId: string, ids: string[], nextCursor: string | null = null): ConversationWorkspacePage {
   return {
@@ -69,6 +72,7 @@ describe('conversation file store', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setActivePinia(createPinia())
+    mockConversations.list.mockResolvedValue({ data: [] } as never)
   })
 
   it('hydrates the conversation association and paginates distinct same-name snapshots', async () => {
@@ -148,5 +152,33 @@ describe('conversation file store', () => {
 
     expect(store.byConversation.get('c1')?.[0].id).toBe('file-1')
     expect(store.error).toBe('This file is in use by an active operation and cannot be deleted.')
+  })
+
+  it('refreshes conversation state when file deletion conflicts with an archived conversation', async () => {
+    const archivedConversation = {
+      id: 'c1', project_id: 'project-1', project_name: 'Production',
+      project_archived_at: null, title: 'Conversation', created_at: '', updated_at: '',
+      archived_at: '2026-10-22T12:00:00Z',
+    }
+    mockWorkspace.get.mockResolvedValueOnce({ data: page('c1', ['file-1']) } as never)
+    mockArtifacts.delete.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: { detail: { error: { code: 'conversation_archived', message: 'Restore this conversation before continuing.' } } },
+      },
+    })
+    mockConversations.get.mockResolvedValueOnce({ data: archivedConversation } as never)
+    const chat = useChatStore()
+    chat.currentConversation = { ...archivedConversation, archived_at: null }
+    chat.conversationMetadataReady = true
+    const store = useArtifactsStore()
+    await store.loadConversation('c1')
+
+    await store.deleteArtifact('c1', 'file-1')
+
+    expect(chat.currentConversationReadOnly).toBe(true)
+    expect(chat.currentConversation?.archived_at).toBe(archivedConversation.archived_at)
+    expect(store.error).toBe('Restore this conversation before continuing.')
+    expect(store.byConversation.get('c1')?.[0].id).toBe('file-1')
   })
 })
