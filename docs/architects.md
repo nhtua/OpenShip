@@ -486,6 +486,16 @@ Configure two role bindings as the initial AWS authorization model:
 | Basic | Administrator-defined low-risk reads | Existing project/connector/gateway policy; no repeated prompts within delegated authority |
 | Maintenance (optional) | Administrator-defined set of supported changes; not automatically unrestricted administrator access | Concrete action approval plus a scoped, time-bounded grant before privileged dispatch |
 
+**Phase 5 direction update (2026-10-23):** AWS resources do not need manual
+registration, environment assignment or binding before discovery/reads. The
+project authorizes the connector, and AWS evaluates each supported request
+under its basic-role session. Observations retain target identities without
+granting access or creating a resource whitelist. A denied discovery call
+does not prohibit a permitted direct read of a named target. The proposed
+[replacement design](./superpowers/specs/2026-10-23-phase5-aws-role-based-discovery-design.md)
+uses a shared SDK read catalog/reader, with unsupported operations distinct
+from AWS permission denials. Maintenance authority remains in Phase 10B.
+
 Create and configure these cloud roles once. Normal workflow/conversation execution does not require the user to edit IAM permissions. When a supported task needs the maintenance role, present the exact target/action and authority window; after eligible approval, the broker obtains temporary credentials for that existing role. Permission to use a role is not permission to invoke every operation it allows. Approval of the action and its authority grant remain separate bindings, even when one review screen captures both.
 
 If the maintenance role is absent or lacks the requested permission, block the affected task with an administrator configuration action, not the entire conversation. Never modify IAM policy automatically to authorize the agent. Connector reconfiguration does not approve or replay the pending action; revalidate current scope and decisions, and reconcile any potentially dispatched operation before proceeding.

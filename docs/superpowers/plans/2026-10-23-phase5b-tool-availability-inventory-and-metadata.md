@@ -2,10 +2,12 @@
 type: plan
 summary: Proposed Phase 5B implementation detail aligned with accepted 5A.1/5A.2, adding managed built-in tool availability, local bucket inventory and bounded bucket metadata.
 date: 2026-10-23
-status: candidate
+status: superseded
 ---
 
 # Phase 5B Tool Availability, Inventory and Metadata Implementation Plan
+
+> **Superseded delivery direction (2026-10-23):** After reviewing the candidate, the user requested removal of resource bindings and confirmed basic-role-only AWS discovery/reads. Use the proposed [replacement plan](2026-10-23-phase5-remove-bindings-and-enable-aws-discovery.md) and its spec. Managed tool availability remains part of the replacement; local bound inventory and mandatory selected-resource admission do not. Checkboxes below retain the original implementation evidence and are not acceptance of the revised flow.
 
 > **For agentic workers:** Use `superpowers:executing-plans` for sequential implementation. The user approved this addendum on 2026-10-23. Implementation and candidate qualification are recorded in the [5B qualification report](../../testing/phase5b-tool-availability-and-reads-qualification.md). The non-service API selector and independent live comparison remain open; user acceptance is pending.
 

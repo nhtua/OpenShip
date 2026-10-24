@@ -7,7 +7,9 @@ date: 2026-10-21
 
 # Phase 5: Managed Connectors and S3 Observations
 
-**Delivery record:** The user accepted 5A.1 on 2026-10-22 and, after testing the corrected AWS connection/bucket/storage flow, accepted 5A.2 on 2026-10-23. On 2026-10-23 the user requested that 5B include installed built-in tool discovery and managed enablement as described in section 3.2. The revised [5B implementation plan](../plans/2026-10-23-phase5b-tool-availability-inventory-and-metadata.md) is awaiting review; 5B is not implemented or accepted. User acceptance does not establish completion of the independent live comparison or remaining PostgreSQL qualification evidence.
+**Current direction (2026-10-23):** The user requested removal of resource binding and confirmed basic-role-only AWS access for Phase 5. The proposed [replacement design](2026-10-23-phase5-aws-role-based-discovery-design.md) and [implementation plan](../plans/2026-10-23-phase5-remove-bindings-and-enable-aws-discovery.md) replace mandatory resource setup/selection and local bound inventory with live discovery and connector-scoped reads. They also replace the earlier prohibition on a shared model-selected SDK read path. The binding-based sections below document the delivered baseline; they must not be used to reintroduce resource registration into new work. The replacement is not yet implemented or accepted.
+
+**Delivery record:** The user accepted 5A.1 on 2026-10-22 and, after testing the corrected AWS connection/bucket/storage flow, accepted 5A.2 on 2026-10-23. The earlier [5B implementation plan](../plans/2026-10-23-phase5b-tool-availability-inventory-and-metadata.md) was approved and implemented as a candidate, with measured evidence in its [qualification report](../../testing/phase5b-tool-availability-and-reads-qualification.md); it was not accepted before this requested revision. Existing acceptance and qualification evidence remains historical and does not establish completion of unperformed checks.
 
 ## 1. Intent, decisions and review boundary
 

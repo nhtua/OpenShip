@@ -7,6 +7,8 @@ date: 2026-10-21
 
 # Phase 5 Managed Connectors and S3 Observations Implementation Plan
 
+> **Current direction (2026-10-23):** The user requested removal of AWS resource bindings and confirmed basic-role-only execution. Use the proposed [binding-removal and AWS discovery plan](2026-10-23-phase5-remove-bindings-and-enable-aws-discovery.md) for revised 5B work. It preserves managed tool availability and existing evidence while replacing per-resource admission with connector-scoped discovery/reads. Binding requirements below record the accepted 5A.2 baseline, not prerequisites for the replacement. The replacement plan still requires review before implementation.
+
 > **For agentic workers:** Use `superpowers:executing-plans` for sequential implementation. Use `superpowers:subagent-driven-development` only if the user selects delegation. Read the specification before starting; checkboxes track implementation.
 >
 > **Planning baseline:** PR #29, commit `222cc49`.
@@ -29,7 +31,7 @@ date: 2026-10-21
 | --- | --- | --- |
 | 5A.1 | 1–7 | Browser-managed global/project Brave and Tavily connectors, credential lifecycle, manual/qualified chat execution, restart recovery and isolation |
 | 5A.2 | 8–14 | Project-scoped AWS connector, bound S3 bucket, identity checks, storage observation, connector blockers and retained evidence |
-| 5B | 15–16 | Managed built-in tool availability, bounded local inventory and selected bucket metadata through the same contracts; revised execution detail is in the 5B addendum |
+| 5B | Replacement plan | Retain managed built-in tool availability; replace bindings/local inventory with live AWS discovery and basic-role reads. The earlier binding-based candidate remains historical evidence, not acceptance of the replacement. |
 
 Execute tasks sequentially. Obtain accept/revise/stop at each acceptance gate before starting the next unit. Planning 5B does not authorize implementing it before 5A.2 acceptance.
 

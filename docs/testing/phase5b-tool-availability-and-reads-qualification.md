@@ -7,6 +7,12 @@ status: candidate
 
 # Phase 5B tool availability and reads qualification
 
+**Revision requested (2026-10-23):** The user requested replacement of resource
+bindings with connector-scoped discovery/reads through the basic role. The
+proposed [replacement plan](../superpowers/plans/2026-10-23-phase5-remove-bindings-and-enable-aws-discovery.md)
+has separate acceptance requirements. Results below remain evidence for the
+original binding-based candidate; they do not qualify the replacement.
+
 **Status: candidate; awaiting user acceptance.** Implementation and the
 synthetic qualification recorded here are complete enough for review. Phase 5
 remains incomplete until the open API selector/live-comparison gaps are
