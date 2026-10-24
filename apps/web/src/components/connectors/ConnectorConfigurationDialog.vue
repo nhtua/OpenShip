@@ -281,9 +281,9 @@ function completeCredentialUpdate(result: Record<string, unknown>): void {
               <span
                 v-if="statusPresentation"
                 data-testid="connector-status"
-                :class="['inline-flex items-center gap-1.5 rounded-full border px-2 py-1', connectorStatusChipClass(statusPresentation.status)]"
+                :class="['inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs', connectorStatusChipClass(statusPresentation.status)]"
               >
-                <span aria-hidden="true" :class="['size-2 rounded-full', connectorStatusDotClass(statusPresentation.status)]" />
+                <span aria-hidden="true" :class="['size-1.5 rounded-full', connectorStatusDotClass(statusPresentation.status)]" />
                 <span>{{ statusPresentation.label }}</span>
               </span>
             </div>

@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ConnectorUsage } from '@/types'
-import { connectorStatusDotClass, connectorStatusPresentation, type ConnectorCatalogEntry } from '@/lib/connectorCatalog'
+import {
+  connectorStatusChipClass,
+  connectorStatusDotClass,
+  connectorStatusPresentation,
+  type ConnectorCatalogEntry,
+} from '@/lib/connectorCatalog'
 
 const props = defineProps<{
   entry: ConnectorCatalogEntry
@@ -41,8 +46,11 @@ const dotClass = computed(() => connectorStatusDotClass(presentation.value.statu
         <span class="text-xs text-muted-foreground">{{ entry.name }} · Published by {{ entry.publisher }}</span>
         <span class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span class="rounded-full border border-border px-2 py-0.5">Global</span>
-          <span class="inline-flex items-center gap-1.5" :aria-label="`Status: ${presentation.label}`">
-            <span aria-hidden="true" :class="['size-2 rounded-full', dotClass]" />
+          <span
+            :class="['inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs', connectorStatusChipClass(presentation.status)]"
+            :aria-label="`Status: ${presentation.label}`"
+          >
+            <span aria-hidden="true" :class="['size-1.5 rounded-full', dotClass]" />
             <span>{{ presentation.label }}</span>
             <span v-if="presentation.detail" class="capitalize">· {{ presentation.detail }}</span>
           </span>

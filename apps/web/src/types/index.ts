@@ -471,6 +471,15 @@ export interface ToolOperationSummary {
     catalog_digest?: string
     service?: string
     operation?: string
+    sdk_version?: string
+    operations?: Array<{
+      service: string
+      operation: string
+      api_name: string
+      supported: boolean
+      unsupported_reason?: string | null
+      parameter_schema?: Record<string, unknown> | null
+    }>
     preview?: Record<string, unknown>
     preview_truncated?: boolean
     next_cursor?: string | null
