@@ -846,23 +846,13 @@ class ToolGateway:
             return matches[0] if len(matches) == 1 else None
         if capability_id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
             try:
-                binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
+                connector_id = uuid.UUID(str(arguments["connector_id"]))
             except (KeyError, TypeError, ValueError):
                 return None
-            binding_refs = [
-                item
-                for item in getattr(execution, "resource_binding_refs", ())
-                if item.id == binding_id
-            ]
-            if len(binding_refs) != 1:
-                return None
-            target = binding_refs[0]
             matches = [
                 item
                 for item in references
-                if item.kind == "aws"
-                and item.id == target.connector_id
-                and item.configuration_revision == target.connector_revision
+                if item.kind == "aws" and item.id == connector_id
             ]
             return matches[0] if len(matches) == 1 else None
         return None
@@ -876,7 +866,7 @@ class ToolGateway:
         connector_ref,
         configuration,
     ):
-        if capability_id in {"aws_read", "aws_read_catalog"}:
+        if capability_id == "aws_read_catalog":
             references = [
                 item
                 for item in getattr(execution, "connector_refs", ())
@@ -887,53 +877,46 @@ class ToolGateway:
                 and references[0] == connector_ref
                 and configuration.kind == "aws"
             )
-        binding_id = None
-        if capability_id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
+        if capability_id == "aws_read":
             try:
-                binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
-            except (KeyError, TypeError, ValueError):
-                return False
-        elif capability_id == "aws_check_connection" and arguments.get(
-            "resource_binding_id"
-        ):
-            try:
-                binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
+                connector_id = (
+                    uuid.UUID(str(arguments["connector_id"]))
+                    if arguments.get("connector_id") is not None
+                    else None
+                )
             except (TypeError, ValueError):
                 return False
-        if binding_id is None:
-            return capability_id == "aws_check_connection"
-        references = [
-            item
-            for item in getattr(execution, "resource_binding_refs", ())
-            if item.id == binding_id
-        ]
-        if len(references) != 1:
-            return False
-        target = references[0]
-        with self._session_factory() as db:
-            from src.openship.resources.models import ResourceBinding
-
-            binding = (
-                db.query(ResourceBinding)
-                .filter(
-                    ResourceBinding.id == binding_id,
-                    ResourceBinding.project_id == project_id,
-                    ResourceBinding.revision == target.revision,
-                    ResourceBinding.connector_id == target.connector_id,
-                    ResourceBinding.connector_revision == target.connector_revision,
-                    ResourceBinding.state == "active",
-                )
-                .first()
-            )
-            if binding is None:
-                return False
+            references = [
+                item
+                for item in getattr(execution, "connector_refs", ())
+                if item.kind == "aws"
+            ]
             return (
-                binding.connector_id == connector_ref.id
-                and binding.connector_revision == connector_ref.configuration_revision
-                and binding.account_id == configuration.expected_account_id
-                and binding.expected_owner == configuration.expected_account_id
-                and binding.region == configuration.region
+                len(references) == 1
+                and references[0] == connector_ref
+                and (connector_id is None or connector_id == connector_ref.id)
+                and configuration.kind == "aws"
             )
+        if capability_id in {
+            "aws_s3_bucket_storage",
+            "aws_s3_bucket_metadata",
+            "aws_check_connection",
+        }:
+            try:
+                connector_id = uuid.UUID(str(arguments["connector_id"]))
+            except (KeyError, TypeError, ValueError):
+                return False
+            references = [
+                item
+                for item in getattr(execution, "connector_refs", ())
+                if item.kind == "aws" and item.id == connector_id
+            ]
+            return (
+                len(references) == 1
+                and references[0] == connector_ref
+                and configuration.kind == "aws"
+            )
+        return False
 
     @staticmethod
     def _aws_access_factory(

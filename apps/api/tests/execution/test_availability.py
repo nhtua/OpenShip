@@ -35,28 +35,6 @@ def test_each_search_tool_availability_depends_only_on_its_own_binding(monkeypat
     assert all(test_value not in repr(item) for item in observations)
 
 
-def test_bound_inventory_readiness_does_not_depend_on_artifact_store_or_credentials(
-    monkeypatch,
-):
-    def unexpected(_value=None):
-        raise AssertionError("inventory readiness must not check storage or credentials")
-
-    monkeypatch.setattr(
-        "src.openship.execution.availability.configured_store", unexpected
-    )
-    observations = observe_tool_availability(
-        enabled_ids=frozenset({"aws_s3_list_bound_buckets"}),
-        credential_check=unexpected,
-    )
-
-    inventory = next(
-        item
-        for item in observations
-        if item.capability_id == "aws_s3_list_bound_buckets"
-    )
-    assert (inventory.available, inventory.reason) == (True, None)
-
-
 def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeypatch):
     monkeypatch.setattr(
         settings, "tool_enabled_ids", "brave_web_search,tavily_web_search"
@@ -75,7 +53,7 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
     db.commit()
 
     rows = db.query(ToolAvailability).all()
-    assert len(rows) == 10
+    assert len(rows) == 9
     assert all(row.worker_id == "availability-worker" for row in rows)
     assert all(not hasattr(row, "credential_binding_ref") for row in rows)
     fresh = read_tool_availability(db, now=now)
@@ -86,7 +64,6 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
         "workspace_read_file": (False, "disabled"),
         "aws_check_connection": (False, "disabled"),
         "aws_s3_bucket_storage": (False, "disabled"),
-        "aws_s3_list_bound_buckets": (False, "disabled"),
         "aws_s3_bucket_metadata": (False, "disabled"),
         "aws_read_catalog": (False, "disabled"),
         "aws_read": (False, "disabled"),
@@ -99,7 +76,6 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
         "workspace_read_file": (False, "runtime_unavailable"),
         "aws_check_connection": (False, "runtime_unavailable"),
         "aws_s3_bucket_storage": (False, "runtime_unavailable"),
-        "aws_s3_list_bound_buckets": (False, "runtime_unavailable"),
         "aws_s3_bucket_metadata": (False, "runtime_unavailable"),
         "aws_read_catalog": (False, "runtime_unavailable"),
         "aws_read": (False, "runtime_unavailable"),

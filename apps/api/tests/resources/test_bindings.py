@@ -3,15 +3,12 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-import httpx
 import pytest
-from fastapi import FastAPI
-from pydantic import ValidationError
+from fastapi import HTTPException
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from src.openship.auth.models import User
-from src.openship.auth.routes import require_jwt
 from src.openship.connectors.contracts import ConnectorConfiguration
 from src.openship.connectors.models import (
     Connector,
@@ -20,17 +17,21 @@ from src.openship.connectors.models import (
 )
 from src.openship.connectors.service import delete_connector
 from src.openship.database.models import Base
-from src.openship.database.session import SessionLocal, get_db
-from src.openship.resources import service as resource_service
-from src.openship.resources.contracts import EnvironmentCreate, ResourceBindingCreate
-from src.openship.resources.models import ResourceBinding, ResourceObject
-from src.openship.resources.routes import router
-from src.openship.resources.service import (
-    ResourceServiceError,
-    create_environment,
-    create_resource_binding,
-    list_resource_bindings,
+from src.openship.resources.models import (
+    Environment,
+    ResourceBinding,
+    ResourceObject,
 )
+from src.openship.resources.routes import (
+    environments_create,
+    environments_list,
+    resources_create,
+    resources_list,
+)
+from src.openship.resources.routes import (
+    router as resource_router,
+)
+from src.openship.resources.service import list_resource_bindings
 from src.openship.workspace.models import Project
 
 ACCOUNT_ID = "123456789012"
@@ -47,7 +48,7 @@ def resource_sessions(tmp_path):
     )
     Base.metadata.create_all(engine)
     try:
-        yield sessionmaker(bind=engine, autoflush=False)
+        yield sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     finally:
         engine.dispose()
 
@@ -118,288 +119,115 @@ def _scope(db, label: str):
     return user, project, connector
 
 
-def test_owned_environment_and_bucket_binding_are_local_identity_only():
-    with SessionLocal() as db:
-        user, project, connector = _scope(db, "create")
-        environment = create_environment(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=EnvironmentCreate(name="development", display_name="Development"),
-        )
-        resource, binding = create_resource_binding(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=ResourceBindingCreate(
-                environment_id=environment.id,
-                connector_id=connector.id,
-                connector_revision=1,
-                bucket_name="openship-dev-data-123",
-                display_name="Development data",
-            ),
-        )
+def _seed_legacy_binding(db, *, user, project, connector, bucket_name="history-bucket"):
+    environment = Environment(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="production",
+        display_name="Production",
+        created_by_user_id=user.id,
+    )
+    resource_id = uuid.uuid4()
+    resource = ResourceObject(
+        id=resource_id,
+        project_id=project.id,
+        kind="aws_s3_bucket",
+        uri=f"openship://{project.id}/resource/{resource_id}",
+        display_name="Production data",
+        created_by_user_id=user.id,
+    )
+    db.add_all([environment, resource])
+    db.flush()
+    binding = ResourceBinding(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        resource_object_id=resource.id,
+        environment_id=environment.id,
+        connector_id=connector.id,
+        connector_revision=1,
+        revision=1,
+        account_id=ACCOUNT_ID,
+        region="us-west-2",
+        bucket_name=bucket_name,
+        bucket_arn=f"arn:aws:s3:::{bucket_name}",
+        expected_owner=ACCOUNT_ID,
+        management_method="external",
+        state="active",
+        created_by_user_id=user.id,
+    )
+    db.add(binding)
+    db.flush()
+    return environment, resource, binding
 
-        assert environment.project_id == project.id
-        assert resource.project_id == project.id
-        assert resource.uri == f"openship://{project.id}/resource/{resource.id}"
-        assert resource.display_name == "Development data"
-        assert binding.environment_id == environment.id
-        assert binding.connector_id == connector.id
-        assert binding.account_id == ACCOUNT_ID
-        assert binding.expected_owner == ACCOUNT_ID
-        assert binding.region == "us-west-2"
-        assert binding.bucket_name == "openship-dev-data-123"
-        assert binding.bucket_arn == "arn:aws:s3:::openship-dev-data-123"
-        assert binding.management_method == "external"
+
+def test_resource_setup_routes_are_retired_and_owner_scoped(resource_sessions):
+    with resource_sessions() as db:
+        user, project, _connector = _scope(db, "retired-owner")
+        _foreign_user, foreign_project, _foreign_connector = _scope(db, "retired-foreign")
+
+        for endpoint in (environments_create, resources_create):
+            with pytest.raises(HTTPException) as caught:
+                endpoint(project.id, db, user)
+            assert caught.value.status_code == 410
+            assert caught.value.detail["error"]["code"] == "resource_binding_retired"
+
+        route_statuses = {
+            route.path: route.status_code
+            for route in resource_router.routes
+            if getattr(route, "methods", set()) == {"POST"}
+        }
+        assert route_statuses["/api/projects/{project_id}/environments"] == 410
+        assert route_statuses["/api/projects/{project_id}/resources"] == 410
+
+        with pytest.raises(HTTPException) as caught:
+            resources_create(foreign_project.id, db, user)
+        assert caught.value.status_code == 404
+        assert caught.value.detail["error"]["code"] == "project_not_found"
+
+        project.archived_at = datetime.now(UTC)
+        db.commit()
+        with pytest.raises(HTTPException) as caught:
+            environments_create(project.id, db, user)
+        assert caught.value.status_code == 410
+        assert db.query(Environment).filter(Environment.project_id == project.id).count() == 0
+        assert db.query(ResourceBinding).filter(ResourceBinding.project_id == project.id).count() == 0
+        assert db.query(ResourceObject).filter(ResourceObject.project_id == project.id).count() == 0
+
+
+def test_legacy_binding_lists_remain_owner_scoped_and_readable(resource_sessions):
+    with resource_sessions() as db:
+        user, project, connector = _scope(db, "history")
+        _foreign_user, foreign_project, _foreign_connector = _scope(db, "foreign-history")
+        environment, resource, binding = _seed_legacy_binding(
+            db, user=user, project=project, connector=connector
+        )
+        db.commit()
+
+        environments = environments_list(project.id, db, user)
+        assert environments[0]["id"] == str(environment.id)
+        page = resources_list(project.id, 20, None, db, user)
+        assert [item.binding_id for item in page.items] == [binding.id]
+        assert page.items[0].resource_id == resource.id
+        assert page.items[0].bucket_name == "history-bucket"
 
         items, next_cursor = list_resource_bindings(
             db, owner_id=user.id, project_id=project.id, limit=20
         )
         assert [item.binding_id for item in items] == [binding.id]
         assert next_cursor is None
+        with pytest.raises(HTTPException) as caught:
+            resources_list(foreign_project.id, 20, None, db, user)
+        assert caught.value.status_code == 404
 
 
-@pytest.mark.asyncio
-async def test_binding_http_accepts_uuid_strings_and_persists_selected_target(resource_sessions):
+def test_connector_revocation_purges_secrets_and_retains_legacy_resource_history(
+    resource_sessions,
+):
     with resource_sessions() as db:
-        user, project, connector = _scope(db, "http-create")
-        environment = create_environment(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=EnvironmentCreate(name="development", display_name="Development"),
+        user, project, connector = _scope(db, "revoke-history")
+        _environment, resource, binding = _seed_legacy_binding(
+            db, user=user, project=project, connector=connector
         )
-        db.commit()
-
-        async def database():
-            yield db
-
-        async def authenticated_user():
-            return user
-
-        app = FastAPI()
-        app.include_router(router)
-        app.dependency_overrides[get_db] = database
-        app.dependency_overrides[require_jwt] = authenticated_user
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                f"/api/projects/{project.id}/resources",
-                json={
-                    "environment_id": str(environment.id),
-                    "connector_id": str(connector.id),
-                    "connector_revision": 1,
-                    "bucket_name": "example-public-data",
-                    "display_name": "Public data",
-                },
-            )
-
-            assert response.status_code == 201, response.text
-            created = response.json()
-            assert created["environment_id"] == str(environment.id)
-            assert created["connector_id"] == str(connector.id)
-            assert created["connector_revision"] == 1
-            assert created["bucket_name"] == "example-public-data"
-            assert created["expected_owner"] == ACCOUNT_ID
-            assert created["region"] == "us-west-2"
-
-            listed = await client.get(f"/api/projects/{project.id}/resources")
-            assert listed.status_code == 200, listed.text
-            assert listed.json()["items"] == [created]
-
-
-def test_binding_and_resource_object_roll_back_together(resource_sessions):
-    with resource_sessions() as db:
-        user, project, connector = _scope(db, "rollback")
-        environment = create_environment(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=EnvironmentCreate(name="development", display_name="Development"),
-        )
-        db.commit()
-
-        resource, binding = create_resource_binding(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=ResourceBindingCreate(
-                environment_id=environment.id,
-                connector_id=connector.id,
-                connector_revision=1,
-                bucket_name="example-rollback-data",
-                display_name="Rollback data",
-            ),
-        )
-        resource_id, binding_id = resource.id, binding.id
-        db.rollback()
-
-    with resource_sessions() as db:
-        assert db.get(ResourceObject, resource_id) is None
-        assert db.get(ResourceBinding, binding_id) is None
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("environment_id", "not-a-uuid"),
-        ("connector_id", "not-a-uuid"),
-        ("environment_id", 123),
-        ("connector_id", 123),
-        ("connector_revision", "1"),
-        ("connector_revision", True),
-        ("connector_revision", 0),
-    ],
-)
-def test_binding_request_rejects_invalid_ids_and_revisions(field, value):
-    payload = {
-        "environment_id": uuid.uuid4(),
-        "connector_id": uuid.uuid4(),
-        "connector_revision": 1,
-        "bucket_name": "example-public-data",
-        "display_name": "Public data",
-    }
-    payload[field] = value
-
-    with pytest.raises(ValidationError) as caught:
-        ResourceBindingCreate.model_validate(payload)
-
-    assert [error["loc"] for error in caught.value.errors()] == [(field,)]
-
-
-def test_binding_rejects_foreign_environment_and_duplicate_active_target():
-    with SessionLocal() as db:
-        user, project, connector = _scope(db, "scope")
-        other_user, other_project, _other_connector = _scope(db, "other-scope")
-        environment = create_environment(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=EnvironmentCreate(name="production", display_name="Production"),
-        )
-        foreign_environment = create_environment(
-            db,
-            owner_id=other_user.id,
-            project_id=other_project.id,
-            request=EnvironmentCreate(name="production", display_name="Production"),
-        )
-        request = ResourceBindingCreate(
-            environment_id=environment.id,
-            connector_id=connector.id,
-            connector_revision=1,
-            bucket_name="openship-prod-data-123",
-            display_name="Production data",
-        )
-        create_resource_binding(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=request,
-        )
-
-        with pytest.raises(ResourceServiceError) as caught:
-            create_resource_binding(
-                db,
-                owner_id=user.id,
-                project_id=project.id,
-                request=request,
-            )
-        assert caught.value.code == "resource_binding_conflict"
-
-        with pytest.raises(ResourceServiceError) as caught:
-            create_resource_binding(
-                db,
-                owner_id=user.id,
-                project_id=project.id,
-                request=request.model_copy(update={"environment_id": foreign_environment.id}),
-            )
-        assert caught.value.code == "resource_scope_denied"
-
-
-def test_environment_and_bucket_contracts_are_bounded_and_reject_reserved_names():
-    with pytest.raises(ValidationError):
-        EnvironmentCreate(name="Production Space", display_name="Production")
-    with pytest.raises(ValidationError):
-        ResourceBindingCreate(
-            environment_id=uuid.uuid4(),
-            connector_id=uuid.uuid4(),
-            connector_revision=1,
-            bucket_name="192.168.5.4",
-            display_name="Invalid bucket",
-        )
-    with pytest.raises(ValidationError):
-        ResourceBindingCreate(
-            environment_id=uuid.uuid4(),
-            connector_id=uuid.uuid4(),
-            connector_revision=1,
-            bucket_name="example--x-s3",
-            display_name="Directory bucket",
-        )
-
-
-def test_binding_limit_counts_retained_revisions(monkeypatch):
-    monkeypatch.setattr(resource_service, "MAX_BINDINGS_PER_PROJECT", 1)
-    with SessionLocal() as db:
-        user, project, connector = _scope(db, "retained-limit")
-        environment = create_environment(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=EnvironmentCreate(name="production", display_name="Production"),
-        )
-        request = ResourceBindingCreate(
-            environment_id=environment.id,
-            connector_id=connector.id,
-            connector_revision=1,
-            bucket_name="openship-retained-data-123",
-            display_name="Retained data",
-        )
-        _resource, binding = create_resource_binding(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=request,
-        )
-        binding.state = "retired"
-        binding.retired_at = datetime.now(UTC)
-        db.commit()
-
-        with pytest.raises(ResourceServiceError) as caught:
-            create_resource_binding(
-                db,
-                owner_id=user.id,
-                project_id=project.id,
-                request=request.model_copy(
-                    update={"bucket_name": "openship-retained-data-456"}
-                ),
-            )
-        assert caught.value.code == "resource_limit_exceeded"
-
-
-def test_revoking_bound_aws_connector_purges_secrets_and_retains_resource_history():
-    with SessionLocal() as db:
-        user, project, connector = _scope(db, "revoke-bound")
-        environment = create_environment(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=EnvironmentCreate(name="production", display_name="Production"),
-        )
-        resource, binding = create_resource_binding(
-            db,
-            owner_id=user.id,
-            project_id=project.id,
-            request=ResourceBindingCreate(
-                environment_id=environment.id,
-                connector_id=connector.id,
-                connector_revision=1,
-                bucket_name="openship-revoke-data-123",
-                display_name="Retained production data",
-            ),
-        )
-
         result = delete_connector(
             db,
             connector=connector,
@@ -418,8 +246,8 @@ def test_revoking_bound_aws_connector_purges_secrets_and_retains_resource_histor
             .filter(ConnectorRevision.connector_id == connector.id)
             .one()
         )
-        retained_binding = db.get(type(binding), binding.id)
-        retained_resource = db.get(type(resource), resource.id)
+        retained_binding = db.get(ResourceBinding, binding.id)
+        retained_resource = db.get(ResourceObject, resource.id)
 
         assert result == {"id": str(connector.id), "deleted": True}
         assert connector.revoked_at is not None

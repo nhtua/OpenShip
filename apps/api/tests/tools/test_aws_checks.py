@@ -10,16 +10,13 @@ from src.openship.tools.aws.checks import (
 from src.openship.tools.aws.contracts import AwsCheckArguments
 
 
-def test_aws_check_arguments_require_a_connector_and_allow_an_owned_binding():
+def test_aws_check_arguments_accept_only_the_connector_id():
     arguments = AwsCheckArguments.model_validate(
-        {
-            "connector_id": "bbd5d88d-f3a7-4d1f-8927-bdb6a7b7d7af",
-            "resource_binding_id": "3654d452-607b-4442-9e96-ead7a704dad3",
-        }
+        {"connector_id": "bbd5d88d-f3a7-4d1f-8927-bdb6a7b7d7af"}
     )
 
     assert str(arguments.connector_id) == "bbd5d88d-f3a7-4d1f-8927-bdb6a7b7d7af"
-    assert str(arguments.resource_binding_id) == "3654d452-607b-4442-9e96-ead7a704dad3"
+    assert set(AwsCheckArguments.model_fields) == {"connector_id"}
 
 
 def test_aws_check_rejects_extra_fields_and_malformed_identifiers():
@@ -29,7 +26,7 @@ def test_aws_check_rejects_extra_fields_and_malformed_identifiers():
         AwsCheckArguments.model_validate(
             {
                 "connector_id": "bbd5d88d-f3a7-4d1f-8927-bdb6a7b7d7af",
-                "role_arn": "arn:aws:iam::123456789012:role/Admin",
+                "resource_binding_id": "3654d452-607b-4442-9e96-ead7a704dad3",
             }
         )
 

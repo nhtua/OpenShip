@@ -27,7 +27,6 @@ from ..capabilities.contracts import (
     ExecutionConfigV3,
     ExecutionConfigV4,
     LoopLimits,
-    ResourceBindingRef,
     ToolCommandRequest,
     canonical_digest,
 )
@@ -48,7 +47,7 @@ from ..execution.errors import CapabilityError
 from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
-from ..resources.models import ConnectorBlocker, ResourceBinding
+from ..resources.models import ConnectorBlocker
 from ..runs.models import Event, Outbox, Run, RunJob
 from ..workspace.lifecycle import (
     ArchiveStateError,
@@ -175,7 +174,6 @@ def _turn_submission_digest(
     enable_tools: bool,
     artifact_ids,
     connector_selections=None,
-    resource_binding_selections=(),
 ) -> str:
     """Hash only client-controlled chat semantics, never current configuration."""
     canonical = {
@@ -187,10 +185,6 @@ def _turn_submission_digest(
             for kind, connector_id in sorted((connector_selections or {}).items())
         },
     }
-    if resource_binding_selections:
-        canonical["resource_binding_selections"] = sorted(
-            str(item) for item in resource_binding_selections
-        )
     return canonical_digest(canonical)
 
 
@@ -351,64 +345,6 @@ def _aws_connector_reference(
     )
 
 
-def _selected_aws_bindings(
-    db: Session, *, project_id: uuid.UUID, binding_ids
-) -> tuple[tuple[ResourceBindingRef, ...], tuple[ConnectorRef, ...]]:
-    requested = tuple(uuid.UUID(str(item)) for item in binding_ids)
-    if len(requested) != len(set(requested)) or len(requested) > 10:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": {
-                    "code": "invalid_resource_selection",
-                    "message": "Selected AWS resources must be distinct and within the limit",
-                }
-            },
-        )
-    if not requested:
-        return (), ()
-    rows = (
-        db.query(ResourceBinding)
-        .filter(
-            ResourceBinding.id.in_(requested),
-            ResourceBinding.project_id == project_id,
-            ResourceBinding.state == "active",
-        )
-        .all()
-    )
-    by_id = {item.id: item for item in rows}
-    if len(by_id) != len(requested):
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": {
-                    "code": "aws_resource_unavailable",
-                    "message": "One or more selected AWS resources are unavailable",
-                }
-            },
-        )
-    binding_refs = []
-    connector_refs = {}
-    for binding_id in requested:
-        binding = by_id[binding_id]
-        connector_ref = _aws_connector_reference(
-            db,
-            project_id=project_id,
-            connector_id=binding.connector_id,
-            revision_number=binding.connector_revision,
-        )
-        binding_refs.append(
-            ResourceBindingRef(
-                id=binding.id,
-                revision=binding.revision,
-                connector_id=binding.connector_id,
-                connector_revision=binding.connector_revision,
-            )
-        )
-        connector_refs[connector_ref.id] = connector_ref
-    return tuple(binding_refs), tuple(connector_refs.values())
-
-
 def _legacy_search_ref(capability_id: str) -> CapabilityRef:
     manifest = next(
         item for item in list_legacy_search_manifests() if item.id == capability_id
@@ -426,7 +362,6 @@ def _tool_chat_execution(
     model_config: RunModelConfig,
     artifact_refs: tuple[ArtifactRef, ...],
     connector_selections: dict[str, uuid.UUID],
-    resource_binding_selections=(),
 ):
     if model_config.fallbacks:
         raise HTTPException(
@@ -474,24 +409,9 @@ def _tool_chat_execution(
         )
     enabled_ids = policy.effective_ids
     aws_discovery_ids = {"aws_read_catalog", "aws_read"} & enabled_ids
-    if aws_discovery_ids and resource_binding_selections:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": {
-                    "code": "resource_binding_retired",
-                    "message": "AWS discovery uses the project Connector role and does not accept resource bindings",
-                }
-            },
-        )
     refs: list[CapabilityRef] = []
     binding_refs: list[str] = []
     connector_refs: list[ConnectorRef] = []
-    resource_binding_refs, aws_connector_refs = _selected_aws_bindings(
-        db,
-        project_id=project_id,
-        binding_ids=resource_binding_selections,
-    )
     explicit_services = set(connector_selections)
     managed_services: set[str] = set()
     preferred_search_kind = None
@@ -557,15 +477,8 @@ def _tool_chat_execution(
             connector_refs.append(aws_connector_ref)
             continue
         if manifest.id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
-            if resource_binding_refs:
-                refs.append(
-                    CapabilityRef(
-                        id=manifest.id,
-                        version=manifest.version,
-                        manifest_digest=manifest.manifest_digest,
-                    )
-                )
-                connector_refs.extend(aws_connector_refs)
+            # These direct-target helpers are explicitly attached through the
+            # manual tool-command path. Automatic AWS reads use aws_read.
             continue
         if manifest.id in {"brave_web_search", "tavily_web_search"}:
             service = "brave" if manifest.id == "brave_web_search" else "tavily"
@@ -725,8 +638,6 @@ def _tool_chat_execution(
             "allowed_capabilities": tuple(refs),
             "selected_artifacts": artifact_refs,
             "connector_refs": tuple(connector_refs),
-            "resource_binding_refs": resource_binding_refs,
-            "selected_resource_binding_refs": resource_binding_refs,
             "loop_limits": LoopLimits(
                 deadline_seconds=min(
                     settings.workflow_run_timeout_seconds,
@@ -783,6 +694,16 @@ def submit_turn(
     change to the installation's default cannot change what it runs.
     """
     conv = require_owned_conversation(db, user_id, conversation_id)
+    if resource_binding_selections:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "resource_binding_retired",
+                    "message": "AWS tool requests no longer accept resource bindings; use the project's AWS Connector role",
+                }
+            },
+        )
 
     # Validate client_request_id format
     try:
@@ -804,7 +725,6 @@ def submit_turn(
             enable_tools,
             artifact_ids,
             connector_selections,
-            resource_binding_selections,
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(
@@ -913,16 +833,6 @@ def submit_turn(
     # Resolve and validate the selection before anything is queued
     config = _resolve_selection(provider_profile_id, fallback_profile_ids)
     artifact_refs = _owned_artifact_refs(db, conv, artifact_ids)
-    if resource_binding_selections and not enable_tools:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": {
-                    "code": "unsupported_capability",
-                    "message": "Selected AWS resources require tool-enabled chat in this phase",
-                }
-            },
-        )
     if artifact_refs and not enable_tools:
         raise HTTPException(
             status_code=422,
@@ -940,7 +850,6 @@ def submit_turn(
             config,
             artifact_refs,
             connector_selections or {},
-            resource_binding_selections,
         )
         if enable_tools
         else None
@@ -1186,7 +1095,6 @@ def submit_tool_run(
     execution_ref = command.capability
     connector_refs: tuple[ConnectorRef, ...] = ()
     binding_refs: tuple[str, ...] = ()
-    resource_binding_refs: tuple[ResourceBindingRef, ...] = ()
     if manifest.schema_version == 2 and command.capability.id in {
         "brave_web_search",
         "tavily_web_search",
@@ -1268,36 +1176,34 @@ def submit_tool_run(
 
     if command.capability.id == "aws_check_connection":
         arguments = normalized_arguments.model_dump(mode="python")
+        selected_id = command.connector_selections.get("aws")
+        if selected_id is not None and selected_id != arguments["connector_id"]:
+            raise _tool_command_error(
+                422,
+                "connector_scope_denied",
+                "The AWS identity check must use the selected project Connector",
+            )
         connector_ref = _aws_connector_reference(
             db,
             project_id=conversation.project_id,
             connector_id=arguments["connector_id"],
         )
         connector_refs = (connector_ref,)
-        if arguments.get("resource_binding_id") is not None:
-            selected_bindings, _connectors = _selected_aws_bindings(
-                db,
-                project_id=conversation.project_id,
-                binding_ids=(arguments["resource_binding_id"],),
-            )
-            if (
-                selected_bindings[0].connector_id != connector_ref.id
-                or selected_bindings[0].connector_revision
-                != connector_ref.configuration_revision
-            ):
-                raise _tool_command_error(
-                    422,
-                    "aws_resource_unavailable",
-                    "The selected bucket binding does not use this Connector revision",
-                )
-            resource_binding_refs = selected_bindings
     elif command.capability.id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
         arguments = normalized_arguments.model_dump(mode="python")
-        resource_binding_refs, connector_refs = _selected_aws_bindings(
+        selected_id = command.connector_selections.get("aws")
+        if selected_id is not None and selected_id != arguments["connector_id"]:
+            raise _tool_command_error(
+                422,
+                "connector_scope_denied",
+                "The S3 read must use the selected project Connector",
+            )
+        connector_ref = _aws_connector_reference(
             db,
             project_id=conversation.project_id,
-            binding_ids=(arguments["resource_binding_id"],),
+            connector_id=arguments["connector_id"],
         )
+        connector_refs = (connector_ref,)
 
     if manifest.schema_version == 3 and command.capability.id in {
         "aws_read_catalog",
@@ -1323,8 +1229,6 @@ def submit_tool_run(
             ),
             allowed_capabilities=(execution_ref,),
             connector_refs=connector_refs,
-            resource_binding_refs=resource_binding_refs,
-            selected_resource_binding_refs=resource_binding_refs,
         )
         graph_version = 2
     else:

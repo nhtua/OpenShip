@@ -105,6 +105,58 @@ describe('GlobalSettings tool availability', () => {
     expect(connectorRequests.getProjectCapabilities).toHaveBeenCalledWith('project-a')
   })
 
+  it('exposes AWS catalog discovery and reads as one broad read-only setting', async () => {
+    policyRequests.get.mockResolvedValue({
+      data: response(7, {
+        tools: [
+          ...response().tools,
+          {
+            id: 'aws_read_catalog', description: 'Discover available AWS resources.',
+            enabled: true, permitted: true, deployment_restricted: false, unavailable_reason: null,
+          },
+          {
+            id: 'aws_read', description: 'Perform supported AWS read operations.',
+            enabled: true, permitted: true, deployment_restricted: false, unavailable_reason: null,
+          },
+        ],
+      }),
+    } as never)
+    policyRequests.set
+      .mockResolvedValueOnce({ data: response(8, {
+        tools: [
+          ...response().tools,
+          { id: 'aws_read_catalog', description: 'Discover available AWS resources.', enabled: false, permitted: true, deployment_restricted: false, unavailable_reason: 'disabled_by_operator' },
+          { id: 'aws_read', description: 'Perform supported AWS read operations.', enabled: true, permitted: true, deployment_restricted: false, unavailable_reason: null },
+        ],
+      }) } as never)
+      .mockResolvedValueOnce({ data: response(9, {
+        tools: [
+          ...response().tools,
+          { id: 'aws_read_catalog', description: 'Discover available AWS resources.', enabled: false, permitted: true, deployment_restricted: false, unavailable_reason: 'disabled_by_operator' },
+          { id: 'aws_read', description: 'Perform supported AWS read operations.', enabled: false, permitted: true, deployment_restricted: false, unavailable_reason: 'disabled_by_operator' },
+        ],
+      }) } as never)
+
+    const { wrapper } = await mountSettings()
+    expect(wrapper.findAll('[data-testid="aws-read-policy-group"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="tool-policy-toggle-aws_read_catalog"]').exists()).toBe(false)
+    const toggle = wrapper.get('[data-testid="tool-policy-toggle-aws_read"]')
+    expect((toggle.element as HTMLInputElement).checked).toBe(true)
+
+    await toggle.setValue(false)
+    await flushPromises()
+
+    expect(policyRequests.set).toHaveBeenNthCalledWith(1, 'aws_read_catalog', {
+      enabled: false,
+      expected_revision: 7,
+    })
+    expect(policyRequests.set).toHaveBeenNthCalledWith(2, 'aws_read', {
+      enabled: false,
+      expected_revision: 8,
+    })
+    expect(connectorRequests.getProjectCapabilities).toHaveBeenCalledWith('project-a')
+  })
+
   it('hides installation controls from a non-operator', async () => {
     policyRequests.get.mockRejectedValue({ response: { status: 403 } })
     const { wrapper } = await mountSettings()

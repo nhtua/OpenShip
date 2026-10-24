@@ -1,4 +1,4 @@
-"""Explicit model-free AWS identity and bound-bucket checks."""
+"""Shared validation for pinned AWS role and direct S3 targets."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class _Identity:
         self.role_arn = role_arn
 
 
-def _reference(context, connector_id):
+def aws_connector_reference(context, connector_id):
     refs = [
         ref
         for ref in getattr(context.execution, "connector_refs", ())
@@ -67,14 +67,43 @@ def _reference(context, connector_id):
     return refs[0]
 
 
+def expected_owner_parameters(expected_owner: str | None) -> dict[str, str]:
+    """Return optional S3 owner confirmation without inventing an owner."""
+    return {"ExpectedBucketOwner": expected_owner} if expected_owner else {}
+
+
+async def resolve_bucket_region(arguments, access, control) -> str:
+    """Use an explicit region directly, otherwise ask S3 for its location."""
+    if arguments.region is not None:
+        if not _REGION.fullmatch(arguments.region):
+            raise AwsToolError("aws_invalid_parameters")
+        return arguments.region
+
+    control.raise_if_stopped()
+    parameters = {
+        "Bucket": arguments.bucket_name,
+        **expected_owner_parameters(arguments.expected_owner),
+    }
+    try:
+        location = await access.run(
+            access.client("s3").get_bucket_location,
+            **parameters,
+        )
+        return normalize_bucket_region(location.get("LocationConstraint"))
+    except AwsSdkError:
+        raise
+    except (AttributeError, TypeError, ValueError):
+        raise AwsToolError("aws_region_mismatch") from None
+
+
 async def aws_check_connection(
     arguments: AwsCheckArguments,
     context,
     control,
 ) -> AwsCheckResult:
-    """Check the pinned role and, optionally, one pinned bucket binding."""
+    """Check only the configured, pinned role identity."""
     try:
-        reference = _reference(context, arguments.connector_id)
+        reference = aws_connector_reference(context, arguments.connector_id)
         access = await context.aws_access_factory(reference)
     except AwsToolError:
         raise
@@ -90,27 +119,12 @@ async def aws_check_connection(
             expected_account_id=configuration.expected_account_id,
             expected_role_arn=configuration.basic_role_arn,
         )
-        bucket_verified = False
-        if arguments.resource_binding_id is not None:
-            binding = _owned_binding(context, arguments.resource_binding_id)
-            if binding.connector_id != reference.id:
-                raise AwsToolError("aws_resource_unavailable")
-            location = await access.run(
-                access.client("s3").get_bucket_location,
-                Bucket=binding.bucket_name,
-                ExpectedBucketOwner=binding.expected_owner,
-            )
-            actual_region = normalize_bucket_region(location.get("LocationConstraint"))
-            if actual_region != binding.region or actual_region != configuration.region:
-                raise AwsToolError("aws_region_mismatch")
-            bucket_verified = True
         return AwsCheckResult(
             operation_id=str(context.operation_id),
             status="ready",
             account_id=identity.account_id,
             role_arn=identity.role_arn,
             region=configuration.region,
-            bucket_verified=bucket_verified,
             checked_at=datetime.now(UTC),
         )
     except AwsToolError:
@@ -123,31 +137,3 @@ async def aws_check_connection(
         raise AwsToolError("aws_identity_mismatch") from None
     finally:
         await access.aclose()
-
-
-def _owned_binding(context, binding_id):
-    from src.openship.resources.models import ResourceBinding
-
-    pinned = [
-        item
-        for item in getattr(context.execution, "resource_binding_refs", ())
-        if item.id == binding_id
-    ]
-    if len(pinned) != 1 or context.session_factory is None:
-        raise AwsToolError("aws_resource_unavailable")
-    with context.session_factory() as db:
-        binding = (
-            db.query(ResourceBinding)
-            .filter(
-                ResourceBinding.id == binding_id,
-                ResourceBinding.project_id == context.authorization.project_id,
-                ResourceBinding.revision == pinned[0].revision,
-                ResourceBinding.connector_id == pinned[0].connector_id,
-                ResourceBinding.connector_revision == pinned[0].connector_revision,
-                ResourceBinding.state == "active",
-            )
-            .first()
-        )
-        if binding is None:
-            raise AwsToolError("aws_resource_unavailable")
-        return binding

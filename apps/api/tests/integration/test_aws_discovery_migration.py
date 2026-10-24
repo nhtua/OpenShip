@@ -441,9 +441,30 @@ def test_migration_preserves_legacy_observation_and_accepts_unbound_read(
             "VALUES (:id, :project, :conversation, :run, :operation_id, 2, :connector, :revision, '123456789012', 's3', 'list_buckets', 'us-east-1', '{}', :catalog, 'aws_read', :retrieved, '{}', 'measured', :artifact, :digest)"
         )
         invalid_rows = (
-            {"revision": 99, "operation": operation_id, "artifact": artifact_id},
-            {"revision": 1, "operation": uuid.uuid4(), "artifact": artifact_id},
-            {"revision": 1, "operation": operation_id, "artifact": uuid.uuid4()},
+            {
+                "connector": connector_id,
+                "revision": 99,
+                "operation": operation_id,
+                "artifact": artifact_id,
+            },
+            {
+                "connector": uuid.uuid4(),
+                "revision": 1,
+                "operation": operation_id,
+                "artifact": artifact_id,
+            },
+            {
+                "connector": connector_id,
+                "revision": 1,
+                "operation": uuid.uuid4(),
+                "artifact": artifact_id,
+            },
+            {
+                "connector": connector_id,
+                "revision": 1,
+                "operation": operation_id,
+                "artifact": uuid.uuid4(),
+            },
         )
         for invalid in invalid_rows:
             with pytest.raises(IntegrityError), connection.begin_nested():
@@ -455,7 +476,7 @@ def test_migration_preserves_legacy_observation_and_accepts_unbound_read(
                         "conversation": _uuid(connection, conversation_id),
                         "run": _uuid(connection, run_id),
                         "operation_id": _uuid(connection, invalid["operation"]),
-                        "connector": _uuid(connection, connector_id),
+                        "connector": _uuid(connection, invalid["connector"]),
                         "revision": invalid["revision"],
                         "catalog": "b" * 64,
                         "retrieved": datetime.now(UTC),

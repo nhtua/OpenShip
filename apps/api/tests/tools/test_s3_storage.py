@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
+from src.openship.capabilities.catalog import list_capability_manifests
+from src.openship.capabilities.contracts import CapabilityRef, ConnectorRef
+from src.openship.providers.control import InvocationControl
+from src.openship.tools.aws import s3_storage
+from src.openship.tools.aws.contracts import (
+    AwsStorageArgumentsV2,
+    AwsStorageObservationV2,
+)
 from src.openship.tools.aws.s3_storage import (
     STORAGE_TYPES_V1,
     normalize_metric_results,
@@ -171,3 +181,145 @@ def test_stale_is_based_on_measurement_time_not_retrieval_time():
 
     assert observation.stale is True
     assert observation.reported_storage_subtotal_bytes == 10
+
+
+def test_storage_manifest_uses_a_direct_bucket_target_without_resource_kinds():
+    manifest = next(
+        item
+        for item in list_capability_manifests()
+        if item.id == "aws_s3_bucket_storage"
+    )
+
+    assert manifest.version == "2.0.0"
+    assert manifest.target_kinds == ()
+    assert "resource_binding_id" not in manifest.input_schema["properties"]
+    assert {"connector_id", "bucket_name", "region", "expected_owner"}.issubset(
+        manifest.input_schema["properties"]
+    )
+
+
+class _DirectAccess:
+    def __init__(self, *, fail_location=False):
+        self.configuration = SimpleNamespace(
+            expected_account_id="123456789012",
+            basic_role_arn="arn:aws:iam::123456789012:role/read-role",
+            region="us-east-1",
+        )
+        self.request_budget = SimpleNamespace(used=2, remaining=8)
+        self.fail_location = fail_location
+        self.calls = []
+        self.clients = []
+        self.closed = False
+
+    def client(self, service, *, region=None):
+        self.clients.append((service, region))
+        if service == "sts":
+            def get_caller_identity():
+                return None
+
+            return SimpleNamespace(get_caller_identity=get_caller_identity)
+        if service == "s3":
+            def get_bucket_location(**_kwargs):
+                return None
+
+            return SimpleNamespace(get_bucket_location=get_bucket_location)
+        assert service == "cloudwatch"
+
+        def get_metric_data(**_kwargs):
+            return None
+
+        return SimpleNamespace(get_metric_data=get_metric_data)
+
+    async def run(self, method, **parameters):
+        self.calls.append((method.__name__, parameters))
+        if method.__name__ == "get_caller_identity":
+            self.request_budget.used += 1
+            return {
+                "Account": "123456789012",
+                "Arn": "arn:aws:sts::123456789012:assumed-role/read-role/session",
+            }
+        if method.__name__ == "get_bucket_location":
+            if self.fail_location:
+                from src.openship.execution.aws_transport import AwsSdkError
+
+                raise AwsSdkError("aws_access_denied")
+            self.request_budget.used += 1
+            return {"LocationConstraint": "us-east-1"}
+        assert method.__name__ == "get_metric_data"
+        self.request_budget.used += 1
+        measured_at = datetime.now(UTC) - timedelta(days=1)
+        return {
+            "MetricDataResults": [
+                {
+                    "Id": query["Id"],
+                    "Timestamps": [measured_at],
+                    "Values": [float(index + 1)],
+                    "StatusCode": "Complete",
+                }
+                for index, query in enumerate(parameters["MetricDataQueries"])
+            ]
+        }
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_storage_helper_uses_supplied_region_without_bucket_location_permission(
+    monkeypatch,
+):
+    manifest = next(
+        item
+        for item in list_capability_manifests()
+        if item.id == "aws_s3_bucket_storage"
+    )
+    connector_ref = ConnectorRef(
+        id=uuid4(),
+        kind="aws",
+        configuration_revision=4,
+        visibility="project",
+        credential_version_id=uuid4(),
+    )
+    access = _DirectAccess(fail_location=True)
+    async def acquire(reference):
+        assert reference == connector_ref
+        return access
+
+    context = SimpleNamespace(
+        authorization=SimpleNamespace(project_id=uuid4()),
+        execution=SimpleNamespace(
+            allowed_capabilities=(
+                CapabilityRef(
+                    id=manifest.id,
+                    version=manifest.version,
+                    manifest_digest=manifest.manifest_digest,
+                ),
+            ),
+            connector_refs=(connector_ref,),
+        ),
+        operation_id=uuid4(),
+        aws_access_factory=acquire,
+    )
+
+    observation = await s3_storage.aws_s3_bucket_storage(
+        AwsStorageArgumentsV2(
+            connector_id=connector_ref.id,
+            bucket_name="public-demo-bucket",
+            region="us-east-1",
+        ),
+        context,
+        InvocationControl(),
+    )
+
+    assert observation.bucket_name == "public-demo-bucket"
+    assert observation.region == "us-east-1"
+    assert observation.metrics.outcome == "measured"
+    assert "resource_id" not in AwsStorageObservationV2.model_fields
+    assert "resource_binding_id" not in AwsStorageObservationV2.model_fields
+    assert [name for name, _parameters in access.calls] == [
+        "get_caller_identity",
+        "get_metric_data",
+    ]
+    metric_client = [item for item in access.clients if item[0] == "cloudwatch"]
+    assert metric_client == [("cloudwatch", "us-east-1")]
+    assert access.closed

@@ -26,7 +26,6 @@ import type {
   ProjectAwsConnectorCreate,
   ResourceObservationPage,
   ResourcePage,
-  ResourceBindingSummary,
   WorkspaceFileRead,
 } from '@/types'
 
@@ -319,26 +318,8 @@ export const resourcesApi = {
   listEnvironments: (projectId: string): Promise<{ data: EnvironmentSummary[] }> =>
     api.get(`/projects/${encodeURIComponent(projectId)}/environments`),
 
-  createEnvironment: (
-    projectId: string,
-    payload: { name: string; display_name: string },
-  ): Promise<{ data: EnvironmentSummary }> =>
-    api.post(`/projects/${encodeURIComponent(projectId)}/environments`, payload),
-
   listBindings: (projectId: string): Promise<{ data: ResourcePage }> =>
     api.get(`/projects/${encodeURIComponent(projectId)}/resources`),
-
-  createBinding: (
-    projectId: string,
-    payload: {
-      environment_id: string
-      connector_id: string
-      connector_revision: number
-      bucket_name: string
-      display_name: string
-    },
-  ): Promise<{ data: ResourceBindingSummary }> =>
-    api.post(`/projects/${encodeURIComponent(projectId)}/resources`, payload),
 
   listObservations: (
     projectId: string,

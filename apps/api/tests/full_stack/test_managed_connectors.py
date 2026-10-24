@@ -449,7 +449,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
         "TOOL_ENABLED_IDS": (
             "brave_web_search,tavily_web_search,workspace_list_files,workspace_read_file,"
             "aws_check_connection,aws_s3_bucket_storage,aws_s3_bucket_metadata,"
-            "aws_s3_list_bound_buckets"
+            "aws_read_catalog,aws_read"
         ),
         "CONNECTOR_INSTALLATION_ID": installation_id,
         "CONNECTOR_ENCRYPTION_KEY_FILE": str(encryption_path),

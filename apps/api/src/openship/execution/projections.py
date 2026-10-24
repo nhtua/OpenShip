@@ -116,8 +116,16 @@ def project_operation(db: Session, operation) -> OperationSummary:
     error_code = operation.error_code
     if operation.status == "succeeded":
         try:
-            definition = get_tool_definition_by_id(operation.capability_id)
-            result = definition.validate_public_result(json.loads(operation.result_json))
+            historical_model = _historical_aws_result_model(operation)
+            if historical_model is not None:
+                result = historical_model.model_validate_json(
+                    operation.result_json
+                ).model_dump(mode="json")
+            else:
+                definition = get_tool_definition_by_id(operation.capability_id)
+                result = definition.validate_public_result(
+                    json.loads(operation.result_json)
+                )
         except (LookupError, TypeError, ValueError):
             from src.openship.execution.publication import _ERROR_MESSAGES
 
@@ -153,6 +161,25 @@ def project_operation(db: Session, operation) -> OperationSummary:
         status=status,
         error_code=error_code,
     )
+
+
+def _historical_aws_result_model(operation):
+    """Keep completed pre-discovery AWS results readable after helper v2."""
+    if operation.capability_version != "1.0.0":
+        return None
+    from src.openship.tools.aws.contracts import (
+        AwsBoundInventoryResultV1,
+        AwsCheckResultV1,
+        AwsS3MetadataResult,
+        AwsStorageResult,
+    )
+
+    return {
+        "aws_check_connection": AwsCheckResultV1,
+        "aws_s3_list_bound_buckets": AwsBoundInventoryResultV1,
+        "aws_s3_bucket_storage": AwsStorageResult,
+        "aws_s3_bucket_metadata": AwsS3MetadataResult,
+    }.get(operation.capability_id)
 
 
 def tool_attempt_summary(attempt) -> ToolAttemptSummary:

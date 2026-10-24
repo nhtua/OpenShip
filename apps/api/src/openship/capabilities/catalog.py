@@ -17,17 +17,13 @@ from src.openship.capabilities.contracts import (
 from src.openship.connectors.aws.read_catalog import load_aws_read_catalog
 from src.openship.execution.errors import CapabilityError
 from src.openship.providers.credentials import credential_binding_present
-from src.openship.tools.aws.bound_inventory import (
-    BoundInventoryArguments,
-    BoundInventoryResult,
-)
 from src.openship.tools.aws.contracts import (
     AwsCheckArguments,
     AwsCheckResult,
-    AwsS3MetadataArguments,
-    AwsS3MetadataResult,
-    AwsStorageArguments,
-    AwsStorageResult,
+    AwsS3MetadataArgumentsV2,
+    AwsS3MetadataResultV2,
+    AwsStorageArgumentsV2,
+    AwsStorageResultV2,
 )
 from src.openship.tools.aws.read import AwsReadArguments, AwsReadResult
 from src.openship.tools.aws.read_catalog import (
@@ -87,19 +83,6 @@ _AWS_SOURCE_FILES = (
     "connectors/aws/clients.py",
     "execution/aws_sdk.py",
     "execution/aws_transport.py",
-)
-_BOUND_INVENTORY_SOURCE_FILES = (
-    "capabilities/catalog.py",
-    "capabilities/contracts.py",
-    "capabilities/definitions.py",
-    "execution/gateway.py",
-    "resources/contracts.py",
-    "resources/models.py",
-    "resources/service.py",
-    "tools/aws/bound_inventory.py",
-    "workspace/lifecycle.py",
-    "workspace/models.py",
-    "workspace/projects.py",
 )
 _S3_METADATA_SOURCE_FILES = (
     "capabilities/catalog.py",
@@ -295,48 +278,6 @@ def _aws_implementation_digest() -> str:
     return digest.hexdigest()
 
 
-def _bound_inventory_implementation_digest() -> str:
-    root = Path(__file__).resolve().parents[1]
-    digest = hashlib.sha256()
-    for relative in _BOUND_INVENTORY_SOURCE_FILES:
-        path = root / relative
-        name = relative.encode("utf-8")
-        body = path.read_bytes()
-        digest.update(len(name).to_bytes(4, "big"))
-        digest.update(name)
-        digest.update(len(body).to_bytes(8, "big"))
-        digest.update(body)
-    return digest.hexdigest()
-
-
-def _bound_inventory_manifest() -> CapabilityManifestV2:
-    description = (
-        "List this project's locally stored active S3 bucket bindings. "
-        "The result does not verify that a bucket still exists or is reachable."
-    )
-    fields = {
-        "schema_version": 2,
-        "id": "aws_s3_list_bound_buckets",
-        "version": "1.0.0",
-        "implementation_digest": _bound_inventory_implementation_digest(),
-        "description": description,
-        "input_schema": BoundInventoryArguments.model_json_schema(),
-        "output_schema": BoundInventoryResult.model_json_schema(),
-        "effect": "read_only_local",
-        "enablement_requirements": ("operator_enabled",),
-        "limits": {
-            "max_page_size": 50,
-            "max_model_result_bytes": 16 * 1024,
-        },
-        "outputs": (),
-        "connector_kinds": (),
-        "operations": (),
-        "target_kinds": (),
-        "execution_kind": "maintained",
-    }
-    return CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
-
-
 def _s3_metadata_implementation_digest() -> str:
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
@@ -353,17 +294,18 @@ def _s3_metadata_implementation_digest() -> str:
 
 def _s3_metadata_manifest() -> CapabilityManifestV2:
     description = (
-        "Read the versioning and MFA Delete states for one explicitly bound S3 bucket. "
+        "Read the versioning and MFA Delete states for one S3 bucket allowed by the "
+        "project's AWS role. "
         "The normalized observation is retained as immutable evidence."
     )
     fields = {
         "schema_version": 2,
         "id": "aws_s3_bucket_metadata",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "implementation_digest": _s3_metadata_implementation_digest(),
         "description": description,
-        "input_schema": AwsS3MetadataArguments.model_json_schema(),
-        "output_schema": AwsS3MetadataResult.model_json_schema(),
+        "input_schema": AwsS3MetadataArgumentsV2.model_json_schema(),
+        "output_schema": AwsS3MetadataResultV2.model_json_schema(),
         "effect": "read_only_external",
         "enablement_requirements": ("operator_enabled", "connector_configured"),
         "limits": {
@@ -384,7 +326,7 @@ def _s3_metadata_manifest() -> CapabilityManifestV2:
             "get_bucket_location",
             "get_bucket_versioning",
         ),
-        "target_kinds": ("aws_s3_bucket",),
+        "target_kinds": (),
         "execution_kind": "maintained",
     }
     return CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
@@ -473,10 +415,10 @@ def _aws_manifests():
     declarations = (
         (
             "aws_check_connection",
-            "Check the configured AWS role identity and optionally one bound bucket. This explicit readiness check is not selected by a model.",
+            "Check the configured AWS role identity. This explicit readiness check is not selected by a model.",
             AwsCheckArguments,
             AwsCheckResult,
-            ("get_caller_identity", "get_bucket_location"),
+            ("get_caller_identity",),
             (),
             {
                 "timeout_seconds": 30,
@@ -487,9 +429,9 @@ def _aws_manifests():
         ),
         (
             "aws_s3_bucket_storage",
-            "Read the daily CloudWatch storage metrics for one explicitly bound S3 bucket and retain the exact normalized observation.",
-            AwsStorageArguments,
-            AwsStorageResult,
+            "Read daily CloudWatch storage metrics for one S3 bucket allowed by the project's AWS role and retain the exact normalized observation.",
+            AwsStorageArgumentsV2,
+            AwsStorageResultV2,
             ("get_caller_identity", "get_bucket_location", "get_metric_data"),
             (OutputPolicy(name="s3-bucket-storage.json", mutability="immutable"),),
             {
@@ -517,7 +459,7 @@ def _aws_manifests():
         fields = {
             "schema_version": 2,
             "id": capability_id,
-            "version": "1.0.0",
+            "version": "2.0.0",
             "implementation_digest": implementation_digest,
             "description": description,
             "input_schema": arguments.model_json_schema(),
@@ -528,9 +470,7 @@ def _aws_manifests():
             "outputs": tuple(output.model_dump(mode="json") for output in outputs),
             "connector_kinds": ("aws",),
             "operations": operations,
-            "target_kinds": ("aws_s3_bucket",)
-            if capability_id == "aws_s3_bucket_storage"
-            else (),
+            "target_kinds": (),
             "execution_kind": "maintained",
         }
         manifests.append(
@@ -592,7 +532,6 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
         *_workspace_manifests(),
         *_aws_manifests(),
         *_aws_discovery_manifests(),
-        _bound_inventory_manifest(),
         _s3_metadata_manifest(),
     )
     registered = tuple(entry.manifest for entry in registered_tool_definitions())

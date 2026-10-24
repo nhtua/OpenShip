@@ -31,7 +31,6 @@ function mountDialog(props: Record<string, unknown> = {}) {
       open: true,
       projectId: 'project-a',
       connector: null,
-      bindings: [],
       credentialStoreReady: true,
       ...props,
     },
@@ -106,6 +105,17 @@ describe('AWS connector dialog', () => {
       },
     )
     expect(wrapper.emitted('saved')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('checks only the selected role identity and does not require a bucket binding', async () => {
+    const wrapper = mountDialog({ connector: awsConnector })
+    await flushPromises()
+
+    expect(document.body.querySelector('[aria-label="Optional S3 bucket for connection check"]')).toBeNull()
+    ;(document.body.querySelector('[data-testid="check-aws-connection"]') as HTMLButtonElement).click()
+
+    expect(wrapper.emitted('check')?.[0]).toEqual([awsConnector.id])
     wrapper.unmount()
   })
 

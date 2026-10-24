@@ -106,7 +106,6 @@ export interface TurnSubmitRequest {
   // server resolves and pins the exact enabled capability versions.
   enable_tools?: boolean
   connector_selections?: ConnectorSelections
-  resource_binding_selections?: string[]
 }
 
 export type ConnectorKind = 'brave' | 'tavily'
@@ -466,6 +465,15 @@ export interface ToolOperationSummary {
   // Added with the owned operation summary; absent on legacy snapshots.
   query?: string | null
   result: {
+    operation_id?: string
+    connector_id?: string
+    connector_revision?: number
+    catalog_digest?: string
+    service?: string
+    operation?: string
+    preview?: Record<string, unknown>
+    preview_truncated?: boolean
+    next_cursor?: string | null
     observed_at?: string
     query?: string
     items?: SearchResultItem[]

@@ -9,13 +9,18 @@ from datetime import UTC, datetime, time, timedelta
 from pydantic import ValidationError
 
 from src.openship.capabilities.contracts import CapabilityRef, canonical_json
+from src.openship.connectors.aws.read_catalog import load_aws_read_catalog
 from src.openship.execution.aws_transport import AwsSdkError
 
-from .checks import normalize_bucket_region, validate_caller_identity
+from .checks import (
+    aws_connector_reference,
+    resolve_bucket_region,
+    validate_caller_identity,
+)
 from .contracts import (
-    AwsStorageArguments,
-    AwsStorageObservation,
-    AwsStorageResult,
+    AwsStorageArgumentsV2,
+    AwsStorageObservationV2,
+    AwsStorageResultV2,
     AwsToolError,
     NormalizedStorageMetrics,
     StorageCoverage,
@@ -190,38 +195,22 @@ def normalize_metric_results(
 
 
 async def aws_s3_bucket_storage(
-    arguments: AwsStorageArguments,
+    arguments: AwsStorageArgumentsV2,
     context,
     control,
-) -> AwsStorageObservation:
-    """Read only the pinned S3 bucket's documented daily storage metrics."""
-    binding = _owned_binding(context, arguments.resource_binding_id)
-    reference = _connector_reference(context, binding)
+) -> AwsStorageObservationV2:
+    """Read daily CloudWatch storage metrics for one direct S3 bucket target."""
+    reference = aws_connector_reference(context, arguments.connector_id)
     access = await context.aws_access_factory(reference)
     try:
         configuration = access.configuration
-        if (
-            binding.account_id != configuration.expected_account_id
-            or binding.expected_owner != configuration.expected_account_id
-            or binding.region != configuration.region
-        ):
-            raise AwsToolError("aws_resource_unavailable")
         caller_identity = await access.run(access.client("sts").get_caller_identity)
         validate_caller_identity(
             caller_identity,
-            expected_account_id=binding.account_id,
+            expected_account_id=configuration.expected_account_id,
             expected_role_arn=configuration.basic_role_arn,
         )
-        location = await access.run(
-            access.client("s3").get_bucket_location,
-            Bucket=binding.bucket_name,
-            ExpectedBucketOwner=binding.expected_owner,
-        )
-        if (
-            normalize_bucket_region(location.get("LocationConstraint"))
-            != binding.region
-        ):
-            raise AwsToolError("aws_region_mismatch")
+        region = await resolve_bucket_region(arguments, access, control)
 
         query_ids = {
             f"m{index:02d}": storage_type
@@ -239,7 +228,7 @@ async def aws_s3_bucket_storage(
                         "Namespace": "AWS/S3",
                         "MetricName": "BucketSizeBytes",
                         "Dimensions": [
-                            {"Name": "BucketName", "Value": binding.bucket_name},
+                            {"Name": "BucketName", "Value": arguments.bucket_name},
                             {"Name": "StorageType", "Value": storage_type},
                         ],
                     },
@@ -250,7 +239,7 @@ async def aws_s3_bucket_storage(
             }
             for query_id, storage_type in query_ids.items()
         ]
-        client = access.client("cloudwatch")
+        client = access.client("cloudwatch", region=region)
         token = None
         results_by_id = {}
         truncated = False
@@ -311,19 +300,22 @@ async def aws_s3_bucket_storage(
             window_start=start,
             window_end=end,
         )
-        observation = AwsStorageObservation(
+        target = {"bucket_name": arguments.bucket_name}
+        if arguments.expected_owner is not None:
+            target["expected_owner"] = arguments.expected_owner
+        observation = AwsStorageObservationV2(
             tool=_capability_ref(context),
-            operation_id=str(context.operation_id),
+            operation_id=context.operation_id,
             project_id=context.authorization.project_id,
-            resource_id=binding.resource_object_id,
-            resource_binding_id=binding.id,
-            binding_revision=binding.revision,
             connector_id=reference.id,
             connector_revision=reference.configuration_revision,
-            account_id=binding.account_id,
-            region=binding.region,
-            bucket_name=binding.bucket_name,
+            catalog_digest=load_aws_read_catalog().digest,
+            account_id=configuration.expected_account_id,
+            region=region,
+            bucket_name=arguments.bucket_name,
+            target=target,
             retrieved_at=retrieved_at,
+            request_count=access.request_budget.used,
             metrics=metrics,
         )
         if len(canonical_json(observation.model_dump(mode="json"))) > 64 * 1024:
@@ -340,13 +332,12 @@ async def aws_s3_bucket_storage(
         await access.aclose()
 
 
-def project_storage_result(observation: AwsStorageObservation, artifact_ref):
+def project_storage_result(observation: AwsStorageObservationV2, artifact_ref):
     metrics = observation.metrics
-    return AwsStorageResult(
+    return AwsStorageResultV2(
         operation_id=observation.operation_id,
-        resource_id=observation.resource_id,
-        resource_binding_id=observation.resource_binding_id,
-        binding_revision=observation.binding_revision,
+        connector_id=observation.connector_id,
+        connector_revision=observation.connector_revision,
         account_id=observation.account_id,
         region=observation.region,
         bucket_name=observation.bucket_name,
@@ -358,48 +349,6 @@ def project_storage_result(observation: AwsStorageObservation, artifact_ref):
         coverage=metrics.coverage,
         artifact=artifact_ref,
     ).model_dump(mode="json")
-
-
-def _owned_binding(context, binding_id):
-    from src.openship.resources.models import ResourceBinding
-
-    references = [
-        ref
-        for ref in getattr(context.execution, "resource_binding_refs", ())
-        if ref.id == binding_id
-    ]
-    if len(references) != 1 or context.session_factory is None:
-        raise AwsToolError("aws_resource_unavailable")
-    target = references[0]
-    with context.session_factory() as db:
-        binding = (
-            db.query(ResourceBinding)
-            .filter(
-                ResourceBinding.id == binding_id,
-                ResourceBinding.project_id == context.authorization.project_id,
-                ResourceBinding.revision == target.revision,
-                ResourceBinding.connector_id == target.connector_id,
-                ResourceBinding.connector_revision == target.connector_revision,
-                ResourceBinding.state == "active",
-            )
-            .first()
-        )
-        if binding is None:
-            raise AwsToolError("aws_resource_unavailable")
-        return binding
-
-
-def _connector_reference(context, binding):
-    refs = [
-        ref
-        for ref in getattr(context.execution, "connector_refs", ())
-        if ref.id == binding.connector_id
-        and ref.kind == "aws"
-        and ref.configuration_revision == binding.connector_revision
-    ]
-    if len(refs) != 1:
-        raise AwsToolError("aws_resource_unavailable")
-    return refs[0]
 
 
 def _capability_ref(context) -> CapabilityRef:

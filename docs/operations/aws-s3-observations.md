@@ -1,36 +1,29 @@
 ---
 type: operations
-summary: Configure the project AWS source and least-privilege basic role for Phase 5A.2 S3 storage observations.
-date: 2026-10-23
+summary: Configure the AWS basic role for direct S3 discovery and read-only observations.
+date: 2026-10-24
 status: active
 ---
 
-# AWS S3 observation setup
+# AWS S3 discovery and observations
 
-Phase 5A.2 uses a dedicated AWS source credential only to assume the configured
-basic read role. The worker does not use the source key for S3 or CloudWatch
-requests. It assumes a short-lived role session, verifies the returned account
-and role, and uses that session for the selected bucket observation.
+OpenShip uses the project's configured AWS source credential only to assume the
+configured basic role. The worker verifies the assumed account and role, then
+uses short-lived role credentials for AWS reads. A bucket does not need an
+OpenShip resource record, environment or binding. AWS decides whether each
+requested operation is allowed by the role's effective policies.
 
-The current browser setup accepts an access key ID and secret access key, with
-an optional temporary session token and expiry. Do not use a personal IAM
-identity. Create a dedicated machine principal, restrict its identity policy to
-the one basic role ARN, and configure that role's trust policy to trust only
-that exact source principal. The role ARN alone does not authenticate a caller.
-The connector encrypts source credentials in the database; revoking a
-connector purges the stored credential bytes and hides the revoked setup from
-active connector lists while retaining non-secret revisions needed by history
-and resource bindings.
+The source principal needs only `sts:AssumeRole` for the one configured role.
+The role trust policy must name that exact source principal. OpenShip does not
+send an external ID or choose a role dynamically. See AWS's guidance for
+[creating a role for an IAM user](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create-for-user.html)
+and the [AssumeRole API](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html).
 
 ## 1. Create the source principal
 
-Use a dedicated IAM user access key for a localhost installation, or temporary
-credentials issued to that dedicated principal. The source principal needs
-only `sts:AssumeRole` for the configured basic role. It does not need S3 or
-CloudWatch permissions. Attach no unrelated permissions to the source
-principal.
-
-Replace the account and role name in this identity policy:
+Use a dedicated machine principal and a key intended for this installation.
+The source principal does not need S3 or CloudWatch permissions. Its identity
+policy should grant only `sts:AssumeRole` for the configured basic role:
 
 ```json
 {
@@ -39,46 +32,32 @@ Replace the account and role name in this identity policy:
     {
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
-      "Resource": "arn:aws:iam::123456789012:role/OpenShipS3BasicRead"
+      "Resource": "arn:aws:iam::123456789012:role/OpenShipBasicRead"
     }
   ]
 }
 ```
 
-The role trust policy must name the dedicated source IAM principal as a
-`Principal`. Avoid wildcard principals. This implementation does not send an
-external ID or choose a role dynamically, so the configured role must be the
-single role the source principal is authorized to assume. See AWS's guidance
-for [creating a role for an IAM user](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user.html)
-and the [AssumeRole API](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html).
+Set the role trust policy to trust that source principal. Do not use a wildcard
+principal.
 
-## 2. Create the basic read role
+## 2. Grant only the role reads you need
 
-Set the role's maximum session duration to at least 15 minutes. OpenShip asks
-STS for a 900-second session and does not chain roles. The role trust policy
-must allow the source principal from step 1 to assume this role.
-
-The role needs the read operations for the features you plan to use. Scope
-`s3:GetBucketLocation` to the bucket ARN that will be bound. To use metadata,
-also allow `s3:GetBucketVersioning` on that bucket. Storage observations also
-use `cloudwatch:GetMetricData` with the broader account-level metric-read scope
-shown below. OpenShip calls
-`sts:GetCallerIdentity` to verify the role; AWS requires no IAM permission for
-that operation. Do not add `s3:ListBucket`, object reads, writes, deletes,
-CloudWatch Logs, or maintenance-role permissions for this flow.
+`sts:GetCallerIdentity` verifies the assumed role and requires no IAM grant.
+For the maintained S3 helper operations, the basic role can use:
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ReadSelectedBucketRegion",
+      "Sid": "ReadBucketVersioning",
       "Effect": "Allow",
-      "Action": "s3:GetBucketLocation",
-      "Resource": "arn:aws:s3:::replace-with-bound-bucket"
+      "Action": "s3:GetBucketVersioning",
+      "Resource": "arn:aws:s3:::replace-with-bucket-name"
     },
     {
-      "Sid": "ReadCloudWatchMetrics",
+      "Sid": "ReadS3Metrics",
       "Effect": "Allow",
       "Action": "cloudwatch:GetMetricData",
       "Resource": "*"
@@ -87,92 +66,87 @@ CloudWatch Logs, or maintenance-role permissions for this flow.
 }
 ```
 
-Add this separate statement only when you plan to use the bucket metadata tool:
+The storage helper reads `AWS/S3` `BucketSizeBytes` metrics. An object-count
+report uses the daily `AWS/S3` `NumberOfObjects` metric with
+`StorageType=AllStorageTypes`. CloudWatch metric reads use account-level
+`Resource: "*"`; the request is limited by OpenShip to the selected bucket's
+metric dimensions, but IAM does not scope `GetMetricData` to a bucket. Review
+that broader metric-read permission before connecting the role. AWS documents
+the [CloudWatch action and resource model](https://docs.aws.amazon.com/service-authorization/latest/reference/list_cloudwatch.html),
+the [GetMetricData API](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_GetMetricData.html),
+and [S3 metrics and dimensions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/metrics-dimensions.html).
 
-```json
-{
-  "Sid": "ReadSelectedBucketVersioning",
-  "Effect": "Allow",
-  "Action": "s3:GetBucketVersioning",
-  "Resource": "arn:aws:s3:::replace-with-bound-bucket"
-}
-```
+The following bucket-scoped S3 actions support direct reads when the user
+requests those fields:
 
-`cloudwatch:GetMetricData` with `Resource: "*"` grants metric-read authority
-broader than the selected S3 bucket. OpenShip's handler constrains its own
-requests to the `AWS/S3` `BucketSizeBytes` metric and the selected bucket's
-`BucketName` and `StorageType` dimensions, but IAM does not provide a
-bucket-level boundary for this role policy. Use a dedicated role and review
-that account-level CloudWatch metric-read exposure before connecting it. AWS
-documents the [CloudWatch action and resource model](https://docs.aws.amazon.com/service-authorization/latest/reference/list_cloudwatch.html)
-and the [GetMetricData operation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_GetMetricData.html).
+| Action | What OpenShip can read |
+| --- | --- |
+| `s3:ListAllMyBuckets` | Discover bucket names in the role's account. This is not required when the user supplies a known bucket name. |
+| `s3:GetBucketLocation` | Resolve a bucket's region when a direct S3 helper request omits the region. Supplying the region skips this optional lookup. |
+| `s3:GetBucketVersioning` | Report enabled, suspended or not-enabled versioning state. |
+| `s3:GetBucketPolicyStatus` | Report AWS's policy-public status for the bucket policy. |
+| `s3:GetBucketPublicAccessBlock` | Read the bucket-level Block Public Access settings. |
+| `s3:GetBucketAcl` | Read the bucket owner and ACL grants. |
+| `cloudwatch:GetMetricData` | Read daily bucket-size and object-count metrics when available. |
 
-The S3 operation-to-permission mapping is in AWS's [required S3 API
-permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-with-s3-policy-actions.html).
-The metadata handler uses the native [GetBucketVersioning API](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketVersioning.html)
-with the expected bucket owner. If bucket versioning was never enabled, AWS
-omits `Status`; OpenShip records `Not enabled`. Missing MFA Delete metadata is
-shown as `Not reported`, not inferred as disabled.
-The handler's storage dimensions are the frozen list in the Phase 5
-specification and AWS's [S3 metrics and dimensions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/metrics-dimensions.html).
+Scope bucket actions to the bucket ARN where AWS supports it. `ListBuckets`
+uses `s3:ListAllMyBuckets` and cannot be scoped to one bucket. Generic AWS reads
+also support other classified operations, including EC2 and RDS descriptions;
+grant only the corresponding read actions for resources the project should
+inspect. The pinned catalog is the set of operations OpenShip can call. IAM
+permissions determine which of those operations this role can perform.
+
+OpenShip does not download object bodies for these reports. Missing permissions
+leave that field unknown while other permitted reads can still succeed. Do not
+interpret a denied or absent public-access field as “private.” Policy status,
+bucket-level Block Public Access and ACL grants describe different controls;
+they do not by themselves prove every caller's effective access.
 
 ## 3. Configure the project Connector
 
-In **Global Settings**, the installation operator enables the installed tools
-that projects may use. `TOOL_ENABLED_IDS` is an optional deployment ceiling;
-if explicitly set, it can continue restricting tools enabled in Global
-Settings. Ordinary policy and Connector changes do not require a process
-restart. A configured Connector or bucket binding does not enable a tool by
-itself.
+In **Global Settings**, the installation operator enables managed tools for
+projects. `TOOL_ENABLED_IDS` is an optional deployment ceiling; when set, it
+can further restrict tools enabled in Global Settings. A configured Connector
+does not enable a tool by itself.
 
 In the project's Connector settings:
 
-1. Add an AWS Connector and enter its name, AWS region, expected 12-digit
-   account ID, and the exact basic-role ARN.
-2. Enter the dedicated source key. If using temporary source credentials,
-   enter the session token and its expiry together.
-3. Save the setup. Run **Check status** to verify the source can assume the
-   configured role and the assumed identity matches the configured account and
-   role. This check does not query the selected bucket.
-4. Add an environment and bind an existing general-purpose S3 bucket to that
-   environment and Connector revision. Binding stores an explicit locator; it
-   does not discover buckets or prove the bucket still exists.
-5. Run the S3 storage observation for the selected binding. The storage check
-   verifies account, bucket owner and region before reading CloudWatch metrics.
+1. Add an AWS Connector and enter its name, default region, expected 12-digit
+   account ID and exact basic-role ARN.
+2. Enter the dedicated source key. If the key is temporary, enter its session
+   token and expiry together.
+3. Save the setup and run **Check status**. This checks that the source can
+   assume the role and that the assumed account and role match the Connector.
+   It does not query a bucket.
+4. In a conversation, ask OpenShip to discover buckets or name a bucket
+   directly. For a direct S3 helper request, provide the bucket name and,
+   optionally, its region and expected owner. There is no bucket binding step.
 
-In a conversation belonging to the same project, choose **+ → S3 bucket
-metadata** or **S3 bucket storage**, select the bound bucket and submit to run
-the read directly. Metadata records versioning and MFA Delete state, the AWS
-request count and retrieval time. It does not report a CloudWatch measurement
-time. The normalized observation is retained as `s3-bucket-metadata.json`.
-For automatic use, select the bucket in the composer's **S3 buckets** selector,
-enable **Let the model use tools automatically**, and ask about its storage.
-The bucket selector chooses targets; it does not attach or run a tool. The
-connection check runs explicitly from Connector settings and is excluded
-from the model's tool choices.
+For example, ask: “Discover my S3 buckets. For `example-bucket`, report size,
+object count, versioning and public-access settings. Cite the evidence and mark
+inaccessible fields unknown.” If listing is denied but the role can read a
+named bucket, OpenShip can still make that direct read. If AWS denies an
+operation, OpenShip reports that the AWS role lacks permission for it; it does
+not switch connectors or fall back to source credentials.
 
-The storage observation reports CloudWatch's daily bucket-size measurements, not a
-live object scan. Missing dimensions remain unknown, and values from different
-measurement dates are not added together. Review the displayed measurement
-time, freshness, coverage and evidence before treating a subtotal as complete.
+The storage helper reports AWS's daily bucket-size measurements, not a live
+object scan. The object-count metric is also daily. Missing dimensions remain
+unknown, and measurements from different dates are not added together. Review
+the measurement date, freshness, coverage and attached evidence before treating
+a subtotal as complete.
 
 ## 4. Rotation and revocation
 
-Use **Save** in the Connector dialog to replace the source credential. A
-replacement creates a new immutable revision; existing resource bindings and
-admitted runs remain pinned to their recorded revisions. Revoke removes the
-Connector from active selection, disables execution and overwrites the
-encrypted key ID, nonce and ciphertext with fixed non-secret sentinels. The
-non-secret Connector and revision rows remain as referential history for
-retained bindings, blockers and audit records. Create a new Connector and
-explicitly bind resources to it when replacing a revoked setup.
+Use **Save** in the Connector dialog to replace source credentials. A
+replacement creates a new immutable Connector revision; admitted runs remain
+pinned to the revision they selected. Revoke removes the Connector from active
+selection, disables new execution and purges its stored secret bytes. Non-secret
+Connector revisions and historical AWS evidence remain available for history.
 
-Revocation overwrites the active database row. Existing database backups may
-still contain its prior ciphertext until those backups expire; follow the
-installation's backup retention and encryption-key retirement procedures.
+Existing backups can retain prior ciphertext until those backups expire; follow
+the installation's backup retention and encryption-key retirement procedures.
 
-Do not test prohibited AWS mutations against a user's bucket. The registered
-SDK surface permits only `GetCallerIdentity`, `GetBucketLocation`,
-`GetBucketVersioning` and `GetMetricData`; it exposes no bucket mutation
-operation. Versioning access is limited to the metadata tool and does not
-make that operation available to storage or connection checks.
+Do not test prohibited AWS mutations against a user's resources. The maintained
+AWS reader permits only operations classified as read-only in the pinned
+catalog. The connection check is limited to role identity, while S3 helpers
+read only their documented metadata and daily storage metrics.

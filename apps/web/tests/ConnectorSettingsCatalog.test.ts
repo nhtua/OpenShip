@@ -29,10 +29,6 @@ vi.mock('@/services/api', () => ({
     projectRequestStatus: vi.fn(),
     getProjectConnector: vi.fn(),
   },
-  resourcesApi: {
-    listEnvironments: vi.fn().mockResolvedValue({ data: [] }),
-    listBindings: vi.fn().mockResolvedValue({ data: { items: [], next_cursor: null } }),
-  },
   runsApi: { submitTool: vi.fn(), getOperations: vi.fn() },
 }))
 
@@ -200,6 +196,10 @@ describe('Connectors catalog page', () => {
     expect(wrapper.text()).not.toContain('Add a project connector')
     expect(wrapper.findAll('[data-connector-card-grid] button')).toHaveLength(2)
     expect(wrapper.findAll('[data-connector-card-grid] button[aria-label^="Add"]')).toHaveLength(0)
+    const resourceRequests = requests.get.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => /\/(resources|environments)(\/|\?|$)/.test(url))
+    expect(resourceRequests).toEqual([])
     wrapper.unmount()
   })
 

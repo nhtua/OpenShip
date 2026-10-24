@@ -37,26 +37,47 @@ test('installation operator changes built-in tool availability without a restart
   await page.goto('/settings/global')
   await expect(page.getByRole('heading', { name: 'Built-in tool availability' })).toBeVisible()
 
-  const metadataToggle = page.getByTestId('tool-policy-toggle-aws_s3_bucket_metadata')
-  await expect(metadataToggle).toBeChecked()
-  await metadataToggle.uncheck()
-  await expect(metadataToggle).not.toBeChecked()
-  await expect(metadataToggle).toBeEnabled()
-  await expect(metadataToggle).not.toBeChecked()
+  const initialResponse = await request.get('/api/global-tool-policy', { headers })
+  expect(initialResponse.status()).toBe(200)
+  const initialPolicy = await initialResponse.json() as { tools: Array<{ id: string; enabled: boolean }> }
+  expect(initialPolicy.tools.find((tool) => tool.id === 'aws_read_catalog')?.enabled).toBe(false)
+  expect(initialPolicy.tools.find((tool) => tool.id === 'aws_read')?.enabled).toBe(false)
 
-  const disabledResponse = await request.get('/api/global-tool-policy', { headers })
-  expect(disabledResponse.status()).toBe(200)
-  const disabledPolicy = await disabledResponse.json() as { tools: Array<{ id: string; enabled: boolean }> }
-  expect(disabledPolicy.tools.find((tool) => tool.id === 'aws_s3_bucket_metadata')?.enabled).toBe(false)
-
-  await metadataToggle.check()
-  await expect(metadataToggle).toBeChecked()
-  await expect(metadataToggle).toBeEnabled()
-  await expect(metadataToggle).toBeChecked()
+  const awsReadToggle = page.getByTestId('tool-policy-toggle-aws_read')
+  await expect(awsReadToggle).not.toBeChecked()
+  const catalogEnabled = page.waitForResponse((response) =>
+    response.url().includes('/api/global-tool-policy/aws_read_catalog') &&
+    response.request().method() === 'PUT' && response.status() === 200,
+  )
+  const readerEnabled = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith('/api/global-tool-policy/aws_read') &&
+    response.request().method() === 'PUT' && response.status() === 200,
+  )
+  await awsReadToggle.check()
+  await Promise.all([catalogEnabled, readerEnabled])
+  await expect(awsReadToggle).toBeChecked()
   const enabledResponse = await request.get('/api/global-tool-policy', { headers })
   expect(enabledResponse.status()).toBe(200)
   const enabledPolicy = await enabledResponse.json() as { tools: Array<{ id: string; enabled: boolean }> }
-  expect(enabledPolicy.tools.find((tool) => tool.id === 'aws_s3_bucket_metadata')?.enabled).toBe(true)
+  expect(enabledPolicy.tools.find((tool) => tool.id === 'aws_read_catalog')?.enabled).toBe(true)
+  expect(enabledPolicy.tools.find((tool) => tool.id === 'aws_read')?.enabled).toBe(true)
+
+  const catalogDisabled = page.waitForResponse((response) =>
+    response.url().includes('/api/global-tool-policy/aws_read_catalog') &&
+    response.request().method() === 'PUT' && response.status() === 200,
+  )
+  const readerDisabled = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith('/api/global-tool-policy/aws_read') &&
+    response.request().method() === 'PUT' && response.status() === 200,
+  )
+  await awsReadToggle.uncheck()
+  await Promise.all([catalogDisabled, readerDisabled])
+  await expect(awsReadToggle).not.toBeChecked()
+  const disabledResponse = await request.get('/api/global-tool-policy', { headers })
+  expect(disabledResponse.status()).toBe(200)
+  const disabledPolicy = await disabledResponse.json() as { tools: Array<{ id: string; enabled: boolean }> }
+  expect(disabledPolicy.tools.find((tool) => tool.id === 'aws_read_catalog')?.enabled).toBe(false)
+  expect(disabledPolicy.tools.find((tool) => tool.id === 'aws_read')?.enabled).toBe(false)
 })
 
 test('operator configures shared search and chooses project defaults independently', async ({ page, request }) => {
@@ -253,7 +274,7 @@ test('unprovisioned connector setup explains a missing HMAC file and blocks writ
   expect(creates).toBe(0)
 })
 
-test('AWS project setup binds an S3 bucket and sends only the selected target to the storage tool', async ({ page }) => {
+test('AWS connector reads use direct targets and automatic discovery without resource bindings', async ({ page }) => {
   const { token, projectId } = requireOperatorSetup()
   await clearApiRoutes(page)
   await mockApi(page, {
@@ -270,10 +291,9 @@ test('AWS project setup binds an S3 bucket and sends only the selected target to
     expected_account_id: '123456789012',
     basic_role_arn: 'arn:aws:iam::123456789012:role/OpenShipRead',
   }
-  const environments: Record<string, unknown>[] = []
-  const bindings: Record<string, unknown>[] = []
   const projectConnectors: Record<string, unknown>[] = []
   let credentialRequest: Record<string, unknown> | null = null
+  let resourceSetupRequests = 0
 
   await page.route('**/api/projects*', (route) => {
     const url = new URL(route.request().url())
@@ -312,33 +332,9 @@ test('AWS project setup binds an S3 bucket and sends only the selected target to
     projectConnectors.push(awsConnector)
     await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ ...safeConnector, ...awsConnector }) })
   })
-  await page.route(`**/api/projects/${projectId}/environments`, async (route) => {
-    if (route.request().method() === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(environments) })
-      return
-    }
-    const body = route.request().postDataJSON() as { name: string; display_name: string }
-    const environment = { id: 'environment-1', project_id: projectId, ...body, created_at: '' }
-    environments.push(environment)
-    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(environment) })
-  })
-  await page.route(`**/api/projects/${projectId}/resources`, async (route) => {
-    if (route.request().method() === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: bindings, next_cursor: null }) })
-      return
-    }
-    const body = route.request().postDataJSON() as {
-      environment_id: string; connector_id: string; connector_revision: number; bucket_name: string; display_name: string
-    }
-    const binding = {
-      resource_id: 'resource-1', uri: 'openship://project/resource-1',
-      environment_name: 'production', binding_id: 'binding-1', binding_revision: 1,
-      account_id: '123456789012', region: 'us-west-2', bucket_arn: 'arn:aws:s3:::production-data',
-      expected_owner: '123456789012', management_method: 'unknown', state: 'active', created_at: '',
-      ...body,
-    }
-    bindings.push(binding)
-    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(binding) })
+  await page.route(/\/api\/projects\/[^/]+\/(environments|resources)(\/|\?|$)/, async (route) => {
+    resourceSetupRequests += 1
+    await route.fulfill({ status: 410, contentType: 'application/json', body: JSON.stringify({ detail: 'retired' }) })
   })
   const storageCapability = {
     id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'c'.repeat(64),
@@ -349,10 +345,14 @@ test('AWS project setup binds an S3 bucket and sends only the selected target to
     ...storageCapability,
     id: 'aws_s3_bucket_metadata', manifest_digest: 'd'.repeat(64),
   }
-  const inventoryCapability = {
+  const awsReadCatalogCapability = {
     ...storageCapability,
-    id: 'aws_s3_list_bound_buckets', manifest_digest: 'e'.repeat(64),
+    id: 'aws_read_catalog', manifest_digest: 'e'.repeat(64),
     effect: 'read_only_local' as const,
+  }
+  const awsReadCapability = {
+    ...storageCapability,
+    id: 'aws_read', manifest_digest: 'f'.repeat(64),
   }
   const toolProfiles = {
     ...E2E_PROFILES,
@@ -361,7 +361,7 @@ test('AWS project setup binds an S3 bucket and sends only the selected target to
       : profile),
   }
   const queued = await mockDurableApi(page, {
-    capabilities: [storageCapability, metadataCapability, inventoryCapability],
+    capabilities: [storageCapability, metadataCapability, awsReadCatalogCapability, awsReadCapability],
     profiles: toolProfiles,
     submittedToolRun: {
       id: 'run-s3-observation', conversation_id: 'c1', status: 'completed', created_at: '', attempt: 0,
@@ -385,10 +385,16 @@ test('AWS project setup binds an S3 bucket and sends only the selected target to
         connector_readiness: { aws: 'ready' },
       },
       {
-        ...inventoryCapability,
+        ...awsReadCatalogCapability,
         permitted: true,
-        required_connector_kinds: [],
-        connector_readiness: {},
+        required_connector_kinds: ['aws'],
+        connector_readiness: { aws: 'ready' },
+      },
+      {
+        ...awsReadCapability,
+        permitted: true,
+        required_connector_kinds: ['aws'],
+        connector_readiness: { aws: 'ready' },
       },
     ]),
   }))
@@ -417,43 +423,47 @@ test('AWS project setup binds an S3 bucket and sends only the selected target to
   expect(await page.locator('body').innerText()).not.toContain('AKIAE2ESYNTHETIC')
   expect(await page.locator('body').innerText()).not.toContain('synthetic-aws-source-secret')
 
-  await page.getByLabel('Environment name').fill('production')
-  await page.getByLabel('Display name').fill('Production')
-  await page.getByRole('button', { name: 'Add environment' }).click()
-  await page.getByLabel('Bucket name').fill('production-data')
-  await page.getByLabel('Display name', { exact: true }).nth(1).fill('Production data')
-  await page.getByRole('button', { name: 'Bind S3 bucket' }).click()
-  await expect(page.locator('[data-binding-id="binding-1"]')).toContainText('production-data')
-
   await page.goto('/')
   await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
   await page.getByRole('button', { name: 'Add tool' }).click()
   await page.getByTestId('tool-choice').filter({ hasText: 'S3 bucket storage' }).click()
-  await page.getByLabel('AWS resource binding').selectOption('binding-1')
+  await page.getByLabel('S3 bucket name').fill('production-data')
+  await page.getByLabel('AWS region (optional)').fill('us-west-2')
   await page.getByRole('button', { name: 'Measure' }).click()
 
   await expect.poll(() => queued.submittedTools.length).toBe(1)
   expect(queued.submittedTools[0].payload.capability.id).toBe('aws_s3_bucket_storage')
-  expect(queued.submittedTools[0].payload.arguments).toEqual({ resource_binding_id: 'binding-1' })
+  expect(queued.submittedTools[0].payload.arguments).toEqual({
+    connector_id: awsConnector.id,
+    bucket_name: 'production-data',
+    region: 'us-west-2',
+  })
+  expect(queued.submittedTools[0].payload.connector_selections).toEqual({ aws: awsConnector.id })
 
   await page.getByRole('button', { name: 'Add tool' }).click()
   await page.getByTestId('tool-choice').filter({ hasText: 'S3 bucket metadata' }).click()
-  await page.getByLabel('AWS resource binding').selectOption('binding-1')
+  await page.getByLabel('S3 bucket name').fill('production-data')
   await page.getByRole('button', { name: 'Inspect', exact: true }).click()
   await expect.poll(() => queued.submittedTools.length).toBe(2)
   expect(queued.submittedTools[1].payload.capability.id).toBe('aws_s3_bucket_metadata')
-  expect(queued.submittedTools[1].payload.arguments).toEqual({ resource_binding_id: 'binding-1' })
+  expect(queued.submittedTools[1].payload.arguments).toEqual({
+    connector_id: awsConnector.id,
+    bucket_name: 'production-data',
+  })
+  expect(queued.submittedTools[1].payload.connector_selections).toEqual({ aws: awsConnector.id })
 
-  await page.getByLabel('S3 buckets available to tools').selectOption('binding-1')
-  await page.getByRole('button', { name: 'Add tool' }).click()
+  await page.goto('/conversation/c1')
   const automaticTools = page.getByTestId('automatic-tool-mode')
+  await page.getByRole('button', { name: 'Add tool' }).click()
   await expect(automaticTools).toBeEnabled()
   await expect(automaticTools).toHaveAttribute('aria-checked', 'true')
-  await page.getByLabel('Message').fill('List the S3 buckets already bound to this project.')
+  await page.keyboard.press('Escape')
+  await page.getByLabel('Message').fill('Discover S3 buckets and report which ones this role can inspect.')
   await page.getByRole('button', { name: 'Send' }).click()
   await expect.poll(() => queued.submitted.length).toBe(1)
   expect(queued.submitted[0].payload).toMatchObject({
     enable_tools: true,
-    resource_binding_selections: ['binding-1'],
   })
+  expect(queued.submitted[0].payload).not.toHaveProperty('resource_binding_selections')
+  expect(resourceSetupRequests).toBe(0)
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
@@ -9,11 +9,18 @@ import type { ToolPolicyEntry } from '@/types'
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
 const toolPolicy = useToolPolicyStore()
+const awsReadIds = new Set(['aws_read_catalog', 'aws_read'])
+const awsReadTools = computed(() => toolPolicy.tools.filter((tool) => awsReadIds.has(tool.id)))
+const visibleTools = computed(() => toolPolicy.tools.filter((tool) => !awsReadIds.has(tool.id)))
+const awsReadEnabled = computed(() => awsReadTools.value.length > 0 && awsReadTools.value.every((tool) => tool.enabled))
+const awsReadDeploymentRestricted = computed(() => awsReadTools.value.some((tool) => tool.deployment_restricted))
 
 const toolLabels: Record<string, string> = {
   brave_web_search: 'Brave Search',
   tavily_web_search: 'Tavily Search',
   aws_check_connection: 'AWS connection check',
+  aws_read: 'AWS read-only access',
+  aws_read_catalog: 'AWS read-only access',
   aws_s3_bucket_storage: 'S3 bucket storage',
   aws_s3_bucket_metadata: 'S3 bucket metadata',
   workspace_list_files: 'List workspace files',
@@ -49,6 +56,15 @@ async function toggleTool(tool: ToolPolicyEntry, event: Event): Promise<void> {
   const enabled = (event.target as HTMLInputElement).checked
   const saved = await toolPolicy.setEnabled(tool.id, enabled)
   if (saved) await connectors.loadProjectContext(projects.currentProjectId)
+}
+
+async function toggleAwsRead(event: Event): Promise<void> {
+  const enabled = (event.target as HTMLInputElement).checked
+  for (const tool of awsReadTools.value) {
+    if (tool.enabled === enabled) continue
+    if (!(await toolPolicy.setEnabled(tool.id, enabled))) return
+  }
+  await connectors.loadProjectContext(projects.currentProjectId)
 }
 
 async function adoptLegacyAllowlist(): Promise<void> {
@@ -118,7 +134,32 @@ const unavailableMessage = () => {
       <template v-else-if="toolPolicy.snapshot">
         <ul class="grid gap-3" aria-label="Installed built-in tools">
           <li
-            v-for="tool in toolPolicy.tools"
+            v-if="awsReadTools.length"
+            class="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-[1fr_auto] sm:items-center"
+            data-testid="aws-read-policy-group"
+          >
+            <div class="grid gap-1">
+              <span class="font-medium">AWS read-only access</span>
+              <span class="text-sm text-muted-foreground">
+                Discover AWS resources and run supported read operations using the project’s configured basic role.
+              </span>
+              <span v-if="awsReadDeploymentRestricted" class="text-sm text-amber-600">
+                Some AWS reads are blocked by TOOL_ENABLED_IDS. Enabling this setting cannot bypass that deployment ceiling.
+              </span>
+            </div>
+            <label class="flex items-center gap-2 text-sm">
+              <input
+                data-testid="tool-policy-toggle-aws_read"
+                type="checkbox"
+                :checked="awsReadEnabled"
+                :disabled="toolPolicy.saving"
+                @change="toggleAwsRead"
+              >
+              Enabled
+            </label>
+          </li>
+          <li
+            v-for="tool in visibleTools"
             :key="tool.id"
             class="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-[1fr_auto] sm:items-center"
           >

@@ -1,4 +1,4 @@
-"""Owned, local-only environment and AWS resource binding commands."""
+"""Historical resource reads and binding-free AWS observation publication."""
 
 from __future__ import annotations
 
@@ -13,25 +13,24 @@ from sqlalchemy.orm import Session
 
 from ..artifacts.contracts import ArtifactRef
 from ..artifacts.models import Artifact
-from ..capabilities.contracts import AuthorizationContext, canonical_json
-from ..connectors.contracts import ConnectorConfiguration
-from ..connectors.models import Connector, ConnectorRevision, CredentialVersion
+from ..capabilities.contracts import (
+    AuthorizationContext,
+    CapabilityRef,
+    canonical_json,
+)
+from ..connectors.models import Connector, ConnectorRevision
 from ..execution.models import ToolOperation
 from ..tools.aws.contracts import AwsReadObservation
-from ..workspace.lifecycle import ArchiveStateError, assert_active_project
 from ..workspace.models import Project
 from ..workspace.projects import ProjectLifecycleError, get_owned_project
 from .contracts import (
-    EnvironmentCreate,
     EnvironmentSummary,
-    ResourceBindingCreate,
     ResourceBindingSummary,
     ResourceObservationSummary,
 )
 from .models import Environment, ResourceBinding, ResourceObject, ResourceObservation
 
 MAX_ENVIRONMENTS_PER_PROJECT = 10
-MAX_BINDINGS_PER_PROJECT = 100
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
 
@@ -48,38 +47,6 @@ class ResourceServiceError(RuntimeError):
 class _ResourceCursor:
     created_at: datetime
     row_id: uuid.UUID
-
-
-def create_environment(
-    db: Session,
-    *,
-    owner_id: uuid.UUID,
-    project_id: uuid.UUID,
-    request: EnvironmentCreate,
-) -> Environment:
-    project = _owned_project(db, owner_id=owner_id, project_id=project_id, lock=True)
-    _assert_active(project)
-    if (
-        db.query(Environment.id).filter(Environment.project_id == project.id).count()
-        >= MAX_ENVIRONMENTS_PER_PROJECT
-    ):
-        raise ResourceServiceError("environment_limit_exceeded")
-    if (
-        db.query(Environment.id)
-        .filter(Environment.project_id == project.id, Environment.name == request.name)
-        .first()
-        is not None
-    ):
-        raise ResourceServiceError("environment_conflict")
-    environment = Environment(
-        project_id=project.id,
-        name=request.name,
-        display_name=request.display_name,
-        created_by_user_id=owner_id,
-    )
-    db.add(environment)
-    db.flush()
-    return environment
 
 
 def list_environments(
@@ -102,142 +69,11 @@ def list_environments(
     ]
 
 
-def create_resource_binding(
-    db: Session,
-    *,
-    owner_id: uuid.UUID,
-    project_id: uuid.UUID,
-    request: ResourceBindingCreate,
-) -> tuple[ResourceObject, ResourceBinding]:
-    project = _owned_project(db, owner_id=owner_id, project_id=project_id, lock=True)
-    _assert_active(project)
-    environment = (
-        db.query(Environment)
-        .filter(
-            Environment.id == request.environment_id,
-            Environment.project_id == project.id,
-        )
-        .with_for_update()
-        .first()
-    )
-    if environment is None:
-        raise ResourceServiceError("resource_scope_denied")
-
-    connector = (
-        db.query(Connector)
-        .filter(
-            Connector.id == request.connector_id,
-            Connector.kind == "aws",
-            Connector.visibility == "project",
-            Connector.project_id == project.id,
-        )
-        .with_for_update()
-        .first()
-    )
-    if connector is None:
-        raise ResourceServiceError("resource_scope_denied")
-    if connector.revoked_at is not None:
-        raise ResourceServiceError("connector_revoked")
-    if not connector.enabled:
-        raise ResourceServiceError("connector_unavailable")
-    if connector.current_revision != request.connector_revision:
-        raise ResourceServiceError("connector_revision_changed")
-
-    revision = (
-        db.query(ConnectorRevision)
-        .filter(
-            ConnectorRevision.connector_id == connector.id,
-            ConnectorRevision.revision == request.connector_revision,
-            ConnectorRevision.project_id == project.id,
-            ConnectorRevision.visibility == "project",
-        )
-        .first()
-    )
-    if revision is None:
-        raise ResourceServiceError("resource_scope_denied")
-    credential = (
-        db.query(CredentialVersion)
-        .filter(
-            CredentialVersion.id == revision.credential_version_id,
-            CredentialVersion.connector_id == connector.id,
-            CredentialVersion.project_id == project.id,
-            CredentialVersion.visibility == "project",
-            CredentialVersion.kind == "aws_bootstrap",
-            CredentialVersion.state == "active",
-            CredentialVersion.revoked_at.is_(None),
-        )
-        .first()
-    )
-    if credential is None:
-        raise ResourceServiceError("connector_unavailable")
-    try:
-        configuration = ConnectorConfiguration.model_validate_json(
-            revision.configuration_json
-        )
-    except (TypeError, ValueError):
-        raise ResourceServiceError("connector_unavailable") from None
-    if (
-        configuration.kind != "aws"
-        or not configuration.expected_account_id
-        or not configuration.region
-    ):
-        raise ResourceServiceError("resource_scope_denied")
-
-    if (
-        db.query(ResourceBinding.id)
-        .filter(
-            ResourceBinding.project_id == project.id,
-        )
-        .count()
-        >= MAX_BINDINGS_PER_PROJECT
-    ):
-        raise ResourceServiceError("resource_limit_exceeded")
-    duplicate = (
-        db.query(ResourceBinding.id)
-        .filter(
-            ResourceBinding.project_id == project.id,
-            ResourceBinding.environment_id == environment.id,
-            ResourceBinding.account_id == configuration.expected_account_id,
-            ResourceBinding.region == configuration.region,
-            ResourceBinding.bucket_name == request.bucket_name,
-            ResourceBinding.state == "active",
-        )
-        .first()
-    )
-    if duplicate is not None:
-        raise ResourceServiceError("resource_binding_conflict")
-
-    resource_id = uuid.uuid4()
-    resource = ResourceObject(
-        id=resource_id,
-        project_id=project.id,
-        kind="aws_s3_bucket",
-        uri=f"openship://{project.id}/resource/{resource_id}",
-        display_name=request.display_name,
-        created_by_user_id=owner_id,
-    )
-    # Persist the parent before its binding; no ORM relationship orders the inserts.
-    db.add(resource)
-    db.flush()
-    binding = ResourceBinding(
-        project_id=project.id,
-        resource_object_id=resource_id,
-        environment_id=environment.id,
-        connector_id=connector.id,
-        connector_revision=revision.revision,
-        revision=1,
-        account_id=configuration.expected_account_id,
-        region=configuration.region,
-        bucket_name=request.bucket_name,
-        bucket_arn=f"arn:aws:s3:::{request.bucket_name}",
-        expected_owner=configuration.expected_account_id,
-        management_method="external",
-        state="active",
-        created_by_user_id=owner_id,
-    )
-    db.add(binding)
-    db.flush()
-    return resource, binding
+def authorize_resource_project(
+    db: Session, *, owner_id: uuid.UUID, project_id: uuid.UUID
+) -> None:
+    """Check ownership before returning the retired setup response."""
+    _owned_project(db, owner_id=owner_id, project_id=project_id)
 
 
 def list_resource_bindings(
@@ -308,41 +144,6 @@ def list_resource_bindings(
         else None
     )
     return items, next_cursor
-
-
-def get_resource_binding_summary(
-    db: Session,
-    *,
-    owner_id: uuid.UUID,
-    project_id: uuid.UUID,
-    binding_id: uuid.UUID,
-) -> ResourceBindingSummary:
-    project = _owned_project(db, owner_id=owner_id, project_id=project_id)
-    row = (
-        db.query(ResourceBinding, ResourceObject, Environment)
-        .join(
-            ResourceObject,
-            and_(
-                ResourceObject.id == ResourceBinding.resource_object_id,
-                ResourceObject.project_id == ResourceBinding.project_id,
-            ),
-        )
-        .join(
-            Environment,
-            and_(
-                Environment.id == ResourceBinding.environment_id,
-                Environment.project_id == ResourceBinding.project_id,
-            ),
-        )
-        .filter(
-            ResourceBinding.id == binding_id,
-            ResourceBinding.project_id == project.id,
-        )
-        .first()
-    )
-    if row is None:
-        raise ResourceServiceError("resource_not_found")
-    return _binding_summary(*row)
 
 
 def list_resource_observations(
@@ -416,29 +217,84 @@ def record_aws_read_observation(
         value = AwsReadObservation.model_validate(observation)
     except Exception as exc:
         raise ResourceServiceError("invalid_observation") from exc
+    return record_aws_direct_observation(
+        db,
+        authorization=authorization,
+        operation=operation,
+        tool=value.tool,
+        connector_id=value.connector_id,
+        connector_revision=value.connector_revision,
+        account_id=value.account_id,
+        service=value.service,
+        operation_name=value.operation,
+        region=value.region,
+        target=value.target,
+        catalog_digest=value.catalog_digest,
+        retrieved_at=value.retrieved_at,
+        measurement_at=None,
+        outcome=value.outcome,
+        coverage={
+            **value.coverage,
+            "request_count": value.request_count,
+            "next_cursor": value.next_cursor,
+        },
+        artifact=artifact,
+    )
+
+
+def record_aws_direct_observation(
+    db: Session,
+    *,
+    authorization: AuthorizationContext,
+    operation: ToolOperation,
+    tool: CapabilityRef,
+    connector_id: uuid.UUID,
+    connector_revision: int,
+    account_id: str,
+    service: str,
+    operation_name: str,
+    region: str,
+    target: dict,
+    catalog_digest: str,
+    retrieved_at: datetime,
+    measurement_at: datetime | None,
+    outcome: str,
+    coverage: dict,
+    artifact: ArtifactRef,
+) -> ResourceObservation:
+    """Stage one direct-target observation with no resource binding dependency."""
     if (
         authorization.action != "execute_tool"
         or authorization.principal_id != operation.principal_id
         or authorization.project_id != operation.project_id
         or authorization.conversation_id != operation.conversation_id
         or authorization.target_id != str(operation.run_id)
-        or value.operation_id != operation.id
-        or value.project_id != operation.project_id
-        or value.tool.id != "aws_read"
-        or value.tool.id != operation.capability_id
-        or value.tool.version != operation.capability_version
-        or value.tool.manifest_digest != operation.manifest_digest
+        or tool.id != operation.capability_id
+        or tool.version != operation.capability_version
+        or tool.manifest_digest != operation.manifest_digest
+        or not isinstance(connector_id, uuid.UUID)
+        or not 1 <= connector_revision
+        or not isinstance(account_id, str)
+        or len(account_id) != 12
+        or not isinstance(service, str)
+        or not 1 <= len(service) <= 64
+        or not isinstance(operation_name, str)
+        or not 1 <= len(operation_name) <= 128
+        or not isinstance(region, str)
+        or not 1 <= len(region) <= 64
+        or not isinstance(catalog_digest, str)
+        or len(catalog_digest) != 64
+        or outcome not in {"measured", "no_data", "partial", "failed"}
         or len(artifact.sha256) != 64
     ):
         raise ResourceServiceError("observation_identity_mismatch")
-
     revision = (
         db.query(ConnectorRevision.id)
         .join(Connector, Connector.id == ConnectorRevision.connector_id)
         .filter(
             ConnectorRevision.project_id == operation.project_id,
-            ConnectorRevision.connector_id == value.connector_id,
-            ConnectorRevision.revision == value.connector_revision,
+            ConnectorRevision.connector_id == connector_id,
+            ConnectorRevision.revision == connector_revision,
             ConnectorRevision.visibility == "project",
             Connector.kind == "aws",
             Connector.visibility == "project",
@@ -449,10 +305,7 @@ def record_aws_read_observation(
     if revision is None:
         raise ResourceServiceError("connector_revision_not_found")
 
-    coverage = dict(value.coverage)
-    coverage["request_count"] = value.request_count
-    coverage["next_cursor"] = value.next_cursor
-    target_json = canonical_json(value.target).decode("utf-8")
+    target_json = canonical_json(target).decode("utf-8")
     coverage_json = canonical_json(coverage).decode("utf-8")
     if (
         len(target_json.encode("utf-8")) > 16 * 1024
@@ -465,19 +318,19 @@ def record_aws_read_observation(
         run_id=operation.run_id,
         operation_id=operation.id,
         schema_version=2,
-        connector_id=value.connector_id,
-        connector_revision=value.connector_revision,
-        account_id=value.account_id,
-        service=value.service,
-        operation=value.operation,
-        region=value.region,
+        connector_id=connector_id,
+        connector_revision=connector_revision,
+        account_id=account_id,
+        service=service,
+        operation=operation_name,
+        region=region,
         target_json=target_json,
-        catalog_digest=value.catalog_digest,
+        catalog_digest=catalog_digest,
         source=operation.capability_id,
-        retrieved_at=value.retrieved_at,
-        measurement_at=None,
+        retrieved_at=retrieved_at,
+        measurement_at=measurement_at,
         coverage_json=coverage_json,
-        outcome=value.outcome,
+        outcome=outcome,
         evidence_artifact_id=artifact.id,
         evidence_sha256=artifact.sha256,
     )
@@ -501,13 +354,6 @@ def _owned_project(
         )
     except ProjectLifecycleError:
         raise ResourceServiceError("project_not_found") from None
-
-
-def _assert_active(project: Project) -> None:
-    try:
-        assert_active_project(project)
-    except ArchiveStateError:
-        raise ResourceServiceError("project_archived") from None
 
 
 def _binding_summary(
@@ -609,12 +455,9 @@ def _utc(value: datetime) -> datetime:
 
 
 __all__ = [
-    "MAX_BINDINGS_PER_PROJECT",
     "MAX_ENVIRONMENTS_PER_PROJECT",
     "ResourceServiceError",
-    "create_environment",
-    "create_resource_binding",
-    "get_resource_binding_summary",
+    "authorize_resource_project",
     "list_environments",
     "list_resource_bindings",
     "list_resource_observations",

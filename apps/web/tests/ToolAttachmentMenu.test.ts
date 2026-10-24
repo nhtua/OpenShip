@@ -137,7 +137,7 @@ describe('ToolAttachmentMenu', () => {
     wrapper.unmount()
   })
 
-  it('offers bound S3 storage as an explicit maintained tool but keeps identity checks out of the model menu', async () => {
+  it('offers S3 storage as a direct maintained tool but keeps identity checks out of the model menu', async () => {
     const awsStorage: CapabilitySummary = {
       id: 'aws_s3_bucket_storage', version: '1.0.0', manifest_digest: 'd'.repeat(64),
       input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true,
@@ -147,13 +147,6 @@ describe('ToolAttachmentMenu', () => {
     const wrapper = mount(ToolAttachmentMenu, {
       props: {
         capabilities: [...capabilities, awsStorage, identityCheck],
-        resourceBindings: [{
-          resource_id: 'resource-1', uri: 'aws:s3://example-bucket', display_name: 'Example bucket',
-          environment_id: 'environment-1', environment_name: 'production', binding_id: 'binding-1',
-          binding_revision: 1, connector_id: 'aws-1', connector_revision: 1, account_id: '123456789012',
-          region: 'us-east-1', bucket_name: 'example-bucket', bucket_arn: 'arn:aws:s3:::example-bucket',
-          expected_owner: '123456789012', management_method: 'unknown', state: 'active', created_at: '',
-        }],
         selectedCapabilityId: null,
         disabled: false,
       },
@@ -196,7 +189,7 @@ describe('ToolAttachmentMenu', () => {
     wrapper.unmount()
   })
 
-  it('offers bucket metadata only when an active bucket binding is available', async () => {
+  it('offers direct AWS read helpers without requiring a saved bucket binding', async () => {
     const metadata: CapabilitySummary = {
       id: 'aws_s3_bucket_metadata',
       version: '1.0.0',
@@ -210,19 +203,11 @@ describe('ToolAttachmentMenu', () => {
       required_connector_kinds: ['aws'],
       connector_readiness: { aws: 'ready' },
     }
-    const binding = {
-      resource_id: 'resource-1', uri: 'aws:s3://example-bucket', display_name: 'Example bucket',
-      environment_id: 'environment-1', environment_name: 'production', binding_id: 'binding-1',
-      binding_revision: 1, connector_id: 'aws-1', connector_revision: 1, account_id: '123456789012',
-      region: 'us-east-1', bucket_name: 'example-bucket', bucket_arn: 'arn:aws:s3:::example-bucket',
-      expected_owner: '123456789012', management_method: 'unknown' as const, state: 'active' as const, created_at: '',
-    }
     const wrapper = mount(ToolAttachmentMenu, {
       props: {
         capabilities: [...capabilities, metadata],
         selectedCapabilityId: null,
         disabled: false,
-        resourceBindings: [binding],
       },
     })
 
@@ -235,11 +220,6 @@ describe('ToolAttachmentMenu', () => {
       id: 'aws_s3_bucket_metadata', version: '1.0.0', manifest_digest: 'd'.repeat(64),
     }])
 
-    await wrapper.setProps({ resourceBindings: [] })
-    await wrapper.get('button[aria-label="Add tool"]').trigger('click')
-    const unavailable = wrapper.findAll('[data-testid="tool-choice"]')
-      .find((item) => item.text().includes('S3 bucket metadata'))!
-    expect(unavailable.attributes('disabled')).toBeDefined()
-    expect(unavailable.text()).toContain('Bind an S3 bucket in Connectors first')
+    wrapper.unmount()
   })
 })

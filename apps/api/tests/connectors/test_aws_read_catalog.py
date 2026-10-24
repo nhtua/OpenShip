@@ -217,7 +217,7 @@ def test_secret_value_operations_are_explicitly_unsupported(
 def test_unknown_sdk_version_or_digest_fails_closed(tmp_path, monkeypatch):
     payload = {
         "schema_version": 1,
-        "schema_conversion_version": 1,
+        "schema_conversion_version": 2,
         "sdk_version": "0.0.0",
         "source": "https://example.invalid",
         "operation_fields": [
@@ -376,6 +376,45 @@ def test_catalog_lookup_is_local_and_lists_are_paged(monkeypatch):
 def test_catalog_supports_the_phase_five_read_fixtures(service, operation):
     descriptor = require_read_operation(service, operation)
     assert descriptor.supported is True
+
+
+def test_cloudwatch_number_of_objects_query_uses_the_real_metric_query_shape():
+    descriptor = require_read_operation("cloudwatch", "get_metric_data")
+    query = {
+        "Id": "m0",
+        "MetricStat": {
+            "Metric": {
+                "Namespace": "AWS/S3",
+                "MetricName": "NumberOfObjects",
+                "Dimensions": [
+                    {"Name": "BucketName", "Value": "example-bucket"},
+                    {"Name": "StorageType", "Value": "AllStorageTypes"},
+                ],
+            },
+            "Period": 86400,
+            "Stat": "Average",
+        },
+        "ReturnData": True,
+    }
+    validate_parameters(
+        descriptor,
+        {
+            "MetricDataQueries": [query],
+            "StartTime": "2026-10-16T00:00:00Z",
+            "EndTime": "2026-10-23T00:00:00Z",
+        },
+    )
+    with pytest.raises(AwsReadCatalogError, match="missing a required parameter"):
+        validate_parameters(
+            descriptor,
+            {
+                "MetricDataQueries": [
+                    {key: value for key, value in query.items() if key != "Id"}
+                ],
+                "StartTime": "2026-10-16T00:00:00Z",
+                "EndTime": "2026-10-23T00:00:00Z",
+            },
+        )
 
 
 @pytest.mark.asyncio

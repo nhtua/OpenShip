@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -392,54 +393,6 @@ async def test_gateway_runs_workspace_list_and_read_without_credentials_or_new_a
     assert read.result["version_id"] == str(artifact.id)
     assert db.query(Artifact).filter_by(conversation_id=conversation.id).count() == 1
     assert db.query(ToolOperation).filter_by(run_id=run.id).count() == 2
-    db.close()
-
-
-@pytest.mark.asyncio
-async def test_gateway_runs_bound_inventory_without_workspace_or_aws_access(
-    monkeypatch,
-):
-    monkeypatch.setattr(settings, "tool_enabled_ids", "aws_s3_list_bound_buckets")
-    db = SessionLocal()
-    _user, _project, _conversation, run, claim, ref, context = _running_tool(
-        db, tool_id="aws_s3_list_bound_buckets"
-    )
-    context.artifact_store = None
-    context.credential_resolver = lambda _name: pytest.fail(
-        "bound inventory must not resolve credentials"
-    )
-    monkeypatch.setattr(
-        "src.openship.execution.gateway.AwsRoleBroker",
-        lambda *_args, **_kwargs: pytest.fail(
-            "bound inventory must not create an AWS broker"
-        ),
-    )
-    monkeypatch.setattr(
-        "src.openship.execution.gateway.SearchCredentialBroker",
-        lambda *_args, **_kwargs: pytest.fail(
-            "bound inventory must not create a credential broker"
-        ),
-    )
-
-    result = await ToolGateway(SessionLocal).execute_tool(
-        claim=claim,
-        context=context,
-        logical_call_id="model:0:list-bound-buckets",
-        ref=ref,
-        arguments={"limit": 5},
-        control=InvocationControl(),
-    )
-
-    assert result.status == "succeeded"
-    assert result.result == {
-        "items": [],
-        "next_cursor": None,
-        "source": "stored_bindings",
-    }
-    assert result.artifacts == ()
-    operation = db.query(ToolOperation).filter_by(run_id=run.id).one()
-    assert operation.credential_binding_ref is None
-    assert operation.output_artifact_ids == "[]"
     db.close()
 
 
@@ -1248,3 +1201,56 @@ async def test_pinned_non_tool_graph_is_rejected_before_operation_or_attempt(
     assert called == []
     assert db.query(ToolOperation).filter(ToolOperation.run_id == run.id).count() == 0
     db.close()
+
+
+def test_completed_legacy_metadata_result_remains_renderable_after_direct_v2():
+    db = SessionLocal()
+    artifact = ArtifactRef(
+        id=uuid.uuid4(),
+        sha256="a" * 64,
+        size_bytes=32,
+        media_type="application/json",
+    )
+    legacy_result = {
+        "operation_id": str(uuid.uuid4()),
+        "resource_id": str(uuid.uuid4()),
+        "resource_binding_id": str(uuid.uuid4()),
+        "binding_revision": 2,
+        "account_id": "123456789012",
+        "region": "us-east-1",
+        "bucket_name": "legacy-demo-bucket",
+        "versioning_status": "enabled",
+        "mfa_delete_status": "disabled",
+        "request_count": 4,
+        "retrieved_at": datetime.now(UTC).isoformat(),
+        "artifact": artifact.model_dump(mode="json"),
+    }
+    operation = SimpleNamespace(
+        id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        conversation_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        logical_call_id="manual:legacy-metadata",
+        capability_id="aws_s3_bucket_metadata",
+        capability_version="1.0.0",
+        manifest_digest="b" * 64,
+        status="succeeded",
+        error_code=None,
+        result_json=json.dumps(legacy_result),
+        output_artifact_ids="[]",
+        arguments_json=json.dumps({"resource_binding_id": str(uuid.uuid4())}),
+        created_at=None,
+        updated_at=None,
+        finished_at=None,
+    )
+
+    try:
+        projection = project_operation(db, operation)
+        assert projection.status == "succeeded"
+        assert projection.result["resource_id"] == legacy_result["resource_id"]
+        assert projection.result["resource_binding_id"] == legacy_result[
+            "resource_binding_id"
+        ]
+        assert projection.result["artifact"] == legacy_result["artifact"]
+    finally:
+        db.close()

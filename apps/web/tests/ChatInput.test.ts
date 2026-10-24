@@ -46,12 +46,9 @@ const awsMetadata: CapabilitySummary = {
   manifest_digest: 'e'.repeat(64),
 }
 
-const resourceBinding = {
-  resource_id: 'resource-1', uri: 'aws:s3://example-bucket', display_name: 'Example bucket',
-  environment_id: 'environment-1', environment_name: 'production', binding_id: 'binding-1',
-  binding_revision: 1, connector_id: 'aws-1', connector_revision: 1, account_id: '123456789012',
-  region: 'us-east-1', bucket_name: 'example-bucket', bucket_arn: 'arn:aws:s3:::example-bucket',
-  expected_owner: '123456789012', management_method: 'unknown' as const, state: 'active' as const, created_at: '',
+const awsConnector = {
+  id: 'aws-1', kind: 'aws', visibility: 'project', name: 'Read only account',
+  status: 'configured', revision: 1, is_default: false,
 }
 
 describe('ChatInput', () => {
@@ -552,7 +549,7 @@ describe('ChatInput', () => {
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('keep this draft')
   })
 
-  it('attaches S3 storage to a selected binding without an unused message field', async () => {
+  it('attaches S3 storage to a direct bucket target through the selected AWS connector', async () => {
     const wrapper = mount(ChatInput, {
       props: {
         profiles: modelProfileCatalog.profiles,
@@ -562,7 +559,7 @@ describe('ChatInput', () => {
         catalogError: null,
         selectionDisabled: false,
         capabilities: [awsStorage],
-        resourceBindings: [resourceBinding],
+        connectors: [awsConnector],
       },
     })
 
@@ -570,17 +567,20 @@ describe('ChatInput', () => {
     const storageChoice = wrapper.findAll('[data-testid="tool-choice"]').find((item) => item.text().includes('S3'))!
     await storageChoice.trigger('click')
     expect(wrapper.find('textarea').exists()).toBe(false)
-    expect(wrapper.get('[aria-label="AWS resource binding"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="aws-bucket-name"]').setValue('example-bucket')
+    await wrapper.get('[data-testid="aws-bucket-region"]').setValue('us-east-1')
     await wrapper.get('form').trigger('submit')
 
     expect(wrapper.emitted('search')?.[0]?.[0]).toMatchObject({
       capability: { id: 'aws_s3_bucket_storage', version: '1.0.0' },
-      arguments: { resource_binding_id: 'binding-1' },
+      arguments: { connector_id: 'aws-1', bucket_name: 'example-bucket', region: 'us-east-1' },
+      connector_selections: { aws: 'aws-1' },
     })
     wrapper.unmount()
   })
 
-  it('attaches bucket metadata to a selected binding without a message field', async () => {
+  it('attaches bucket metadata to a direct bucket target without a message field', async () => {
+    const secondAwsConnector = { ...awsConnector, id: 'aws-2', name: 'Audit role' }
     const wrapper = mount(ChatInput, {
       props: {
         profiles: modelProfileCatalog.profiles,
@@ -590,7 +590,7 @@ describe('ChatInput', () => {
         catalogError: null,
         selectionDisabled: false,
         capabilities: [awsMetadata],
-        resourceBindings: [resourceBinding],
+        connectors: [awsConnector, secondAwsConnector],
       },
     })
 
@@ -599,17 +599,21 @@ describe('ChatInput', () => {
       .find((item) => item.text().includes('S3 bucket metadata'))!
     await metadataChoice.trigger('click')
     expect(wrapper.find('textarea').exists()).toBe(false)
-    expect(wrapper.get('[aria-label="AWS resource binding"]').exists()).toBe(true)
+    expect((wrapper.get('button[type="submit"]').element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.get('[aria-label="AWS connector"]').setValue('aws-2')
+    await wrapper.get('[data-testid="aws-bucket-name"]').setValue('example-bucket')
     await wrapper.get('form').trigger('submit')
 
     expect(wrapper.emitted('search')?.[0]?.[0]).toMatchObject({
       capability: { id: 'aws_s3_bucket_metadata', version: '1.0.0' },
-      arguments: { resource_binding_id: 'binding-1' },
+      arguments: { connector_id: 'aws-2', bucket_name: 'example-bucket' },
+      connector_selections: { aws: 'aws-2' },
     })
     wrapper.unmount()
   })
 
-  it('includes explicitly selected bucket bindings in automatic tool turns', async () => {
+  it('requires an explicit AWS connector in automatic mode when several roles are eligible', async () => {
+    const secondAwsConnector = { ...awsConnector, id: 'aws-2', name: 'Audit role' }
     const wrapper = mount(ChatInput, {
       props: {
         profiles: toolCapableProfiles,
@@ -618,24 +622,28 @@ describe('ChatInput', () => {
         fallbackIds: [],
         catalogError: null,
         selectionDisabled: false,
-        capabilities: [awsStorage],
-        resourceBindings: [resourceBinding],
+        capabilities: [{
+          ...awsStorage,
+          id: 'aws_read',
+          connector_readiness: { aws: 'ambiguous' },
+        }],
+        connectors: [awsConnector, secondAwsConnector],
       },
     })
 
-    await wrapper.get('[data-testid="resource-binding-selection"]').setValue(['binding-1'])
     expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
+    await wrapper.get('[aria-label="AWS connector for automatic tools"]').setValue('aws-2')
     await wrapper.get('textarea').setValue('What is the storage usage?')
     await wrapper.get('form').trigger('submit')
 
     expect(wrapper.emitted('send')?.[0]).toEqual([
       'What is the storage usage?',
-      { enableTools: true, resourceBindingSelections: ['binding-1'] },
+      { enableTools: true, connectorSelections: { aws: 'aws-2' } },
     ])
     wrapper.unmount()
   })
 
-  it('makes metadata available to automatic mode only after selecting a bucket', async () => {
+  it('keeps direct AWS reads available to automatic mode without registered buckets', async () => {
     const wrapper = mount(ChatInput, {
       props: {
         profiles: toolCapableProfiles,
@@ -644,22 +652,23 @@ describe('ChatInput', () => {
         fallbackIds: [],
         catalogError: null,
         selectionDisabled: false,
-        capabilities: [awsMetadata],
-        resourceBindings: [resourceBinding],
+        capabilities: [{
+          ...awsMetadata,
+          id: 'aws_read',
+          required_connector_kinds: ['aws'],
+          connector_readiness: { aws: 'ready' },
+        }],
+        connectors: [awsConnector],
       },
     })
 
-    await wrapper.get('[aria-label="Add tool"]').trigger('click')
-    expect(wrapper.get('[data-testid="automatic-tool-mode"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('[data-testid="tool-menu"]').trigger('keydown', { key: 'Escape' })
-    await wrapper.get('[data-testid="resource-binding-selection"]').setValue(['binding-1'])
     expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
     await wrapper.get('textarea').setValue('Check this bucket versioning configuration.')
     await wrapper.get('form').trigger('submit')
 
     expect(wrapper.emitted('send')?.[0]).toEqual([
       'Check this bucket versioning configuration.',
-      { enableTools: true, resourceBindingSelections: ['binding-1'] },
+      { enableTools: true },
     ])
     wrapper.unmount()
   })

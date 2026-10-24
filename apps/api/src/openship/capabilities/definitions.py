@@ -17,12 +17,6 @@ from src.openship.capabilities.contracts import (
     ConnectorRef,
     canonical_json,
 )
-from src.openship.tools.aws.bound_inventory import (
-    BoundInventoryArguments,
-    BoundInventoryError,
-    BoundInventoryResult,
-    list_bound_buckets,
-)
 from src.openship.tools.aws.checks import aws_check_connection
 from src.openship.tools.aws.contracts import (
     AwsCheckArguments,
@@ -30,12 +24,12 @@ from src.openship.tools.aws.contracts import (
     AwsReadArguments,
     AwsReadObservation,
     AwsReadResult,
-    AwsS3MetadataArguments,
-    AwsS3MetadataObservation,
-    AwsS3MetadataResult,
-    AwsStorageArguments,
-    AwsStorageObservation,
-    AwsStorageResult,
+    AwsS3MetadataArgumentsV2,
+    AwsS3MetadataObservationV2,
+    AwsS3MetadataResultV2,
+    AwsStorageArgumentsV2,
+    AwsStorageObservationV2,
+    AwsStorageResultV2,
     AwsToolError,
 )
 from src.openship.tools.aws.read import execute_aws_read, project_aws_read_result
@@ -160,7 +154,6 @@ _BUILTIN_IDS = frozenset(
         "aws_check_connection",
         "aws_s3_bucket_storage",
         "aws_s3_bucket_metadata",
-        "aws_s3_list_bound_buckets",
         "aws_read_catalog",
         "aws_read",
     }
@@ -226,10 +219,6 @@ def _workspace_publication(db: Any, operation: Any, value: Any) -> Any:
 
 def _aws_error(error: Exception) -> str | None:
     return error.code if isinstance(error, AwsToolError) else None
-
-
-def _bound_inventory_error(error: Exception) -> str | None:
-    return error.code if isinstance(error, BoundInventoryError) else None
 
 
 def _aws_check_output(operation: Any, value: Any) -> Any:
@@ -343,15 +332,30 @@ def _aws_read_publication(db: Any, operation: Any, observation: Any, artifact_re
 
 
 def _aws_storage_output(operation: Any, value: Any) -> Any:
+    from src.openship.connectors.aws.read_catalog import load_aws_read_catalog
     from src.openship.execution.publication import ToolPublicationError
 
     try:
-        observation = AwsStorageObservation.model_validate(value)
-        arguments = AwsStorageArguments.model_validate_json(operation.arguments_json)
+        observation = AwsStorageObservationV2.model_validate(value)
+        arguments = AwsStorageArgumentsV2.model_validate_json(
+            operation.arguments_json
+        )
+        expected_target = {"bucket_name": arguments.bucket_name}
+        if arguments.expected_owner is not None:
+            expected_target["expected_owner"] = arguments.expected_owner
         if (
-            observation.operation_id != str(operation.id)
+            observation.operation_id != operation.id
             or observation.project_id != operation.project_id
-            or observation.resource_binding_id != arguments.resource_binding_id
+            or observation.connector_id != arguments.connector_id
+            or observation.bucket_name != arguments.bucket_name
+            or (
+                arguments.region is not None
+                and observation.region != arguments.region
+            )
+            or observation.target != expected_target
+            or observation.service != "cloudwatch"
+            or observation.operation != "get_metric_data"
+            or observation.catalog_digest != load_aws_read_catalog().digest
             or observation.tool.id != operation.capability_id
             or observation.tool.version != operation.capability_version
             or observation.tool.manifest_digest != operation.manifest_digest
@@ -367,65 +371,71 @@ def _aws_storage_output(operation: Any, value: Any) -> Any:
 def _aws_storage_publication(
     db: Any, operation: Any, observation: Any, artifact_ref: Any
 ) -> Any:
-    from src.openship.execution.publication import ToolPublicationError
-    from src.openship.resources.models import ResourceBinding, ResourceObservation
-
-    binding = (
-        db.query(ResourceBinding)
-        .filter(
-            ResourceBinding.id == observation.resource_binding_id,
-            ResourceBinding.project_id == operation.project_id,
-            ResourceBinding.resource_object_id == observation.resource_id,
-            ResourceBinding.revision == observation.binding_revision,
-            ResourceBinding.connector_id == observation.connector_id,
-            ResourceBinding.connector_revision == observation.connector_revision,
-            ResourceBinding.account_id == observation.account_id,
-            ResourceBinding.region == observation.region,
-            ResourceBinding.bucket_name == observation.bucket_name,
-            ResourceBinding.state == "active",
-        )
-        .with_for_update()
-        .first()
+    from src.openship.capabilities.contracts import AuthorizationContext
+    from src.openship.resources.service import (
+        ResourceServiceError,
+        record_aws_direct_observation,
     )
-    if binding is None:
-        raise ToolPublicationError("changed")
+
     coverage = observation.metrics.coverage.model_dump(mode="json")
     coverage["stale"] = observation.metrics.stale
     coverage["reported_storage_subtotal_bytes"] = (
         observation.metrics.reported_storage_subtotal_bytes
     )
-    coverage_json = canonical_json(coverage)
-    db.add(
-        ResourceObservation(
-            project_id=operation.project_id,
-            conversation_id=operation.conversation_id,
-            run_id=operation.run_id,
-            operation_id=operation.id,
-            resource_object_id=observation.resource_id,
-            resource_binding_id=observation.resource_binding_id,
-            binding_revision=observation.binding_revision,
-            source=operation.capability_id,
-            retrieved_at=observation.retrieved_at,
-            measurement_at=observation.metrics.measurement_at,
-            coverage_json=coverage_json.decode("utf-8"),
-            outcome=observation.metrics.outcome,
-            evidence_artifact_id=artifact_ref.id,
-            evidence_sha256=artifact_ref.sha256,
-        )
+    coverage["request_count"] = observation.request_count
+    authorization = AuthorizationContext(
+        principal_id=operation.principal_id,
+        project_id=operation.project_id,
+        conversation_id=operation.conversation_id,
+        action="execute_tool",
+        target_id=str(operation.run_id),
     )
+    try:
+        _record_s3_helper_observation(
+            db,
+            operation=operation,
+            observation=observation,
+            artifact_ref=artifact_ref,
+            authorization=authorization,
+            service=observation.service,
+            operation_name=observation.operation,
+            measurement_at=observation.metrics.measurement_at,
+            outcome=observation.metrics.outcome,
+            coverage=coverage,
+            record=record_aws_direct_observation,
+        )
+    except ResourceServiceError:
+        from src.openship.execution.publication import ToolPublicationError
+
+        raise ToolPublicationError("changed") from None
     return project_storage_result(observation, artifact_ref)
 
 
 def _aws_metadata_output(operation: Any, value: Any) -> Any:
+    from src.openship.connectors.aws.read_catalog import load_aws_read_catalog
     from src.openship.execution.publication import ToolPublicationError
 
     try:
-        observation = AwsS3MetadataObservation.model_validate(value)
-        arguments = AwsS3MetadataArguments.model_validate_json(operation.arguments_json)
+        observation = AwsS3MetadataObservationV2.model_validate(value)
+        arguments = AwsS3MetadataArgumentsV2.model_validate_json(
+            operation.arguments_json
+        )
+        expected_target = {"bucket_name": arguments.bucket_name}
+        if arguments.expected_owner is not None:
+            expected_target["expected_owner"] = arguments.expected_owner
         if (
-            observation.operation_id != str(operation.id)
+            observation.operation_id != operation.id
             or observation.project_id != operation.project_id
-            or observation.resource_binding_id != arguments.resource_binding_id
+            or observation.connector_id != arguments.connector_id
+            or observation.bucket_name != arguments.bucket_name
+            or (
+                arguments.region is not None
+                and observation.region != arguments.region
+            )
+            or observation.target != expected_target
+            or observation.service != "s3"
+            or observation.operation != "get_bucket_versioning"
+            or observation.catalog_digest != load_aws_read_catalog().digest
             or observation.tool.id != operation.capability_id
             or observation.tool.version != operation.capability_version
             or observation.tool.manifest_digest != operation.manifest_digest
@@ -441,12 +451,64 @@ def _aws_metadata_output(operation: Any, value: Any) -> Any:
 def _aws_metadata_publication(
     db: Any, operation: Any, observation: Any, artifact_ref: Any
 ) -> Any:
-    from src.openship.connectors.aws.broker import AwsRoleBroker
+    from src.openship.capabilities.contracts import AuthorizationContext
+    from src.openship.resources.service import (
+        ResourceServiceError,
+        record_aws_direct_observation,
+    )
+
+    coverage = {
+        "versioning_status": observation.versioning_status,
+        "mfa_delete_status": observation.mfa_delete_status,
+        "request_count": observation.request_count,
+    }
+    authorization = AuthorizationContext(
+        principal_id=operation.principal_id,
+        project_id=operation.project_id,
+        conversation_id=operation.conversation_id,
+        action="execute_tool",
+        target_id=str(operation.run_id),
+    )
+    try:
+        _record_s3_helper_observation(
+            db,
+            operation=operation,
+            observation=observation,
+            artifact_ref=artifact_ref,
+            authorization=authorization,
+            service=observation.service,
+            operation_name=observation.operation,
+            measurement_at=None,
+            outcome="measured",
+            coverage=coverage,
+            record=record_aws_direct_observation,
+        )
+    except ResourceServiceError:
+        from src.openship.execution.publication import ToolPublicationError
+
+        raise ToolPublicationError("changed") from None
+    return project_s3_metadata_result(observation, artifact_ref)
+
+
+def _record_s3_helper_observation(
+    db: Any,
+    *,
+    operation: Any,
+    observation: Any,
+    artifact_ref: Any,
+    authorization: Any,
+    service: str,
+    operation_name: str,
+    measurement_at: Any,
+    outcome: str,
+    coverage: dict,
+    record: Any,
+) -> None:
+    from src.openship.connectors.aws.broker import AwsBrokerError, AwsRoleBroker
     from src.openship.connectors.credentials.broker import ConnectorCredentialError
     from src.openship.connectors.models import ConnectorRevision
     from src.openship.execution.aws_transport import AwsSdkError
     from src.openship.execution.publication import ToolPublicationError
-    from src.openship.resources.models import ResourceBinding, ResourceObservation
 
     revision = (
         db.query(ConnectorRevision)
@@ -474,60 +536,37 @@ def _aws_metadata_publication(
             reference=reference,
             lock=True,
         )
-    except (ConnectorCredentialError, AwsSdkError):
+    except (AwsBrokerError, ConnectorCredentialError, AwsSdkError):
         raise ToolPublicationError("changed") from None
-    if (
-        configuration.expected_account_id != observation.account_id
-        or configuration.region != observation.region
-    ):
+    if configuration.expected_account_id != observation.account_id:
         raise ToolPublicationError("changed")
 
-    binding = (
-        db.query(ResourceBinding)
-        .filter(
-            ResourceBinding.id == observation.resource_binding_id,
-            ResourceBinding.project_id == operation.project_id,
-            ResourceBinding.resource_object_id == observation.resource_id,
-            ResourceBinding.revision == observation.binding_revision,
-            ResourceBinding.connector_id == observation.connector_id,
-            ResourceBinding.connector_revision == observation.connector_revision,
-            ResourceBinding.account_id == observation.account_id,
-            ResourceBinding.region == observation.region,
-            ResourceBinding.bucket_name == observation.bucket_name,
-            ResourceBinding.expected_owner == observation.account_id,
-            ResourceBinding.state == "active",
-        )
-        .with_for_update()
-        .first()
-    )
-    if binding is None:
-        raise ToolPublicationError("changed")
-    coverage = canonical_json(
-        {
-            "versioning_status": observation.versioning_status,
-            "mfa_delete_status": observation.mfa_delete_status,
-            "request_count": observation.request_count,
-        }
-    ).decode("utf-8")
-    db.add(
-        ResourceObservation(
-            project_id=operation.project_id,
-            conversation_id=operation.conversation_id,
-            run_id=operation.run_id,
-            operation_id=operation.id,
-            resource_object_id=observation.resource_id,
-            resource_binding_id=observation.resource_binding_id,
-            binding_revision=observation.binding_revision,
-            source=operation.capability_id,
+    try:
+        record(
+            db,
+            authorization=authorization,
+            operation=operation,
+            tool=observation.tool,
+            connector_id=observation.connector_id,
+            connector_revision=observation.connector_revision,
+            account_id=observation.account_id,
+            service=service,
+            operation_name=operation_name,
+            region=observation.region,
+            target=observation.target,
+            catalog_digest=observation.catalog_digest,
             retrieved_at=observation.retrieved_at,
-            measurement_at=None,
-            coverage_json=coverage,
-            outcome="measured",
-            evidence_artifact_id=artifact_ref.id,
-            evidence_sha256=artifact_ref.sha256,
+            measurement_at=measurement_at,
+            outcome=outcome,
+            coverage=coverage,
+            artifact=artifact_ref,
         )
-    )
-    return project_s3_metadata_result(observation, artifact_ref)
+    except Exception as exc:
+        from src.openship.resources.service import ResourceServiceError
+
+        if isinstance(exc, ResourceServiceError):
+            raise
+        raise ToolPublicationError("invalid_tool_output") from exc
 
 
 def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry:
@@ -621,41 +660,33 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
         entry = ToolDefinitionEntry(
             manifest=manifest,
             description=manifest.description,
-            argument_model=AwsStorageArguments,
-            result_model=AwsStorageResult,
+            argument_model=AwsStorageArgumentsV2,
+            result_model=AwsStorageResultV2,
             handler=aws_s3_bucket_storage,
-            handler_result_model=AwsStorageObservation,
+            handler_result_model=AwsStorageObservationV2,
             output_validator=_aws_storage_output,
             external_publication_hook=_aws_storage_publication,
             artifact_kind="cloud_observation",
             artifact_name="s3-bucket-storage.json",
             error_mapper=_aws_error,
             safe_failure_code="aws_unavailable",
+            model_selectable=False,
         )
     elif manifest.id == "aws_s3_bucket_metadata":
         entry = ToolDefinitionEntry(
             manifest=manifest,
             description=manifest.description,
-            argument_model=AwsS3MetadataArguments,
-            result_model=AwsS3MetadataResult,
+            argument_model=AwsS3MetadataArgumentsV2,
+            result_model=AwsS3MetadataResultV2,
             handler=aws_s3_bucket_metadata,
-            handler_result_model=AwsS3MetadataObservation,
+            handler_result_model=AwsS3MetadataObservationV2,
             output_validator=_aws_metadata_output,
             external_publication_hook=_aws_metadata_publication,
             artifact_kind="cloud_observation",
             artifact_name="s3-bucket-metadata.json",
             error_mapper=_aws_error,
             safe_failure_code="aws_unavailable",
-        )
-    elif manifest.id == "aws_s3_list_bound_buckets":
-        entry = ToolDefinitionEntry(
-            manifest=manifest,
-            description=manifest.description,
-            argument_model=BoundInventoryArguments,
-            result_model=BoundInventoryResult,
-            handler=list_bound_buckets,
-            error_mapper=_bound_inventory_error,
-            safe_failure_code="inventory_unavailable",
+            model_selectable=False,
         )
     else:
         raise LookupError("tool definition is not registered")

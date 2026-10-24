@@ -5,6 +5,7 @@ import type { SearchResultItem, ToolOperationSummary } from '@/types'
 import S3StorageObservation from './S3StorageObservation.vue'
 import S3MetadataObservation from './S3MetadataObservation.vue'
 import AwsConnectionCheck from './AwsConnectionCheck.vue'
+import AwsReadObservation from './AwsReadObservation.vue'
 
 const props = defineProps<{ operation: ToolOperationSummary }>()
 const emit = defineEmits<{
@@ -18,6 +19,7 @@ const fullSnippets = ref(false)
 const isStorageObservation = computed(() => props.operation.capability_id === 'aws_s3_bucket_storage')
 const isMetadataObservation = computed(() => props.operation.capability_id === 'aws_s3_bucket_metadata')
 const isConnectionCheck = computed(() => props.operation.capability_id === 'aws_check_connection')
+const isAwsRead = computed(() => props.operation.capability_id === 'aws_read')
 
 function toolLabel(id: string): string {
   if (id === 'brave_web_search') return 'Brave Search'
@@ -25,6 +27,7 @@ function toolLabel(id: string): string {
   if (id === 'aws_s3_bucket_storage') return 'S3 bucket storage'
   if (id === 'aws_s3_bucket_metadata') return 'S3 bucket metadata'
   if (id === 'aws_check_connection') return 'AWS connection check'
+  if (id === 'aws_read') return 'AWS read'
   return id
 }
 
@@ -55,11 +58,15 @@ const summary = computed(() => {
     return props.operation.result?.bucket_name ?? 'CloudWatch storage measurement'
   }
   if (isConnectionCheck.value) return props.operation.result?.account_id ?? 'AWS role identity'
+  if (isAwsRead.value) {
+    const result = props.operation.result
+    return result?.service && result.operation ? `${result.service}.${result.operation}` : 'AWS result details'
+  }
   const text = query.value || 'Search query unavailable'
   return text
 })
 const toggleLabel = computed(() =>
-  isMetadataObservation.value
+  isMetadataObservation.value || isAwsRead.value
     ? `${expanded.value ? 'Hide' : 'Show'} details for ${summary.value}`
     : `${expanded.value ? 'Hide' : 'Show'} results for ${query.value || 'this search'}`,
 )
@@ -117,7 +124,7 @@ function toggleSnippets() {
           <span aria-hidden="true" class="shrink-0 text-muted-foreground">·</span>
           <span class="min-w-0 flex-1 truncate">{{ summary }}</span>
         </span>
-        <span v-if="operation.status === 'succeeded' && !isStorageObservation && !isMetadataObservation && !isConnectionCheck" class="shrink-0 text-xs text-muted-foreground">
+        <span v-if="operation.status === 'succeeded' && !isStorageObservation && !isMetadataObservation && !isConnectionCheck && !isAwsRead" class="shrink-0 text-xs text-muted-foreground">
           {{ results.length }} {{ results.length === 1 ? 'result' : 'results' }}
         </span>
         <Badge :variant="statusVariant" data-testid="operation-status" class="h-5 shrink-0 text-[10px]">
@@ -142,12 +149,12 @@ function toggleSnippets() {
     </p>
 
     <div v-if="expanded" class="border-t border-border px-3 py-3">
-      <div v-if="!isStorageObservation" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+      <div v-if="!isStorageObservation && !isAwsRead" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <span>{{ observedAt || 'Search details' }}</span>
         <span v-if="operation.result?.truncated">More results are available from the search service.</span>
       </div>
 
-      <dl data-testid="operation-provenance" class="mb-3 grid min-w-0 gap-1 rounded-md bg-muted/40 p-2 text-xs">
+      <dl v-if="!isAwsRead" data-testid="operation-provenance" class="mb-3 grid min-w-0 gap-1 rounded-md bg-muted/40 p-2 text-xs">
         <div class="flex min-w-0 flex-wrap gap-x-2">
           <dt class="text-muted-foreground">Tool</dt>
           <dd><code>{{ operation.capability_id }}@{{ operation.capability_version }}</code></dd>
@@ -162,8 +169,15 @@ function toggleSnippets() {
         </div>
       </dl>
 
+      <AwsReadObservation
+        v-if="isAwsRead && operation.status === 'succeeded' && operation.result"
+        :result="operation.result"
+        :artifacts="operation.artifacts"
+        @download="(artifactId, name) => emit('download', artifactId, name)"
+        @layout-change="emit('layout-change')"
+      />
       <S3StorageObservation
-        v-if="isStorageObservation && operation.status === 'succeeded' && operation.result"
+        v-else-if="isStorageObservation && operation.status === 'succeeded' && operation.result"
         :result="operation.result"
         :artifacts="operation.artifacts"
         @download="(artifactId, name) => emit('download', artifactId, name)"
@@ -179,16 +193,16 @@ function toggleSnippets() {
         :result="operation.result"
       />
 
-      <p v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && !query" class="mb-3 text-xs text-muted-foreground">
+      <p v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && !isAwsRead && !query" class="mb-3 text-xs text-muted-foreground">
         The search query is not available in this saved history.
       </p>
       <p
-        v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && operation.status === 'succeeded' && results.length === 0"
+        v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && !isAwsRead && operation.status === 'succeeded' && results.length === 0"
         class="py-2 text-sm text-muted-foreground"
       >
         No results returned.
       </p>
-      <ol v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && operation.status === 'succeeded'" class="space-y-3">
+      <ol v-else-if="!isStorageObservation && !isMetadataObservation && !isConnectionCheck && !isAwsRead && operation.status === 'succeeded'" class="space-y-3">
         <li v-for="item in results" :key="`${item.rank}-${item.url}`" class="min-w-0">
           <a
             v-if="safeHref(item.url)"
@@ -225,7 +239,7 @@ function toggleSnippets() {
           {{ fullSnippets ? 'Show shorter snippets' : 'Show full snippets' }}
         </Button>
         <div
-          v-if="!isStorageObservation && !isMetadataObservation"
+          v-if="!isStorageObservation && !isMetadataObservation && !isAwsRead"
           v-for="artifact in operation.artifacts.filter((item) => item.status === 'ready')"
           :key="artifact.id"
           class="flex min-w-0 items-center gap-2"

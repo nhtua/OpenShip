@@ -8,15 +8,21 @@ from typing import Literal
 from pydantic import ValidationError
 
 from src.openship.capabilities.contracts import CapabilityRef, canonical_json
+from src.openship.connectors.aws.read_catalog import load_aws_read_catalog
 from src.openship.execution.aws_transport import AwsSdkError
 
-from .checks import normalize_bucket_region, validate_caller_identity
+from .checks import (
+    aws_connector_reference,
+    expected_owner_parameters,
+    resolve_bucket_region,
+    validate_caller_identity,
+)
 from .contracts import (
-    AwsS3MetadataArguments,
-    AwsS3MetadataObservation,
+    AwsS3MetadataArgumentsV2,
+    AwsS3MetadataObservationV2,
+    AwsS3MetadataResultV2,
     AwsToolError,
 )
-from .s3_storage import _connector_reference, _owned_binding
 
 VersioningStatus = Literal["enabled", "suspended", "not_enabled"]
 MfaDeleteStatus = Literal["enabled", "disabled", "not_reported"]
@@ -53,13 +59,12 @@ def normalize_versioning_configuration(
 
 
 async def aws_s3_bucket_metadata(
-    arguments: AwsS3MetadataArguments,
+    arguments: AwsS3MetadataArgumentsV2,
     context,
     control,
-) -> AwsS3MetadataObservation:
-    """Read the versioning state for one exact, explicitly selected binding."""
-    binding = _owned_binding(context, arguments.resource_binding_id)
-    reference = _connector_reference(context, binding)
+) -> AwsS3MetadataObservationV2:
+    """Read versioning metadata for one direct S3 bucket target."""
+    reference = aws_connector_reference(context, arguments.connector_id)
     try:
         access = await context.aws_access_factory(reference)
     except AwsToolError:
@@ -69,39 +74,21 @@ async def aws_s3_bucket_metadata(
 
     try:
         configuration = access.configuration
-        if (
-            binding.account_id != configuration.expected_account_id
-            or binding.expected_owner != configuration.expected_account_id
-            or binding.region != configuration.region
-        ):
-            raise AwsToolError("aws_resource_unavailable")
-
         control.raise_if_stopped()
         caller_identity = await access.run(access.client("sts").get_caller_identity)
         validate_caller_identity(
             caller_identity,
-            expected_account_id=binding.account_id,
+            expected_account_id=configuration.expected_account_id,
             expected_role_arn=configuration.basic_role_arn,
         )
 
-        control.raise_if_stopped()
-        location = await access.run(
-            access.client("s3").get_bucket_location,
-            Bucket=binding.bucket_name,
-            ExpectedBucketOwner=binding.expected_owner,
-        )
-        try:
-            actual_region = normalize_bucket_region(location.get("LocationConstraint"))
-        except (AttributeError, TypeError, ValueError):
-            raise AwsToolError("aws_region_mismatch") from None
-        if actual_region != binding.region or actual_region != configuration.region:
-            raise AwsToolError("aws_region_mismatch")
+        region = await resolve_bucket_region(arguments, access, control)
 
         control.raise_if_stopped()
         versioning_response = await access.run(
-            access.client("s3").get_bucket_versioning,
-            Bucket=binding.bucket_name,
-            ExpectedBucketOwner=binding.expected_owner,
+            access.client("s3", region=region).get_bucket_versioning,
+            Bucket=arguments.bucket_name,
+            **expected_owner_parameters(arguments.expected_owner),
         )
         try:
             versioning_status, mfa_delete_status = normalize_versioning_configuration(
@@ -111,18 +98,20 @@ async def aws_s3_bucket_metadata(
             raise AwsToolError("aws_invalid_metadata_response") from None
 
         tool = _capability_ref(context)
-        observation = AwsS3MetadataObservation(
+        target = {"bucket_name": arguments.bucket_name}
+        if arguments.expected_owner is not None:
+            target["expected_owner"] = arguments.expected_owner
+        observation = AwsS3MetadataObservationV2(
             tool=tool,
-            operation_id=str(context.operation_id),
+            operation_id=context.operation_id,
             project_id=context.authorization.project_id,
-            resource_id=binding.resource_object_id,
-            resource_binding_id=binding.id,
-            binding_revision=binding.revision,
             connector_id=reference.id,
             connector_revision=reference.configuration_revision,
-            account_id=binding.account_id,
-            region=binding.region,
-            bucket_name=binding.bucket_name,
+            catalog_digest=load_aws_read_catalog().digest,
+            account_id=configuration.expected_account_id,
+            region=region,
+            bucket_name=arguments.bucket_name,
+            target=target,
             versioning_status=versioning_status,
             mfa_delete_status=mfa_delete_status,
             request_count=access.request_budget.used,
@@ -142,21 +131,22 @@ async def aws_s3_bucket_metadata(
         await access.aclose()
 
 
-def project_s3_metadata_result(observation: AwsS3MetadataObservation, artifact_ref):
-    return {
-        "operation_id": observation.operation_id,
-        "resource_id": str(observation.resource_id),
-        "resource_binding_id": str(observation.resource_binding_id),
-        "binding_revision": observation.binding_revision,
-        "account_id": observation.account_id,
-        "region": observation.region,
-        "bucket_name": observation.bucket_name,
-        "versioning_status": observation.versioning_status,
-        "mfa_delete_status": observation.mfa_delete_status,
-        "request_count": observation.request_count,
-        "retrieved_at": observation.retrieved_at.isoformat(),
-        "artifact": artifact_ref.model_dump(mode="json"),
-    }
+def project_s3_metadata_result(
+    observation: AwsS3MetadataObservationV2, artifact_ref
+):
+    return AwsS3MetadataResultV2(
+        operation_id=observation.operation_id,
+        connector_id=observation.connector_id,
+        connector_revision=observation.connector_revision,
+        account_id=observation.account_id,
+        region=observation.region,
+        bucket_name=observation.bucket_name,
+        versioning_status=observation.versioning_status,
+        mfa_delete_status=observation.mfa_delete_status,
+        request_count=observation.request_count,
+        retrieved_at=observation.retrieved_at,
+        artifact=artifact_ref,
+    ).model_dump(mode="json")
 
 
 def _capability_ref(context) -> CapabilityRef:

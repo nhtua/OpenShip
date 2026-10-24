@@ -29,6 +29,7 @@ from src.openship.tools.aws.contracts import (
     AwsReadObservation,
     AwsReadResult,
     AwsS3BucketTargetArguments,
+    AwsS3MetadataArgumentsV2,
     AwsS3MetadataObservationV2,
 )
 from src.openship.tools.search.contracts import SearchArguments, SearchItem
@@ -45,7 +46,6 @@ def test_tool_ids_and_connector_kinds_are_independent():
         "workspace_read_file",
         "aws_check_connection",
         "aws_s3_bucket_storage",
-        "aws_s3_list_bound_buckets",
         "aws_s3_bucket_metadata",
         "aws_read_catalog",
         "aws_read",
@@ -64,13 +64,7 @@ def test_tool_ids_and_connector_kinds_are_independent():
         assert manifest.outputs == ()
         assert "path" not in manifest.input_schema["properties"]
 
-    inventory = manifests["aws_s3_list_bound_buckets"]
-    assert inventory.effect == "read_only_local"
-    assert inventory.connector_kinds == ()
-    assert inventory.operations == ()
-    assert inventory.target_kinds == ()
-    assert inventory.outputs == ()
-    assert inventory.enablement_requirements == ("operator_enabled",)
+    assert "aws_s3_list_bound_buckets" not in manifests
 
 
 def test_manifest_digest_covers_implementation_schema_and_limits():
@@ -338,7 +332,7 @@ def test_aws_read_contracts_bind_targets_to_connector_and_bound_evidence():
     direct_target = AwsS3BucketTargetArguments(
         connector_id=connector,
         bucket_name="example-bucket",
-        expected_bucket_owner="123456789012",
+        expected_owner="123456789012",
     )
     assert direct_target.bucket_name == "example-bucket"
     with pytest.raises(ValidationError):
@@ -350,16 +344,20 @@ def test_aws_read_contracts_bind_targets_to_connector_and_bound_evidence():
     metadata = AwsS3MetadataObservationV2(
         tool=CapabilityRef(
             id="aws_s3_bucket_metadata",
-            version="1.0.0",
+            version="2.0.0",
             manifest_digest="d" * 64,
         ),
         operation_id=UUID("bb60f797-4f22-4c53-b1d6-68d8462efcd8"),
         project_id=UUID("0e64e8a3-c38f-45bb-91a8-d1eb48495b66"),
         connector_id=connector,
         connector_revision=1,
+        catalog_digest="f" * 64,
         account_id="123456789012",
+        service="s3",
+        operation="get_bucket_versioning",
         region="us-east-1",
         bucket_name="example-bucket",
+        target={"bucket_name": "example-bucket"},
         versioning_status="enabled",
         mfa_delete_status="not_reported",
         request_count=3,
@@ -367,3 +365,11 @@ def test_aws_read_contracts_bind_targets_to_connector_and_bound_evidence():
     )
     assert metadata.schema_version == 2
     assert "resource_id" not in metadata.model_dump()
+    assert "resource_binding_id" not in metadata.model_dump()
+
+    direct_arguments = AwsS3MetadataArgumentsV2(
+        connector_id=connector,
+        bucket_name="example-bucket",
+        region="us-east-1",
+    )
+    assert direct_arguments.region == "us-east-1"

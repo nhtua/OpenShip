@@ -22,7 +22,7 @@ _MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024
 _MAX_SCHEMA_DEPTH = 16
 _MAX_PARAMETER_BYTES = 16 * 1024
 _MAX_PAGE_SIZE = 50
-_SCHEMA_CONVERSION_VERSION = 1
+_SCHEMA_CONVERSION_VERSION = 2
 _SNAPSHOT_OPERATION_FIELDS = (
     "service",
     "operation",
@@ -482,11 +482,11 @@ def _shape_schema(
     identity = id(shape)
     if identity in ancestors:
         raise AwsReadCatalogError("unsupported recursive schema")
-    name = shape.name
-    if not root and name in definitions:
-        return {"$ref": f"#/$defs/{name}"}
+    shape_name = shape.name
+    if not root and shape_name in definitions:
+        return {"$ref": f"#/$defs/{shape_name}"}
     if not root:
-        definitions[name] = {}
+        definitions[shape_name] = {}
     ancestors = ancestors | {identity}
     shape_type = shape.type_name
     schema: dict[str, Any] = {}
@@ -495,38 +495,38 @@ def _shape_schema(
         required = list(getattr(shape, "required_members", ()))
         if getattr(shape, "metadata", {}).get("union"):
             choices = []
-            for name, member in sorted(members.items()):
+            for member_name, member in sorted(members.items()):
                 member_schema = _shape_schema(
                     member,
                     ancestors=ancestors,
                     definitions=definitions,
                     depth=depth + 1,
                 )
-                if _sensitive_output_field(name, member):
+                if _sensitive_output_field(member_name, member):
                     member_schema = dict(member_schema)
                     member_schema["x-openship-sensitive"] = True
                 choices.append(
                     {
                         "type": "object",
-                        "properties": {name: member_schema},
-                        "required": [name],
+                        "properties": {member_name: member_schema},
+                        "required": [member_name],
                         "additionalProperties": False,
                     }
                 )
             schema = {"oneOf": choices}
         else:
             properties = {}
-            for name, member in sorted(members.items()):
+            for member_name, member in sorted(members.items()):
                 member_schema = _shape_schema(
                     member,
                     ancestors=ancestors,
                     definitions=definitions,
                     depth=depth + 1,
                 )
-                if _sensitive_output_field(name, member):
+                if _sensitive_output_field(member_name, member):
                     member_schema = dict(member_schema)
                     member_schema["x-openship-sensitive"] = True
-                properties[name] = member_schema
+                properties[member_name] = member_schema
             schema = {
                 "type": "object",
                 "properties": properties,
@@ -595,8 +595,8 @@ def _shape_schema(
         schema["x-openship-sensitive"] = True
     if root:
         return schema
-    definitions[name] = schema
-    return {"$ref": f"#/$defs/{name}"}
+    definitions[shape_name] = schema
+    return {"$ref": f"#/$defs/{shape_name}"}
 
 
 def _sensitive_output_field(name: str, shape: Shape) -> bool:

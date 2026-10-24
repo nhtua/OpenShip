@@ -5,7 +5,6 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import ConnectorCard from '@/components/connectors/ConnectorCard.vue'
 import ConnectorConfigurationDialog from '@/components/connectors/ConnectorConfigurationDialog.vue'
 import AwsConnectorDialog from '@/components/connectors/AwsConnectorDialog.vue'
-import AwsResourcesPanel from '@/components/connectors/AwsResourcesPanel.vue'
 import { Button } from '@/components/ui'
 import {
   connectorCatalog,
@@ -18,7 +17,6 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
-import { useResourcesStore } from '@/stores/resources'
 import type { ConnectorUsage } from '@/types'
 
 const router = useRouter()
@@ -26,7 +24,6 @@ const auth = useAuthStore()
 const chat = useChatStore()
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
-const resources = useResourcesStore()
 const pageError = ref<string | null>(null)
 const projectCreationError = ref<string | null>(null)
 const projectCreating = ref(false)
@@ -111,7 +108,6 @@ function closeDialog(open: boolean): void {
 async function refreshConnectorViews(): Promise<void> {
   pageError.value = null
   await connectors.reload(projects.currentProjectId)
-  await resources.loadProject(projects.currentProjectId)
 }
 
 function openAwsConnector(connector: ConnectorUsage | null = null): void {
@@ -119,7 +115,7 @@ function openAwsConnector(connector: ConnectorUsage | null = null): void {
   awsDialogOpen.value = true
 }
 
-async function checkAwsConnection(connectorId: string, resourceBindingId: string | null): Promise<void> {
+async function checkAwsConnection(connectorId: string): Promise<void> {
   const projectId = projects.currentProjectId
   if (!projectId || awsCheckBusy.value) return
   const capability = connectors.capabilities.find((item) => item.id === 'aws_check_connection')
@@ -142,10 +138,7 @@ async function checkAwsConnection(connectorId: string, resourceBindingId: string
         version: capability.version,
         manifest_digest: capability.manifest_digest,
       },
-      arguments: {
-        connector_id: connectorId,
-        ...(resourceBindingId ? { resource_binding_id: resourceBindingId } : {}),
-      },
+      arguments: { connector_id: connectorId },
     })
     if (!accepted) {
       pageError.value = chat.error ?? 'The AWS connection check could not be queued. Reload the project and try again.'
@@ -165,7 +158,7 @@ function showDialogError(message: string): void {
 
 async function selectProject(projectId: string): Promise<void> {
   if (!projects.selectProject(projectId)) return
-  await Promise.all([connectors.loadProjectContext(projectId), resources.loadProject(projectId)])
+  await connectors.loadProjectContext(projectId)
 }
 
 async function goToConversation(id: string): Promise<void> {
@@ -185,7 +178,7 @@ async function createProject(name: string): Promise<void> {
   projectCreationError.value = null
   try {
     const project = await projects.createProject(name)
-    await Promise.all([connectors.loadProjectContext(project.id), resources.loadProject(project.id)])
+    await connectors.loadProjectContext(project.id)
   } catch {
     projectCreationError.value = projects.error ?? 'Failed to create project'
   } finally {
@@ -197,7 +190,6 @@ async function signOut(): Promise<void> {
   auth.logout()
   chat.clearMessages()
   connectors.clear()
-  resources.clear()
   projects.clear()
   await router.replace({ name: 'login' })
 }
@@ -212,7 +204,6 @@ watch(() => projects.currentProjectId, (next, previous) => {
 onMounted(async () => {
   if (!projects.projects.length) await projects.initialize()
   await connectors.initialize(projects.currentProjectId, true)
-  await resources.loadProject(projects.currentProjectId)
   if (!chat.conversations.length) await chat.getConversations()
 })
 </script>
@@ -238,7 +229,7 @@ onMounted(async () => {
         <header class="grid gap-2">
           <h1 class="text-2xl font-semibold">Connectors</h1>
           <p class="max-w-3xl text-sm text-muted-foreground">
-            Brave Search and Tavily Search are shared Global integrations. AWS access and S3 bucket bindings belong to the selected project.
+            Brave Search and Tavily Search are shared Global integrations. AWS access belongs to the selected project and follows the configured role's permissions.
           </p>
         </header>
 
@@ -352,15 +343,6 @@ onMounted(async () => {
             </div>
           </section>
 
-          <AwsResourcesPanel
-            :project-id="projects.currentProjectId"
-            :connectors="connectors.connectors"
-            :environments="resources.environments"
-            :bindings="resources.bindings"
-            :loading="resources.loading"
-            @check="checkAwsConnection"
-            @error="showDialogError"
-          />
         </template>
 
         <ConnectorConfigurationDialog
@@ -381,7 +363,6 @@ onMounted(async () => {
           :open="awsDialogOpen"
           :project-id="projects.currentProjectId"
           :connector="selectedAwsConnector"
-          :bindings="resources.bindings"
           :credential-store-ready="connectors.credentialStoreReady"
           @update:open="awsDialogOpen = $event"
           @saved="refreshConnectorViews"

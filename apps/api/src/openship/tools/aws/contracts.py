@@ -18,12 +18,21 @@ from pydantic import (
 
 from src.openship.artifacts.contracts import ArtifactRef
 from src.openship.capabilities.contracts import CapabilityRef, canonical_json
+from src.openship.resources.contracts import ResourceBindingSummary
 
 _SHA256 = r"^[0-9a-f]{64}$"
 
 
 class AwsToolContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class AwsBoundInventoryResultV1(AwsToolContract):
+    """Read-only projection for completed binding inventory runs from history."""
+
+    source: Literal["stored_bindings"] = "stored_bindings"
+    items: tuple[ResourceBindingSummary, ...]
+    next_cursor: str | None = None
 
 
 class AwsReadArguments(AwsToolContract):
@@ -144,12 +153,11 @@ class AwsReadResult(AwsToolContract):
 
 class AwsCheckArguments(AwsToolContract):
     connector_id: UUID
-    resource_binding_id: UUID | None = None
 
-    @field_validator("connector_id", "resource_binding_id", mode="before")
+    @field_validator("connector_id", mode="before")
     @classmethod
     def _parse_ids(cls, value):
-        if value is None or isinstance(value, UUID):
+        if isinstance(value, UUID):
             return value
         if isinstance(value, str):
             try:
@@ -160,6 +168,17 @@ class AwsCheckArguments(AwsToolContract):
 
 
 class AwsCheckResult(AwsToolContract):
+    operation_id: str = Field(min_length=1, max_length=64)
+    status: Literal["ready"]
+    account_id: str = Field(pattern=r"^\d{12}$")
+    role_arn: str = Field(min_length=1, max_length=2048)
+    region: str = Field(min_length=1, max_length=64)
+    checked_at: datetime
+
+
+class AwsCheckResultV1(AwsToolContract):
+    """Historical output contract for pre-discovery role and bucket checks."""
+
     operation_id: str = Field(min_length=1, max_length=64)
     status: Literal["ready"]
     account_id: str = Field(pattern=r"^\d{12}$")
@@ -314,7 +333,7 @@ class AwsS3BucketTargetArguments(AwsToolContract):
     connector_id: UUID
     bucket_name: str = Field(min_length=3, max_length=63)
     region: str | None = Field(default=None, min_length=1, max_length=64)
-    expected_bucket_owner: str | None = Field(default=None, pattern=r"^\d{12}$")
+    expected_owner: str | None = Field(default=None, pattern=r"^\d{12}$")
 
     @field_validator("connector_id", mode="before")
     @classmethod
@@ -329,6 +348,14 @@ class AwsS3BucketTargetArguments(AwsToolContract):
         return value
 
 
+class AwsStorageArgumentsV2(AwsS3BucketTargetArguments):
+    """Direct-target arguments for the specialized storage helper."""
+
+
+class AwsS3MetadataArgumentsV2(AwsS3BucketTargetArguments):
+    """Direct-target arguments for the specialized metadata helper."""
+
+
 class AwsStorageObservationV2(AwsToolContract):
     """Direct-target evidence for the earlier specialized storage helper."""
 
@@ -338,11 +365,30 @@ class AwsStorageObservationV2(AwsToolContract):
     project_id: UUID
     connector_id: UUID
     connector_revision: StrictInt = Field(ge=1)
+    catalog_digest: str = Field(pattern=_SHA256)
     account_id: str = Field(pattern=r"^\d{12}$")
+    service: Literal["cloudwatch"] = "cloudwatch"
+    operation: Literal["get_metric_data"] = "get_metric_data"
     region: str = Field(min_length=1, max_length=64)
     bucket_name: str = Field(min_length=3, max_length=63)
+    target: dict[str, object]
     retrieved_at: datetime
+    request_count: StrictInt = Field(ge=1, le=8)
     metrics: NormalizedStorageMetrics
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def _retrieved_at_is_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("storage retrieval timestamp must include a timezone")
+        return value
+
+    @field_validator("target")
+    @classmethod
+    def _bounded_target(cls, value: dict[str, object]) -> dict[str, object]:
+        if len(canonical_json(value)) > 16 * 1024:
+            raise ValueError("AWS observation target exceeds the storage limit")
+        return value
 
 
 class AwsStorageResultV2(AwsToolContract):
@@ -368,13 +414,31 @@ class AwsS3MetadataObservationV2(AwsToolContract):
     project_id: UUID
     connector_id: UUID
     connector_revision: StrictInt = Field(ge=1)
+    catalog_digest: str = Field(pattern=_SHA256)
     account_id: str = Field(pattern=r"^\d{12}$")
+    service: Literal["s3"] = "s3"
+    operation: Literal["get_bucket_versioning"] = "get_bucket_versioning"
     region: str = Field(min_length=1, max_length=64)
     bucket_name: str = Field(min_length=3, max_length=63)
+    target: dict[str, object]
     versioning_status: Literal["enabled", "suspended", "not_enabled"]
     mfa_delete_status: Literal["enabled", "disabled", "not_reported"]
     request_count: StrictInt = Field(ge=1, le=8)
     retrieved_at: datetime
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def _retrieved_at_is_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("metadata retrieval timestamp must include a timezone")
+        return value
+
+    @field_validator("target")
+    @classmethod
+    def _bounded_target(cls, value: dict[str, object]) -> dict[str, object]:
+        if len(canonical_json(value)) > 16 * 1024:
+            raise ValueError("AWS observation target exceeds the storage limit")
+        return value
 
 
 class AwsS3MetadataResultV2(AwsToolContract):

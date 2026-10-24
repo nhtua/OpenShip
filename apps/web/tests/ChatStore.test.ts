@@ -438,7 +438,7 @@ describe('chat store', () => {
 
     await chat.sendMessage('Hello', 'c1', {
       enableTools: true,
-      resourceBindingSelections: ['binding-1'],
+      connectorSelections: { aws: 'aws-connector-1' },
     })
 
     // Verify the run command was posted with a client_request_id. Naming no
@@ -452,7 +452,7 @@ describe('chat store', () => {
         provider_profile_id: null,
         fallback_profile_ids: [],
         enable_tools: true,
-        resource_binding_selections: ['binding-1'],
+        connector_selections: { aws: 'aws-connector-1' },
       }),
     )
 
@@ -1508,14 +1508,14 @@ describe('chat store', () => {
 
     await chat.sendMessage('Find current search results', 'c1', {
       enableTools: true,
-      connectorSelections: { brave: 'global-brave', tavily: 'project-tavily' },
+      connectorSelections: { brave: 'global-brave', tavily: 'project-tavily', aws: 'aws-role-1' },
     })
     const originalPayload = mockRunsApi.submitTurn.mock.calls[0][1]
     expect(originalPayload).toMatchObject({
       content: 'Find current search results',
       client_request_id: 'stable-tool-request',
       enable_tools: true,
-      connector_selections: { brave: 'global-brave', tavily: 'project-tavily' },
+      connector_selections: { brave: 'global-brave', tavily: 'project-tavily', aws: 'aws-role-1' },
       provider_profile_id: 'primary-fixture',
       fallback_profile_ids: [],
     })
@@ -1529,7 +1529,7 @@ describe('chat store', () => {
     expect(chat.pendingRequests.has('stable-tool-request')).toBe(false)
   })
 
-  it('retries a direct tool request with the originally selected capability version and count', async () => {
+  it('retries a direct AWS target with the original connector, bucket, region, and capability version', async () => {
     vi.spyOn(crypto, 'randomUUID').mockReturnValue('stable-direct-tool-request')
     const chat = useChatStore()
     chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
@@ -1543,16 +1543,21 @@ describe('chat store', () => {
       } as never)
     const command = {
       capability: {
-        id: 'tavily_web_search', version: '1.0.0', manifest_digest: 'b'.repeat(64),
+        id: 'aws_s3_bucket_storage', version: '2.0.0', manifest_digest: 'b'.repeat(64),
       },
-      arguments: { query: 'terraform modules', max_results: 8 },
+      arguments: {
+        connector_id: 'aws-role-1',
+        bucket_name: 'production-data',
+        region: 'us-west-2',
+      },
+      connector_selections: { aws: 'aws-role-1' },
     }
 
     await chat.submitToolSearch('c1', command)
     const originalPayload = mockRunsApi.submitTool.mock.calls[0][1]
     expect(originalPayload).toEqual({ client_request_id: 'stable-direct-tool-request', ...command })
     chat.searchCapabilities = [
-      { id: 'tavily_web_search', version: '2.0.0', manifest_digest: 'c'.repeat(64), input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true, available: true, unavailable_reason: null },
+      { id: 'aws_s3_bucket_storage', version: '3.0.0', manifest_digest: 'c'.repeat(64), input_schema: {}, output_schema: {}, effect: 'read_only_external', enabled: true, available: true, unavailable_reason: null },
     ]
 
     await chat.retryToolSubmission('stable-direct-tool-request')

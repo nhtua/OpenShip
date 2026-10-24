@@ -186,4 +186,45 @@ describe('ToolOperationCard', () => {
     await wrapper.get('button[aria-label="Download s3-bucket-metadata.json"]').trigger('click')
     expect(wrapper.emitted('download')?.[0]).toEqual(['metadata-artifact', 's3-bucket-metadata.json'])
   })
+
+  it('renders generic AWS read provenance and bounded preview as text with exact evidence download', async () => {
+    const wrapper = mount(ToolOperationCard, {
+      props: {
+        operation: operation({
+          capability_id: 'aws_read',
+          query: null,
+          result: {
+            operation_id: 'aws-operation-1',
+            connector_id: 'aws-connector-1',
+            connector_revision: 2,
+            account_id: '123456789012',
+            service: 's3',
+            operation: 'list_buckets',
+            region: 'us-east-1',
+            retrieved_at: '2026-10-24T12:00:00Z',
+            outcome: 'partial',
+            preview: { Buckets: [{ Name: '<script>unsafe</script>' }] },
+            preview_truncated: true,
+            next_cursor: 'opaque-cursor',
+          },
+          artifacts: [{
+            id: 'aws-artifact', sha256: 'd'.repeat(64), size_bytes: 900,
+            media_type: 'application/json', conversation_id: 'conversation-1',
+            project_id: 'project-1', name: 'aws-read.json', source: 'aws_read',
+            status: 'ready', created_at: '2026-10-24T12:00:00Z', mutability: 'immutable',
+          }],
+        }),
+      },
+    })
+
+    expect(wrapper.text()).toContain('AWS read')
+    expect(wrapper.text()).toContain('s3.list_buckets')
+    await wrapper.get('button[aria-label="Show details for s3.list_buckets"]').trigger('click')
+    expect(wrapper.text()).toContain('123456789012')
+    expect(wrapper.text()).toContain('More results are available to continue reading')
+    expect(wrapper.find('script').exists()).toBe(false)
+    expect(wrapper.text()).toContain('<script>unsafe</script>')
+    await wrapper.get('button[aria-label="Download aws-read.json"]').trigger('click')
+    expect(wrapper.emitted('download')?.[0]).toEqual(['aws-artifact', 'aws-read.json'])
+  })
 })

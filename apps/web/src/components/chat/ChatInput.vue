@@ -6,12 +6,11 @@ import ToolAttachmentMenu from './ToolAttachmentMenu.vue'
 import type {
   CapabilityRef,
   CapabilitySummary,
-  ConnectorKind,
   ConnectorSelections,
   ConnectorUsage,
+  ManagedConnectorKind,
   ModelProfileItem,
   ProjectCapabilitySummary,
-  ResourceBindingSummary,
   ToolCommandRequest,
 } from '@/types'
 
@@ -28,8 +27,7 @@ interface Props {
   toolSubmissionDisabled?: boolean
   submissionError?: string | null
   connectors?: ConnectorUsage[]
-  defaultConnectorIds?: Partial<Record<ConnectorKind, string>>
-  resourceBindings?: ResourceBindingSummary[]
+  defaultConnectorIds?: Partial<Record<ManagedConnectorKind, string>>
   draftContent?: string | null
 }
 
@@ -46,12 +44,11 @@ const props = withDefaults(defineProps<Props>(), {
   toolSubmissionDisabled: false,
   submissionError: null,
   defaultConnectorIds: () => ({}),
-  resourceBindings: () => [],
   draftContent: null,
 })
 
 const emit = defineEmits<{
-  send: [content: string, options?: { enableTools: boolean; connectorSelections?: ConnectorSelections; resourceBindingSelections?: string[] }]
+  send: [content: string, options?: { enableTools: boolean; connectorSelections?: ConnectorSelections }]
   search: [command: Omit<ToolCommandRequest, 'client_request_id'>]
   select: [profileId: string | null, fallbackIds: string[]]
   'draft-consumed': []
@@ -75,14 +72,15 @@ let pendingDraft: {
   maxResults: number
   automaticToolMode: boolean
   connectorId: string | null
-  resourceBindingIds: string[]
+  awsConnectorId: string | null
+  bucketName: string
+  bucketRegion: string
 } | null = null
 const selectedConnectorId = ref<string | null>(null)
 const selectedAwsConnectorId = ref<string | null>(null)
-const selectedResourceBindingIds = ref<string[]>([])
-const selectedStorageBindingId = ref<string | null>(null)
+const bucketName = ref('')
+const bucketRegion = ref('')
 const isS3ReadTool = computed(() => ['aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(attachedCapability.value?.id ?? ''))
-const activeResourceBindings = computed(() => props.resourceBindings.filter((binding) => binding.state === 'active'))
 const awsConnectorChoices = computed(() => (props.connectors ?? []).filter(
   (connector) => connector.kind === 'aws' && connector.status === 'configured',
 ))
@@ -138,11 +136,6 @@ const automaticToolDisabledReason = computed(() => {
     (capability.required_connector_kinds ?? []).every((kind) =>
       capability.connector_readiness?.[kind] === 'ready' ||
       (kind === 'aws' && awsSelectionRequired.value),
-    ) && (
-      !['aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(capability.id) ||
-      selectedResourceBindingIds.value.some((id) => props.resourceBindings.some(
-        (binding) => binding.binding_id === id && binding.state === 'active',
-      ))
     ),
   )
   if (!hasReadyCapability) {
@@ -153,7 +146,7 @@ const automaticToolDisabledReason = computed(() => {
     )) {
       return 'Select a project Connector when more than one is eligible.'
     }
-    return 'Choose a ready Connector or select an active S3 bucket.'
+    return 'Choose a ready Connector for this project.'
   }
   if (
     !effectiveProfile.value?.available ||
@@ -178,17 +171,12 @@ watch(automaticToolDisabled, (disabled) => {
   if (!disabled && !automaticToolModeTouched.value) automaticToolMode.value = true
 }, { immediate: true })
 
-watch(activeResourceBindings, (bindings) => {
-  const availableIds = new Set(bindings.map((binding) => binding.binding_id))
-  selectedResourceBindingIds.value = selectedResourceBindingIds.value.filter((id) => availableIds.has(id))
-  if (!selectedStorageBindingId.value || !availableIds.has(selectedStorageBindingId.value)) {
-    selectedStorageBindingId.value = bindings.length === 1 ? bindings[0].binding_id : null
-  }
-})
-
 watch(awsConnectorChoices, (choices) => {
   if (!choices.some((connector) => connector.id === selectedAwsConnectorId.value)) {
-    selectedAwsConnectorId.value = choices.length === 1 ? choices[0].id : null
+    const defaultId = props.defaultConnectorIds.aws
+    selectedAwsConnectorId.value = choices.some((connector) => connector.id === defaultId)
+      ? defaultId ?? null
+      : choices.length === 1 ? choices[0].id : null
   }
 }, { immediate: true })
 
@@ -208,9 +196,10 @@ const toolUnavailable = computed(() => Boolean(
     attachedSummary.value?.permitted === false
   ),
 ))
-const attachedConnectorKind = computed<ConnectorKind | null>(() => {
+const attachedConnectorKind = computed<ManagedConnectorKind | null>(() => {
   if (attachedCapability.value?.id === 'brave_web_search') return 'brave'
   if (attachedCapability.value?.id === 'tavily_web_search') return 'tavily'
+  if (isS3ReadTool.value) return 'aws'
   return null
 })
 const attachedConnectorChoices = computed(() => {
@@ -221,13 +210,18 @@ const attachedConnectorChoices = computed(() => {
   )
 })
 const connectorSelectionMissing = computed(() => Boolean(
-  attachedConnectorKind.value && props.connectors !== undefined &&
-  !attachedConnectorChoices.value.some((connector) => connector.id === selectedConnectorId.value),
+  attachedConnectorKind.value && (attachedConnectorKind.value === 'aws' || props.connectors !== undefined) &&
+  !attachedConnectorChoices.value.some((connector) =>
+    connector.id === (attachedConnectorKind.value === 'aws' ? selectedAwsConnectorId.value : selectedConnectorId.value),
+  ),
 ))
+const attachedConnectorId = computed(() =>
+  attachedConnectorKind.value === 'aws' ? selectedAwsConnectorId.value : selectedConnectorId.value,
+)
 const submitDisabled = computed(() =>
   props.disabled || (!isS3ReadTool.value && !content.value.trim()) ||
   (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value || connectorSelectionMissing.value)) ||
-  (isS3ReadTool.value && !activeResourceBindings.value.some((binding) => binding.binding_id === selectedStorageBindingId.value)) ||
+  (isS3ReadTool.value && !bucketName.value.trim()) ||
   (automaticToolMode.value && awsSelectionRequired.value && !awsSelectionValid.value) ||
   (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value),
 )
@@ -244,26 +238,37 @@ function attachTool(capability: CapabilityRef) {
     ? 'brave'
     : capability.id === 'tavily_web_search'
       ? 'tavily'
-      : null
+      : ['aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(capability.id)
+        ? 'aws'
+        : null
   const choices = kind
     ? (props.connectors ?? []).filter((connector) => connector.kind === kind && connector.status === 'configured')
     : []
   const defaultId = kind ? props.defaultConnectorIds[kind] : undefined
-  selectedConnectorId.value = choices.some((connector) => connector.id === defaultId)
+  const selected = choices.some((connector) => connector.id === defaultId)
     ? defaultId ?? null
-    : choices.length === 1
-      ? choices[0].id
-      : null
-  selectedStorageBindingId.value = activeResourceBindings.value.length === 1
-    ? activeResourceBindings.value[0].binding_id
-    : null
+    : choices.length === 1 ? choices[0].id : null
+  if (kind === 'aws') {
+    selectedAwsConnectorId.value = selected
+    bucketName.value = ''
+    bucketRegion.value = ''
+  } else {
+    selectedConnectorId.value = selected
+  }
 }
 
 function removeTool() {
   attachedCapability.value = null
   maxResults.value = 5
   selectedConnectorId.value = null
-  selectedStorageBindingId.value = null
+  bucketName.value = ''
+  bucketRegion.value = ''
+}
+
+function updateAttachedConnector(event: Event) {
+  const value = (event.target as HTMLSelectElement).value || null
+  if (attachedConnectorKind.value === 'aws') selectedAwsConnectorId.value = value
+  else selectedConnectorId.value = value
 }
 
 function toggleAutomaticToolMode() {
@@ -301,7 +306,9 @@ async function handleSubmit() {
     maxResults: maxResults.value,
     automaticToolMode: automaticToolMode.value,
     connectorId: selectedConnectorId.value,
-    resourceBindingIds: [...selectedResourceBindingIds.value],
+    awsConnectorId: selectedAwsConnectorId.value,
+    bucketName: bucketName.value,
+    bucketRegion: bucketRegion.value,
   }
   if (attachedCapability.value) {
     const connectorSelections: ConnectorSelections = {}
@@ -311,7 +318,12 @@ async function handleSubmit() {
     const command: Omit<ToolCommandRequest, 'client_request_id'> = isS3ReadTool.value
       ? {
           capability: { ...attachedCapability.value },
-          arguments: { resource_binding_id: selectedStorageBindingId.value },
+          arguments: {
+            connector_id: selectedAwsConnectorId.value,
+            bucket_name: bucketName.value.trim(),
+            ...(bucketRegion.value.trim() ? { region: bucketRegion.value.trim() } : {}),
+          },
+          connector_selections: selectedAwsConnectorId.value ? { aws: selectedAwsConnectorId.value } : {},
         }
       : {
           capability: { ...attachedCapability.value },
@@ -321,13 +333,6 @@ async function handleSubmit() {
     emit('search', command)
   } else {
     if (automaticToolMode.value) {
-      const hasAwsDiscovery = props.capabilities.some((capability) =>
-        capability.id === 'aws_read' && capability.permitted !== false &&
-        capability.enabled !== false && capability.available !== false,
-      )
-      const resourceBindingSelections = hasAwsDiscovery ? [] : selectedResourceBindingIds.value.filter((id) =>
-        activeResourceBindings.value.some((binding) => binding.binding_id === id),
-      )
       const connectorSelections: ConnectorSelections = {}
       if (awsSelectionRequired.value && selectedAwsConnectorId.value) {
         connectorSelections.aws = selectedAwsConnectorId.value
@@ -335,7 +340,6 @@ async function handleSubmit() {
       emit('send', text, {
         enableTools: true,
         ...(Object.keys(connectorSelections).length ? { connectorSelections } : {}),
-        ...(resourceBindingSelections.length ? { resourceBindingSelections } : {}),
       })
     }
     else emit('send', text)
@@ -354,7 +358,9 @@ watch(
     maxResults.value = pendingDraft.maxResults
     automaticToolMode.value = pendingDraft.automaticToolMode
     selectedConnectorId.value = pendingDraft.connectorId
-    selectedResourceBindingIds.value = pendingDraft.resourceBindingIds
+    selectedAwsConnectorId.value = pendingDraft.awsConnectorId
+    bucketName.value = pendingDraft.bucketName
+    bucketRegion.value = pendingDraft.bucketRegion
     pendingDraft = null
     void nextTick(grow)
   },
@@ -428,6 +434,32 @@ onBeforeUnmount(() => {
       @input="grow"
     />
 
+    <div v-if="isS3ReadTool" class="mt-2 grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(10rem,1fr)]" data-testid="aws-direct-target">
+      <label class="grid gap-1 text-xs text-muted-foreground">
+        S3 bucket name
+        <input
+          v-model="bucketName"
+          data-testid="aws-bucket-name"
+          aria-label="S3 bucket name"
+          autocomplete="off"
+          class="h-8 min-w-0 rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :disabled="props.disabled"
+        >
+      </label>
+      <label class="grid gap-1 text-xs text-muted-foreground">
+        Region (optional)
+        <input
+          v-model="bucketRegion"
+          data-testid="aws-bucket-region"
+          aria-label="AWS region (optional)"
+          autocomplete="off"
+          placeholder="Use connector default"
+          class="h-8 min-w-0 rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :disabled="props.disabled"
+        >
+      </label>
+    </div>
+
     <div class="mt-2 flex min-w-0 flex-wrap items-center gap-2">
       <ToolAttachmentMenu
         :capabilities="props.capabilities"
@@ -436,29 +468,10 @@ onBeforeUnmount(() => {
         :automatic-tool-mode="automaticToolMode"
         :automatic-tool-disabled="automaticToolDisabled"
         :automatic-tool-disabled-reason="automaticToolDisabledReason"
-        :resource-bindings="activeResourceBindings"
         :disabled="props.disabled"
         @attach="attachTool"
         @toggle-automatic="toggleAutomaticToolMode"
       />
-
-      <label
-        v-if="activeResourceBindings.length && !attachedCapability"
-        class="inline-flex h-8 min-w-0 items-center gap-2 text-xs text-muted-foreground"
-      >
-        <span>S3 buckets</span>
-        <select
-          v-model="selectedResourceBindingIds"
-          multiple
-          aria-label="S3 buckets available to tools"
-          data-testid="resource-binding-selection"
-          class="h-8 max-w-64 rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <option v-for="binding in activeResourceBindings" :key="binding.binding_id" :value="binding.binding_id">
-            {{ binding.display_name }} · {{ binding.environment_name }}
-          </option>
-        </select>
-      </label>
 
       <button
         v-if="automaticToolMode"
@@ -498,27 +511,15 @@ onBeforeUnmount(() => {
         class="inline-flex h-8 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 pl-3 pr-1 text-xs text-foreground"
       >
         <span>{{ attachedLabel }}</span>
-        <select
-          v-if="isS3ReadTool"
-          v-model="selectedStorageBindingId"
-          data-testid="storage-binding-selection"
-          aria-label="AWS resource binding"
-          class="h-6 max-w-52 rounded-full border-0 bg-transparent px-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          :disabled="props.disabled"
-        >
-          <option :value="null">Choose an S3 bucket</option>
-          <option v-for="binding in activeResourceBindings" :key="binding.binding_id" :value="binding.binding_id">
-            {{ binding.display_name }} · {{ binding.environment_name }}
-          </option>
-        </select>
         <label class="sr-only" for="search-result-count">Number of results</label>
         <select
           v-if="attachedConnectorKind && props.connectors !== undefined"
-          v-model="selectedConnectorId"
+          :value="attachedConnectorId"
           data-testid="connector-selection"
-          aria-label="Search connector"
+          :aria-label="attachedConnectorKind === 'aws' ? 'AWS connector' : 'Search connector'"
           class="h-6 max-w-40 rounded-full border-0 bg-transparent px-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           :disabled="props.disabled"
+          @change="updateAttachedConnector"
         >
           <option :value="null">Choose a connector</option>
           <option
@@ -530,6 +531,7 @@ onBeforeUnmount(() => {
           </option>
         </select>
         <select
+          v-if="!isS3ReadTool"
           id="search-result-count"
           v-model.number="maxResults"
           aria-label="Number of results"
@@ -549,7 +551,7 @@ onBeforeUnmount(() => {
       </div>
 
       <span v-if="toolUnavailable" class="text-xs text-destructive">
-        This search tool is unavailable. Remove it or configure its connection.
+        This tool is unavailable. Remove it or configure its connection.
       </span>
       <span v-else-if="attachedCapability && props.toolSubmissionDisabled" class="text-xs text-muted-foreground">
         Wait for the current run to finish before searching.

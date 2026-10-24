@@ -19,20 +19,19 @@ import {
   connectorStatusDotClass,
   connectorStatusPresentation,
 } from '@/lib/connectorCatalog'
-import type { ConnectorUsage, ResourceBindingSummary } from '@/types'
+import type { ConnectorUsage } from '@/types'
 
 const props = defineProps<{
   open: boolean
   projectId: string | null
   connector: ConnectorUsage | null
-  bindings: ResourceBindingSummary[]
   credentialStoreReady: boolean
 }>()
 
 const emit = defineEmits<{
   'update:open': [open: boolean]
   saved: []
-  check: [connectorId: string, resourceBindingId: string | null]
+  check: [connectorId: string]
   error: [message: string]
 }>()
 
@@ -52,7 +51,6 @@ const accessKeyId = ref('')
 const secretAccessKey = ref('')
 const sessionToken = ref('')
 const sourceExpiresAt = ref('')
-const resourceBindingId = ref('')
 const loadingDetails = ref(false)
 const saving = ref(false)
 const revoking = ref(false)
@@ -155,7 +153,6 @@ async function loadDetails(): Promise<void> {
 function resetForOpen(): void {
   errorMessage.value = null
   checkError.value = null
-  resourceBindingId.value = ''
   if (!props.connector) {
     name.value = 'AWS account'
     configuration.value = { region: 'us-east-1', expected_account_id: '', basic_role_arn: '' }
@@ -253,7 +250,7 @@ async function save(): Promise<void> {
 
 function checkConnection(): void {
   if (!props.connector || !props.projectId) return
-  emit('check', props.connector.id, resourceBindingId.value || null)
+  emit('check', props.connector.id)
   emit('update:open', false)
 }
 
@@ -356,7 +353,7 @@ async function revoke(): Promise<void> {
                 </div>
               </div>
               <p class="text-xs text-muted-foreground">
-                The source key must be able to assume this role. The role trust policy must trust this installation and grant only the read actions listed in the setup guide. A bucket binding still needs the selected account and bucket to match.
+                The source key must be able to assume this role. The role trust policy must trust this installation and grant only the read actions listed in the setup guide. AWS access follows the permissions of this read role; you do not need to register buckets first.
               </p>
             </fieldset>
 
@@ -383,17 +380,6 @@ async function revoke(): Promise<void> {
                 Check request status
               </Button>
               <template v-if="existing">
-                <select
-                  v-if="bindings.some((binding) => binding.connector_id === connector?.id && binding.state === 'active')"
-                  v-model="resourceBindingId"
-                  aria-label="Optional S3 bucket for connection check"
-                  class="h-8 max-w-64 rounded-md border border-input bg-background px-2 text-xs"
-                >
-                  <option value="">Check role identity only</option>
-                  <option v-for="binding in bindings.filter((item) => item.connector_id === connector?.id && item.state === 'active')" :key="binding.binding_id" :value="binding.binding_id">
-                    Verify {{ binding.display_name }}
-                  </option>
-                </select>
                 <Button type="button" size="sm" variant="outline" data-testid="check-aws-connection" :disabled="!credentialStoreReady || !connector || waiting" @click="checkConnection">
                   Check status
                 </Button>

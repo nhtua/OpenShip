@@ -6,7 +6,6 @@ import { useChatStore } from '@/stores/chat'
 import { useArtifactsStore } from '@/stores/artifacts'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
-import { useResourcesStore } from '@/stores/resources'
 import { runsApi } from '@/services/api'
 import type { ConnectorSelections } from '@/types'
 import AppLayout from '@/layouts/AppLayout.vue'
@@ -35,7 +34,6 @@ const chat = useChatStore()
 const artifacts = useArtifactsStore()
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
-const resources = useResourcesStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
@@ -206,14 +204,6 @@ watch(() => [route.name, route.params.conversationId], () => {
   if (routeReady.value) routeLoad = loadConversationFromRoute()
 })
 
-watch(() => projects.currentProjectId, (projectId) => {
-  void resources.loadProject(projectId)
-})
-
-watch(() => chat.resourceObservationEvent, (event) => {
-  if (event) void resources.loadObservations(event.project_id, event.resource_id)
-})
-
 async function createAndOpenConversation(newTitle: string): Promise<string | null> {
   const origin = route.fullPath
   const generation = routeLoadGeneration
@@ -252,7 +242,6 @@ async function handleSelectConversation(id: string) {
 async function handleSend(content: string, options?: {
   enableTools: boolean
   connectorSelections?: ConnectorSelections
-  resourceBindingSelections?: string[]
 }) {
   if (busy.value) return
   chat.error = null
@@ -484,7 +473,6 @@ async function handleSignOut() {
   chat.clearMessages()
   artifacts.clear()
   connectors.clear()
-  resources.clear()
   projects.clear()
   chat.conversations = []
   chat.error = null
@@ -506,7 +494,6 @@ async function handleSelectProject(projectId: string) {
   projectCreationError.value = null
   chat.deselectConversation()
   await connectors.loadProjectContext(projectId)
-  await resources.loadProject(projectId)
   if (route.name === 'conversation' && conversationProjectId !== projectId) {
     await router.replace({ name: 'chat' })
   }
@@ -521,7 +508,6 @@ async function handleCreateProject(name: string) {
     chat.deselectConversation()
     if (route.name !== 'chat') await router.replace({ name: 'chat' })
     await connectors.loadProjectContext(project.id)
-    await resources.loadProject(project.id)
   } catch {
     projectCreationError.value = projects.error ?? 'Failed to create project'
   } finally {
@@ -536,7 +522,6 @@ onMounted(async () => {
   await chat.loadModelProfiles()
   await projects.initialize()
   await connectors.initialize(projects.currentProjectId)
-  await resources.loadProject(projects.currentProjectId)
   await loadHistory()
   if (disposed) return
   routeReady.value = true
@@ -691,7 +676,6 @@ onBeforeUnmount(() => {
         :catalog-error="chat.profileError"
         :capabilities="connectors.capabilities"
         :connectors="connectors.connectors"
-        :resource-bindings="resources.bindings"
         :draft-content="composerDraft"
         :default-connector-ids="{
           brave: connectors.defaults.brave?.connector_id ?? undefined,

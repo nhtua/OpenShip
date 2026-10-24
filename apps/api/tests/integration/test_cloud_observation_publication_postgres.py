@@ -31,7 +31,6 @@ from src.openship.capabilities.contracts import (
     ConnectorRef,
     ExecutionConfigV2,
     ExecutionConfigV4,
-    ResourceBindingRef,
     ToolCommandRequest,
     ToolInvocationContext,
     canonical_digest,
@@ -350,19 +349,11 @@ def _running_aws_tool(
         visibility="project",
         credential_version_id=credential.id,
     )
-    binding_ref = ResourceBindingRef(
-        id=binding.id,
-        revision=1,
-        connector_id=connector.id,
-        connector_revision=1,
-    )
     execution = ExecutionConfigV2(
         graph_kind="tool",
         graph_version=2,
         allowed_capabilities=(storage_ref, check_ref),
         connector_refs=(connector_ref,),
-        resource_binding_refs=(binding_ref,),
-        selected_resource_binding_refs=(binding_ref,),
     )
     run = Run(
         conversation_id=conversation.id,
@@ -462,6 +453,12 @@ def _synthetic_transport(requests, *, on_request=None):
                 body = b'<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>'
             elif "versioning" in query:
                 body = b'<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status><MfaDelete>Disabled</MfaDelete></VersioningConfiguration>'
+            elif "policyStatus" in query:
+                body = b'<PolicyStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsPublic>true</IsPublic></PolicyStatus>'
+            elif "publicAccessBlock" in query:
+                body = b'<PublicAccessBlockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><BlockPublicAcls>true</BlockPublicAcls><IgnorePublicAcls>true</IgnorePublicAcls><BlockPublicPolicy>true</BlockPublicPolicy><RestrictPublicBuckets>true</RestrictPublicBuckets></PublicAccessBlockConfiguration>'
+            elif "acl" in query:
+                body = f'<AccessControlPolicy xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>{ACCOUNT_ID}</ID><DisplayName>synthetic</DisplayName></Owner><AccessControlList><Grant><Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser"><ID>{ACCOUNT_ID}</ID><DisplayName>synthetic</DisplayName></Grantee><Permission>FULL_CONTROL</Permission></Grant></AccessControlList></AccessControlPolicy>'.encode()
             else:
                 raise AssertionError(f"unexpected S3 request path: {request.url.path}?{query}")
             return httpx.Response(
@@ -472,6 +469,41 @@ def _synthetic_transport(requests, *, on_request=None):
         assert request.url.host.startswith(("monitoring.", "cloudwatch."))
         payload = json.loads(request.content)
         assert request.headers["x-amz-target"].endswith("GetMetricData")
+        metric_name = payload["MetricDataQueries"][0]["MetricStat"]["Metric"][
+            "MetricName"
+        ]
+        if metric_name == "NumberOfObjects":
+            query = payload["MetricDataQueries"][0]
+            assert query["MetricStat"]["Metric"]["Namespace"] == "AWS/S3"
+            assert query["MetricStat"]["Metric"]["Dimensions"] == [
+                {"Name": "BucketName", "Value": BUCKET},
+                {"Name": "StorageType", "Value": "AllStorageTypes"},
+            ]
+            assert query["MetricStat"]["Period"] == 86400
+            assert query["MetricStat"]["Stat"] == "Average"
+            measurement = (
+                datetime.now(UTC).date() - timedelta(days=1)
+            ).isoformat() + "T00:00:00Z"
+            metric_response = {
+                "MetricDataResults": [
+                    {
+                        "Id": query["Id"],
+                        "Label": "NumberOfObjects",
+                        "Timestamps": [measurement],
+                        "Values": [42.0],
+                        "StatusCode": "Complete",
+                        "Messages": [],
+                    }
+                ]
+            }
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "application/x-amz-json-1.1",
+                    "x-amzn-requestid": "synthetic-request",
+                },
+                stream=_BodyStream(json.dumps(metric_response).encode()),
+            )
         assert len(payload["MetricDataQueries"]) == 22
         assert payload["MaxDatapoints"] == 1024
         if "NextToken" in payload:
@@ -557,8 +589,9 @@ async def test_aws_worker_restart_never_replays_a_dispatched_request(
 
     with sqlite_worker_sessions() as db:
         user, _project, conversation, _connector, _credential, binding = (
-            _insert_aws_scope(db)
+            _insert_aws_scope(db, include_legacy_binding=False)
         )
+        assert binding is None
         user_id = user.id
         manifest = next(
             item
@@ -576,7 +609,11 @@ async def test_aws_worker_restart_never_replays_a_dispatched_request(
                     version=manifest.version,
                     manifest_digest=manifest.manifest_digest,
                 ),
-                arguments={"resource_binding_id": str(binding.id)},
+                arguments={
+                    "connector_id": str(_connector.id),
+                    "bucket_name": BUCKET,
+                    "expected_owner": ACCOUNT_ID,
+                },
             ),
         )
         run_id = run.id
@@ -692,8 +729,12 @@ async def test_synthetic_botocore_storage_observation_publishes_atomically(
     transport_factory = _synthetic_transport(requests)
     with database_sessions() as db:
         user, project, conversation, connector, credential, binding = _insert_aws_scope(
-            db
+            db, include_legacy_binding=False
         )
+        assert binding is None
+        assert db.query(Environment).filter_by(project_id=project.id).count() == 0
+        assert db.query(ResourceObject).filter_by(project_id=project.id).count() == 0
+        assert db.query(ResourceBinding).filter_by(project_id=project.id).count() == 0
         run, claim, context, _store, storage_ref, check_ref, connector_ref = (
             _running_aws_tool(
                 db,
@@ -731,7 +772,11 @@ async def test_synthetic_botocore_storage_observation_publishes_atomically(
         context=context,
         logical_call_id="manual:storage",
         ref=storage_ref,
-        arguments={"resource_binding_id": str(binding.id)},
+        arguments={
+            "connector_id": str(connector_ref.id),
+            "bucket_name": BUCKET,
+            "expected_owner": ACCOUNT_ID,
+        },
         control=InvocationControl(),
     )
 
@@ -774,8 +819,16 @@ async def test_synthetic_botocore_storage_observation_publishes_atomically(
         assert stored_coverage["reported_storage_subtotal_bytes"] == 253.0
         assert observation.evidence_artifact_id == artifact.id
         assert observation.evidence_sha256 == artifact.sha256
-        assert "resource.observed" in events
-        assert "resource.observed" in outbox_types
+        assert observation.schema_version == 2
+        assert observation.resource_object_id is None
+        assert observation.resource_binding_id is None
+        assert observation.connector_id == connector.id
+        assert json.loads(observation.target_json) == {
+            "bucket_name": BUCKET,
+            "expected_owner": ACCOUNT_ID,
+        }
+        assert "cloud.observed" in events
+        assert "cloud.observed" in outbox_types
         store = context.artifact_store
         with store.open_verified(artifact) as evidence_file:
             evidence = json.load(evidence_file)
@@ -799,12 +852,10 @@ async def test_synthetic_botocore_storage_observation_publishes_atomically(
         ref=check_ref,
         arguments={
             "connector_id": str(connector_ref.id),
-            "resource_binding_id": str(binding.id),
         },
         control=InvocationControl(),
     )
     assert check_result.status == "succeeded"
-    assert check_result.result["bucket_verified"] is True
     assert check_result.result["account_id"] == ACCOUNT_ID
     assert not check_result.artifacts
 
@@ -957,7 +1008,67 @@ async def test_catalog_then_binding_free_aws_read_publishes_and_reopens_evidence
     assert target_result.status == "succeeded"
     assert target_result.result["preview"]["LocationConstraint"] == "us-east-1"
     assert len(target_result.artifacts) == 1
-    assert len(requests) == 6  # Each tool call assumes, verifies, and uses the role.
+
+    report_results = {}
+    for operation, parameters in (
+        ("get_bucket_policy_status", {"Bucket": BUCKET}),
+        ("get_public_access_block", {"Bucket": BUCKET}),
+        ("get_bucket_acl", {"Bucket": BUCKET}),
+        (
+            "get_metric_data",
+            {
+                "MetricDataQueries": [
+                    {
+                        "Id": "m0",
+                        "MetricStat": {
+                            "Metric": {
+                                "Namespace": "AWS/S3",
+                                "MetricName": "NumberOfObjects",
+                                "Dimensions": [
+                                    {"Name": "BucketName", "Value": BUCKET},
+                                    {
+                                        "Name": "StorageType",
+                                        "Value": "AllStorageTypes",
+                                    },
+                                ],
+                            },
+                            "Period": 86400,
+                            "Stat": "Average",
+                        },
+                        "ReturnData": True,
+                    }
+                ],
+                "StartTime": (datetime.now(UTC) - timedelta(days=7)).isoformat(),
+                "EndTime": datetime.now(UTC).isoformat(),
+            },
+        ),
+    ):
+        result = await ToolGateway(operation_session).execute_tool(
+            claim=claim,
+            context=context,
+            logical_call_id=f"model:report:{operation}",
+            ref=read_ref,
+            arguments={
+                "service": "cloudwatch" if operation == "get_metric_data" else "s3",
+                "operation": operation,
+                "region": "us-east-1",
+                "parameters": parameters,
+            },
+            control=InvocationControl(),
+        )
+        assert result.status == "succeeded", result.error
+        report_results[operation] = result.result["preview"]
+    assert report_results["get_bucket_policy_status"]["PolicyStatus"]["IsPublic"] is True
+    assert report_results["get_public_access_block"][
+        "PublicAccessBlockConfiguration"
+    ]["BlockPublicAcls"] is True
+    assert report_results["get_bucket_acl"]["Grants"][0][
+        "Permission"
+    ] == "FULL_CONTROL"
+    assert report_results["get_metric_data"]["MetricDataResults"][0]["Values"] == [
+        42.0
+    ]
+    assert len(requests) == 18  # Each read assumes, verifies, and uses the role.
 
     with operation_session() as db:
         operation = db.query(ToolOperation).filter_by(
@@ -999,16 +1110,18 @@ async def test_catalog_then_binding_free_aws_read_publishes_and_reopens_evidence
     [
         None,
         "connector_revoked",
-        "binding_retired",
         "policy_disabled_before_dispatch",
         "policy_disabled_after_read",
+        "cancelled_after_read",
+        "lease_lost_after_read",
     ],
     ids=[
         "success",
         "revoked-connector",
-        "retired-binding",
         "disabled-before-dispatch",
         "disabled-after-read",
+        "cancelled-after-read",
+        "lease-lost-after-read",
     ],
 )
 @pytest.mark.asyncio
@@ -1025,8 +1138,12 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
     transport_factory = _synthetic_transport(requests)
     with database_sessions() as db:
         user, project, conversation, connector, _credential, binding = _insert_aws_scope(
-            db
+            db, include_legacy_binding=False
         )
+        assert binding is None
+        assert db.query(Environment).filter_by(project_id=project.id).count() == 0
+        assert db.query(ResourceObject).filter_by(project_id=project.id).count() == 0
+        assert db.query(ResourceBinding).filter_by(project_id=project.id).count() == 0
         manifest = next(
             item
             for item in list_capability_manifests()
@@ -1044,13 +1161,17 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
             ToolCommandRequest(
                 client_request_id=uuid.uuid4(),
                 capability=metadata_ref,
-                arguments={"resource_binding_id": str(binding.id)},
+                arguments={
+                    "connector_id": str(connector.id),
+                    "bucket_name": BUCKET,
+                    "expected_owner": ACCOUNT_ID,
+                },
             ),
         )
         db.commit()
         execution = decode_execution_config(run.execution_configuration)
-        assert execution.selected_resource_binding_refs == execution.resource_binding_refs
-        assert len(execution.selected_resource_binding_refs) == 1
+        assert execution.resource_binding_refs == ()
+        assert execution.connector_refs[0].id == connector.id
         claim = claim_next(db, worker_id="metadata-publication-worker")
         assert claim is not None
         context = ToolInvocationContext(
@@ -1073,10 +1194,12 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
         conversation_id = conversation.id
         operation_session = database_sessions
 
+        stop_state = {"stopped": False}
         if publication_change in {
             "connector_revoked",
-            "binding_retired",
             "policy_disabled_after_read",
+            "cancelled_after_read",
+            "lease_lost_after_read",
         }:
             from src.openship.capabilities.definitions import get_tool_definition
 
@@ -1088,11 +1211,7 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
                     if publication_change == "connector_revoked":
                         row = mutation_db.query(Connector).filter_by(id=connector.id).one()
                         row.revoked_at = datetime.now(UTC)
-                    elif publication_change == "binding_retired":
-                        row = mutation_db.query(ResourceBinding).filter_by(id=binding.id).one()
-                        row.state = "retired"
-                        row.retired_at = datetime.now(UTC)
-                    else:
+                    elif publication_change == "policy_disabled_after_read":
                         from src.openship.capabilities.policy import set_tool_policy
 
                         monkeypatch.setattr(
@@ -1105,6 +1224,20 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
                             enabled=False,
                             expected_revision=1,
                         )
+                    elif publication_change == "lease_lost_after_read":
+                        current_run = mutation_db.query(Run).filter_by(id=run_id).one()
+                        current_job = mutation_db.query(RunJob).filter_by(
+                            run_id=run_id
+                        ).one()
+                        replacement_fence = claim.fence + 1
+                        current_run.fence = replacement_fence
+                        current_job.fence = replacement_fence
+                        current_job.owner_id = "replacement-metadata-worker"
+                        current_job.lease_until = datetime.now(UTC) + timedelta(
+                            minutes=1
+                        )
+                    else:
+                        stop_state["stopped"] = True
                     mutation_db.commit()
                 return observation
 
@@ -1124,7 +1257,11 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
             context,
             "manual:metadata",
             metadata_ref,
-            {"resource_binding_id": str(binding.id)},
+            {
+                "connector_id": str(connector.id),
+                "bucket_name": BUCKET,
+                "expected_owner": ACCOUNT_ID,
+            },
             (),
         )
         assert admission_status == "admitted"
@@ -1150,8 +1287,12 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
         context=context,
         logical_call_id="manual:metadata",
         ref=metadata_ref,
-        arguments={"resource_binding_id": str(binding.id)},
-        control=InvocationControl(),
+        arguments={
+            "connector_id": str(connector.id),
+            "bucket_name": BUCKET,
+            "expected_owner": ACCOUNT_ID,
+        },
+        control=InvocationControl(stop=lambda: stop_state["stopped"]),
     )
 
     expected_requests = 0 if publication_change == "policy_disabled_before_dispatch" else 5
@@ -1175,13 +1316,19 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
         assert result.result["mfa_delete_status"] == "disabled"
         assert result.result["request_count"] == 5
         assert result.result["artifact"]["id"] == str(result.artifacts[0].id)
+    elif publication_change == "lease_lost_after_read":
+        assert result.status == "interrupted"
+        assert result.error.code == "execution_interrupted"
+        assert not result.artifacts
+    elif publication_change == "cancelled_after_read":
+        assert result.status == "cancelled"
+        assert result.error.code == "cancelled"
+        assert not result.artifacts
     else:
         assert result.status == "failed"
         assert result.error.code == (
             "connector_revoked"
             if publication_change == "connector_revoked"
-            else "changed"
-            if publication_change == "binding_retired"
             else "disabled"
         )
         assert not result.artifacts
@@ -1211,7 +1358,15 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
             assert attempt.outcome == "succeeded"
             assert artifact.kind == "cloud_observation"
             assert artifact.display_name == "s3-bucket-metadata.json"
+            assert observation.schema_version == 2
             assert observation.source == "aws_s3_bucket_metadata"
+            assert observation.resource_object_id is None
+            assert observation.resource_binding_id is None
+            assert observation.connector_id == connector.id
+            assert json.loads(observation.target_json) == {
+                "bucket_name": BUCKET,
+                "expected_owner": ACCOUNT_ID,
+            }
             assert observation.measurement_at is None
             assert observation.outcome == "measured"
             assert json.loads(observation.coverage_json) == {
@@ -1221,8 +1376,8 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
             }
             assert observation.evidence_artifact_id == artifact.id
             assert observation.evidence_sha256 == artifact.sha256
-            assert "resource.observed" in events
-            assert "resource.observed" in outbox_types
+            assert "cloud.observed" in events
+            assert "cloud.observed" in outbox_types
             restarted_store = LocalArtifactStore(artifact_root, artifact_storage_id)
             restarted_store.initialize()
             with restarted_store.open_verified(artifact) as evidence_file:
@@ -1231,6 +1386,32 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
             assert evidence["mfa_delete_status"] == "disabled"
             assert "raw_response" not in evidence
             assert "session_token" not in json.dumps(evidence)
+        elif publication_change == "lease_lost_after_read":
+            assert operation.status == "running"
+            assert attempt is not None
+            assert attempt.outcome == "started"
+            assert observation is None
+            assert "cloud.observed" not in events
+            assert "cloud.observed" not in outbox_types
+            artifact = db.query(Artifact).filter_by(
+                originating_operation_id=operation.id
+            ).one()
+            assert artifact.status == "staging"
+            assert operation.output_artifact_ids == "[]"
+            assert not (artifact_root / artifact.relative_storage_key).exists()
+        elif publication_change == "cancelled_after_read":
+            assert operation.status == "cancelled"
+            assert attempt is not None
+            assert attempt.outcome == "cancelled"
+            assert observation is None
+            assert "cloud.observed" not in events
+            assert "cloud.observed" not in outbox_types
+            artifact = db.query(Artifact).filter_by(
+                originating_operation_id=operation.id
+            ).one()
+            assert artifact.status == "deleted"
+            assert artifact.reserved_bytes == 0
+            assert not (artifact_root / artifact.relative_storage_key).exists()
         else:
             assert operation.status == "failed"
             if publication_change == "policy_disabled_before_dispatch":
@@ -1239,12 +1420,15 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
                 assert attempt is not None
                 assert attempt.outcome == "failed"
             assert observation is None
-            assert "resource.observed" not in events
-            assert "resource.observed" not in outbox_types
+            assert "cloud.observed" not in events
+            assert "cloud.observed" not in outbox_types
             artifact = db.query(Artifact).filter_by(
                 originating_operation_id=operation.id
             ).one_or_none()
-            if publication_change == "policy_disabled_before_dispatch":
+            if publication_change in {
+                "policy_disabled_before_dispatch",
+                "cancelled_after_read",
+            }:
                 assert artifact is None
             else:
                 assert artifact is not None

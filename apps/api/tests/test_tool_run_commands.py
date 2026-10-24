@@ -123,40 +123,6 @@ def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
         db.close()
 
 
-def test_bound_inventory_run_needs_no_connector_or_resource_selection(monkeypatch):
-    monkeypatch.setattr(settings, "tool_enabled_ids", "aws_s3_list_bound_buckets")
-    db = SessionLocal()
-    try:
-        user, _project, conversation = _principals(db)[0]
-        manifest = next(
-            item
-            for item in list_capability_manifests()
-            if item.id == "aws_s3_list_bound_buckets"
-        )
-        capability = CapabilityRef(
-            id=manifest.id,
-            version=manifest.version,
-            manifest_digest=manifest.manifest_digest,
-        )
-        command = ToolCommandRequest(
-            client_request_id=uuid.uuid4(),
-            capability=capability,
-            arguments={"limit": 5},
-        )
-
-        run = submit_tool_run(db, user.id, conversation.id, command)
-        db.commit()
-        execution = ExecutionConfig.model_validate_json(run.execution_configuration)
-
-        assert run.kind == "tool"
-        assert run.graph_version == 1
-        assert execution.allowed_capabilities == (capability,)
-        assert execution.credential_binding_refs == ()
-        assert not hasattr(execution, "selected_resource_binding_refs")
-    finally:
-        db.close()
-
-
 def test_aws_read_manual_command_uses_pinned_connector_and_binding_free_config(monkeypatch):
     monkeypatch.setattr(settings, "tool_enabled_ids", "aws_read")
     db = SessionLocal()
