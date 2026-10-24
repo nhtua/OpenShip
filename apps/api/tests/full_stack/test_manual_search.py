@@ -267,7 +267,12 @@ def test_manual_search_survives_restart_and_cancel_is_not_redispatched(tmp_path)
             api_process, base_url = _start_api(api_root, workdir, env, port)
             with httpx.Client(base_url=base_url, timeout=5) as restarted:
                 restarted.headers["Authorization"] = f"Bearer {token}"
-                snapshot = restarted.get(f"/api/conversations/{conversation_id}/snapshot")
+                # This is the first durable-history read on the restarted API;
+                # allow time for a fresh database connection on slower CI hosts.
+                snapshot = restarted.get(
+                    f"/api/conversations/{conversation_id}/snapshot",
+                    timeout=20,
+                )
                 assert snapshot.status_code == 200
                 for artifact_id, expected_bytes in downloaded_before_restart.items():
                     restored = restarted.get(f"/api/artifacts/{artifact_id}/content")
