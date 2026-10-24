@@ -12,6 +12,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from src.openship.capabilities.contracts import (
+    AuthorizationContext,
     CapabilityManifestLike,
     ConnectorRef,
     canonical_json,
@@ -26,6 +27,9 @@ from src.openship.tools.aws.checks import aws_check_connection
 from src.openship.tools.aws.contracts import (
     AwsCheckArguments,
     AwsCheckResult,
+    AwsReadArguments,
+    AwsReadObservation,
+    AwsReadResult,
     AwsS3MetadataArguments,
     AwsS3MetadataObservation,
     AwsS3MetadataResult,
@@ -33,6 +37,12 @@ from src.openship.tools.aws.contracts import (
     AwsStorageObservation,
     AwsStorageResult,
     AwsToolError,
+)
+from src.openship.tools.aws.read import execute_aws_read, project_aws_read_result
+from src.openship.tools.aws.read_catalog import (
+    AwsReadCatalogArguments,
+    AwsReadCatalogResult,
+    aws_read_catalog,
 )
 from src.openship.tools.aws.s3_metadata import (
     aws_s3_bucket_metadata,
@@ -151,6 +161,8 @@ _BUILTIN_IDS = frozenset(
         "aws_s3_bucket_storage",
         "aws_s3_bucket_metadata",
         "aws_s3_list_bound_buckets",
+        "aws_read_catalog",
+        "aws_read",
     }
 )
 _REGISTERED: dict[str, ToolDefinitionEntry] = {}
@@ -232,6 +244,102 @@ def _aws_check_output(operation: Any, value: Any) -> Any:
         raise
     except Exception as exc:
         raise ToolPublicationError("invalid_tool_output") from exc
+
+
+def _aws_read_output(operation: Any, value: Any) -> Any:
+    from src.openship.connectors.aws.read_catalog import load_aws_read_catalog
+    from src.openship.execution.publication import ToolPublicationError
+
+    try:
+        observation = AwsReadObservation.model_validate(value)
+        arguments = AwsReadArguments.model_validate_json(operation.arguments_json)
+        if (
+            observation.operation_id != operation.id
+            or observation.project_id != operation.project_id
+            or (
+                arguments.connector_id is not None
+                and observation.connector_id != arguments.connector_id
+            )
+            or observation.service != arguments.service
+            or observation.operation != arguments.operation
+            or canonical_json(observation.target.get("parameters", {}))
+            != canonical_json(arguments.parameters)
+            or observation.catalog_digest != load_aws_read_catalog().digest
+            or observation.tool.id != operation.capability_id
+            or observation.tool.version != operation.capability_version
+            or observation.tool.manifest_digest != operation.manifest_digest
+        ):
+            raise ToolPublicationError("invalid_tool_output")
+        return observation
+    except ToolPublicationError:
+        raise
+    except Exception as exc:
+        raise ToolPublicationError("invalid_tool_output") from exc
+
+
+def _aws_read_publication(db: Any, operation: Any, observation: Any, artifact_ref: Any):
+    from src.openship.connectors.aws.broker import AwsBrokerError, AwsRoleBroker
+    from src.openship.connectors.credentials.broker import ConnectorCredentialError
+    from src.openship.connectors.models import ConnectorRevision
+    from src.openship.execution.publication import ToolPublicationError
+    from src.openship.resources.service import (
+        ResourceServiceError,
+        record_aws_read_observation,
+    )
+
+    arguments = AwsReadArguments.model_validate_json(operation.arguments_json)
+    revision = (
+        db.query(ConnectorRevision)
+        .filter(
+            ConnectorRevision.connector_id == observation.connector_id,
+            ConnectorRevision.revision == observation.connector_revision,
+            ConnectorRevision.project_id == operation.project_id,
+            ConnectorRevision.visibility == "project",
+        )
+        .first()
+    )
+    if revision is None:
+        raise ToolPublicationError("changed")
+    reference = ConnectorRef(
+        id=observation.connector_id,
+        kind="aws",
+        configuration_revision=observation.connector_revision,
+        visibility="project",
+        credential_version_id=revision.credential_version_id,
+    )
+    try:
+        configuration = AwsRoleBroker(lambda: db).validate_in_session(
+            db,
+            project_id=operation.project_id,
+            reference=reference,
+            lock=True,
+        )
+    except (AwsBrokerError, ConnectorCredentialError):
+        raise ToolPublicationError("changed") from None
+    if (
+        configuration.expected_account_id != observation.account_id
+        or (arguments.region is None and configuration.region != observation.region)
+    ):
+        raise ToolPublicationError("changed")
+
+    authorization = AuthorizationContext(
+        principal_id=operation.principal_id,
+        project_id=operation.project_id,
+        conversation_id=operation.conversation_id,
+        action="execute_tool",
+        target_id=str(operation.run_id),
+    )
+    try:
+        record_aws_read_observation(
+            db,
+            authorization=authorization,
+            operation=operation,
+            observation=observation,
+            artifact=artifact_ref,
+        )
+    except ResourceServiceError:
+        raise ToolPublicationError("changed") from None
+    return project_aws_read_result(observation, artifact_ref)
 
 
 def _aws_storage_output(operation: Any, value: Any) -> Any:
@@ -483,6 +591,31 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             error_mapper=_aws_error,
             safe_failure_code="aws_unavailable",
             model_selectable=False,
+        )
+    elif manifest.id == "aws_read_catalog":
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=manifest.description,
+            argument_model=AwsReadCatalogArguments,
+            result_model=AwsReadCatalogResult,
+            handler=aws_read_catalog,
+            error_mapper=_aws_error,
+            safe_failure_code="aws_unavailable",
+        )
+    elif manifest.id == "aws_read":
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=manifest.description,
+            argument_model=AwsReadArguments,
+            result_model=AwsReadResult,
+            handler=execute_aws_read,
+            handler_result_model=AwsReadObservation,
+            output_validator=_aws_read_output,
+            external_publication_hook=_aws_read_publication,
+            artifact_kind="cloud_observation",
+            artifact_name="aws-read-observation.json",
+            error_mapper=_aws_error,
+            safe_failure_code="aws_unavailable",
         )
     elif manifest.id == "aws_s3_bucket_storage":
         entry = ToolDefinitionEntry(

@@ -130,7 +130,8 @@ async def execute_aws_read(
     references = [
         ref
         for ref in execution.connector_refs
-        if ref.kind == "aws" and ref.id == arguments.connector_id
+        if ref.kind == "aws"
+        and (arguments.connector_id is None or ref.id == arguments.connector_id)
     ]
     if len(references) != 1:
         raise AwsToolError("aws_resource_unavailable")

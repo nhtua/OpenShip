@@ -236,7 +236,7 @@ class ToolGateway:
         broker = None
         aws_broker = None
         credential = None
-        if manifest.schema_version == 2 and getattr(manifest, "connector_kinds", ()):
+        if manifest.schema_version in (2, 3) and getattr(manifest, "connector_kinds", ()):
             expected_kinds = set(manifest.connector_kinds)
             if "aws" in expected_kinds:
                 managed_reference = self._aws_reference(
@@ -568,8 +568,8 @@ class ToolGateway:
                 pinned = decode_execution_config(run.execution_configuration or "{}")
             except (ValidationError, TypeError, ValueError) as exc:
                 raise ToolPublicationError("changed") from exc
-            is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2)
-            is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3)
+            is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2, 3)
+            is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3, 4)
             if (
                 context.execution != pinned
                 or not (is_manual_tool or is_chat_tool)
@@ -593,6 +593,17 @@ class ToolGateway:
                 definition = get_tool_definition(manifest)
             except LookupError:
                 raise ToolPublicationError("changed")
+            if manifest.id in {"aws_read", "aws_read_catalog"}:
+                from src.openship.connectors.aws.read_catalog import (
+                    load_aws_read_catalog,
+                )
+
+                if (
+                    not hasattr(pinned, "aws_read_catalog_digest")
+                    or pinned.aws_read_catalog_digest != load_aws_read_catalog().digest
+                    or manifest.aws_read_catalog_digest != pinned.aws_read_catalog_digest
+                ):
+                    raise ToolPublicationError("changed")
             return pinned, manifest, definition
 
     async def _acquire_and_mark(
@@ -821,6 +832,18 @@ class ToolGateway:
                 if item.kind == "aws" and item.id == connector_id
             ]
             return matches[0] if len(matches) == 1 else None
+        if capability_id in {"aws_read", "aws_read_catalog"}:
+            try:
+                connector_id = uuid.UUID(str(arguments["connector_id"]))
+            except (KeyError, TypeError, ValueError):
+                connector_id = None
+            matches = [
+                item
+                for item in references
+                if item.kind == "aws"
+                and (connector_id is None or item.id == connector_id)
+            ]
+            return matches[0] if len(matches) == 1 else None
         if capability_id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
             try:
                 binding_id = uuid.UUID(str(arguments["resource_binding_id"]))
@@ -853,6 +876,17 @@ class ToolGateway:
         connector_ref,
         configuration,
     ):
+        if capability_id in {"aws_read", "aws_read_catalog"}:
+            references = [
+                item
+                for item in getattr(execution, "connector_refs", ())
+                if item.kind == "aws"
+            ]
+            return (
+                len(references) == 1
+                and references[0] == connector_ref
+                and configuration.kind == "aws"
+            )
         binding_id = None
         if capability_id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
             try:
@@ -989,7 +1023,7 @@ class ToolGateway:
                     else "changed"
                 )
                 raise ToolPublicationError(code) from None
-            if manifest.schema_version == 2 and manifest.connector_kinds:
+            if manifest.schema_version in (2, 3) and manifest.connector_kinds:
                 if "aws" in manifest.connector_kinds:
                     reference = self._aws_reference(
                         operation.capability_id,

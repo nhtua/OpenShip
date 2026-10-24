@@ -719,7 +719,7 @@ class Worker:
             agent_execution = None
             try:
                 snapshot = bind_run_model_config(job, run, fence)
-                if run.kind == "chat" and run.graph_version in (2, 3):
+                if run.kind == "chat" and run.graph_version in (2, 3, 4):
                     try:
                         agent_execution = decode_execution_config(
                             run.execution_configuration or ""

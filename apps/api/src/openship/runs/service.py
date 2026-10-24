@@ -25,6 +25,7 @@ from ..capabilities.contracts import (
     ExecutionConfig,
     ExecutionConfigV2,
     ExecutionConfigV3,
+    ExecutionConfigV4,
     LoopLimits,
     ResourceBindingRef,
     ToolCommandRequest,
@@ -35,6 +36,7 @@ from ..capabilities.policy import read_effective_tool_policy
 from ..chat.lifecycle import ConversationLifecycleError, get_owned_conversation_scope
 from ..chat.models import Conversation, Message
 from ..config import settings
+from ..connectors.aws.read_catalog import load_aws_read_catalog
 from ..connectors.models import (
     Connector,
     ConnectorRevision,
@@ -471,6 +473,17 @@ def _tool_chat_execution(
             },
         )
     enabled_ids = policy.effective_ids
+    aws_discovery_ids = {"aws_read_catalog", "aws_read"} & enabled_ids
+    if aws_discovery_ids and resource_binding_selections:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "resource_binding_retired",
+                    "message": "AWS discovery uses the project Connector role and does not accept resource bindings",
+                }
+            },
+        )
     refs: list[CapabilityRef] = []
     binding_refs: list[str] = []
     connector_refs: list[ConnectorRef] = []
@@ -481,6 +494,33 @@ def _tool_chat_execution(
     )
     explicit_services = set(connector_selections)
     managed_services: set[str] = set()
+    preferred_search_kind = None
+    aws_connector_ref = None
+    if aws_discovery_ids:
+        try:
+            resolved_aws = resolve_connector(
+                db,
+                project_id=project_id,
+                service="aws",
+                selected_id=connector_selections.get("aws"),
+            )
+        except ConnectorSelectionError as refused:
+            if (
+                "aws" in explicit_services
+                or refused.code != "connector_required"
+                or _connector_rows_for_project(db, project_id, "aws") > 0
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": {
+                            "code": refused.code,
+                            "message": "Choose one eligible AWS Connector for this project",
+                        }
+                    },
+                ) from refused
+        else:
+            aws_connector_ref = _connector_reference(resolved_aws)
     for manifest in list_capability_manifests():
         if manifest.id not in enabled_ids:
             continue
@@ -497,6 +537,24 @@ def _tool_chat_execution(
                 },
             ) from refused
         if not definition.model_selectable:
+            continue
+        if manifest.id in {"aws_read_catalog", "aws_read"}:
+            if aws_connector_ref is None:
+                continue
+            ref = CapabilityRef(
+                id=manifest.id,
+                version=manifest.version,
+                manifest_digest=manifest.manifest_digest,
+            )
+            try:
+                resolve_capability(ref, enabled_ids)
+            except CapabilityError as refused:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": {"code": refused.code, "message": str(refused)}},
+                ) from refused
+            refs.append(ref)
+            connector_refs.append(aws_connector_ref)
             continue
         if manifest.id in {"aws_s3_bucket_storage", "aws_s3_bucket_metadata"}:
             if resource_binding_refs:
@@ -625,9 +683,45 @@ def _tool_chat_execution(
                 else "tavily_web_search"
             )
             refs.sort(key=lambda ref: ref.id != preferred_id)
+
+    has_aws_discovery = any(
+        ref.id in {"aws_read_catalog", "aws_read"} for ref in refs
+    )
+    if has_aws_discovery:
+        loop_limits = LoopLimits(
+            deadline_seconds=min(
+                settings.workflow_run_timeout_seconds,
+                int(model_config.limits.run_timeout_seconds),
+                180,
+            ),
+            max_tool_calls=12,
+            max_model_turns=13,
+            max_generation_attempts=15,
+            max_output_tokens_per_request=1000,
+            max_total_output_tokens=15000,
+        )
         execution_fields = {
             "graph_kind": "chat",
-            "graph_version": 3 if search_connector_refs else 2,
+            "graph_version": 4,
+            "allowed_capabilities": tuple(refs),
+            "selected_artifacts": artifact_refs,
+            "connector_refs": tuple(connector_refs),
+            "loop_limits": loop_limits,
+        }
+        return (
+            ExecutionConfigV4(
+                **execution_fields,
+                credential_binding_refs=tuple(binding_refs),
+                preferred_search_kind=preferred_search_kind,
+                aws_read_catalog_digest=load_aws_read_catalog().digest,
+            ),
+            policy.revision,
+        )
+
+    if search_connector_refs:
+        execution_fields = {
+            "graph_kind": "chat",
+            "graph_version": 3,
             "allowed_capabilities": tuple(refs),
             "selected_artifacts": artifact_refs,
             "connector_refs": tuple(connector_refs),
@@ -1136,6 +1230,42 @@ def submit_tool_run(
         else:
             connector_refs = (_connector_reference(selected),)
 
+    if manifest.schema_version == 3 and command.capability.id in {
+        "aws_read_catalog",
+        "aws_read",
+    }:
+        arguments = normalized_arguments.model_dump(mode="python")
+        selected_id = command.connector_selections.get("aws")
+        argument_connector_id = arguments.get("connector_id")
+        if (
+            selected_id is not None
+            and argument_connector_id is not None
+            and selected_id != argument_connector_id
+        ):
+            raise _tool_command_error(
+                422,
+                "connector_scope_denied",
+                "The AWS operation must use the selected project Connector",
+            )
+        selected_id = selected_id or argument_connector_id
+        try:
+            selected = resolve_connector(
+                db,
+                project_id=conversation.project_id,
+                service="aws",
+                selected_id=selected_id,
+            )
+        except ConnectorSelectionError as refused:
+            raise _tool_command_error(
+                422,
+                refused.code,
+                "Choose one eligible AWS Connector for this project",
+            ) from refused
+        connector_refs = (_connector_reference(selected),)
+        if command.capability.id == "aws_read":
+            arguments["connector_id"] = selected.connector_id
+            normalized_arguments = definition.validate_arguments(arguments)
+
     if command.capability.id == "aws_check_connection":
         arguments = normalized_arguments.model_dump(mode="python")
         connector_ref = _aws_connector_reference(
@@ -1169,7 +1299,22 @@ def submit_tool_run(
             binding_ids=(arguments["resource_binding_id"],),
         )
 
-    if connector_refs:
+    if manifest.schema_version == 3 and command.capability.id in {
+        "aws_read_catalog",
+        "aws_read",
+    }:
+        execution = ExecutionConfigV4(
+            graph_kind="tool",
+            graph_version=3,
+            loop_limits=LoopLimits(
+                deadline_seconds=min(settings.workflow_run_timeout_seconds, 180)
+            ),
+            allowed_capabilities=(execution_ref,),
+            connector_refs=connector_refs,
+            aws_read_catalog_digest=manifest.aws_read_catalog_digest,
+        )
+        graph_version = 3
+    elif connector_refs:
         execution = ExecutionConfigV2(
             graph_kind="tool",
             graph_version=2,

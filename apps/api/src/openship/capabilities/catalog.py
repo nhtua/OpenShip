@@ -8,11 +8,13 @@ from src.openship.capabilities.contracts import (
     CapabilityManifest,
     CapabilityManifestLike,
     CapabilityManifestV2,
+    CapabilityManifestV3,
     CapabilityRef,
     CapabilitySummary,
     OutputPolicy,
     canonical_digest,
 )
+from src.openship.connectors.aws.read_catalog import load_aws_read_catalog
 from src.openship.execution.errors import CapabilityError
 from src.openship.providers.credentials import credential_binding_present
 from src.openship.tools.aws.bound_inventory import (
@@ -26,6 +28,11 @@ from src.openship.tools.aws.contracts import (
     AwsS3MetadataResult,
     AwsStorageArguments,
     AwsStorageResult,
+)
+from src.openship.tools.aws.read import AwsReadArguments, AwsReadResult
+from src.openship.tools.aws.read_catalog import (
+    AwsReadCatalogArguments,
+    AwsReadCatalogResult,
 )
 from src.openship.tools.search.contracts import SearchArguments, SearchItem
 from src.openship.workspace.schemas import (
@@ -111,6 +118,31 @@ _S3_METADATA_SOURCE_FILES = (
     "tools/aws/contracts.py",
     "tools/aws/s3_metadata.py",
     "tools/aws/s3_storage.py",
+)
+_AWS_DISCOVERY_SOURCE_FILES = (
+    "capabilities/catalog.py",
+    "capabilities/contracts.py",
+    "capabilities/definitions.py",
+    "connectors/aws/read_catalog.py",
+    "connectors/aws/broker.py",
+    "connectors/aws/clients.py",
+    "execution/aws_sdk.py",
+    "execution/aws_transport.py",
+    "execution/gateway.py",
+    "execution/publication.py",
+    "resources/models.py",
+    "resources/service.py",
+    "runs/agent_graph.py",
+    "runs/budget.py",
+    "runs/dispatch.py",
+    "runs/queue.py",
+    "runs/schemas.py",
+    "runs/service.py",
+    "runs/transcript.py",
+    "runs/worker.py",
+    "tools/aws/contracts.py",
+    "tools/aws/read.py",
+    "tools/aws/read_catalog.py",
 )
 
 # These exact v1 manifests were admitted before managed Connectors. Keep them
@@ -358,6 +390,84 @@ def _s3_metadata_manifest() -> CapabilityManifestV2:
     return CapabilityManifestV2(**fields, manifest_digest=canonical_digest(fields))
 
 
+def _aws_discovery_manifests() -> tuple[CapabilityManifestV3, ...]:
+    root = Path(__file__).resolve().parents[1]
+    implementation_digest = hashlib.sha256()
+    for relative in _AWS_DISCOVERY_SOURCE_FILES:
+        path = root / relative
+        name = relative.encode("utf-8")
+        body = path.read_bytes()
+        implementation_digest.update(len(name).to_bytes(4, "big"))
+        implementation_digest.update(name)
+        implementation_digest.update(len(body).to_bytes(8, "big"))
+        implementation_digest.update(body)
+
+    catalog = load_aws_read_catalog()
+    supported_operations = tuple(
+        f"{item.service}.{item.operation}"
+        for item in catalog.operations
+        if item.supported
+    )
+    declarations = (
+        (
+            "aws_read_catalog",
+            (
+                "Discover the safe AWS read operations available in this installation. "
+                "Call with a service and operation to inspect its parameter schema before reading."
+            ),
+            AwsReadCatalogArguments,
+            AwsReadCatalogResult,
+            "read_only_local",
+            (),
+            {"max_page_size": 50, "max_model_result_bytes": 16 * 1024},
+        ),
+        (
+            "aws_read",
+            (
+                "Perform one bounded, read-only AWS SDK operation from the pinned catalog. "
+                "Use catalog discovery first, pass only the selected operation's parameters, "
+                "and explain access-denied errors as missing permissions on the project's AWS role."
+            ),
+            AwsReadArguments,
+            AwsReadResult,
+            "read_only_external",
+            (OutputPolicy(name="aws-read-observation.json", mutability="immutable"),),
+            {
+                "timeout_seconds": 30,
+                "max_requests": 8,
+                "max_page_size": 50,
+                "max_http_response_bytes": 2 * 1024 * 1024,
+                "max_observation_bytes": 64 * 1024,
+                "max_model_result_bytes": 16 * 1024,
+            },
+        ),
+    )
+    manifests = []
+    for capability_id, description, arguments, result, effect, outputs, limits in declarations:
+        fields = {
+            "schema_version": 3,
+            "id": capability_id,
+            "version": "1.0.0",
+            "implementation_digest": implementation_digest.hexdigest(),
+            "description": description,
+            "input_schema": arguments.model_json_schema(),
+            "output_schema": result.model_json_schema(),
+            "effect": effect,
+            "enablement_requirements": ("operator_enabled", "connector_configured"),
+            "limits": limits,
+            "outputs": tuple(output.model_dump(mode="json") for output in outputs),
+            "connector_kinds": ("aws",),
+            "operations": supported_operations,
+            "target_kinds": (),
+            "execution_kind": "maintained",
+            "aws_read_catalog_digest": catalog.digest,
+        }
+        manifests.append(
+            CapabilityManifestV3(**fields, manifest_digest=canonical_digest(fields))
+        )
+    return tuple(manifests)
+
+
 def _aws_manifests():
     implementation_digest = _aws_implementation_digest()
     declarations = (
@@ -481,6 +591,7 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
         _search_manifest("tavily_web_search", "tavily"),
         *_workspace_manifests(),
         *_aws_manifests(),
+        *_aws_discovery_manifests(),
         _bound_inventory_manifest(),
         _s3_metadata_manifest(),
     )

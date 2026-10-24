@@ -82,7 +82,10 @@ def test_operator_policy_is_shared_by_catalog_and_execution(tmp_path, monkeypatc
         snapshot = policy_module.read_effective_tool_policy(db)
         installed_ids = {item.id for item in list_capability_manifests()}
         assert snapshot.installed_ids == installed_ids
-        assert snapshot.effective_ids == installed_ids
+        assert snapshot.effective_ids == installed_ids - {
+            "aws_read_catalog",
+            "aws_read",
+        }
 
         changed = policy_module.set_tool_policy(
             db,
@@ -156,6 +159,47 @@ def test_missing_policy_state_returns_no_effective_capabilities(tmp_path):
         assert snapshot.state_available is False
         assert snapshot.revision == 0
         assert snapshot.effective_ids == frozenset()
+    engine.dispose()
+
+
+def test_aws_discovery_is_disabled_by_default_and_operator_opt_in(tmp_path, monkeypatch):
+    from uuid import uuid4
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from src.openship.auth.models import User
+    from src.openship.capabilities.models import ToolPolicyState
+    from src.openship.config import settings
+
+    policy_module = _policy_module()
+    engine = create_engine(f"sqlite:///{tmp_path / 'aws-read-policy.db'}")
+    Base.metadata.create_all(engine)
+    actor = User(
+        id=uuid4(),
+        username="aws-policy-operator",
+        email="aws-policy-operator@example.test",
+        password_hash="test-only",
+    )
+    with sessionmaker(bind=engine)() as db:
+        db.add(actor)
+        db.add(ToolPolicyState(id=1, revision=1))
+        db.commit()
+        monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+        monkeypatch.setattr(settings, "tool_enabled_ids", None)
+
+        initial = policy_module.read_effective_tool_policy(db)
+        assert "aws_read_catalog" not in initial.effective_ids
+        assert "aws_read" not in initial.effective_ids
+        for capability_id in ("aws_read_catalog", "aws_read"):
+            initial = policy_module.set_tool_policy(
+                db,
+                actor=actor,
+                capability_id=capability_id,
+                enabled=True,
+                expected_revision=initial.revision,
+            )
+        assert {"aws_read_catalog", "aws_read"}.issubset(initial.effective_ids)
     engine.dispose()
 
 

@@ -88,7 +88,7 @@ class RunBudget:
             run = require_live_claim(db, self._claim, lock=True)
             if (
                 run.kind != "chat"
-                or run.graph_version not in (2, 3)
+                or run.graph_version not in (2, 3, 4)
                 or self._execution.graph_kind != "chat"
                 or self._execution.graph_version != run.graph_version
             ):
@@ -202,7 +202,7 @@ class RunBudget:
             run = require_live_claim(db, self._claim, lock=True)
             if (
                 run.kind != "chat"
-                or run.graph_version not in (2, 3)
+                or run.graph_version not in (2, 3, 4)
                 or self._execution.graph_kind != "chat"
                 or self._execution.graph_version != run.graph_version
             ):

@@ -11,6 +11,7 @@ from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import (
     CapabilityRef,
     ExecutionConfig,
+    ExecutionConfigV4,
     LoopLimits,
 )
 from src.openship.chat.models import Conversation
@@ -72,6 +73,20 @@ def _execution(*, tool_limit=2, model_turn_limit=3, attempt_limit=3, output_limi
     )
 
 
+def _aws_execution():
+    return ExecutionConfigV4(
+        graph_kind="chat",
+        graph_version=4,
+        aws_read_catalog_digest="a" * 64,
+        loop_limits=LoopLimits(
+            deadline_seconds=180,
+            max_tool_calls=12,
+            max_model_turns=13,
+            max_generation_attempts=15,
+            max_output_tokens_per_request=1000,
+            max_total_output_tokens=15000,
+        ),
+    )
 def _running_run(execution):
     suffix = uuid.uuid4().hex
     with TestSessionLocal() as db:
@@ -94,7 +109,7 @@ def _running_run(execution):
             client_request_id=str(uuid.uuid4()),
             status="running",
             kind="chat",
-            graph_version=2,
+            graph_version=execution.graph_version,
             fence=1,
             execution_configuration=execution.model_dump_json(),
         )
@@ -165,6 +180,79 @@ def test_generation_reservations_are_durable_and_share_attempt_output_limits():
             reason="initial",
             model_turn_ordinal=3,
             requested_output_tokens=1,
+            reserved_tokens=None,
+            reserved_cost=None,
+        )
+    assert refused.value.code == "budget_exceeded"
+
+
+def test_aws_budget_reserves_room_for_twelve_reads_and_final_answer():
+    execution = _aws_execution()
+    run_id, user_id, _project_id, _conversation_id, lease_until = _running_run(execution)
+    _claim, budget = _budget(
+        execution,
+        run_id,
+        lease_until,
+        user_id,
+        limits=RunLimits(max_output_tokens=1000, max_attempts=15),
+    )
+    profile = _profile()
+
+    reservations = [
+        budget.reserve_generation(
+            profile,
+            reason="initial" if turn == 0 else "retry",
+            model_turn_ordinal=turn,
+            requested_output_tokens=1000,
+            reserved_tokens=None,
+            reserved_cost=None,
+        )
+        for turn in range(13)
+    ]
+
+    assert all(item.tool_calls_allowed for item in reservations[:12])
+    assert reservations[12].tool_calls_allowed is False
+    with pytest.raises(ProviderError) as refused:
+        budget.reserve_generation(
+            profile,
+            reason="initial",
+            model_turn_ordinal=13,
+            requested_output_tokens=1000,
+            reserved_tokens=None,
+            reserved_cost=None,
+        )
+    assert refused.value.code == "budget_exceeded"
+
+
+def test_aws_budget_honors_a_lower_profile_attempt_limit():
+    execution = _aws_execution()
+    run_id, user_id, _project_id, _conversation_id, lease_until = _running_run(execution)
+    _claim, budget = _budget(
+        execution,
+        run_id,
+        lease_until,
+        user_id,
+        limits=RunLimits(max_output_tokens=1000, max_attempts=3),
+    )
+    profile = _profile()
+    reservations = [
+        budget.reserve_generation(
+            profile,
+            reason="initial",
+            model_turn_ordinal=turn,
+            requested_output_tokens=1000,
+            reserved_tokens=None,
+            reserved_cost=None,
+        )
+        for turn in range(3)
+    ]
+    assert reservations[-1].tool_calls_allowed is False
+    with pytest.raises(ProviderError) as refused:
+        budget.reserve_generation(
+            profile,
+            reason="initial",
+            model_turn_ordinal=3,
+            requested_output_tokens=1000,
             reserved_tokens=None,
             reserved_cost=None,
         )

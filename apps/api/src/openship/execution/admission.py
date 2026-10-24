@@ -101,8 +101,8 @@ def admit_operation(
     if conversation is None:
         raise _refused(409, "lease_lost", "This worker no longer owns the active run")
     run = require_live_claim(db, claim, lock=True)
-    is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2)
-    is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3)
+    is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2, 3)
+    is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3, 4)
     if not (is_manual_tool or is_chat_tool):
         raise _refused(
             409,

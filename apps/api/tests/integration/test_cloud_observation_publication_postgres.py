@@ -30,6 +30,7 @@ from src.openship.capabilities.contracts import (
     CapabilityRef,
     ConnectorRef,
     ExecutionConfigV2,
+    ExecutionConfigV4,
     ResourceBindingRef,
     ToolCommandRequest,
     ToolInvocationContext,
@@ -44,7 +45,7 @@ from src.openship.capabilities.definitions import (
     register_tool_definition,
     unregister_tool_definition,
 )
-from src.openship.capabilities.models import ToolPolicyState
+from src.openship.capabilities.models import ToolPolicyOverride, ToolPolicyState
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.connectors.aws.broker import AwsRoleBroker
@@ -199,7 +200,7 @@ def _configure_test_keys(monkeypatch, tmp_path):
     return encryption_file, hmac_file
 
 
-def _insert_aws_scope(db):
+def _insert_aws_scope(db, *, include_legacy_binding=True):
     user = User(
         username=f"cloud-observation-{uuid.uuid4().hex[:12]}",
         email=f"cloud-observation-{uuid.uuid4().hex}@example.test",
@@ -280,46 +281,48 @@ def _insert_aws_scope(db):
         credential_version_id=credential.id,
         created_by_user_id=user.id,
     )
-    environment = Environment(
-        id=uuid.uuid4(),
-        project_id=project.id,
-        name="production",
-        display_name="Production",
-        created_by_user_id=user.id,
-    )
-    resource = ResourceObject(
-        id=uuid.uuid4(),
-        project_id=project.id,
-        kind="aws_s3_bucket",
-        uri=f"openship://{project.id}/resource/synthetic-bucket",
-        display_name="Synthetic storage bucket",
-        created_by_user_id=user.id,
-    )
-    binding = ResourceBinding(
-        id=uuid.uuid4(),
-        project_id=project.id,
-        resource_object_id=resource.id,
-        environment_id=environment.id,
-        connector_id=connector.id,
-        connector_revision=1,
-        revision=1,
-        account_id=ACCOUNT_ID,
-        region="us-east-1",
-        bucket_name=BUCKET,
-        bucket_arn=f"arn:aws:s3:::{BUCKET}",
-        expected_owner=ACCOUNT_ID,
-        management_method="external",
-        state="active",
-        created_by_user_id=user.id,
-    )
     db.add(credential)
     db.flush()
     db.add(revision)
     db.flush()
-    db.add_all([environment, resource])
-    db.flush()
-    db.add(binding)
-    db.flush()
+    binding = None
+    if include_legacy_binding:
+        environment = Environment(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="production",
+            display_name="Production",
+            created_by_user_id=user.id,
+        )
+        resource = ResourceObject(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            kind="aws_s3_bucket",
+            uri=f"openship://{project.id}/resource/synthetic-bucket",
+            display_name="Synthetic storage bucket",
+            created_by_user_id=user.id,
+        )
+        binding = ResourceBinding(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            resource_object_id=resource.id,
+            environment_id=environment.id,
+            connector_id=connector.id,
+            connector_revision=1,
+            revision=1,
+            account_id=ACCOUNT_ID,
+            region="us-east-1",
+            bucket_name=BUCKET,
+            bucket_arn=f"arn:aws:s3:::{BUCKET}",
+            expected_owner=ACCOUNT_ID,
+            management_method="external",
+            state="active",
+            created_by_user_id=user.id,
+        )
+        db.add_all([environment, resource])
+        db.flush()
+        db.add(binding)
+        db.flush()
     return user, project, conversation, connector, credential, binding
 
 
@@ -450,9 +453,12 @@ def _synthetic_transport(requests, *, on_request=None):
             )
         if request.url.host.startswith("s3."):
             assert request.method == "GET"
-            assert request.headers["x-amz-expected-bucket-owner"] == ACCOUNT_ID
+            if "x-amz-expected-bucket-owner" in request.headers:
+                assert request.headers["x-amz-expected-bucket-owner"] == ACCOUNT_ID
             query = request.url.query.decode()
-            if "location" in query:
+            if query in {"", "max-buckets=20"} and request.url.path in {"", "/"}:
+                body = f"""<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>{ACCOUNT_ID}</ID><DisplayName>synthetic</DisplayName></Owner><Buckets><Bucket><Name>{BUCKET}</Name><CreationDate>2025-01-01T00:00:00.000Z</CreationDate></Bucket></Buckets></ListAllMyBucketsResult>""".encode()
+            elif "location" in query:
                 body = b'<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>'
             elif "versioning" in query:
                 body = b'<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status><MfaDelete>Disabled</MfaDelete></VersioningConfiguration>'
@@ -804,6 +810,188 @@ async def test_synthetic_botocore_storage_observation_publishes_atomically(
 
     assert len(STORAGE_TYPES_V1) == 22
     assert storage_manifest.outputs[0].name == "s3-bucket-storage.json"
+
+
+@pytest.mark.asyncio
+async def test_catalog_then_binding_free_aws_read_publishes_and_reopens_evidence(
+    database_sessions, monkeypatch, tmp_path
+):
+    _configure_test_keys(monkeypatch, tmp_path)
+    requests = []
+    transport_factory = _synthetic_transport(requests)
+    with database_sessions() as db:
+        user, project, conversation, connector, credential, binding = _insert_aws_scope(
+            db, include_legacy_binding=False
+        )
+        assert binding is None
+        assert db.query(Environment).filter_by(project_id=project.id).count() == 0
+        assert db.query(ResourceObject).filter_by(project_id=project.id).count() == 0
+        assert db.query(ResourceBinding).filter_by(project_id=project.id).count() == 0
+        db.merge(ToolPolicyOverride(capability_id="aws_read_catalog", enabled=True))
+        db.merge(ToolPolicyOverride(capability_id="aws_read", enabled=True))
+        catalog_manifest, read_manifest = (
+            next(item for item in list_capability_manifests() if item.id == tool_id)
+            for tool_id in ("aws_read_catalog", "aws_read")
+        )
+        catalog_ref = CapabilityRef(
+            id=catalog_manifest.id,
+            version=catalog_manifest.version,
+            manifest_digest=catalog_manifest.manifest_digest,
+        )
+        read_ref = CapabilityRef(
+            id=read_manifest.id,
+            version=read_manifest.version,
+            manifest_digest=read_manifest.manifest_digest,
+        )
+        connector_ref = ConnectorRef(
+            id=connector.id,
+            kind="aws",
+            configuration_revision=1,
+            visibility="project",
+            credential_version_id=credential.id,
+        )
+        execution = ExecutionConfigV4(
+            graph_kind="tool",
+            graph_version=3,
+            allowed_capabilities=(catalog_ref, read_ref),
+            connector_refs=(connector_ref,),
+            aws_read_catalog_digest=catalog_manifest.aws_read_catalog_digest,
+        )
+        run = Run(
+            conversation_id=conversation.id,
+            project_id=project.id,
+            client_request_id=str(uuid.uuid4()),
+            status="running",
+            kind="tool",
+            graph_version=3,
+            fence=1,
+            execution_configuration=execution.model_dump_json(),
+        )
+        db.add(run)
+        db.flush()
+        lease_until = datetime.now(UTC) + timedelta(minutes=1)
+        db.add(
+            RunJob(
+                run_id=run.id,
+                fence=1,
+                owner_id="aws-read-publication-worker",
+                lease_until=lease_until,
+            )
+        )
+        db.commit()
+        claim = Claim(
+            run_id=run.id,
+            fence=1,
+            lease_until=lease_until,
+            worker_id="aws-read-publication-worker",
+            user_id=user.id,
+        )
+        context = ToolInvocationContext(
+            authorization=AuthorizationContext(
+                principal_id=user.id,
+                project_id=project.id,
+                conversation_id=conversation.id,
+                action="execute_tool",
+                target_id=str(run.id),
+            ),
+            execution=execution,
+            credential_resolver=lambda _name: None,
+            session_factory=database_sessions,
+        )
+        artifact_root = tmp_path / "aws-read-evidence"
+        storage_id = uuid.uuid4()
+        store = LocalArtifactStore(artifact_root, storage_id)
+        store.initialize()
+        context.artifact_store = store
+        operation_session = database_sessions
+        run_id = run.id
+
+    import src.openship.execution.gateway as gateway_module
+
+    monkeypatch.setattr(
+        gateway_module,
+        "AwsRoleBroker",
+        lambda factory: AwsRoleBroker(factory, transport_factory=transport_factory),
+    )
+    catalog_result = await ToolGateway(operation_session).execute_tool(
+        claim=claim,
+        context=context,
+        logical_call_id="model:0:catalog",
+        ref=catalog_ref,
+        arguments={"service": "s3", "operation": "list_buckets"},
+        control=InvocationControl(),
+    )
+    assert catalog_result.status == "succeeded"
+    assert catalog_result.result["operations"][0]["operation"] == "list_buckets"
+
+    # The model can use the bucket name returned by its discovery call as the
+    # target of a separate read without a resource-object or binding row.
+    read_result = await ToolGateway(operation_session).execute_tool(
+        claim=claim,
+        context=context,
+        logical_call_id="model:1:read",
+        ref=read_ref,
+        arguments={
+            "service": "s3",
+            "operation": "list_buckets",
+            "parameters": {},
+        },
+        control=InvocationControl(),
+    )
+    assert read_result.status == "succeeded"
+    assert read_result.result["preview"]["Buckets"][0]["Name"] == BUCKET
+    assert len(read_result.artifacts) == 1
+    bucket_name = read_result.result["preview"]["Buckets"][0]["Name"]
+    target_result = await ToolGateway(operation_session).execute_tool(
+        claim=claim,
+        context=context,
+        logical_call_id="model:2:target-read",
+        ref=read_ref,
+        arguments={
+            "service": "s3",
+            "operation": "get_bucket_location",
+            "parameters": {"Bucket": bucket_name},
+        },
+        control=InvocationControl(),
+    )
+    assert target_result.status == "succeeded"
+    assert target_result.result["preview"]["LocationConstraint"] == "us-east-1"
+    assert len(target_result.artifacts) == 1
+    assert len(requests) == 6  # Each tool call assumes, verifies, and uses the role.
+
+    with operation_session() as db:
+        operation = db.query(ToolOperation).filter_by(
+            id=target_result.operation_id, run_id=run_id, capability_id="aws_read"
+        ).one()
+        artifact = db.query(Artifact).filter_by(id=target_result.artifacts[0].id).one()
+        observation = db.query(ResourceObservation).filter_by(
+            operation_id=target_result.operation_id
+        ).one()
+        list_observation = db.query(ResourceObservation).filter_by(
+            operation_id=read_result.operation_id
+        ).one()
+        event_types = [
+            item.type
+            for item in db.query(Event).filter_by(run_id=run_id).order_by(Event.sequence)
+        ]
+        assert operation.status == "succeeded"
+        assert artifact.kind == "cloud_observation"
+        assert artifact.status == "ready"
+        assert observation.schema_version == 2
+        assert observation.resource_binding_id is None
+        assert observation.resource_object_id is None
+        assert observation.connector_id == connector.id
+        assert observation.service == "s3"
+        assert observation.operation == "get_bucket_location"
+        assert json.loads(observation.target_json) == {
+            "parameters": {"Bucket": BUCKET}
+        }
+        assert list_observation.resource_object_id is None
+        assert list_observation.resource_binding_id is None
+        assert "cloud.observed" in event_types
+        with LocalArtifactStore(artifact_root, storage_id).open_verified(artifact) as stream:
+            evidence = json.load(stream)
+        assert evidence["data"]["LocationConstraint"] == "us-east-1"
 
 
 @pytest.mark.parametrize(

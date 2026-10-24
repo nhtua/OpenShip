@@ -36,8 +36,8 @@ class TurnSubmitRequest(BaseModel):
     resource_binding_selections: list[uuid.UUID] = Field(
         default_factory=list, max_length=10
     )
-    connector_selections: dict[Literal["brave", "tavily"], uuid.UUID] = Field(
-        default_factory=dict, max_length=2
+    connector_selections: dict[Literal["brave", "tavily", "aws"], uuid.UUID] = Field(
+        default_factory=dict, max_length=3
     )
 
     @field_validator("artifact_ids")

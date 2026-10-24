@@ -69,6 +69,24 @@ _ERROR_MESSAGES = {
     "aws_invalid_metadata_response": "AWS returned invalid S3 versioning metadata.",
     "aws_request_limit_exceeded": "The AWS request limit was exceeded.",
     "aws_output_limit_exceeded": "The AWS storage observation exceeded its size limit.",
+    "aws_access_denied": "The AWS connector role does not have permission to perform this operation.",
+    "aws_trust_denied": "AWS denied the configured role assumption. Check the source key and role trust policy.",
+    "aws_credentials_expired": "The AWS source credentials have expired.",
+    "aws_credentials_invalid": "The AWS source credentials were rejected.",
+    "aws_timeout": "The AWS request exceeded its execution deadline.",
+    "aws_cancelled": "The AWS request was cancelled.",
+    "aws_destination_denied": "The AWS destination was rejected by network policy.",
+    "aws_redirect": "The AWS service returned an unsupported redirect.",
+    "aws_configuration_error": "The AWS Connector configuration is unavailable.",
+    "aws_not_found": "The requested AWS resource was not found or is not available to this role.",
+    "aws_throttled": "AWS is throttling this request. Try again shortly.",
+    "aws_invalid_parameters": "The AWS service rejected the operation parameters.",
+    "aws_operation_not_supported": "This AWS read operation is not supported by OpenShip.",
+    "aws_unsupported_protocol": "This AWS operation uses a protocol OpenShip cannot safely handle.",
+    "aws_unsupported_output": "The AWS operation returned data OpenShip cannot safely publish.",
+    "aws_invalid_response": "AWS returned an invalid response.",
+    "aws_invalid_cursor": "The AWS continuation cursor is invalid or has expired. Start a fresh read.",
+    "aws_catalog_mismatch": "The AWS read catalog changed. Start a fresh operation.",
     "invalid_response": "The search service returned an invalid response.",
     "output_limit_exceeded": "The search response exceeded the allowed size.",
     "cancelled": "The search was cancelled before it completed.",
@@ -726,12 +744,9 @@ def publish_tool_result(
         )
         if resource_observation is None:
             raise ToolPublicationError("invalid_tool_output")
-        _event(
-            db,
-            conversation,
-            operation.run_id,
-            "resource.observed",
-            {
+        if resource_observation.schema_version == 1:
+            event_type = "resource.observed"
+            payload = {
                 "schema_version": 1,
                 "observation_id": str(resource_observation.id),
                 "resource_id": str(resource_observation.resource_object_id),
@@ -740,8 +755,25 @@ def publish_tool_result(
                 "outcome": resource_observation.outcome,
                 "retrieved_at": resource_observation.retrieved_at.isoformat(),
                 "artifact_id": str(ready.id),
-            },
-        )
+            }
+        else:
+            event_type = "cloud.observed"
+            payload = {
+                "schema_version": 1,
+                "observation_id": str(resource_observation.id),
+                "operation_id": str(operation.id),
+                "connector_id": str(resource_observation.connector_id),
+                "connector_revision": resource_observation.connector_revision,
+                "account_id": resource_observation.account_id,
+                "service": resource_observation.service,
+                "operation": resource_observation.operation,
+                "region": resource_observation.region,
+                "target": json.loads(resource_observation.target_json),
+                "outcome": resource_observation.outcome,
+                "retrieved_at": resource_observation.retrieved_at.isoformat(),
+                "artifact_id": str(ready.id),
+            }
+        _event(db, conversation, operation.run_id, event_type, payload)
     _event(
         db,
         conversation,

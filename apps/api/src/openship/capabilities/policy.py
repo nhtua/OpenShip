@@ -24,6 +24,10 @@ from src.openship.connectors.service import (
     require_global_operator,
 )
 
+# AWS catalog discovery is opt-in at the operator policy layer. The deployment
+# ceiling still acts only as a ceiling and cannot enable either capability.
+_DEFAULT_DISABLED_IDS = frozenset({"aws_read_catalog", "aws_read"})
+
 
 class ToolPolicyError(RuntimeError):
     def __init__(self, code: str):
@@ -84,7 +88,7 @@ def read_effective_tool_policy(
     operator_enabled_ids = frozenset(
         capability_id
         for capability_id in installed_ids
-        if overrides.get(capability_id, True)
+        if overrides.get(capability_id, capability_id not in _DEFAULT_DISABLED_IDS)
     )
     ceiling = settings.tool_enabled_ceiling
     unknown = tuple(sorted(ceiling - installed_ids)) if ceiling is not None else ()
@@ -270,7 +274,11 @@ def set_tool_policy(
         .filter(ToolPolicyOverride.capability_id == capability_id)
         .first()
     )
-    current_enabled = existing.enabled if existing is not None else True
+    current_enabled = (
+        existing.enabled
+        if existing is not None
+        else capability_id not in _DEFAULT_DISABLED_IDS
+    )
     if current_enabled == enabled:
         return read_effective_tool_policy(db)
 

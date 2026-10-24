@@ -482,7 +482,7 @@ def begin_execution_window(
         or job is None
         or not (
             run.kind == "tool"
-            or (run.kind == "chat" and run.graph_version in (2, 3))
+            or (run.kind == "chat" and run.graph_version in (2, 3, 4))
         )
         or run.status != "running"
         or run.fence != claim.fence

@@ -8,6 +8,7 @@ import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
 import { useResourcesStore } from '@/stores/resources'
 import { runsApi } from '@/services/api'
+import type { ConnectorSelections } from '@/types'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
@@ -250,7 +251,7 @@ async function handleSelectConversation(id: string) {
 
 async function handleSend(content: string, options?: {
   enableTools: boolean
-  connectorSelections?: Partial<Record<'brave' | 'tavily', string>>
+  connectorSelections?: ConnectorSelections
   resourceBindingSelections?: string[]
 }) {
   if (busy.value) return
@@ -365,7 +366,7 @@ async function handleRetrySubmission() {
   else await chat.retryToolSubmission(requestId)
 }
 
-async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: Record<string, unknown>; connector_selections?: Partial<Record<'brave' | 'tavily', string>> }) {
+async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: Record<string, unknown>; connector_selections?: ConnectorSelections }) {
   if (busy.value || hasActiveRun.value) return
   isToolSubmitting.value = true
   try {

@@ -112,7 +112,7 @@ export interface TurnSubmitRequest {
 export type ConnectorKind = 'brave' | 'tavily'
 export type ManagedConnectorKind = ConnectorKind | 'aws'
 export type ConnectorVisibility = 'global' | 'project'
-export type ConnectorSelections = Partial<Record<ConnectorKind, string>>
+export type ConnectorSelections = Partial<Record<ManagedConnectorKind, string>>
 
 export interface ProjectSummary {
   id: string

@@ -310,6 +310,7 @@ class ExecutionConfigV4(FrozenModel):
     allowed_capabilities: tuple[CapabilityRef, ...] = ()
     selected_artifacts: tuple[ArtifactRef, ...] = ()
     connector_refs: tuple[ConnectorRef, ...] = ()
+    credential_binding_refs: tuple[str, ...] = ()
     admitted_context_message_ids: tuple[UUID, ...] = ()
     preferred_search_kind: Literal["brave", "tavily"] | None = None
     aws_read_catalog_digest: str = Field(pattern=SHA256_PATTERN)
@@ -352,8 +353,8 @@ class ToolCommandRequest(FrozenModel):
     client_request_id: UUID
     capability: CapabilityRef
     arguments: dict[str, Any]
-    connector_selections: dict[Literal["brave", "tavily"], UUID] = Field(
-        default_factory=dict, max_length=2
+    connector_selections: dict[Literal["brave", "tavily", "aws"], UUID] = Field(
+        default_factory=dict, max_length=3
     )
 
     @field_validator("client_request_id", mode="before")
@@ -375,7 +376,7 @@ class ToolCommandRequest(FrozenModel):
             return value
         parsed = {}
         for kind, connector_id in value.items():
-            if not isinstance(kind, str) or kind not in {"brave", "tavily"}:
+            if not isinstance(kind, str) or kind not in {"brave", "tavily", "aws"}:
                 raise ValueError("connector selection kind is invalid")
             if isinstance(connector_id, str):
                 try:

@@ -29,7 +29,7 @@ class AwsToolContract(BaseModel):
 class AwsReadArguments(AwsToolContract):
     """One explicitly selected, catalog-approved AWS operation and target."""
 
-    connector_id: UUID
+    connector_id: UUID | None = None
     service: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9-]+$")
     operation: str = Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_]*$")
     region: str | None = Field(default=None, min_length=1, max_length=64)

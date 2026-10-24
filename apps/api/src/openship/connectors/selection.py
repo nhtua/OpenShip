@@ -123,7 +123,7 @@ def resolve_connector(
     Visibility is always checked against the consuming project. A default is
     authoritative even when unavailable: it never falls back to another scope.
     """
-    if service not in {"brave", "tavily"}:
+    if service not in {"brave", "tavily", "aws"}:
         raise ConnectorSelectionError("connector_required")
     visible = _visible_query(db, project_id, service)
 

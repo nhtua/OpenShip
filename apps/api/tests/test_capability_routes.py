@@ -62,6 +62,8 @@ def test_catalog_auth_and_secret_redaction(monkeypatch):
         "aws_s3_bucket_storage",
         "aws_s3_list_bound_buckets",
         "aws_s3_bucket_metadata",
+        "aws_read_catalog",
+        "aws_read",
     }
     assert all(not item.available for item in summary)
     assert by_id["brave_web_search"].unavailable_reason == "runtime_unavailable"

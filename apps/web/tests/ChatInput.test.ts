@@ -123,6 +123,48 @@ describe('ChatInput', () => {
     expect(wrapper.emitted('search')).toBeFalsy()
   })
 
+  it('requires and submits an AWS connector choice when the project has multiple roles', async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        profiles: toolCapableProfiles,
+        defaultProfileId: 'primary-fixture',
+        selectedProfileId: null,
+        fallbackIds: [],
+        catalogError: null,
+        selectionDisabled: false,
+        capabilities: [{
+          id: 'aws_read',
+          version: '1.0.0',
+          manifest_digest: 'e'.repeat(64),
+          input_schema: {},
+          output_schema: {},
+          effect: 'read_only_external',
+          permitted: true,
+          required_connector_kinds: ['aws'],
+          connector_readiness: { aws: 'ambiguous' },
+        }],
+        connectors: [
+          { id: 'aws-one', kind: 'aws', visibility: 'project', name: 'Read role one', status: 'configured', revision: 1, is_default: false },
+          { id: 'aws-two', kind: 'aws', visibility: 'project', name: 'Read role two', status: 'configured', revision: 1, is_default: false },
+        ],
+        submissionError: null,
+      },
+    })
+
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="automatic-aws-connector-selection"]').exists()).toBe(true)
+    await wrapper.get('textarea').setValue('List buckets I can read.')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-testid="automatic-aws-connector-selection"]').setValue('aws-two')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('send')?.[0]).toEqual([
+      'List buckets I can read.',
+      { enableTools: true, connectorSelections: { aws: 'aws-two' } },
+    ])
+  })
+
   it('explains an installation ceiling and keeps restricted manual choices disabled', async () => {
     const restricted = {
       ...capabilities[0],
@@ -363,7 +405,7 @@ describe('ChatInput', () => {
 
     await wrapper.get('button[aria-label="Add tool"]').trigger('click')
     expect(wrapper.get('[data-testid="automatic-tool-mode"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('choose a project default when a provider has multiple eligible Connectors')
+    expect(wrapper.text()).toContain('Select a project Connector when more than one is eligible.')
   })
 
   it('keeps automatic mode available when one permitted provider is ready and another is not', async () => {

@@ -28,7 +28,7 @@ interface Props {
   toolSubmissionDisabled?: boolean
   submissionError?: string | null
   connectors?: ConnectorUsage[]
-  defaultConnectorIds?: ConnectorSelections
+  defaultConnectorIds?: Partial<Record<ConnectorKind, string>>
   resourceBindings?: ResourceBindingSummary[]
   draftContent?: string | null
 }
@@ -78,10 +78,22 @@ let pendingDraft: {
   resourceBindingIds: string[]
 } | null = null
 const selectedConnectorId = ref<string | null>(null)
+const selectedAwsConnectorId = ref<string | null>(null)
 const selectedResourceBindingIds = ref<string[]>([])
 const selectedStorageBindingId = ref<string | null>(null)
 const isS3ReadTool = computed(() => ['aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(attachedCapability.value?.id ?? ''))
 const activeResourceBindings = computed(() => props.resourceBindings.filter((binding) => binding.state === 'active'))
+const awsConnectorChoices = computed(() => (props.connectors ?? []).filter(
+  (connector) => connector.kind === 'aws' && connector.status === 'configured',
+))
+const awsSelectionRequired = computed(() => props.capabilities.some((capability) =>
+  ['aws_read_catalog', 'aws_read'].includes(capability.id) &&
+  capability.permitted !== false && capability.enabled !== false &&
+  capability.connector_readiness?.aws === 'ambiguous',
+))
+const awsSelectionValid = computed(() => awsConnectorChoices.value.some(
+  (connector) => connector.id === selectedAwsConnectorId.value,
+))
 
 const inputPlaceholder = computed(() =>
   showKeyboardHint.value
@@ -118,13 +130,14 @@ const automaticToolDisabledReason = computed(() => {
     }
     if (disabledByOperator) return 'Enable at least one tool in Global Settings.'
     return props.capabilities.length
-      ? 'Configure a Connector or bind an S3 bucket to enable tools.'
+      ? 'Configure an eligible Connector for this project to enable tools.'
       : 'No tools are configured.'
   }
   const hasReadyCapability = props.capabilities.some((capability) =>
     capability.permitted !== false && capability.enabled !== false && capability.available !== false &&
     (capability.required_connector_kinds ?? []).every((kind) =>
-      capability.connector_readiness?.[kind] === 'ready',
+      capability.connector_readiness?.[kind] === 'ready' ||
+      (kind === 'aws' && awsSelectionRequired.value),
     ) && (
       !['aws_s3_bucket_storage', 'aws_s3_bucket_metadata'].includes(capability.id) ||
       selectedResourceBindingIds.value.some((id) => props.resourceBindings.some(
@@ -138,9 +151,9 @@ const automaticToolDisabledReason = computed(() => {
         (kind === 'brave' || kind === 'tavily') && capability.connector_readiness?.[kind] === 'ambiguous',
       ),
     )) {
-      return 'Configure a Connector, or choose a project default when a provider has multiple eligible Connectors.'
+      return 'Select a project Connector when more than one is eligible.'
     }
-    return 'Choose a ready search Connector or select an active S3 bucket.'
+    return 'Choose a ready Connector or select an active S3 bucket.'
   }
   if (
     !effectiveProfile.value?.available ||
@@ -160,7 +173,7 @@ const automaticToolWarning = computed(() =>
 const automaticToolDisabled = computed(() => Boolean(automaticToolDisabledReason.value))
 
 // Start with automatic tools enabled when this installation has a compatible
-// model and search capability. Keep the choice stable after the user changes it.
+// model and an available capability. Keep the choice stable after user changes.
 watch(automaticToolDisabled, (disabled) => {
   if (!disabled && !automaticToolModeTouched.value) automaticToolMode.value = true
 }, { immediate: true })
@@ -172,6 +185,12 @@ watch(activeResourceBindings, (bindings) => {
     selectedStorageBindingId.value = bindings.length === 1 ? bindings[0].binding_id : null
   }
 })
+
+watch(awsConnectorChoices, (choices) => {
+  if (!choices.some((connector) => connector.id === selectedAwsConnectorId.value)) {
+    selectedAwsConnectorId.value = choices.length === 1 ? choices[0].id : null
+  }
+}, { immediate: true })
 
 const attachedSummary = computed(() => props.capabilities.find(
   (capability) => capability.id === attachedCapability.value?.id,
@@ -209,6 +228,7 @@ const submitDisabled = computed(() =>
   props.disabled || (!isS3ReadTool.value && !content.value.trim()) ||
   (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value || connectorSelectionMissing.value)) ||
   (isS3ReadTool.value && !activeResourceBindings.value.some((binding) => binding.binding_id === selectedStorageBindingId.value)) ||
+  (automaticToolMode.value && awsSelectionRequired.value && !awsSelectionValid.value) ||
   (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value),
 )
 
@@ -301,11 +321,20 @@ async function handleSubmit() {
     emit('search', command)
   } else {
     if (automaticToolMode.value) {
-      const resourceBindingSelections = selectedResourceBindingIds.value.filter((id) =>
+      const hasAwsDiscovery = props.capabilities.some((capability) =>
+        capability.id === 'aws_read' && capability.permitted !== false &&
+        capability.enabled !== false && capability.available !== false,
+      )
+      const resourceBindingSelections = hasAwsDiscovery ? [] : selectedResourceBindingIds.value.filter((id) =>
         activeResourceBindings.value.some((binding) => binding.binding_id === id),
       )
+      const connectorSelections: ConnectorSelections = {}
+      if (awsSelectionRequired.value && selectedAwsConnectorId.value) {
+        connectorSelections.aws = selectedAwsConnectorId.value
+      }
       emit('send', text, {
         enableTools: true,
+        ...(Object.keys(connectorSelections).length ? { connectorSelections } : {}),
         ...(resourceBindingSelections.length ? { resourceBindingSelections } : {}),
       })
     }
@@ -436,13 +465,32 @@ onBeforeUnmount(() => {
         type="button"
         data-testid="automatic-tool-chip"
         aria-label="Disable automatic tool use"
-        :title="automaticToolDisabledReason || 'The model may use available search tools for this message.'"
+        :title="automaticToolDisabledReason || 'The model may use available tools for this message.'"
         class="inline-flex h-8 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-3 text-xs text-foreground hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         @click="disableAutomaticToolMode"
       >
         <span>Automatic tools</span>
         <span aria-hidden="true">×</span>
       </button>
+
+      <label
+        v-if="automaticToolMode && awsSelectionRequired"
+        class="inline-flex h-8 items-center gap-1 rounded-full border border-border px-2 text-xs text-muted-foreground"
+      >
+        <span>AWS</span>
+        <select
+          v-model="selectedAwsConnectorId"
+          data-testid="automatic-aws-connector-selection"
+          aria-label="AWS connector for automatic tools"
+          class="h-6 max-w-40 rounded-full border-0 bg-transparent px-1 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :disabled="props.disabled"
+        >
+          <option :value="null">Choose a role</option>
+          <option v-for="connector in awsConnectorChoices" :key="connector.id" :value="connector.id">
+            {{ connector.name }}
+          </option>
+        </select>
+      </label>
 
       <div
         v-if="attachedCapability"
@@ -508,6 +556,12 @@ onBeforeUnmount(() => {
       </span>
       <span v-else-if="automaticToolMode && automaticToolWarning" class="text-xs text-destructive">
         {{ automaticToolWarning }}
+      </span>
+      <span
+        v-else-if="automaticToolMode && awsSelectionRequired && !awsSelectionValid"
+        class="text-xs text-destructive"
+      >
+        Choose an AWS Connector for this conversation.
       </span>
 
       <div class="ml-auto flex min-w-0 items-center gap-2">
