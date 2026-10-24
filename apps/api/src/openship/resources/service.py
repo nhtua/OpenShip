@@ -13,8 +13,11 @@ from sqlalchemy.orm import Session
 
 from ..artifacts.contracts import ArtifactRef
 from ..artifacts.models import Artifact
+from ..capabilities.contracts import AuthorizationContext, canonical_json
 from ..connectors.contracts import ConnectorConfiguration
 from ..connectors.models import Connector, ConnectorRevision, CredentialVersion
+from ..execution.models import ToolOperation
+from ..tools.aws.contracts import AwsReadObservation
 from ..workspace.lifecycle import ArchiveStateError, assert_active_project
 from ..workspace.models import Project
 from ..workspace.projects import ProjectLifecycleError, get_owned_project
@@ -57,9 +60,7 @@ def create_environment(
     project = _owned_project(db, owner_id=owner_id, project_id=project_id, lock=True)
     _assert_active(project)
     if (
-        db.query(Environment.id)
-        .filter(Environment.project_id == project.id)
-        .count()
+        db.query(Environment.id).filter(Environment.project_id == project.id).count()
         >= MAX_ENVIRONMENTS_PER_PROJECT
     ):
         raise ResourceServiceError("environment_limit_exceeded")
@@ -175,7 +176,11 @@ def create_resource_binding(
         )
     except (TypeError, ValueError):
         raise ResourceServiceError("connector_unavailable") from None
-    if configuration.kind != "aws" or not configuration.expected_account_id or not configuration.region:
+    if (
+        configuration.kind != "aws"
+        or not configuration.expected_account_id
+        or not configuration.region
+    ):
         raise ResourceServiceError("resource_scope_denied")
 
     if (
@@ -270,7 +275,9 @@ def list_resource_bindings(
     if cursor:
         decoded = _decode_cursor(cursor)
         if db.get_bind().dialect.name == "sqlite":
-            binding_time = func.strftime("%Y-%m-%d %H:%M:%f", ResourceBinding.created_at)
+            binding_time = func.strftime(
+                "%Y-%m-%d %H:%M:%f", ResourceBinding.created_at
+            )
             cursor_time = func.strftime("%Y-%m-%d %H:%M:%f", decoded.created_at)
         else:
             binding_time = ResourceBinding.created_at
@@ -295,7 +302,11 @@ def list_resource_bindings(
         _binding_summary(binding, resource, environment)
         for binding, resource, environment in rows
     ]
-    next_cursor = _encode_cursor(rows[-1][0].created_at, rows[-1][0].id) if more and rows else None
+    next_cursor = (
+        _encode_cursor(rows[-1][0].created_at, rows[-1][0].id)
+        if more and rows
+        else None
+    )
     return items, next_cursor
 
 
@@ -348,7 +359,9 @@ def list_resource_observations(
     project = _owned_project(db, owner_id=owner_id, project_id=project_id)
     resource = (
         db.query(ResourceObject.id)
-        .filter(ResourceObject.id == resource_id, ResourceObject.project_id == project.id)
+        .filter(
+            ResourceObject.id == resource_id, ResourceObject.project_id == project.id
+        )
         .first()
     )
     if resource is None:
@@ -356,6 +369,7 @@ def list_resource_observations(
     query = db.query(ResourceObservation).filter(
         ResourceObservation.project_id == project.id,
         ResourceObservation.resource_object_id == resource_id,
+        ResourceObservation.schema_version == 1,
     )
     if cursor:
         decoded = _decode_cursor(cursor)
@@ -369,15 +383,106 @@ def list_resource_observations(
             )
         )
     rows = (
-        query.order_by(ResourceObservation.retrieved_at.desc(), ResourceObservation.id.desc())
+        query.order_by(
+            ResourceObservation.retrieved_at.desc(), ResourceObservation.id.desc()
+        )
         .limit(limit + 1)
         .all()
     )
     more = len(rows) > limit
     rows = rows[:limit]
     items = [_observation_summary(db, row) for row in rows]
-    next_cursor = _encode_cursor(rows[-1].retrieved_at, rows[-1].id) if more and rows else None
+    next_cursor = (
+        _encode_cursor(rows[-1].retrieved_at, rows[-1].id) if more and rows else None
+    )
     return items, next_cursor
+
+
+def record_aws_read_observation(
+    db: Session,
+    *,
+    authorization: AuthorizationContext,
+    operation: ToolOperation,
+    observation: AwsReadObservation,
+    artifact: ArtifactRef,
+) -> ResourceObservation:
+    """Stage one binding-free AWS observation inside the caller's transaction.
+
+    This helper performs only database validation and model staging. Artifact
+    bytes are written by the publication pipeline, and the caller owns commit
+    or rollback for the whole publication transaction.
+    """
+    try:
+        value = AwsReadObservation.model_validate(observation)
+    except Exception as exc:
+        raise ResourceServiceError("invalid_observation") from exc
+    if (
+        authorization.action != "execute_tool"
+        or authorization.principal_id != operation.principal_id
+        or authorization.project_id != operation.project_id
+        or authorization.conversation_id != operation.conversation_id
+        or authorization.target_id != str(operation.run_id)
+        or value.operation_id != operation.id
+        or value.project_id != operation.project_id
+        or value.tool.id != "aws_read"
+        or value.tool.id != operation.capability_id
+        or value.tool.version != operation.capability_version
+        or value.tool.manifest_digest != operation.manifest_digest
+        or len(artifact.sha256) != 64
+    ):
+        raise ResourceServiceError("observation_identity_mismatch")
+
+    revision = (
+        db.query(ConnectorRevision.id)
+        .join(Connector, Connector.id == ConnectorRevision.connector_id)
+        .filter(
+            ConnectorRevision.project_id == operation.project_id,
+            ConnectorRevision.connector_id == value.connector_id,
+            ConnectorRevision.revision == value.connector_revision,
+            ConnectorRevision.visibility == "project",
+            Connector.kind == "aws",
+            Connector.visibility == "project",
+            Connector.project_id == operation.project_id,
+        )
+        .first()
+    )
+    if revision is None:
+        raise ResourceServiceError("connector_revision_not_found")
+
+    coverage = dict(value.coverage)
+    coverage["request_count"] = value.request_count
+    coverage["next_cursor"] = value.next_cursor
+    target_json = canonical_json(value.target).decode("utf-8")
+    coverage_json = canonical_json(coverage).decode("utf-8")
+    if (
+        len(target_json.encode("utf-8")) > 16 * 1024
+        or len(coverage_json.encode("utf-8")) > 16 * 1024
+    ):
+        raise ResourceServiceError("invalid_observation")
+    row = ResourceObservation(
+        project_id=operation.project_id,
+        conversation_id=operation.conversation_id,
+        run_id=operation.run_id,
+        operation_id=operation.id,
+        schema_version=2,
+        connector_id=value.connector_id,
+        connector_revision=value.connector_revision,
+        account_id=value.account_id,
+        service=value.service,
+        operation=value.operation,
+        region=value.region,
+        target_json=target_json,
+        catalog_digest=value.catalog_digest,
+        source=operation.capability_id,
+        retrieved_at=value.retrieved_at,
+        measurement_at=None,
+        coverage_json=coverage_json,
+        outcome=value.outcome,
+        evidence_artifact_id=artifact.id,
+        evidence_sha256=artifact.sha256,
+    )
+    db.add(row)
+    return row
 
 
 def _owned_project(
@@ -513,4 +618,5 @@ __all__ = [
     "list_environments",
     "list_resource_bindings",
     "list_resource_observations",
+    "record_aws_read_observation",
 ]

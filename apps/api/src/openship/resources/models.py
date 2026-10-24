@@ -231,7 +231,7 @@ class ResourceBinding(Base):
 
 
 class ResourceObservation(Base):
-    """Immutable, secret-free result metadata linked to one run and operation."""
+    """Immutable, secret-free result metadata for a bound or direct AWS read."""
 
     __tablename__ = "resource_observations"
 
@@ -240,9 +240,18 @@ class ResourceObservation(Base):
     conversation_id = Column(UUID(as_uuid=True), nullable=False)
     run_id = Column(UUID(as_uuid=True), nullable=False)
     operation_id = Column(UUID(as_uuid=True), nullable=False)
-    resource_object_id = Column(UUID(as_uuid=True), nullable=False)
-    resource_binding_id = Column(UUID(as_uuid=True), nullable=False)
-    binding_revision = Column(Integer, nullable=False)
+    resource_object_id = Column(UUID(as_uuid=True), nullable=True)
+    resource_binding_id = Column(UUID(as_uuid=True), nullable=True)
+    binding_revision = Column(Integer, nullable=True)
+    schema_version = Column(Integer, nullable=False, server_default="1")
+    connector_id = Column(UUID(as_uuid=True), nullable=True)
+    connector_revision = Column(Integer, nullable=True)
+    account_id = Column(String(12), nullable=True)
+    service = Column(String(64), nullable=True)
+    operation = Column(String(128), nullable=True)
+    region = Column(String(64), nullable=True)
+    target_json = Column(Text, nullable=True)
+    catalog_digest = Column(String(64), nullable=True)
     source = Column(String(32), nullable=False)
     retrieved_at = Column(DateTime(timezone=True), nullable=False)
     measurement_at = Column(DateTime(timezone=True), nullable=True)
@@ -294,6 +303,16 @@ class ResourceObservation(Base):
             name="fk_resource_observations_project_binding",
         ),
         ForeignKeyConstraint(
+            ["project_id", "connector_id", "connector_revision"],
+            [
+                "connector_revisions.project_id",
+                "connector_revisions.connector_id",
+                "connector_revisions.revision",
+            ],
+            ondelete="RESTRICT",
+            name="fk_resource_observations_project_connector_revision",
+        ),
+        ForeignKeyConstraint(
             ["project_id", "conversation_id", "evidence_artifact_id"],
             ["artifacts.project_id", "artifacts.conversation_id", "artifacts.id"],
             ondelete="RESTRICT",
@@ -312,8 +331,35 @@ class ResourceObservation(Base):
             "conversation_id",
             "created_at",
         ),
+        Index(
+            "ix_resource_observations_connector_retrieved",
+            "project_id",
+            "connector_id",
+            "retrieved_at",
+            "id",
+        ),
         CheckConstraint(
-            "binding_revision >= 1", name="ck_resource_observations_binding_revision"
+            "schema_version IN (1, 2)",
+            name="ck_resource_observations_schema_version",
+        ),
+        CheckConstraint(
+            "(schema_version = 1 AND resource_object_id IS NOT NULL "
+            "AND resource_binding_id IS NOT NULL AND binding_revision >= 1 "
+            "AND connector_id IS NULL AND connector_revision IS NULL AND account_id IS NULL "
+            "AND service IS NULL AND operation IS NULL AND region IS NULL "
+            "AND target_json IS NULL AND catalog_digest IS NULL) OR "
+            "(schema_version = 2 AND resource_object_id IS NULL "
+            "AND resource_binding_id IS NULL AND binding_revision IS NULL "
+            "AND connector_id IS NOT NULL AND connector_revision >= 1 "
+            "AND length(account_id) = 12 AND length(service) BETWEEN 1 AND 64 "
+            "AND length(operation) BETWEEN 1 AND 128 AND length(region) BETWEEN 1 AND 64 "
+            "AND target_json IS NOT NULL AND length(target_json) <= 16384 "
+            "AND length(catalog_digest) = 64)",
+            name="ck_resource_observations_schema_shape",
+        ),
+        CheckConstraint(
+            "connector_revision IS NULL OR connector_revision >= 1",
+            name="ck_resource_observations_connector_revision",
         ),
         CheckConstraint(
             "length(source) BETWEEN 1 AND 32", name="ck_resource_observations_source"

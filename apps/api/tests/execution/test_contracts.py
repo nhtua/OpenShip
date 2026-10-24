@@ -1,9 +1,11 @@
 import hashlib
 import json
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
+from src.openship.artifacts.contracts import ArtifactRef
 from src.openship.capabilities.catalog import (
     list_capability_manifests,
     list_legacy_search_manifests,
@@ -12,10 +14,23 @@ from src.openship.capabilities.catalog import (
 )
 from src.openship.capabilities.contracts import (
     CapabilityManifest,
+    CapabilityManifestV3,
     CapabilityRef,
+    ExecutionConfigV3,
+    ExecutionConfigV4,
     OutputPolicy,
+    canonical_digest,
+    decode_capability_manifest,
+    decode_execution_config,
 )
 from src.openship.execution.errors import CapabilityError
+from src.openship.tools.aws.contracts import (
+    AwsReadArguments,
+    AwsReadObservation,
+    AwsReadResult,
+    AwsS3BucketTargetArguments,
+    AwsS3MetadataObservationV2,
+)
 from src.openship.tools.search.contracts import SearchArguments, SearchItem
 
 
@@ -162,3 +177,191 @@ def test_search_arguments_and_items_enforce_utf8_bounds():
         SearchArguments(query="valid", endpoint="https://attacker.invalid")
     with pytest.raises(ValidationError):
         SearchItem(title="é" * 257, url="https://example.com", snippet="ok", rank=1)
+
+
+def test_execution_v4_does_not_accept_resource_binding_references():
+    connector_id = "d2c54ef2-fcd7-47fa-8719-64259b4d910e"
+    payload = {
+        "schema_version": 4,
+        "graph_kind": "chat",
+        "graph_version": 4,
+        "connector_refs": [
+            {
+                "id": connector_id,
+                "kind": "aws",
+                "configuration_revision": 1,
+                "visibility": "project",
+                "credential_version_id": "0e64e8a3-c38f-45bb-91a8-d1eb48495b66",
+            }
+        ],
+        "aws_read_catalog_digest": "a" * 64,
+    }
+    decoded = decode_execution_config(payload)
+    assert isinstance(decoded, ExecutionConfigV4)
+    assert decoded.aws_read_catalog_digest == "a" * 64
+    with pytest.raises(ValidationError):
+        decode_execution_config(
+            {**payload, "resource_binding_refs": [{"id": connector_id}]}
+        )
+
+    # Existing versioned payloads keep their original decoder identities.
+    assert isinstance(
+        decode_execution_config(
+            {"schema_version": 3, "graph_kind": "chat", "graph_version": 1}
+        ),
+        ExecutionConfigV3,
+    )
+
+
+def test_manifest_v3_pins_generic_aws_operation_set_to_catalog_digest():
+    unsigned = {
+        "schema_version": 3,
+        "id": "aws_read",
+        "version": "1.0.0",
+        "implementation_digest": "b" * 64,
+        "manifest_digest": "0" * 64,
+        "description": "Read supported AWS metadata.",
+        "input_schema": {"type": "object"},
+        "output_schema": {"type": "object"},
+        "effect": "read_only_external",
+        "enablement_requirements": ("operator_enabled",),
+        "limits": {"max_tool_calls": 1},
+        "outputs": (),
+        "connector_kinds": ("aws",),
+        "operations": ("s3.list_buckets",),
+        "target_kinds": (),
+        "execution_kind": "maintained",
+        "aws_read_catalog_digest": "c" * 64,
+    }
+    unsigned["manifest_digest"] = canonical_digest(
+        {key: value for key, value in unsigned.items() if key != "manifest_digest"}
+    )
+    decoded = decode_capability_manifest(unsigned)
+    assert isinstance(decoded, CapabilityManifestV3)
+    assert decoded.aws_read_catalog_digest == "c" * 64
+
+    unrestricted = {**unsigned, "operations": ()}
+    unrestricted["manifest_digest"] = canonical_digest(
+        {key: value for key, value in unrestricted.items() if key != "manifest_digest"}
+    )
+    with pytest.raises(ValidationError):
+        decode_capability_manifest(unrestricted)
+    missing_catalog = {
+        key: value
+        for key, value in unsigned.items()
+        if key != "aws_read_catalog_digest"
+    }
+    missing_catalog["manifest_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in missing_catalog.items()
+            if key != "manifest_digest"
+        }
+    )
+    with pytest.raises(ValidationError):
+        decode_capability_manifest(missing_catalog)
+
+
+def test_aws_read_contracts_bind_targets_to_connector_and_bound_evidence():
+    from uuid import UUID
+
+    connector = UUID("d2c54ef2-fcd7-47fa-8719-64259b4d910e")
+    tool = CapabilityRef(
+        id="aws_read",
+        version="1.0.0",
+        manifest_digest="a" * 64,
+    )
+    arguments = AwsReadArguments(
+        connector_id=connector,
+        service="s3",
+        operation="list_objects_v2",
+        region="us-east-1",
+        parameters={"Bucket": "example-bucket"},
+        page_size=10,
+    )
+    assert arguments.page_size == 10
+    with pytest.raises(ValidationError):
+        AwsReadArguments(
+            connector_id=connector,
+            service="s3",
+            operation="list_objects_v2",
+            parameters={},
+            page_size=51,
+        )
+
+    observation = AwsReadObservation(
+        tool=tool,
+        operation_id=UUID("bb60f797-4f22-4c53-b1d6-68d8462efcd8"),
+        project_id=UUID("0e64e8a3-c38f-45bb-91a8-d1eb48495b66"),
+        connector_id=connector,
+        connector_revision=1,
+        catalog_digest="c" * 64,
+        account_id="123456789012",
+        service="s3",
+        operation="list_objects_v2",
+        region="us-east-1",
+        target={"bucket": "example-bucket"},
+        retrieved_at=datetime(2026, 10, 23, 12, tzinfo=UTC),
+        request_count=2,
+        data={"contents": []},
+        outcome="measured",
+        coverage={"truncated": False},
+    )
+    assert observation.schema_version == 2
+    assert observation.target["bucket"] == "example-bucket"
+    result = AwsReadResult(
+        tool=tool,
+        operation_id=UUID("bb60f797-4f22-4c53-b1d6-68d8462efcd8"),
+        connector_id=connector,
+        connector_revision=1,
+        catalog_digest="c" * 64,
+        account_id="123456789012",
+        service="s3",
+        operation="list_objects_v2",
+        region="us-east-1",
+        retrieved_at=datetime(2026, 10, 23, 12, tzinfo=UTC),
+        outcome="measured",
+        preview={"contents": []},
+        preview_truncated=False,
+        artifact=ArtifactRef(
+            id=UUID("30ac38ab-f757-4d8e-b490-8d765859fca9"),
+            sha256="e" * 64,
+            size_bytes=9,
+            media_type="application/json",
+        ),
+    )
+    assert result.artifact.size_bytes == 9
+    assert "resource_binding_id" not in result.model_dump()
+
+    direct_target = AwsS3BucketTargetArguments(
+        connector_id=connector,
+        bucket_name="example-bucket",
+        expected_bucket_owner="123456789012",
+    )
+    assert direct_target.bucket_name == "example-bucket"
+    with pytest.raises(ValidationError):
+        AwsS3BucketTargetArguments(
+            connector_id=connector,
+            bucket_name="example-bucket",
+            resource_binding_id="d2c54ef2-fcd7-47fa-8719-64259b4d910e",
+        )
+    metadata = AwsS3MetadataObservationV2(
+        tool=CapabilityRef(
+            id="aws_s3_bucket_metadata",
+            version="1.0.0",
+            manifest_digest="d" * 64,
+        ),
+        operation_id=UUID("bb60f797-4f22-4c53-b1d6-68d8462efcd8"),
+        project_id=UUID("0e64e8a3-c38f-45bb-91a8-d1eb48495b66"),
+        connector_id=connector,
+        connector_revision=1,
+        account_id="123456789012",
+        region="us-east-1",
+        bucket_name="example-bucket",
+        versioning_status="enabled",
+        mfa_delete_status="not_reported",
+        request_count=3,
+        retrieved_at=datetime(2026, 10, 23, 12, tzinfo=UTC),
+    )
+    assert metadata.schema_version == 2
+    assert "resource_id" not in metadata.model_dump()

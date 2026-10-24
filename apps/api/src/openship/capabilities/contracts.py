@@ -118,7 +118,37 @@ class CapabilityManifestV2(FrozenModel):
         return self
 
 
-CapabilityManifestLike: TypeAlias = CapabilityManifest | CapabilityManifestV2
+class CapabilityManifestV3(CapabilityManifestV2):
+    """Version 3 pins AWS discovery capabilities to one installed read catalog."""
+
+    schema_version: Literal[3] = 3
+    aws_read_catalog_digest: str | None = Field(default=None, pattern=SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _aws_catalog_is_pinned(self) -> CapabilityManifestV3:
+        if self.id in {"aws_read", "aws_read_catalog"}:
+            if self.aws_read_catalog_digest is None:
+                raise ValueError(
+                    "AWS discovery capabilities require a read catalog digest"
+                )
+            if "aws" not in self.connector_kinds:
+                raise ValueError(
+                    "AWS discovery capabilities require an AWS connector kind"
+                )
+            if not self.operations:
+                raise ValueError(
+                    "AWS discovery capabilities require a pinned operation set"
+                )
+        elif self.aws_read_catalog_digest is not None:
+            raise ValueError(
+                "read catalog digests are only valid for AWS discovery capabilities"
+            )
+        return self
+
+
+CapabilityManifestLike: TypeAlias = (
+    CapabilityManifest | CapabilityManifestV2 | CapabilityManifestV3
+)
 
 
 def _json_object(
@@ -146,6 +176,8 @@ def decode_capability_manifest(
         return CapabilityManifest.model_validate_json(encoded)
     if version == 2:
         return CapabilityManifestV2.model_validate_json(encoded)
+    if version == 3:
+        return CapabilityManifestV3.model_validate_json(encoded)
     raise ValueError("unsupported capability manifest version")
 
 
@@ -269,7 +301,25 @@ class ExecutionConfigV3(ExecutionConfigV2):
     preferred_search_kind: Literal["brave", "tavily"] | None = None
 
 
-ExecutionConfigLike: TypeAlias = ExecutionConfig | ExecutionConfigV2 | ExecutionConfigV3
+class ExecutionConfigV4(FrozenModel):
+    """Binding-free managed execution snapshot used by role-based AWS reads."""
+
+    schema_version: Literal[4] = 4
+    graph_kind: Literal["chat", "tool"]
+    graph_version: int = Field(ge=1)
+    allowed_capabilities: tuple[CapabilityRef, ...] = ()
+    selected_artifacts: tuple[ArtifactRef, ...] = ()
+    connector_refs: tuple[ConnectorRef, ...] = ()
+    admitted_context_message_ids: tuple[UUID, ...] = ()
+    preferred_search_kind: Literal["brave", "tavily"] | None = None
+    aws_read_catalog_digest: str = Field(pattern=SHA256_PATTERN)
+    limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
+    loop_limits: LoopLimits = Field(default_factory=LoopLimits)
+
+
+ExecutionConfigLike: TypeAlias = (
+    ExecutionConfig | ExecutionConfigV2 | ExecutionConfigV3 | ExecutionConfigV4
+)
 
 
 def decode_execution_config(
@@ -285,6 +335,8 @@ def decode_execution_config(
         return ExecutionConfigV2.model_validate_json(encoded)
     if version == 3:
         return ExecutionConfigV3.model_validate_json(encoded)
+    if version == 4:
+        return ExecutionConfigV4.model_validate_json(encoded)
     raise ValueError("unsupported execution configuration version")
 
 
