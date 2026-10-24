@@ -219,7 +219,9 @@ def test_manual_search_survives_restart_and_cancel_is_not_redispatched(tmp_path)
             assert conversation.status_code == 201
             conversation_id = conversation.json()["id"]
 
-            capabilities_response = client.get("/api/capabilities")
+            # The first request validates the pinned Botocore operation catalog;
+            # allow for that cold initialization on slower CI Python versions.
+            capabilities_response = client.get("/api/capabilities", timeout=20)
             assert capabilities_response.status_code == 200
             capabilities = {item["id"]: item for item in capabilities_response.json()}
             deadline = time.monotonic() + 20
@@ -228,7 +230,7 @@ def test_manual_search_survives_restart_and_cancel_is_not_redispatched(tmp_path)
                 for item in ("brave_web_search", "tavily_web_search")
             ):
                 time.sleep(0.1)
-                capabilities_response = client.get("/api/capabilities")
+                capabilities_response = client.get("/api/capabilities", timeout=20)
                 capabilities = {item["id"]: item for item in capabilities_response.json()}
             assert capabilities["brave_web_search"]["available"] is True
             assert capabilities["tavily_web_search"]["available"] is True

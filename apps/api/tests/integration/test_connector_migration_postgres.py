@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event, inspect, text
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
 from src.openship.database.models import Base
@@ -23,11 +24,32 @@ from tests.integration.postgres import bounded_postgres_url
 ])
 def database_url(request, tmp_path):
     if request.param == "sqlite":
-        return f"sqlite:///{tmp_path / 'phase5-connectors.db'}"
+        yield f"sqlite:///{tmp_path / 'phase5-connectors.db'}"
+        return
     service_url = os.environ.get("TEST_POSTGRES_URL")
     if not service_url:
         pytest.skip("no TEST_POSTGRES_URL; connector migration PostgreSQL checks are opt-in")
-    return bounded_postgres_url(service_url)
+
+    parsed_url = make_url(bounded_postgres_url(service_url))
+    schema = f"phase5_connector_migration_{uuid.uuid4().hex}"
+    admin_engine = create_engine(parsed_url, poolclass=NullPool)
+    try:
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    except SQLAlchemyError:
+        admin_engine.dispose()
+        pytest.skip("configured PostgreSQL service is unavailable")
+
+    options = parsed_url.query.get("options", "")
+    scoped_url = parsed_url.update_query_dict(
+        {"options": f"{options} -csearch_path={schema}".strip()}
+    ).render_as_string(hide_password=False)
+    try:
+        yield scoped_url
+    finally:
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        admin_engine.dispose()
 
 
 def _engine(url: str):
