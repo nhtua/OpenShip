@@ -160,8 +160,9 @@ Bootstrap owns resource creation; runtime verifies compatibility.
 
 ## Task 3 — Execute broker commands through existing fenced runtime
 
-**Depends on:** Task 2. **Files:** consumer/handlers/supervisor, queue/worker,
-Connector blockers, worker commands, execution recovery and tests.
+**Depends on:** Task 2. **Files:** `messaging/command.py`,
+consumer/handlers/supervisor, queue/worker, Connector blockers, worker
+commands, execution recovery and tests.
 
 **Interfaces:**
 `claim_run(db, *, run_id: UUID, generation: int, epoch: UUID, worker_id: str, lease_seconds: int) -> ClaimDecision`;
@@ -169,6 +170,17 @@ Connector blockers, worker commands, execution recovery and tests.
 `reconcile_required`, never a claim for another run.
 `async handle_command(message: ValidatedEnvelope) -> DeliveryDisposition`
 routes an allowlisted kind to existing execution or explicit retention.
+
+**Implementation slices:**
+
+- [x] **3A — Exact command acquisition:** parse bounded run references, bind
+  them to the persisted outbox identity, validate the saved payload digest, and
+  claim only the exact due generation under conversation → run → job → shared
+  transport-state locks. Local unit cases and real PostgreSQL contention,
+  state-lock compatibility and non-claim cases pass.
+- [ ] **3B — Durable consumer and execution slots:** implement bounded pull
+  delivery, reuse `process_job` in per-slot execution contexts, supervision,
+  durable outcomes and confirmed-ACK rules below.
 
 - [ ] Add failing `test_messaging_consumer.py` and PG/broker cases for every
   spec delivery-state branch, especially redelivery after dedup expiry,

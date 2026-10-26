@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,7 +29,7 @@ from nats.js.api import (
     StreamConfig,
 )
 from nats.js.errors import NotFoundError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
@@ -36,7 +37,9 @@ from src.openship.auth.models import User
 from src.openship.chat.models import Conversation
 from src.openship.events.service import append_event
 from src.openship.messaging import relay
-from src.openship.messaging.models import MessageTransportState
+from src.openship.messaging.command import claim_command
+from src.openship.messaging.models import MessageDisposition, MessageTransportState
+from src.openship.messaging.outbox import enqueue_run
 from src.openship.messaging.relay import (
     _settle_publication,
     claim_outbox_batch,
@@ -48,11 +51,164 @@ from src.openship.messaging.topology import (
     ensure_topology,
     stream_configs,
 )
-from src.openship.runs.models import Outbox
+from src.openship.runs.models import Outbox, Run, RunJob
 from src.openship.workspace.models import Project
 
 pytestmark = [pytest.mark.postgres, pytest.mark.jetstream]
 _native_to_thread = asyncio.to_thread
+
+
+def _pg_command(sessions):
+    with sessions() as db:
+        state = db.get(MessageTransportState, 1)
+        state.execution_open = True
+        user = User(
+            username=f"claim_{uuid.uuid4().hex[:12]}",
+            email=f"claim_{uuid.uuid4().hex}@example.test",
+            password_hash="test",
+        )
+        db.add(user)
+        db.flush()
+        project = Project(owner_user_id=user.id, name="Exact claim")
+        db.add(project)
+        db.flush()
+        conversation = Conversation(
+            user_id=user.id, project_id=project.id, title="Exact claim"
+        )
+        db.add(conversation)
+        db.flush()
+        run = Run(
+            conversation_id=conversation.id,
+            project_id=project.id,
+            status="queued",
+            fence=0,
+        )
+        db.add(run)
+        db.flush()
+        job = RunJob(
+            run_id=run.id,
+            fence=0,
+            dispatch_generation=1,
+            available_at=datetime.now(UTC) - timedelta(seconds=5),
+        )
+        db.add(job)
+        db.flush()
+        row_id = enqueue_run(db, run.id, 1, epoch=state.transport_epoch)
+        db.flush()
+        row = db.get(Outbox, row_id)
+        envelope = relay._record_envelope(
+            row, state, uuid.uuid4(), event=None, run=run, job=job
+        )
+        run_id, job_id = run.id, job.id
+        db.commit()
+        return run_id, job_id, envelope.body, envelope.subject
+
+
+def test_pg_command_claim_exact_run_and_single_fence(relay_postgres):
+    _url, sessions, _installation_id = relay_postgres
+    run_id, job_id, body, subject = _pg_command(sessions)
+    other_run_id, other_job_id, _other_body, _other_subject = _pg_command(sessions)
+    with sessions() as db:
+        decision = claim_command(
+            db, body, subject=subject, worker_id="pg-worker", lease_seconds=30
+        )
+        assert decision.kind == "claimed"
+        assert decision.claim.run_id == run_id
+        assert decision.claim.fence == 1
+        assert db.get(RunJob, job_id).owner_id == "pg-worker"
+        assert db.get(Run, other_run_id).status == "queued"
+        assert db.get(RunJob, other_job_id).fence == 0
+
+
+def test_pg_command_claim_competing_workers_only_one_wins(relay_postgres):
+    _url, sessions, _installation_id = relay_postgres
+    run_id, job_id, body, subject = _pg_command(sessions)
+
+    def acquire(worker_id):
+        with sessions() as db:
+            return claim_command(
+                db, body, subject=subject, worker_id=worker_id, lease_seconds=30
+            ).kind
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        kinds = list(pool.map(acquire, ("pg-a", "pg-b")))
+    assert sorted(kinds) == ["claimed", "defer"]
+    with sessions() as db:
+        assert db.get(Run, run_id).fence == 1
+        assert db.get(RunJob, job_id).fence == 1
+        message_id = uuid.UUID(json.loads(body)["message_id"])
+        disposition = (
+            db.query(MessageDisposition)
+            .filter(MessageDisposition.message_id == message_id)
+            .one()
+        )
+        assert disposition.disposition in {"claimed", "deferred"}
+
+
+def test_pg_independent_claims_share_transport_state_lock(relay_postgres):
+    _url, sessions, _installation_id = relay_postgres
+    run_id, _job_id, body, subject = _pg_command(sessions)
+    with sessions() as state_reader:
+        state_reader.query(MessageTransportState).with_for_update(read=True).one()
+        with sessions() as db:
+            db.execute(text("SET LOCAL lock_timeout = '250ms'"))
+            decision = claim_command(
+                db,
+                body,
+                subject=subject,
+                worker_id="independent-worker",
+                lease_seconds=30,
+            )
+        assert decision.kind == "claimed"
+        assert decision.claim.run_id == run_id
+        state_reader.rollback()
+
+
+@pytest.mark.parametrize(
+    "condition,expected",
+    [
+        ("future", "defer"),
+        ("closed", "defer"),
+        ("terminal", "disposed"),
+        ("obsolete", "disposed"),
+        ("live", "defer"),
+        ("expired", "reconcile_required"),
+        ("identity", "disposed"),
+    ],
+)
+def test_pg_command_nonclaims_leave_fence_unchanged(
+    relay_postgres, condition, expected
+):
+    _url, sessions, _installation_id = relay_postgres
+    run_id, job_id, body, subject = _pg_command(sessions)
+    with sessions() as db:
+        run = db.get(Run, run_id)
+        job = db.get(RunJob, job_id)
+        if condition == "future":
+            job.available_at = datetime.now(UTC) + timedelta(minutes=5)
+        elif condition == "closed":
+            db.get(MessageTransportState, 1).execution_open = False
+        elif condition == "terminal":
+            run.status = "completed"
+        elif condition == "obsolete":
+            job.dispatch_generation = 2
+        elif condition in {"live", "expired"}:
+            run.status = "running"
+            job.owner_id = "another"
+            job.lease_until = datetime.now(UTC) + timedelta(
+                minutes=5 if condition == "live" else -5
+            )
+        else:
+            db.query(Outbox).filter(
+                Outbox.run_id == run_id, Outbox.destination == "command"
+            ).one().message_id = uuid.uuid4()
+        db.commit()
+    with sessions() as db:
+        decision = claim_command(
+            db, body, subject=subject, worker_id="pg-worker", lease_seconds=30
+        )
+        assert decision.kind == expected
+        assert db.get(RunJob, job_id).fence == 0
 
 
 @dataclass(repr=False)
