@@ -32,6 +32,7 @@ from src.openship.connectors.models import (
 from src.openship.connectors.readiness import ConnectorReadinessFailure
 from src.openship.database.models import Base
 from src.openship.database.session import SessionLocal
+from src.openship.messaging.models import MessageTransportState
 from src.openship.resources.models import (
     ConnectorBlocker,
     Environment,
@@ -404,6 +405,16 @@ def test_resume_rejects_a_retired_target_binding(monkeypatch, tmp_path):
         bind=engine, autoflush=False, expire_on_commit=False
     )
     try:
+        with isolated_sessions() as db:
+            db.add(
+                MessageTransportState(
+                    id=1,
+                    installation_id=uuid.uuid4(),
+                    transport_epoch=uuid.uuid4(),
+                    active=False,
+                )
+            )
+            db.commit()
         with isolated_sessions() as db:
             scope = _scope(db, visibility="project", connector_kind="aws")
             user, project, conversation, connector, reference, execution, run, _job, claim = scope

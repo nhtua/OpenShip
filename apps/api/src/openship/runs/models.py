@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -103,9 +104,11 @@ class RunJob(Base):
     lease_until = Column(DateTime(timezone=True), nullable=True)
     owner_id = Column(String(50), nullable=True)
     fence = Column(Integer, nullable=False, server_default="0")
+    dispatch_generation = Column(Integer, nullable=False, server_default="1")
 
     __table_args__ = (
         Index("ix_run_jobs_run_id", "run_id"),
+        Index("uq_run_jobs_run_id", "run_id", unique=True),
         Index("ix_run_jobs_available_at", "available_at"),
         Index("ix_run_jobs_owner_id", "owner_id"),
     )
@@ -228,7 +231,7 @@ class Event(Base):
 
 
 class Outbox(Base):
-    """Outbox pattern for reliable SSE notifications."""
+    """Transactional records waiting for transport publication."""
     __tablename__ = "outbox"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -246,8 +249,49 @@ class Outbox(Base):
     payload = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     processed_at = Column(DateTime(timezone=True), nullable=True)
+    destination = Column(String(20), nullable=False, server_default="legacy")
+    schema_version = Column(Integer, nullable=False, server_default="1")
+    message_id = Column(UUID(as_uuid=True), nullable=False, default=uuid.uuid4)
+    subject = Column(String(255), nullable=True)
+    run_id = Column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=True)
+    dispatch_generation = Column(Integer, nullable=True)
+    transport_epoch = Column(UUID(as_uuid=True), nullable=True)
+    publish_attempts = Column(Integer, nullable=False, server_default="0")
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    publisher_claim_id = Column(UUID(as_uuid=True), nullable=True)
+    publisher_lease_until = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(String(160), nullable=True)
 
     __table_args__ = (
+        CheckConstraint(
+            "destination IN ('event', 'command', 'control', 'legacy', 'failure')",
+            name="ck_outbox_destination",
+        ),
+        CheckConstraint("schema_version >= 1", name="ck_outbox_schema_version"),
+        CheckConstraint("publish_attempts >= 0", name="ck_outbox_publish_attempts"),
+        Index("uq_outbox_message_id", "message_id", unique=True),
         Index("ix_outbox_conversation_id", "conversation_id"),
         Index("ix_outbox_processed_at", "processed_at"),
+        Index(
+            "ix_outbox_publish_due",
+            "destination",
+            "processed_at",
+            "next_attempt_at",
+            "publisher_lease_until",
+        ),
+        Index(
+            "uq_outbox_event_destination",
+            "event_id",
+            unique=True,
+            postgresql_where=text("destination = 'event'"),
+            sqlite_where=text("destination = 'event'"),
+        ),
+        Index(
+            "uq_outbox_run_generation",
+            "run_id",
+            "dispatch_generation",
+            unique=True,
+            postgresql_where=text("destination = 'command'"),
+            sqlite_where=text("destination = 'command'"),
+        ),
     )

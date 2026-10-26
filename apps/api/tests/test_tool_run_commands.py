@@ -119,6 +119,12 @@ def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
             Outbox.conversation_id == conversation.id,
             Outbox.type == "tool.submitted",
         ).count() == 1
+        command_row = db.query(Outbox).filter(
+            Outbox.run_id == run.id,
+            Outbox.destination == "command",
+        ).one()
+        assert command_row.dispatch_generation == 1
+        assert "terraform modules" not in command_row.payload
     finally:
         db.close()
 

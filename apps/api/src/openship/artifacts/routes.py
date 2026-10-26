@@ -40,7 +40,6 @@ from src.openship.chat.models import Conversation
 from src.openship.config import settings
 from src.openship.database.session import get_db
 from src.openship.events.service import append_event
-from src.openship.runs.models import Outbox
 from src.openship.workspace.lifecycle import (
     ArchiveStateError,
     archive_http_error,
@@ -199,7 +198,7 @@ def _spool_chunks(spool: BinaryIO):
 
 
 def _append_artifact_event(db: Session, artifact: Artifact, actor_id: uuid.UUID, event_type: str) -> None:
-    event = append_event(
+    append_event(
         db=db,
         conversation_id=artifact.conversation_id,
         run_id=None,
@@ -211,15 +210,6 @@ def _append_artifact_event(db: Session, artifact: Artifact, actor_id: uuid.UUID,
             "status": artifact.status,
         },
         actor_id=actor_id,
-    )
-    db.flush()
-    db.add(
-        Outbox(
-            conversation_id=artifact.conversation_id,
-            event_id=event.id,
-            type=event_type,
-            payload=event.payload,
-        )
     )
 
 

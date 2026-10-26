@@ -19,7 +19,6 @@ from src.openship.artifacts.service import (
 )
 from src.openship.chat.models import Conversation
 from src.openship.events.service import append_event
-from src.openship.runs.models import Outbox
 
 from .models import ConversationWorkspace
 
@@ -164,7 +163,7 @@ def plan_workspace_purge(db: Session, workspace_id: uuid.UUID | str) -> PurgePla
 
 
 def _append_deleted_event(db: Session, artifact: Artifact) -> None:
-    event = append_event(
+    append_event(
         db=db,
         conversation_id=artifact.conversation_id,
         run_id=None,
@@ -175,15 +174,6 @@ def _append_deleted_event(db: Session, artifact: Artifact) -> None:
             "sha256": artifact.sha256,
             "status": "deleted",
         },
-    )
-    db.flush()
-    db.add(
-        Outbox(
-            conversation_id=artifact.conversation_id,
-            event_id=event.id,
-            type="artifact.deleted",
-            payload=event.payload,
-        )
     )
 
 

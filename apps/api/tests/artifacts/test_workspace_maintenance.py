@@ -21,6 +21,7 @@ from src.openship.artifacts.service import mark_artifact_ready, reserve_artifact
 from src.openship.auth.models import User
 from src.openship.chat.models import Conversation
 from src.openship.database.models import Base
+from src.openship.messaging.models import MessageTransportState
 from src.openship.runs.models import Outbox, Run
 from src.openship.workspace.models import ConversationWorkspace, Project
 from src.openship.workspace.service import ensure_workspace
@@ -32,6 +33,16 @@ def _isolated_session():
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     try:
+        with factory() as db:
+            db.add(
+                MessageTransportState(
+                    id=1,
+                    installation_id=uuid.uuid4(),
+                    transport_epoch=uuid.uuid4(),
+                    active=False,
+                )
+            )
+            db.commit()
         with factory() as db:
             yield db
     finally:

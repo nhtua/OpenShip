@@ -162,6 +162,9 @@ def append_event(
     # Make the sequence increment visible to another append_event call in the
     # same transaction, even when that session has a cached Conversation row.
     db.flush()
+    from ..messaging.outbox import enqueue_event
+
+    enqueue_event(db, event)
     return event
 
 

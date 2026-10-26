@@ -23,6 +23,7 @@ from ..execution.models import (
     ToolAvailability,
     ToolOperation,
 )
+from ..messaging.models import MessageDisposition, MessageTransportState
 from ..resources.models import (
     ConnectorBlocker,
     Environment,
@@ -57,6 +58,8 @@ __all__ = [
     "Event",
     "ExecutionSlot",
     "Message",
+    "MessageDisposition",
+    "MessageTransportState",
     "Outbox",
     "Project",
     "ProjectConnectorDefault",

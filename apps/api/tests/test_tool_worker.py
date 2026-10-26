@@ -335,10 +335,22 @@ def test_cancel_fences_run_and_tool_operation_with_one_outbox_transaction(
             .filter(
                 Outbox.conversation_id == conversation.id,
                 Outbox.event_id.in_((run_event.id, tool_event.id)),
+                Outbox.destination == "event",
             )
             .count()
             == 2
         )
+        control = (
+            db.query(Outbox)
+            .filter(
+                Outbox.conversation_id == conversation.id,
+                Outbox.event_id == run_event.id,
+                Outbox.destination == "control",
+            )
+            .one()
+        )
+        assert control.type == "run.cancel"
+        assert control.run_id == run.id
         assert db.query(Message).filter(Message.run_id == run.id).count() == 0
     finally:
         db.close()

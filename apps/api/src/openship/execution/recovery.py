@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -10,7 +9,6 @@ from sqlalchemy.orm import Session
 from src.openship.artifacts.models import Artifact
 from src.openship.artifacts.service import release_artifact_reservation
 from src.openship.events.service import append_event
-from src.openship.runs.models import Outbox
 
 from .models import ExecutionSlot, ToolAttempt, ToolOperation
 
@@ -183,14 +181,13 @@ def append_run_terminal_event(db: Session, run, conversation_id, *, error_code: 
         "model_interrupted": "The model stopped before completing the answer. Try again.",
         **_SAFE_MESSAGES,
     }.get(error_code, "The run could not be completed safely.")
-    event = append_event(
+    append_event(
         db,
         conversation_id,
         run.id,
         "run.failed",
         {"error_code": error_code, "error": message, "model": None},
     )
-    _append_outbox(db, event)
 
 
 def _append_operation_event(
@@ -202,7 +199,7 @@ def _append_operation_event(
     *,
     event_type: str,
 ) -> None:
-    event = append_event(
+    append_event(
         db,
         conversation_id,
         operation.run_id,
@@ -215,23 +212,6 @@ def _append_operation_event(
             "status": status,
             "error_code": error_code,
         },
-    )
-    _append_outbox(db, event)
-
-
-def _append_outbox(db: Session, event) -> None:
-    db.flush()
-    db.add(
-        Outbox(
-            conversation_id=event.conversation_id,
-            event_id=event.id,
-            type=event.type,
-            payload=json.dumps(
-                {"event_id": str(event.id), "type": event.type},
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
     )
 
 

@@ -50,7 +50,7 @@ from ..runs.schemas import _model_projection
 from ..runs.service import bind_run_model_config
 from .dispatch import UnsupportedGraphVersion, resolve_graph
 from .graph import ModelResult
-from .models import Outbox, ProviderAttempt, Run, RunJob
+from .models import ProviderAttempt, Run, RunJob
 from .queue import (
     begin_execution_window,
     claim_next,
@@ -393,7 +393,7 @@ class Worker:
                 ),
                 "model": None,
             }
-        event = append_event(
+        append_event(
             db,
             conversation_id=conversation.id,
             run_id=run.id,
@@ -401,18 +401,6 @@ class Worker:
             payload=payload,
         )
         db.flush()
-        db.add(
-            Outbox(
-                conversation_id=conversation.id,
-                event_id=event.id,
-                type=event.type,
-                payload=json.dumps(
-                    {"event_id": str(event.id), "type": event.type},
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-            )
-        )
         db.commit()
         return True
 

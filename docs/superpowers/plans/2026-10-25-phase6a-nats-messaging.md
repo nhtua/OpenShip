@@ -104,9 +104,9 @@ versions and configuration capabilities, without activating transport.
   authenticated broker executed 4 tests with no skips on Python 3.13,
   including ACK timing, delayed NAK, file storage, deduplication, filter and
   permissions checks.
-- [ ] Confirm the required Python 3.11/3.12/3.13 CI matrix passes before
+- [x] Confirm the required Python 3.11/3.12/3.13 CI matrix passes before
   completing the qualification task.
-- [ ] Review and commit the isolated topology/client contract.
+- [x] Review and commit the isolated topology/client contract.
 
 ## Task 1 — Make all admissions and events durably publishable
 
@@ -119,17 +119,17 @@ revision, event and command producers in the map; focused migration tests.
 `enqueue_control(db, run: Run, *, event_id: UUID) -> UUID`.
 They participate in the caller transaction and never commit or access NATS.
 
-- [ ] First add failing `test_messaging_outbox.py` and PostgreSQL cases:
+- [x] Add `test_messaging_outbox.py` and PostgreSQL cases:
   commit/rollback atomicity, every producer family, event uniqueness,
   initial/resumed/requeued generations, duplicate job audit and safe schema
   downgrade before activation. Include terminal failure and title events.
-- [ ] Extend outbox and run jobs; add disposition/gate records and the
+- [x] Extend outbox and run jobs; add disposition/gate records and the
   notification trigger. Implement canonical event+outbox creation and migrate
   direct event writers; remove duplicate manual notification rows.
-- [ ] Add pending-count/age checks serialized with submission. Tests prove
+- [x] Add pending-count/age checks serialized with submission. Tests prove
   10,000 pending or 300-second oldest age rejects a new submission without
   partial rows, while cancel remains durable. Preserve request idempotency.
-- [ ] Verify `uv run pytest tests/test_messaging_outbox.py tests/integration/test_messaging_migration.py -q`
+- [x] Verify `uv run pytest tests/test_messaging_outbox.py tests/integration/test_messaging_migration.py -q`
   plus affected submit/Connector/provider/artifact tests; verify upgrade/down
   on disposable PG. Review the producer inventory and commit.
 

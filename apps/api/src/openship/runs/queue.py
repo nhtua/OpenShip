@@ -296,6 +296,17 @@ def reconcile_expired(db: Session) -> int:
             run.fence = job.fence
             job.owner_id = None
             job.lease_until = None
+            job.dispatch_generation += 1
+            from ..messaging.models import MessageTransportState
+            from ..messaging.outbox import enqueue_run
+
+            transport = db.query(MessageTransportState).filter_by(id=1).one()
+            enqueue_run(
+                db,
+                run.id,
+                job.dispatch_generation,
+                epoch=transport.transport_epoch,
+            )
             reclaimed += 1
             continue
 
