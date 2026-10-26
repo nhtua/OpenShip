@@ -1,0 +1,693 @@
+"""PostgreSQL and JetStream relay recovery and ordering contracts."""
+
+from __future__ import annotations
+
+import asyncio
+import configparser
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+import uuid
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import nats
+import pytest
+import pytest_asyncio
+from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.api import (
+    AckPolicy,
+    ConsumerConfig,
+    DiscardPolicy,
+    RetentionPolicy,
+    StorageType,
+    StreamConfig,
+)
+from nats.js.errors import NotFoundError
+from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
+from sqlalchemy.orm import sessionmaker
+
+from src.openship.auth.models import User
+from src.openship.chat.models import Conversation
+from src.openship.events.service import append_event
+from src.openship.messaging import relay
+from src.openship.messaging.models import MessageTransportState
+from src.openship.messaging.relay import (
+    _settle_publication,
+    claim_outbox_batch,
+    publish_pending_batch,
+    publish_record,
+)
+from src.openship.messaging.topology import (
+    TopologyCompatibilityError,
+    ensure_topology,
+    stream_configs,
+)
+from src.openship.runs.models import Outbox
+from src.openship.workspace.models import Project
+
+pytestmark = [pytest.mark.postgres, pytest.mark.jetstream]
+_native_to_thread = asyncio.to_thread
+
+
+@dataclass(repr=False)
+class _Credentials:
+    user: str
+    password: str = field(repr=False)
+
+
+@dataclass(repr=False)
+class _Broker:
+    js: object
+    stream: str
+    subject: str
+
+
+@pytest.fixture(scope="module")
+def relay_postgres(tmp_path_factory):
+    service_url = os.environ.get("TEST_POSTGRES_URL")
+    if not service_url:
+        pytest.fail("TEST_POSTGRES_URL is required for the JetStream relay lane")
+
+    base_url = make_url(service_url)
+    admin = create_engine(base_url, pool_pre_ping=True)
+    schema = f"relay_{uuid.uuid4().hex}"
+    with admin.begin() as connection:
+        connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+
+    query = dict(base_url.query)
+    query["options"] = f"-csearch_path={schema}"
+    schema_url = base_url.set(query=query)
+    api_root = Path(__file__).parents[2]
+    ini = tmp_path_factory.mktemp("messaging-relay") / "alembic.ini"
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(api_root / "alembic.ini")
+    parser.set("alembic", "script_location", str(api_root / "alembic"))
+    parser.set(
+        "alembic",
+        "sqlalchemy.url",
+        schema_url.render_as_string(hide_password=False).replace("%", "%%"),
+    )
+    with ini.open("w", encoding="utf-8") as config_file:
+        parser.write(config_file)
+
+    built = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", str(ini), "upgrade", "head"],
+        cwd=api_root,
+        env={"PYTHONPATH": str(api_root / "src"), "ALEMBIC_CONFIG": str(ini)},
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert built.returncode == 0, built.stderr
+    engine = create_engine(schema_url, pool_size=8, max_overflow=4)
+    sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    try:
+        with sessions() as db:
+            state = db.get(MessageTransportState, 1)
+            assert state is not None
+            installation_id = state.installation_id
+        yield (
+            schema_url.render_as_string(hide_password=False),
+            sessions,
+            installation_id,
+        )
+    finally:
+        engine.dispose()
+        with admin.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.dispose()
+
+
+@pytest_asyncio.fixture
+async def relay_broker(relay_postgres):
+    nats_url = os.environ.get("TEST_NATS_URL")
+    auth_path_value = os.environ.get("TEST_NATS_AUTH_FILE")
+    if not nats_url or not auth_path_value:
+        pytest.fail(
+            "TEST_NATS_URL and TEST_NATS_AUTH_FILE are required for relay tests"
+        )
+    auth_path = Path(auth_path_value)
+    if auth_path.stat().st_mode & 0o077:
+        pytest.fail("TEST_NATS_AUTH_FILE must have mode 0600")
+    auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    credentials = _Credentials(**auth["admin"])
+    client = await nats.connect(
+        nats_url,
+        user=credentials.user,
+        password=credentials.password,
+        name="openship-relay-integration-fixture",
+        connect_timeout=2,
+    )
+    js = client.jetstream(timeout=2)
+    _url, _sessions, installation_id = relay_postgres
+    streams = tuple(
+        config.name
+        for config in stream_configs(installation_id)
+        if config.name is not None
+    )
+    try:
+        report = await ensure_topology(
+            apply=True,
+            js=js,
+            installation_id=installation_id,
+        )
+        assert report.ready
+        subject = f"openship.{installation_id.hex}.v1.event.>"
+        broker = _Broker(js, "OS_EVENTS", subject)
+        yield broker
+    finally:
+        for stream in streams:
+            try:
+                await js.delete_stream(stream)
+            except NotFoundError:
+                pass
+        await client.close()
+
+
+def _new_conversation(sessions):
+    with sessions() as db:
+        suffix = uuid.uuid4().hex
+        user = User(
+            username=f"relay_{suffix[:16]}",
+            email=f"relay_{suffix}@example.test",
+            password_hash="integration-test-only",
+        )
+        db.add(user)
+        db.flush()
+        project = Project(owner_user_id=user.id, name="Relay integration")
+        db.add(project)
+        db.flush()
+        conversation = Conversation(
+            user_id=user.id,
+            project_id=project.id,
+            title="Relay integration",
+            next_event_sequence=0,
+        )
+        db.add(conversation)
+        db.commit()
+        return conversation.id
+
+
+def _append_events(sessions, conversation_id, *, count=1, prefix="relay"):
+    with sessions() as db:
+        events = [
+            append_event(
+                db,
+                conversation_id,
+                None,
+                f"{prefix}.{sequence}",
+                {"content": f"private-{prefix}-{sequence}"},
+            )
+            for sequence in range(count)
+        ]
+        ids = [event.id for event in events]
+        db.commit()
+        return ids
+
+
+async def _thread_call_with_wakeup_poll(function, /, *args, **kwargs):
+    """Keep the loop responsive in sandboxes that miss executor wakeups."""
+    task = asyncio.create_task(_native_to_thread(function, *args, **kwargs))
+    while not task.done():
+        await asyncio.sleep(0.01)
+    return await task
+
+
+@pytest.fixture
+def relay_threading(monkeypatch):
+    if os.environ.get("OPENSHIP_TEST_RELAY_THREAD_POLL") == "1":
+        monkeypatch.setattr(
+            relay.asyncio,
+            "to_thread",
+            _thread_call_with_wakeup_poll,
+        )
+
+
+def _test_client_factory(nats_url, credentials):
+    async def connect(*, name, reconnected_cb=None):
+        return await nats.connect(
+            nats_url,
+            user=credentials.user,
+            password=credentials.password,
+            name=name,
+            reconnected_cb=reconnected_cb,
+            connect_timeout=2,
+        )
+
+    return connect
+
+
+async def _wait_processed(sessions, event_ids, *, timeout=8):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        with sessions() as db:
+            processed = {
+                row.event_id
+                for row in db.query(Outbox)
+                .filter(Outbox.event_id.in_(event_ids))
+                .filter(Outbox.processed_at.is_not(None))
+                .all()
+            }
+        if set(event_ids) <= processed:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("relay did not confirm all expected outbox rows")
+
+
+@pytest.mark.asyncio
+async def test_startup_catchup_notifications_and_conversation_order(
+    relay_postgres, relay_broker, relay_threading, monkeypatch
+):
+    database_url, sessions, _installation_id = relay_postgres
+    conversation_id = _new_conversation(sessions)
+    first_event = _append_events(sessions, conversation_id, prefix="before-listen")[0]
+
+    nats_url = os.environ["TEST_NATS_URL"]
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())
+    credentials = _Credentials(**auth["admin"])
+    stop = asyncio.Event()
+    listener_ready = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    subscription = await relay_broker.js.pull_subscribe(
+        relay_broker.subject,
+        durable=f"relay_{uuid.uuid4().hex[:20]}",
+        stream=relay_broker.stream,
+        config=ConsumerConfig(ack_policy=AckPolicy.EXPLICIT, max_ack_pending=4),
+    )
+    original_connect_listener = relay._connect_listener
+
+    def track_listener(dsn):
+        result = original_connect_listener(dsn)
+        loop.call_soon_threadsafe(listener_ready.set)
+        return result
+
+    monkeypatch.setattr(relay, "_connect_listener", track_listener)
+    task = asyncio.create_task(
+        relay.run_relay(
+            stop,
+            session_factory=sessions,
+            database_url=database_url,
+            nats_client_factory=_test_client_factory(nats_url, credentials),
+        )
+    )
+    probe = None
+    try:
+        await asyncio.wait_for(listener_ready.wait(), timeout=5)
+        await _wait_processed(sessions, [first_event])
+
+        # A second listener observes PostgreSQL coalescing identical notifications
+        # from one transaction while the relay receives the same wakeup.
+        import psycopg2
+
+        probe = psycopg2.connect(relay._postgres_dsn(database_url), connect_timeout=3)
+        probe.autocommit = True
+        with probe.cursor() as cursor:
+            cursor.execute("LISTEN openship_outbox")
+        next_events = _append_events(
+            sessions,
+            conversation_id,
+            count=2,
+            prefix="coalesced",
+        )
+        readable, _, _ = select.select([probe.fileno()], [], [], 3)
+        assert readable
+        probe.poll()
+        assert len(probe.notifies) == 1
+        probe.notifies.clear()
+
+        await _wait_processed(sessions, next_events)
+        messages = await subscription.fetch(batch=3, timeout=3)
+        envelopes = [json.loads(item.data) for item in messages]
+        assert [item["sequence"] for item in envelopes] == [0, 1, 2]
+        assert all("private-" not in item.data.decode() for item in messages)
+        for message in messages:
+            await message.ack_sync(timeout=1)
+
+        # Idle waiting does not repeatedly query the outbox for an empty batch.
+        calls = 0
+        original_due = relay.next_outbox_due_at
+
+        def count_due(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original_due(*args, **kwargs)
+
+        monkeypatch.setattr(relay, "next_outbox_due_at", count_due)
+        await asyncio.sleep(0.2)
+        idle_query_count = calls
+        await asyncio.sleep(1.2)
+        assert calls == idle_query_count
+    finally:
+        if probe is not None:
+            probe.close()
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_commit_during_listener_reconnect_is_caught_up(
+    relay_postgres, relay_broker, relay_threading, monkeypatch
+):
+    database_url, sessions, _installation_id = relay_postgres
+    conversation_id = _new_conversation(sessions)
+    before_reconnect = _append_events(
+        sessions, conversation_id, prefix="before-reconnect"
+    )[0]
+    nats_url = os.environ["TEST_NATS_URL"]
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())
+    credentials = _Credentials(**auth["admin"])
+    disconnected = asyncio.Event()
+    listener_ready = asyncio.Event()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    original_connect_listener = relay._connect_listener
+    calls = 0
+
+    def fail_once_then_connect(dsn):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            loop.call_soon_threadsafe(disconnected.set)
+            import psycopg2
+
+            raise psycopg2.OperationalError("simulated listener connection loss")
+        result = original_connect_listener(dsn)
+        loop.call_soon_threadsafe(listener_ready.set)
+        return result
+
+    monkeypatch.setattr(relay, "_connect_listener", fail_once_then_connect)
+    task = asyncio.create_task(
+        relay.run_relay(
+            stop,
+            session_factory=sessions,
+            database_url=database_url,
+            nats_client_factory=_test_client_factory(nats_url, credentials),
+        )
+    )
+    try:
+        await asyncio.wait_for(disconnected.wait(), timeout=5)
+        during_reconnect = _append_events(
+            sessions,
+            conversation_id,
+            prefix="during-reconnect",
+        )[0]
+        await asyncio.wait_for(listener_ready.wait(), timeout=5)
+        await _wait_processed(sessions, [before_reconnect, during_reconnect])
+        assert (
+            await relay_broker.js.stream_info(relay_broker.stream)
+        ).state.messages == 2
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_nats_reconnect_wakeup_catches_up_without_a_database_notification(
+    relay_postgres, relay_broker, relay_threading, monkeypatch
+):
+    database_url, sessions, _installation_id = relay_postgres
+    conversation_id = _new_conversation(sessions)
+    nats_url = os.environ["TEST_NATS_URL"]
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())
+    credentials = _Credentials(**auth["admin"])
+    loop = asyncio.get_running_loop()
+    listener_ready = asyncio.Event()
+    client_ready = asyncio.Event()
+    client_reconnected = asyncio.Event()
+    clients = []
+    stop = asyncio.Event()
+    original_connect_listener = relay._connect_listener
+
+    def track_listener(dsn):
+        result = original_connect_listener(dsn)
+        loop.call_soon_threadsafe(listener_ready.set)
+        return result
+
+    async def connect_relay(*, name, reconnected_cb=None):
+        async def on_reconnected():
+            if reconnected_cb is not None:
+                await reconnected_cb()
+            client_reconnected.set()
+
+        client = await nats.connect(
+            nats_url,
+            user=credentials.user,
+            password=credentials.password,
+            name=name,
+            reconnected_cb=on_reconnected,
+            connect_timeout=2,
+        )
+        clients.append(client)
+        client_ready.set()
+        return client
+
+    def ignore_database_wakeups(_connection, timeout):
+        time.sleep(min(timeout, 1.0))
+        return False
+
+    monkeypatch.setattr(relay, "_connect_listener", track_listener)
+    monkeypatch.setattr(relay, "_wait_for_listener", ignore_database_wakeups)
+    task = asyncio.create_task(
+        relay.run_relay(
+            stop,
+            session_factory=sessions,
+            database_url=database_url,
+            nats_client_factory=connect_relay,
+        )
+    )
+    try:
+        await asyncio.wait_for(listener_ready.wait(), timeout=5)
+        await asyncio.wait_for(client_ready.wait(), timeout=5)
+        await asyncio.sleep(0.2)
+        event_id = _append_events(
+            sessions,
+            conversation_id,
+            prefix="during-nats-reconnect",
+        )[0]
+        # Closing this live client transport makes nats-py observe EOF, run
+        # its reconnect loop, and invoke the relay's registered callback.
+        clients[0]._transport.close()
+        await asyncio.wait_for(client_reconnected.wait(), timeout=5)
+        assert clients[0].stats["reconnects"] >= 1
+        await _wait_processed(sessions, [event_id])
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_runtime_refuses_to_publish_with_drifted_topology(
+    relay_postgres, relay_broker, relay_threading
+):
+    database_url, sessions, installation_id = relay_postgres
+    nats_url = os.environ["TEST_NATS_URL"]
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())
+    credentials = _Credentials(**auth["admin"])
+    expected = stream_configs(installation_id)[2]
+    await relay_broker.js.update_stream(
+        config=replace(
+            expected,
+            subjects=[f"openship.{installation_id.hex}.v1.event.wrong"],
+        )
+    )
+
+    with pytest.raises(TopologyCompatibilityError):
+        await relay.run_relay(
+            asyncio.Event(),
+            session_factory=sessions,
+            database_url=database_url,
+            nats_client_factory=_test_client_factory(nats_url, credentials),
+        )
+
+
+@pytest.mark.asyncio
+async def test_relay_role_can_check_and_publish_but_cannot_create_streams(
+    relay_postgres, relay_broker
+):
+    _database_url, sessions, installation_id = relay_postgres
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())
+    credentials = _Credentials(**auth["relay"])
+    permission_errors = []
+
+    async def on_error(error):
+        permission_errors.append(str(error))
+
+    client = await nats.connect(
+        os.environ["TEST_NATS_URL"],
+        user=credentials.user,
+        password=credentials.password,
+        error_cb=on_error,
+        name="openship-relay-role-integration-test",
+        connect_timeout=2,
+    )
+    js = client.jetstream(timeout=1)
+    denied_stream = f"RELAY_DENIED_{uuid.uuid4().hex[:12].upper()}"
+    try:
+        report = await ensure_topology(
+            apply=False,
+            js=js,
+            installation_id=installation_id,
+        )
+        assert report.ready
+
+        conversation_id = _new_conversation(sessions)
+        _append_events(sessions, conversation_id, prefix="relay-role")
+        (record,) = claim_outbox_batch(sessions, conversation_id=conversation_id)
+        receipt = await publish_record(js, record)
+        assert receipt.stream == "OS_EVENTS"
+
+        with pytest.raises(NatsTimeoutError):
+            await js.add_stream(
+                config=StreamConfig(
+                    name=denied_stream,
+                    subjects=[f"openship.denied.{uuid.uuid4().hex}.>"],
+                    storage=StorageType.FILE,
+                )
+            )
+        assert any(
+            "permissions violation" in error.lower() for error in permission_errors
+        )
+    finally:
+        try:
+            await relay_broker.js.delete_stream(denied_stream)
+        except NotFoundError:
+            pass
+        await client.close()
+
+
+class _LostPubAck:
+    def __init__(self, js):
+        self.js = js
+        self.calls = 0
+
+    async def publish(self, subject, body, *, headers):
+        ack = await self.js.publish(subject, body, headers=headers)
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("lost JetStream PubAck")
+        return ack
+
+
+@pytest.mark.asyncio
+async def test_lost_puback_retries_stable_identity_without_duplicate_storage(
+    relay_postgres, relay_broker, relay_threading
+):
+    _url, sessions, _installation_id = relay_postgres
+    conversation_id = _new_conversation(sessions)
+    event_id = _append_events(sessions, conversation_id, prefix="lost-ack")[0]
+    publisher = _LostPubAck(relay_broker.js)
+
+    first = await publish_pending_batch(
+        publisher, sessions, conversation_id=conversation_id
+    )
+    assert first.claimed == 1 and first.published == 0
+    with sessions() as db:
+        row = db.query(Outbox).filter(Outbox.event_id == event_id).one()
+        message_id = row.message_id
+        assert row.processed_at is None
+        assert row.last_error == "TimeoutError"
+        row.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+
+    second = await publish_pending_batch(
+        publisher, sessions, conversation_id=conversation_id
+    )
+    assert second.claimed == 1 and second.published == 1
+    assert (await relay_broker.js.stream_info(relay_broker.stream)).state.messages == 1
+    with sessions() as db:
+        row = db.query(Outbox).filter(Outbox.event_id == event_id).one()
+        assert row.processed_at is not None
+        assert row.message_id == message_id
+
+
+@pytest.mark.asyncio
+async def test_crash_after_puback_before_processed_flag_reclaims_same_identity(
+    relay_postgres, relay_broker
+):
+    _url, sessions, _installation_id = relay_postgres
+    conversation_id = _new_conversation(sessions)
+    event_id = _append_events(sessions, conversation_id, prefix="crash-after-ack")[0]
+    now = datetime.now(UTC)
+    (claimed,) = claim_outbox_batch(
+        sessions,
+        now=now,
+        lease_seconds=5,
+        conversation_id=conversation_id,
+    )
+    first_ack = await publish_record(relay_broker.js, claimed)
+    assert first_ack.duplicate is False
+
+    with sessions() as db:
+        row = db.query(Outbox).filter(Outbox.event_id == event_id).one()
+        assert row.processed_at is None
+        assert row.publisher_lease_until is not None
+
+    (reclaimed,) = claim_outbox_batch(
+        sessions,
+        now=now + timedelta(seconds=6),
+        lease_seconds=5,
+        conversation_id=conversation_id,
+    )
+    duplicate_ack = await publish_record(relay_broker.js, reclaimed)
+    assert duplicate_ack.duplicate is True
+    assert duplicate_ack.message_id == claimed.message_id
+    assert _settle_publication(sessions, reclaimed, error=None)
+    assert (await relay_broker.js.stream_info(relay_broker.stream)).state.messages == 1
+
+
+@pytest.mark.asyncio
+async def test_broker_full_keeps_outbox_pending_and_schedules_retry(
+    relay_postgres, relay_threading
+):
+    _url, sessions, installation_id = relay_postgres
+    nats_url = os.environ["TEST_NATS_URL"]
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())
+    credentials = _Credentials(**auth["admin"])
+    client = await nats.connect(
+        nats_url,
+        user=credentials.user,
+        password=credentials.password,
+        name="openship-relay-full-stream-test",
+        connect_timeout=2,
+    )
+    js = client.jetstream(timeout=2)
+    stream = f"OS_RELAY_FULL_{uuid.uuid4().hex[:12].upper()}"
+    subject_pattern = f"openship.{installation_id.hex}.v1.>"
+    try:
+        await js.add_stream(
+            config=StreamConfig(
+                name=stream,
+                subjects=[subject_pattern],
+                retention=RetentionPolicy.LIMITS,
+                storage=StorageType.FILE,
+                discard=DiscardPolicy.NEW,
+                max_bytes=1,
+                max_age=300.0,
+                duplicate_window=120.0,
+                max_msg_size=16 * 1024,
+            )
+        )
+        conversation_id = _new_conversation(sessions)
+        event_id = _append_events(sessions, conversation_id, prefix="full-stream")[0]
+        result = await publish_pending_batch(
+            js, sessions, conversation_id=conversation_id
+        )
+        assert result.claimed == 1 and result.published == 0
+        with sessions() as db:
+            row = db.query(Outbox).filter(Outbox.event_id == event_id).one()
+            assert row.processed_at is None
+            assert row.last_error is not None
+            assert row.next_attempt_at > datetime.now(UTC)
+    finally:
+        try:
+            await js.delete_stream(stream)
+        except NotFoundError:
+            pass
+        await client.close()

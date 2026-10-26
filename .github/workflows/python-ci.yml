@@ -71,9 +71,9 @@ jobs:
       - run: cd apps/api && uv sync --extra dev
       - run: cd apps/api && uv run pytest -q -o faulthandler_timeout=60 -m "not postgres and not provider_live and not full_stack and not jetstream"
 
-  # JetStream transport behavior is qualified against the exact authenticated
-  # NATS server image, not an in-memory mock. The launcher creates a disposable
-  # broker and temporary credentials for each Python-version job.
+  # JetStream relay behavior is qualified against real PostgreSQL and the exact
+  # authenticated NATS server image. The launcher creates the disposable broker
+  # and temporary credentials for each Python-version job.
   api-jetstream:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -83,6 +83,21 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     env:
       UV_PYTHON: ${{ matrix.python-version }}
+      TEST_POSTGRES_URL: postgresql+psycopg://openship@localhost:5432/lane
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: openship
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: lane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openship -d lane"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v2
@@ -133,14 +148,15 @@ jobs:
         timeout-minutes: 10
         shell: bash
         env:
-          # The service exists only for this job; tests create isolated lane
-          # databases from this local connection.
+          # This general PostgreSQL lane excludes JetStream tests; those run
+          # against PostgreSQL plus the disposable broker in api-jetstream.
+          # Tests create isolated lane databases from this local connection.
           TEST_POSTGRES_URL: postgresql+psycopg://openship@localhost:5432/lane
           PYTHONUNBUFFERED: "1"
         run: |
           cd apps/api
           set -o pipefail
-          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/pg-lane.xml -m postgres tests/integration 2>&1 | tee /tmp/pg-lane.log
+          timeout --signal=TERM --kill-after=10s 8m uv run pytest -vv -ra -o faulthandler_timeout=60 --junitxml=/tmp/pg-lane.xml -m 'postgres and not jetstream' tests/integration 2>&1 | tee /tmp/pg-lane.log
           python - /tmp/pg-lane.xml <<'PY'
           import sys
           import xml.etree.ElementTree as ET

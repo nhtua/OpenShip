@@ -22,7 +22,10 @@ import nats
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 API_ROOT = Path(__file__).resolve().parents[1]
-TEST_PATH = API_ROOT / "tests/integration/test_messaging_topology.py"
+TEST_PATHS = (
+    API_ROOT / "tests/integration/test_messaging_topology.py",
+    API_ROOT / "tests/integration/test_messaging_relay.py",
+)
 
 
 def _load_versions() -> dict[str, str]:
@@ -101,6 +104,10 @@ def _check_junit(path: Path) -> None:
 
 def main() -> int:
     versions = _load_versions()
+    if not os.environ.get("TEST_POSTGRES_URL"):
+        raise RuntimeError(
+            "JetStream relay qualification requires TEST_POSTGRES_URL for its PostgreSQL lane"
+        )
     image = versions["NATS_SERVER_IMAGE"]
     runtime = _runtime()
     container_name = f"openship-jetstream-qual-{uuid.uuid4().hex[:12]}"
@@ -120,6 +127,10 @@ def main() -> int:
                 "user": "limited_" + secrets.token_urlsafe(8),
                 "password": secrets.token_urlsafe(32),
             },
+            "relay": {
+                "user": "relay_" + secrets.token_urlsafe(8),
+                "password": secrets.token_urlsafe(32),
+            },
         }
         auth_file = temp_dir / "auth.json"
         config_file = temp_dir / "nats.conf"
@@ -130,7 +141,7 @@ listen: 0.0.0.0:4222
 jetstream {{
   store_dir: "/data"
   max_mem_store: 67108864
-  max_file_store: 536870912
+  max_file_store: 2147483648
   sync_interval: 100ms
 }}
 authorization {{
@@ -145,12 +156,19 @@ authorization {{
       password: "{auth["restricted"]["password"]}"
       permissions: {{ publish: ["openship.test.>"], subscribe: ["_INBOX.>"] }}
     }}
+    {{
+      user: "{auth["relay"]["user"]}"
+      password: "{auth["relay"]["password"]}"
+      permissions: {{ publish: ["openship.>", "$JS.API.STREAM.INFO.>"], subscribe: ["_INBOX.>"] }}
+    }}
   ]
 }}
 '''
         _write_private(config_file, config)
 
-        volume_suffix = ",Z" if Path(runtime).name == "podman" and sys.platform == "linux" else ""
+        volume_suffix = (
+            ",Z" if Path(runtime).name == "podman" and sys.platform == "linux" else ""
+        )
         command = [
             runtime,
             "run",
@@ -169,9 +187,9 @@ authorization {{
             command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
         command.extend(
             [
-            image,
-            "-c",
-            "/etc/nats/nats.conf",
+                image,
+                "-c",
+                "/etc/nats/nats.conf",
             ]
         )
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
@@ -195,7 +213,7 @@ authorization {{
                     str(result_file),
                     "-m",
                     "jetstream",
-                    str(TEST_PATH),
+                    *(str(path) for path in TEST_PATHS),
                 ],
                 cwd=API_ROOT,
                 env=environment,

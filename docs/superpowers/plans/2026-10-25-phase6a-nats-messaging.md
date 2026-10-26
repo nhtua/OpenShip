@@ -100,10 +100,9 @@ versions and configuration capabilities, without activating transport.
   integration harness; generate disposable credentials and isolated
   per-test stream/consumer namespaces rather than using application secrets.
 - [x] Verify the declared server/client pins locally using
-  `uv run python scripts/qualify_jetstream.py` from `apps/api`; the real
-  authenticated broker executed 4 tests with no skips on Python 3.13,
-  including ACK timing, delayed NAK, file storage, deduplication, filter and
-  permissions checks.
+  `uv run python scripts/qualify_jetstream.py` from `apps/api`. The initial
+  topology-only run exercised six authenticated broker tests; Task 2 extends
+  the same pinned lane to include real PostgreSQL relay coverage.
 - [x] Confirm the required Python 3.11/3.12/3.13 CI matrix passes before
   completing the qualification task.
 - [x] Review and commit the isolated topology/client contract.
@@ -143,19 +142,21 @@ settings and real broker relay tests.
 `async ensure_topology(*, apply: bool) -> TopologyReport`.
 Bootstrap owns resource creation; runtime verifies compatibility.
 
-- [ ] Add failing `tests/integration/test_messaging_relay.py` cases: commit
+- [x] Add failing `tests/integration/test_messaging_relay.py` cases: commit
   before listener startup, reconnect during commit, notification coalescing,
   lost PubAck, crash before processed flag, expired publisher claim, broker
-  full and per-conversation sequence ordering.
-- [ ] Implement dedicated LISTEN connection, advisory leadership, bounded
+  full, NATS reconnect catch-up and per-conversation sequence ordering.
+- [x] Implement dedicated LISTEN connection, advisory leadership, bounded
   row claims and confirmed publish; retry on scheduled due/error timers.
   Broker reconnect triggers catch-up even without a later DB notification.
-- [ ] Add `bootstrap --check` and `doctor`: detect missing resources and
+- [x] Add `bootstrap --check` and `doctor`: detect missing resources and
   immutable configuration drift; `bootstrap --apply` is idempotent but never
   recreates/deletes streams or lowers limits silently.
-- [ ] Verify relay tests against real DB/broker and trace idle SQL: no
+- [x] Verify relay tests against real DB/broker and trace idle SQL: no
   recurring empty-outbox SELECT. Test role ACLs, clean shutdown and auth/TLS
-  redaction. Review and commit.
+  redaction. The pinned local lane ran 14 broker/PostgreSQL tests with no skips;
+  Python 3.11–3.13 CI coverage is configured for the same lane. Review and
+  commit this task.
 
 ## Task 3 — Execute broker commands through existing fenced runtime
 
