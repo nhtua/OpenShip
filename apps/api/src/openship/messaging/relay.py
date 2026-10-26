@@ -109,10 +109,9 @@ def _record_envelope(
             raise ValueError("run command is missing its durable run reference")
         if job is None:
             raise ValueError("run command is missing its durable job reference")
-        if job.dispatch_generation != row.dispatch_generation:
-            raise ValueError(
-                "run command generation no longer matches the admitted job"
-            )
+        # A lost PubAck can leave this immutable command pending after its run
+        # has resumed or safely requeued. Republish its original generation;
+        # exact acquisition disposes obsolete deliveries without another effect.
         record["transport_epoch"] = str(row.transport_epoch)
     elif row.destination == "control":
         if run is None or event is None:

@@ -11,12 +11,14 @@ from src.openship.auth.models import User
 from src.openship.chat.models import Conversation
 from src.openship.database.session import SessionLocal
 from src.openship.events.service import append_event
+from src.openship.messaging.models import MessageTransportState
+from src.openship.messaging.outbox import enqueue_run
 from src.openship.messaging.relay import (
     claim_outbox_batch,
     next_outbox_due_at,
     publish_pending_batch,
 )
-from src.openship.runs.models import Event, Outbox
+from src.openship.runs.models import Event, Outbox, Run, RunJob
 from src.openship.workspace.models import Project
 
 _FIXTURE_IDS: list[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = []
@@ -35,6 +37,13 @@ def cleanup_relay_fixtures():
             synchronize_session=False
         )
         db.query(Event).filter(Event.conversation_id.in_(conversation_ids)).delete(
+            synchronize_session=False
+        )
+        run_ids = db.query(Run.id).filter(Run.conversation_id.in_(conversation_ids))
+        db.query(RunJob).filter(RunJob.run_id.in_(run_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(Run).filter(Run.conversation_id.in_(conversation_ids)).delete(
             synchronize_session=False
         )
         db.query(Conversation).filter(Conversation.id.in_(conversation_ids)).delete(
@@ -86,6 +95,51 @@ class _LostAckOnce:
         if len(self.publications) == 1:
             raise TimeoutError("simulated lost publish confirmation")
         return _Ack()
+
+
+def test_lost_confirmation_republishes_immutable_command_after_generation_advance():
+    now = datetime.now(UTC)
+    with SessionLocal() as db:
+        conversation = _conversation(db)
+        conversation_id = conversation.id
+        run = Run(
+            conversation_id=conversation.id,
+            project_id=conversation.project_id,
+            status="queued",
+            fence=0,
+        )
+        db.add(run)
+        db.flush()
+        job = RunJob(run_id=run.id, fence=0, dispatch_generation=1)
+        db.add(job)
+        db.flush()
+        epoch = db.get(MessageTransportState, 1).transport_epoch
+        first_id = enqueue_run(db, run.id, 1, epoch=epoch)
+        run_id = run.id
+        db.commit()
+
+    (original,) = claim_outbox_batch(
+        conversation_id=conversation_id, now=now + timedelta(seconds=1), lease_seconds=5
+    )
+    with SessionLocal() as db:
+        job = db.query(RunJob).filter_by(run_id=run_id).one()
+        job.dispatch_generation = 2
+        replacement_id = enqueue_run(db, run_id, 2, epoch=epoch)
+        event = append_event(db, conversation_id, run_id, "run.requeued", {})
+        event_id = event.id
+        db.commit()
+
+    retried = claim_outbox_batch(
+        conversation_id=conversation_id, now=now + timedelta(seconds=7), lease_seconds=5
+    )
+    by_id = {record.id: record for record in retried}
+    assert by_id[first_id].body == original.body
+    assert by_id[first_id].message_id == original.message_id
+    assert json.loads(by_id[first_id].body)["dispatch_generation"] == 1
+    assert json.loads(by_id[replacement_id].body)["dispatch_generation"] == 2
+    assert any(
+        json.loads(record.body).get("event_id") == str(event_id) for record in retried
+    )
 
 
 def test_event_claims_preserve_sequence_and_exclude_event_content():
