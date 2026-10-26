@@ -1,8 +1,8 @@
 ---
 type: architecture
-summary: Proposed high-level design for the self-hosted OpenShip harness, conversational workflows, capability registry, and secure execution.
+summary: Target self-hosted harness architecture with accepted NATS messaging, durable workflows, capability discovery, and secure execution.
 status: proposed
-date: 2026-10-21
+date: 2026-10-25
 ---
 
 # OpenShip Harness Architecture
@@ -12,6 +12,8 @@ OpenShip is a self-hosted DevOps co-pilot accessed through a browser. An enginee
 The proposed architecture is a **modular application with a separate execution worker**. Python and LangGraph provide the agent and workflow runtime; a TypeScript web application provides the conversational workspace. Persistent state, capability discovery, authorization, and sandboxing belong to the harness rather than to the model.
 
 This document redesigns the previous resource-focused architecture using [the project ideas](./ideas.md), the [agent PoC](../poc/agent/src/cli.py), and the six current requirements. Those requirements define the requested scope. Technology choices and changes to earlier ideas below are proposals for review, not implementation commitments. The existing PoC remains an experiment; this document describes the target service.
+
+**Accepted messaging decision (2026-10-25):** NATS is the main internal broker, with JetStream providing durable delivery. Phases 1–5 are complete as confirmed by the user; this is a forward change beginning in Phase 6A, not a claim that NATS is already deployed. Other unaccepted target capabilities remain proposals. See [the decision in ideas](./ideas.md#nats-messaging-foundation) and [the roadmap](./roadmap.md#phase-6--nats-messaging-and-controlled-execution).
 
 ## 1. Requirements and Design Principles
 
@@ -24,6 +26,7 @@ This document redesigns the previous resource-focused architecture using [the pr
 | Modular community extensions and semantic discovery | A local capability registry indexes tools, skills, and workflows, with access filtering and progressive loading. |
 | Secure isolation and ephemeral generated code from day one | Establish gateway authorization with the first trusted built-in tool. Before user-provided or generated code runs, add a separate sandbox manager, enforced profiles, scoped credentials, network controls, and server-side authorization. |
 | Event-driven workflow automation | An event ingestion layer with trigger routing connects cloud monitoring, webhooks, message brokers, chat platforms, and email to workflow execution. |
+| Concurrent messaging for a small team | NATS subject routing, JetStream persistence, asynchronous API/worker communication, and bounded execution slots replace routine dispatch/event polling. |
 
 Engineers remain in control. The agent acts naturally within previously granted authority; operations outside that authority require a concrete review or additional configuration. A model recommendation, retrieved skill, or workflow definition never grants permission by itself.
 
@@ -60,19 +63,25 @@ flowchart TB
         Gateway[Policy and tool gateway]
         Secrets[Credential broker]
         Events[Event ingestion and trigger routing]
-        API --> Runtime
+        Relay[Committed outbox publisher]
         Runtime --> Registry
         Runtime --> Gateway
         Gateway --> Secrets
-        Events --> Runtime
     end
 
+    Messaging[NATS with JetStream]
+    API -->|Bounded asynchronous requests| Messaging
+    Messaging -->|Run events and correlated replies| API
+    Messaging -->|Commands and controls| Runtime
+    Runtime -->|Correlated replies| Messaging
+    Relay -->|Confirmed durable commands and events| Messaging
     Runtime -->|Approved model context| Models[Configured model providers]
     API --> DB[(PostgreSQL)]
     Runtime --> DB
     Registry --> DB
     Gateway --> DB
     Events --> DB
+    DB -->|Committed outbox records| Relay
     Runtime --> Artifacts[(Artifact store)]
 
     subgraph Execution[Separate execution worker]
@@ -95,7 +104,7 @@ flowchart TB
     Email[Email receivers] -->|IMAP/webhook| Events
 ```
 
-The control plane owns identity, conversations, scheduling, policy, and durable state. The execution plane runs executable extensions, local MCP servers, CLI tools, and generated code. A worker receives a bounded execution request, not database credentials or unrestricted control-plane access. Maintained typed connectors may execute in the trusted gateway; their network requests and credential use are still scoped and audited. Remote MCP servers are an external trust boundary, not protected by the local sandbox.
+The control plane owns identity, conversations, scheduling, policy, and durable state. Trusted runtime workers use PostgreSQL and NATS to execute admitted runs. The separate sandbox execution plane runs executable extensions, local MCP servers, CLI tools, and generated code; its workers receive bounded execution requests without application database credentials or unrestricted control-plane access. Maintained typed connectors may execute in the trusted gateway; their network requests and credential use are still scoped and audited. Remote MCP servers are an external trust boundary, not protected by the local sandbox. Durable commands/events in the diagram are published through the committed outbox; direct request/reply is a bounded interaction, not an alternative durable admission path.
 
 Maintained built-in tools such as search may execute inside the supervised
 runtime worker through the gateway. That trusted execution tier does not run
@@ -112,6 +121,8 @@ The initial control plane is a modular monolith: API, registry, runtime, and pol
 | --- | --- |
 | Web workspace | Conversation, workflow graph/timeline, inputs, approvals, artifact inspection, project navigation. |
 | API | Authentication, project authorization, command validation, uploads, event delivery, administrative configuration. |
+| NATS / JetStream | Internal subject routing, request/reply, durable command delivery, event fanout, acknowledgements, and redelivery. Application state and authorization remain in OpenShip. |
+| Outbox publisher | Publishes committed application commands/events with broker confirmation and recoverable delivery identity. |
 | Agent runtime | Model loop, context assembly, capability selection, task routing, conversation checkpoints. |
 | Workflow runtime | Graph compilation, scheduling, durable waits, child runs, budgets, recovery. Uses the same LangGraph foundation as the agent runtime. |
 | Capability registry | Versioned metadata/packages, lexical and semantic discovery, dependency/compatibility resolution. |
@@ -123,7 +134,7 @@ The initial control plane is a modular monolith: API, registry, runtime, and pol
 
 ## 4. Self-Hosted Deployment
 
-Ship a container-based distribution with configuration and health checks for the API, runtime worker, PostgreSQL, artifact storage, and sandbox worker. Docker Compose is the proposed first packaging target for simple deployments; Kubernetes Helm charts provide a production-ready path for team and enterprise deployments.
+Ship a container-based distribution with configuration and health checks for the API, runtime worker, NATS with persistent JetStream storage, PostgreSQL, artifact storage, and sandbox worker. Docker Compose is the proposed first packaging target for simple deployments; Kubernetes Helm charts provide a production-ready path for team and enterprise deployments. NATS runs as a compact server with an async Python client; its broker and monitoring endpoints remain private. Broker subject permissions supplement application project authorization, not replace it.
 
 | Profile | Arrangement | Access and isolation |
 | --- | --- | --- |
@@ -138,13 +149,32 @@ On macOS or Windows, use a dedicated Linux VM or a remote Linux worker for untru
 
 The sandbox manager may need a container-runtime or VM interface. That access belongs only to its restricted worker host; neither the API, model runtime, nor any sandbox receives a Docker socket or equivalent administrative interface. Authenticate control-plane-to-worker requests, constrain the worker protocol, and reject expired or altered execution requests.
 
-Maintain coordinated backup/restore procedures for the database, artifacts, configuration, and separately protected credential encryption keys. Restoring a backup enters reconciliation mode before resuming pending external mutations. Upgrades drain or checkpoint runs and preserve compatible runtime/package versions for resume.
+Maintain coordinated backup/restore procedures for PostgreSQL, JetStream streams/consumer state, artifacts, configuration, and separately protected credential encryption keys. Declare retention, storage limits, disk synchronization, recovery point/time objectives, and replay policy for each supported deployment. A single persistent broker supports a small local installation without promising node-failure availability; a replicated profile must qualify quorum behavior across failure domains. Replication is not a backup. Restoring a backup enters reconciliation mode before resuming pending external mutations. Upgrades drain or checkpoint runs, preserve compatible message/runtime/package versions, and exercise reconnect and duplicate-delivery recovery. Monitor outbox age, pending acknowledgements, consumer lag, redelivery, exhausted deliveries, disk use, and execution capacity. See [JetStream operations](https://docs.nats.io/learn/backup-recovery/) and [disk synchronization settings](https://docs.nats.io/reference/config/jetstream/sync_interval).
 
 Self-hosting keeps the harness and its stored state in the user's infrastructure. Context sent to a remote LLM, embedding provider, or MCP server leaves that boundary. Configuration makes these destinations visible and supports local embeddings and compatible local model endpoints where required.
 
 ## 5. Event-Driven Workflow Architecture
 
 OpenShip workflows can be triggered by events from multiple sources, enabling reactive automation that responds to real-world signals without manual initiation. This reduces toil for DevOps engineers by automating routine monitoring and response tasks.
+
+### NATS messaging foundation
+
+**Accepted direction; implementation starts in Phase 6A.** Use NATS as the common internal transport for the API, trusted runtime workers, and background functions. JetStream persists work and semantic events; Core NATS request/reply supports bounded interactions and returning a response to its source. The broker selection does not bring forward external trigger capabilities scheduled for Phases 13, 14, and 19.
+
+| Traffic | Routing and completion |
+| --- | --- |
+| Chat/workflow/background command | A durable consumer routes validated message types to registered handlers and divides work among compatible workers. Completion requires a persisted result, terminal outcome, or durable waiting/handoff state before acknowledgement. |
+| Semantic event | A retained event stream supports independent consumers for API instances, notifications, and other approved functions. Event identity and conversation sequence remain application-owned. |
+| Correlated response | The worker can return a result to an authorized source response subject; an API coroutine awaits it without blocking other requests and forwards the appropriate response over SSE. |
+| Cancellation/control | Route to the active owner or broadcast to interested supervisors; an arbitrary member of the execution consumer group must not absorb a control intended for another worker. Persist the control outcome and enforce the current run fence. |
+
+NATS routes subjects and reports transport conditions such as timeouts or missing responders. OpenShip supplies the handler registry, schema validation, authorization, and safe application error records. Subjects identify supported message types; arbitrary payloads cannot select Python code or grant execution authority. Envelopes carry schema version, message/request/correlation IDs, project/conversation/run identity where relevant, source identity, and bounded payloads or references. Response subjects are server-owned and validated; sensitive prompts, credential values, and artifact bodies do not become general broadcast payloads.
+
+Request/reply addresses returning a response to the requester; it does not replace durable execution or event replay. The ordinary NATS `request()` interaction resolves one reply and has a deadline. Progressive text and workflow updates use a separate correlated response/event subscription. For JetStream deliveries, keep the application response route separate from the broker's delivery-acknowledgement subject. A request timeout, missing responder, or disappeared inbox does not prove that an accepted run failed or authorize another model/tool call. These boundaries follow [NATS request/reply](https://docs.nats.io/concepts/request-reply) and [JetStream delivery semantics](https://docs.nats.io/concepts/jetstream).
+
+The HTTP command can continue returning the accepted run identity while the browser observes SSE. A live API may await/forward a correlated worker reply, but losing that waiter never loses the run or its completed answer. Each API process subscribes independently for the conversations it serves; workers for the same command type share work. Do not put all API replicas into a single competing consumer group, or create durable backlog ownership for every browser tab. Reconnect uses the existing authorized snapshot/event APIs.
+
+Use distinct retention for execution commands and replayable events. Work-queue retention removes acknowledged commands and disallows overlapping consumers; retained events allow multiple independent consumers. Set bounded storage and an explicit full-stream policy; accepted unprocessed commands must not be silently discarded to admit new traffic. Define consumer cleanup and slow-subscriber recovery. See [JetStream retention](https://docs.nats.io/learn/jetstream/retention-policies).
 
 ### Trigger Sources
 
@@ -378,9 +408,13 @@ Use LangGraph checkpoints/interrupts with a persistent PostgreSQL checkpointer a
 
 ### Scheduling and consistency
 
-The service needs a scheduler around the graph library. Initially use a PostgreSQL-backed queue, worker leases, heartbeats, and fenced run ownership. Allow one writer per run; parallel steps have distinct identities. Child runs inherit the parent's project and no broader permissions, with nesting/concurrency limits.
+The service needs a scheduler around the graph library. Phases 1–5 delivered PostgreSQL queue/lease/fence contracts; Phase 6A migrates routine dispatch to durable NATS JetStream consumers while preserving PostgreSQL run ownership, heartbeats, and fences. Allow one writer per run; parallel steps have distinct identities. Child runs inherit the parent's project and no broader permissions, with nesting/concurrency limits. The database remains the authority for whether a delivery may execute, including terminal, cancelled, or already-owned runs.
 
-In one application transaction, persist a validated command/state transition and its outbox event. Deliver events and queue work from that outbox with deduplication. Graph checkpoints, application projections, and external operations are related but separate records; a cloud mutation is not atomic with a checkpoint write.
+In one application transaction, persist a validated command/state transition and its outbox event. A commit-driven publisher delivers pending records to JetStream, checks publication acknowledgements, then records delivery. It catches up after startup, reconnect, and publication failure; duplicate publication remains safe through stable message IDs and application deduplication. Select and qualify the relay mechanism in Phase 6A, using commit notifications with durable catch-up or database change capture rather than routine table polling. A PostgreSQL commit and a NATS publish are separate operations. Graph checkpoints, application projections, and external operations remain separate records; a cloud mutation is not atomic with a checkpoint write.
+
+Consumer intake and API subscriptions use async I/O with bounded buffers and execution slots. Existing synchronous graph/SDK work runs in isolated execution slots or is explicitly migrated to async; it never blocks the API/broker event loop. Multiple conversations can progress concurrently within configured provider, tool, project, and installation limits. Separate interactive and maintenance capacity so a background backlog cannot starve chat. Sequential steps and per-run serialization remain valid inside an execution slot.
+
+Acknowledge a delivery only after its durable handling outcome is committed. Redelivery of completed work returns its recorded outcome without re-executing it; dispatched work with an uncertain outcome is reconciled or failed visibly. Set acknowledgement deadlines/progress heartbeats for active work, bounded retry/backoff for eligible transient errors, and an inspectable failure destination with controlled replay. JetStream's delivery-limit advisories require OpenShip to implement that failure workflow. Waiting for input, approval, or a connector persists the wait and releases the delivery/slot; a later authorized command resumes it. See [acknowledgement and redelivery](https://docs.nats.io/learn/jetstream/acknowledgment).
 
 Before an external operation, persist its intent and stable operation key derived from the run and logical step invocation. Retries reuse that key; loop iterations and new requested operations receive distinct keys. Dispatch requires current run ownership, authorization, and any bound approval. Persist the result before advancing application status; a reconciler resolves crashes between these writes and the next checkpoint.
 
@@ -412,6 +446,8 @@ Conversation is the stable workspace. Starting a workflow adds a run card and op
 Persist semantic events such as `run.started`, `step.started`, `tool.requested`, `tool.completed`, `input.requested`, `approval.requested`, `artifact.created`, `run.paused`, and `run.completed`. Each has schema version, event ID, ordered sequence, project/conversation/run IDs, timestamp, actor, and safe payload or artifact reference.
 
 Deliver events through authenticated Server-Sent Events; messages/decisions use HTTP commands. SSE is the initial transport because server-to-browser progress dominates. Reconnect uses an event cursor; expired history returns a current snapshot before streaming resumes. Deduplicate repeated deliveries by event ID.
+
+After Phase 6A, the API receives worker results and semantic events through NATS subscriptions and forwards authorized updates to SSE. Establish/buffer the live subscription before snapshot/replay, then deduplicate at the application cursor boundary to avoid a reconnect gap. An open SSE connection holds a bounded local buffer, not a database transaction or a per-second database poll. Slow or disconnected browsers do not delay worker acknowledgement; overflow forces snapshot/replay. A final answer is persisted before the API advertises its durable completion, even when a correlated reply supplies the live delivery.
 
 Token deltas can be transient; completed messages and workflow transitions are durable. Large logs use bounded streaming and persisted artifact chunks rather than unbounded event/database payloads. Slow clients cannot block execution.
 
@@ -530,6 +566,7 @@ Secure browser/API access with authenticated sessions, TLS remotely, origin/CSRF
 | Store | Authoritative responsibility |
 | --- | --- |
 | PostgreSQL | Users/projects, conversations, revisions, run projections, requests, checkpoints, operation journal, outbox, connector references, resource bindings. |
+| NATS JetStream | Durable internal command/event delivery, consumer acknowledgement state, bounded retention, and broker replay. PostgreSQL remains authoritative for application state and execution eligibility. |
 | Registry search index | Rebuildable lexical/vector index of authorized metadata; proposed pgvector in the same database. |
 | Artifact store | Immutable versions and controlled snapshots; local durable storage first, optional S3-compatible storage. |
 | Git | Reviewed requirements, workflow exports, desired infrastructure specifications, generated code, selected non-secret artifacts. |
@@ -559,7 +596,8 @@ Drift detection compares desired revisions against observations. Options are rep
 | Backend | Python, FastAPI, Pydantic | Fits the PoC and gives explicit request/state contracts; extensions remain out of process. |
 | Orchestration | LangGraph with PostgreSQL persistence | Extends current graphs; OpenShip still supplies scheduling, reconciliation, and isolation. |
 | Web UI | Vue 3, TypeScript, Vite | Builds on [existing mockups](../poc/mockup/README.md); reusable components render schema-driven workflows. |
-| Data / initial queue | PostgreSQL | One required state service simplifies hosting; contention/recovery need integration tests. |
+| Application state | PostgreSQL | Retains messages, runs, checkpoints, ownership/fences, operation records, and transactional outbox across the messaging migration. |
+| Internal messaging — accepted | NATS with JetStream | Subject routing, request/reply, durable consumers, broadcast, and replay in a compact portable server. Phase 6A qualifies delivery, recovery, concurrency, and operation. |
 | Discovery | pgvector, lexical search, local embeddings | Avoids a separate vector service; indexes remain disposable and access-filtered. |
 | Browser progress | SSE and HTTP commands | Reconnectable progress; add another transport if interactive sessions require it. |
 | Sandbox | OCI profiles with gVisor on compatible Linux workers | First isolation provider; validate tool behavior and provide VM workers when needed. |
@@ -568,6 +606,8 @@ Drift detection compares desired revisions against observations. Options are rep
 | Telemetry | Structured logs/metrics, optional OpenTelemetry export | Track failures, queue delay, usage, limits, and waits without requiring hosted tracing. |
 
 Keep one graph engine initially. Temporal, Redis, a separate vector service, Kubernetes, and an external marketplace are later choices justified by operational needs.
+
+**Messaging alternatives considered:** NATS JetStream was selected by the user for the event-stream/consumer model, returning responses to their source, and simple installation/maintenance. RabbitMQ offers stronger built-in queue failure policies and a management UI; OpenShip accepts the corresponding responsibility for JetStream failure inspection/replay and monitoring. PostgreSQL `LISTEN/NOTIFY` alone was not selected as the messaging backend. External broker adapters remain possible without changing the selected internal transport. See [the accepted idea](./ideas.md#nats-messaging-foundation).
 
 ## 16. Example: Conversation to Reusable Workflow
 
@@ -601,6 +641,8 @@ Do not expose the current subprocess executor as a production endpoint. Establis
 
 ## 18. Delivery Sequence and Validation
 
+**Current handoff (2026-10-25):** Phases 1–5 are complete. The [roadmap](./roadmap.md#phase-6--nats-messaging-and-controlled-execution) schedules NATS migration and concurrent chat/SSE delivery as Phase 6A, followed by the existing sandbox/artifact scope in 6B. The target sequence below is not a reopening of completed phase scope.
+
 1. **Secure harness slice:** Authenticated project chat, initial model adapters, PostgreSQL conversations/checkpoints, events, sandbox worker, bounded credential-free generated code, and a minimal registry with relevant tool/skill loading, semantic search, and configured MCP access. Verify localhost and remote deployment.
 2. **Workflow service:** Freeform builder with two-phase standardization flow, validated revisions, graph inspector, typed input/output, approval binding, durable waits, operation journal, cancellation, and restart recovery. Demonstrate the complete example with a narrowly scoped connector; these controls are prerequisites for enabling mutations.
 3. **Event-driven automation:** Event ingestion layer with webhook triggers, cloud monitoring alarm integration (CloudWatch, Stackdriver), message broker consumers, and chat platform bot integrations. Implement trigger routing, authentication, input mapping, and reliability patterns (idempotency, deduplication, reconciliation polling).
@@ -616,6 +658,7 @@ Before declaring the design implemented, demonstrate these acceptance checks:
 | Self-hosting | Browser operation locally/remotely; execution refusal without a compatible worker. |
 | Model portability | Same chat/tool/workflow scenario across initial adapters; malformed calls fail validation. |
 | Conversation | Direct answers, relevant tools/skills, workflow invocation, freeform creation in one workspace. |
+| NATS messaging | Concurrent conversations, correlated replies and independent API event delivery; publication/acknowledgement loss, broker/worker/API restart, poisoned messages, cancellation, and slow subscribers recover without losing committed results or repeating uncertain effects. |
 | Workflow standardization | Freeform input standardized to formal specification; user review and agreement before execution; cached JSON loaded for fast deterministic execution. |
 | Event-driven triggers | Webhook, cloud alarm, and message broker events correctly route to subscribed workflows with proper authentication, input mapping, and idempotent handling. |
 | Transparency | Resolved inputs/outputs, branches, artifacts, decisions, outcomes visible after reconnect. |
