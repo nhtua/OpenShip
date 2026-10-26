@@ -2,7 +2,7 @@
 type: roadmap
 summary: Cumulative delivery phases that establish shared foundations with one working use case before expanding capabilities and deployment scale.
 status: proposed
-date: 2026-10-21
+date: 2026-10-25
 ---
 
 # OpenShip Delivery Roadmap
@@ -11,7 +11,9 @@ Build OpenShip through **small, end-to-end milestones**, rather than finishing e
 
 This roadmap is based on the [OpenShip Harness Architecture](./architects.md) in PR #18, at architecture revision `9fe9f37`, and was reviewed after delivery of Phases 1–3.
 
-**Delivery baseline:** Phases **1, 2, and 3 are complete**, as confirmed by the user. Phase 3 is delivered on [PR #22](https://github.com/nhtua/OpenShip/pull/22). **Phase 4 is implemented** in [PR #27](https://github.com/nhtua/OpenShip/pull/27), with a UI follow-up in PR #28; see the [acceptance record](./testing/phase4-acceptance.md) for measured evidence, remaining qualification limits and separate user acceptance. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **Phases 5–21 remain proposed delivery work.** The two-role direction described in Phase 10B was agreed with the user on 2026-10-21; that design decision does not imply implementation or acceptance of the increment.
+**Delivery baseline (2026-10-25):** The user confirmed **Phases 1–5 complete**. Their phase descriptions and overview rows below are preserved as historical scope; earlier candidate/qualification records remain evidence for their recorded revisions. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **Phases 6–21 remain pending delivery work.** The two-role direction described in Phase 10B was agreed with the user on 2026-10-21; that design decision does not imply implementation or acceptance of the increment.
+
+**Accepted forward architecture change:** NATS with JetStream is the main internal message broker. [Architecture §5](./architects.md#nats-messaging-foundation) defines routing, request/reply, and durable delivery. Phase **6A** introduces that transport and concurrent chat/SSE delivery; **6B** retains the generated-code/artifact milestone. This change applies from Phase 6 onward and does not rewrite or reopen Phases 1–5. Broker selection is accepted; implementation details and phase acceptance still require their normal review.
 
 The [foundation review](./reviews/2026-10-14-roadmap-foundations-review.md) explains the dependency corrections and the responsibilities established by each remaining phase.
 
@@ -73,6 +75,7 @@ These are responsibility boundaries, not a requirement to implement future funct
 | Decision identity, eligible actor, digest binding, atomic consumption | 8: one durable input/approval request | Concrete mutation approval in 10, Terraform approval in 17, other clients in 19 |
 | External-event inbox, trigger identity, scoped initiator, admission deduplication | 13: one signed webhook and saved workflow | Schedules in 13B, alarm/broker adapters in 14, other sources in 19 |
 | Safe deployment and recovery | 2–3 baseline; extend whenever a store, worker, or privilege is added | Team and remote qualification in 20, Kubernetes packaging/scaling in 21 |
+| NATS internal commands/events, correlated responses, concurrent worker intake | 6A: migrate delivered chat/background dispatch and SSE delivery | Saved workflows/waits in 7–8, external admission in 13, source adapters in 14/19, operations/scaling in 20–21 |
 
 ## 2. Roadmap Overview
 
@@ -89,7 +92,7 @@ Keep the phase IDs stable for references. Phases 4 onward are dependency-ordered
 | 3 | The same workspace works across model providers — complete | 2 | S per adapter |
 | 4 | Trusted search and persistent conversation files — implemented | 3 | M per increment |
 | 5 | OpenShip inspects one real cloud environment safely | 4 | S–M |
-| 6 | Generated code produces controlled artifacts | 4 | S–M |
+| 6 | NATS carries concurrent chat/events, then generated code produces controlled artifacts | 5; 6B builds on 6A | M per increment |
 | 7 | A saved, typed workflow can be run repeatedly | 4, 6 | M per increment |
 | 8 | Workflows wait for input or approval across restarts | 7 | S–M |
 | 9 | Conversation becomes a reviewed, reusable workflow | 5, 7, 8 | M |
@@ -267,13 +270,42 @@ historical data migrations remain part of the application.
 
 **Important distinction:** Short-lived credentials reduce exposure; they do not automatically remove standing permissions or make issued cloud tokens universally revocable.
 
-#### Phase 6 — Generated Code and Controlled Artifacts
+#### Phase 6 — NATS Messaging and Controlled Execution
 
-**Milestone:** "OpenShip can write and run a small analysis program, then show me its outputs."
+**Milestones:** **6A:** "Several conversations progress through NATS without dispatch/event polling, and worker responses reach the correct client." **6B:** "OpenShip can write and run a small analysis program, then show me its outputs."
 
-**Build on:** Phase 4's artifact IDs/storage/transfer, gateway, and trusted runtime. Phase 6 owns the sandbox lifecycle: driver installation and qualification (including gVisor where selected), sandbox image build/reproducibility, worker protocol, execution limits, isolation tests and operational recovery. Extend the artifact contract with logical mutable files and immutable captured versions; do not introduce another artifact store or direct subprocess executor.
+**Build on:** The delivered Phases 1–5, preserving their HTTP commands, conversation history, pinned models/connectors, cancellation, ownership/fences, checkpoints, and event identities. The [accepted NATS direction](./ideas.md#nats-messaging-foundation) changes internal transport; it does not introduce a second runtime or permission path. Phase IDs 7–21 stay stable, and all later execution/event work builds on 6A.
 
-**Acceptance units:** Start with one credential-free Python program and a prebuilt dependency set; qualify additional runtimes or dependency profiles separately.
+**Acceptance units:** Qualify and accept **6A** before extending the runtime in **6B**. Each is a usable increment with its own evidence and user decision.
+
+##### 6A — NATS Foundation and Concurrent Chat
+
+**Build**
+
+- Package a pinned NATS server and async Python client with file-backed JetStream storage, scoped service credentials, private endpoints, health/readiness checks, and repeatable installation/upgrade/recovery instructions. Declare the initial availability and disk-durability profile; do not imply single-node high availability.
+- Define versioned command/event/correlation envelopes, subject ownership, registered handler routing, and separate execution-command and replayable-event retention. Start with the existing chat/tool turns plus a supported maintenance task, then reuse the contract for later workflows and sources.
+- Publish committed commands/events from the transactional outbox with broker confirmation and recoverable publication identity. Specify an event-driven relay and startup/reconnect catch-up; replace routine PostgreSQL job/event polling. Database ownership checks and bounded recovery/lease timers remain necessary.
+- Share durable execution consumers among compatible workers; give API processes independent event subscriptions. Route cancellation to its active owner/interested supervisors. Add bounded concurrent execution and separate chat/background capacity; isolate synchronous graph/SDK work from API and broker event loops.
+- Support correlated worker-to-source replies with bounded asynchronous waits and safe timeout/no-responder errors. Preserve the accepted-run HTTP contract and SSE reconnect/snapshots; ordinary NATS request/reply is one response, while progressive updates use subscriptions. Losing an inbox or timing out does not cancel or repeat a durable run.
+- Acknowledge only after a committed result, terminal disposition, or durable handoff/wait. Configure progress acknowledgements, eligible retries/backoff, an inspectable failure destination, retention/overflow limits, consumer cleanup, and controlled replay. Retain operation fencing and uncertain-dispatch recovery.
+- Migrate existing queued runs/outbox records and preserve old event cursors/history. Drain or reconcile active pre-migration work under a documented cutover; remove the superseded dispatch/SSE polling loops rather than leave two schedulers competing. Specify rollback eligibility and how new-format in-flight work is drained or blocked.
+
+**User demonstration:** Run several independent conversations and a maintenance task; observe correlated replies and SSE progress, disconnect/reopen a client, and restart a worker, API, and broker without losing a committed answer.
+
+**Exit gates**
+
+- Existing Phases 1–5 user journeys still work through the new transport; no fabricated completion, duplicated assistant answer, or implicit provider/tool retry follows a disconnect or request timeout.
+- Fifty concurrent synthetic conversations within configured execution limits remain responsive; ready work uses more than one execution slot, slow work cannot freeze unrelated API requests, and background backlog cannot consume all chat capacity. Record API/SSE latency, queue delay, provider limits, and resource usage against agreed targets; synthetic results are not live-provider capacity claims.
+- Repeated publication/delivery, lost publish confirmation, lost consumer acknowledgement, and worker failure before/after dispatch preserve one logical run and safe external-operation outcomes. Malformed/exhausted messages have an inspectable disposition instead of an endless retry loop or silent loss.
+- Two API instances with clients observing the same conversation both receive authorized progress. Snapshot/replay and live subscription meet without a gap; slow-client overflow recovers through snapshot/replay and never blocks worker acknowledgement.
+- Wrong-project messages/reply subjects, stale fences, expired credentials, and altered execution identities cannot grant authority. Secrets do not enter general event broadcasts or failure records.
+- Broker outage retains accepted work in the outbox or reports admission unavailable explicitly. Recovery, storage-full behavior, consumer cleanup, backup/restore, and upgrade/cutover/rollback follow the declared profile. No normal dispatch/SSE table-polling loop remains.
+
+**Not yet:** External triggers, new model capabilities, generated-code execution, or a guarantee of exactly-once model/cloud effects. This documentation decision does not itself implement 6A.
+
+##### 6B — Generated Code and Controlled Artifacts
+
+**Build on:** Accepted 6A messaging and Phase 4's artifact IDs/storage/transfer, gateway, and trusted runtime. This increment owns sandbox driver installation and qualification (including gVisor where selected), image build/reproducibility, the authenticated execution protocol, limits, isolation tests, and cleanup. NATS carries trusted control messages; sandboxes receive neither application database access nor general broker credentials. Extend logical mutable files and immutable captured versions through the existing artifact contract.
 
 **Build**
 
@@ -282,6 +314,8 @@ historical data migrations remain part of the application.
 - Credential-free, network-denied execution by default.
 - Immutable output artifacts, metadata, authorized downloads, and safe previews.
 - First supported runtime, followed by others as separate increments.
+
+Start with one credential-free Python program and a prebuilt dependency set; qualify additional runtimes or dependency profiles separately.
 
 **User demonstration:** Upload deployment logs and ask for a generated parser that produces a summary and report.
 
@@ -302,7 +336,7 @@ historical data migrations remain part of the application.
 
 **Milestone:** "I can run the same saved process with different inputs and inspect each step."
 
-**Build on:** The existing LangGraph engine, run/queue/checkpoint/outbox/event contracts, Phase 4 gateway, and Phase 6 artifact/code operations. Saved workflows are another graph within this runtime, not another scheduler or execution service.
+**Build on:** The existing LangGraph engine, Phase 6A NATS command/event/response contracts with PostgreSQL ownership/checkpoints/outbox, Phase 4 gateway, and Phase 6B artifact/code operations. Saved workflows are another graph within this runtime, not another scheduler or execution service.
 
 **Acceptance units:** **7A** runs one hand-authored, sequential, credential-free log-analysis workflow using the qualified Phase 6 parser, typed inputs, persisted step results, and a simple timeline. **7B** adds reusable forms, inspector detail, and the compatibility-aware compilation cache using that same revision format. A cache is an optimization, never the only source of an executable definition.
 
@@ -334,7 +368,7 @@ historical data migrations remain part of the application.
 
 **Milestone:** "A workflow can wait for me overnight, survive a restart, and resume only the correct request."
 
-**Build on:** Phase 7's versioned node factories, step identities, and runtime. Add input/approval node types and persisted waiting states through explicit migrations; retain existing run status/event meanings, including completed chat runs.
+**Build on:** Phase 7's versioned node factories, step identities, and runtime on 6A messaging. Persist waiting states and release the broker delivery/execution slot; an authorized input/approval command resumes the exact recorded wait. Retain existing run status/event meanings, including completed chat runs; a reply inbox or unacknowledged message is not the storage for an overnight approval.
 
 **Acceptance units:** **8A** pauses for a typed input and resumes through one validated command. **8B** adds digest-bound approval/rejection using the same request identity, eligibility, and atomic consumption mechanism. The first eligible actor can be the project owner; team roles expand this policy in Phase 20.
 
@@ -527,7 +561,7 @@ historical data migrations remain part of the application.
 
 **Milestone:** "A webhook or schedule starts a workflow without an open browser."
 
-**Build on:** Existing authorized workflow-start commands, the run queue/outbox, and Phase 8 waiting decisions. Introduce one external-event inbox for all later sources; it records admission, while the existing runtime records execution. SSE remains a projection of run state, not an ingestion queue.
+**Build on:** Existing authorized workflow-start commands, Phase 6A NATS transport/outbox, and Phase 8 waiting decisions. Introduce one external-event inbox for all later sources; persist authenticated admission before publishing execution commands. The inbox records admission while the existing runtime records execution. SSE remains a projection of run state, not an ingestion queue.
 
 **Acceptance units:** **13A** starts one saved, credential-free/read-only report workflow from a signed webhook. **13B** adds one durable schedule using the same admission path. Freeform authoring in Phase 9 is optional for these hand-authored revisions. Enabling a mutating trigger additionally requires Phase 10 and its normal approval/authority checks.
 
@@ -559,12 +593,12 @@ historical data migrations remain part of the application.
 
 **Milestone:** "A real alert initiates an investigation and delivers an evidence-based report."
 
-**Build on:** Phase 13's envelope, inbox, trigger binding, and admission policy, and Phase 5 cloud reads. Source adapters authenticate and normalize events; they do not create another workflow queue or scheduler.
+**Build on:** Phase 13's envelope, inbox, trigger binding, and admission policy, Phase 6A NATS command/event delivery, and Phase 5 cloud reads. Source adapters authenticate and normalize events; they do not create another workflow queue or scheduler. This phase qualifies external broker sources, not the internal NATS broker already established in 6A.
 
 **Build**
 
 - One cloud-monitoring adapter.
-- One broker adapter, selected from actual user infrastructure.
+- One external broker adapter, selected from actual user infrastructure, forwarding authorized admissions into the internal NATS path. Its source may be RabbitMQ, Kafka, a cloud queue, or another qualified transport without replacing NATS.
 - Source-specific authentication and envelope validation.
 - Durable acknowledgement/cursor handling, backpressure, retry/dead-letter behavior, and reconciliation.
 - Report artifacts and run links visible in the browser. If outbound notification is included, start with one explicitly authorized destination and a recorded delivery operation; Phase 19 reuses this contract for additional channels.
@@ -710,7 +744,7 @@ Split into independently accepted increments:
 
 **Milestone:** "The same workflows can be invoked through the channels my team uses."
 
-**Build on:** Phase 13's inbox/admission contract, Phase 8 decision commands, and the current identity/gateway/event APIs. Reuse Phase 14's delivery records if outbound notifications are enabled. A bot or watcher is a client/source adapter, never a second agent runtime.
+**Build on:** Phase 13's inbox/admission contract, Phase 8 decision commands, Phase 6A NATS routing/correlated responses, and the current identity/gateway/event APIs. Reuse Phase 14's delivery records if outbound notifications are enabled. A bot or watcher is a client/source adapter, never a second agent runtime. Retain authenticated source/channel/recipient correlation so progress and results return to the intended source or authorized browser; a missing live reply subject falls back to durable status, not duplicate execution.
 
 **Start small:** One channel supports start/status for one read-only workflow; add approvals and notifications only after identity/recipient checks pass. Team use requires Phase 20A membership/role qualification. Resource-state sources additionally require the relevant Phase 5/18 observations; broker-backed sources require their Phase 14 transport qualification.
 
@@ -755,7 +789,7 @@ Deliver in separate qualification gates:
 
 - Membership and viewer/operator/approver/admin roles extending the existing authorization context, with permission-change/revocation checks at every boundary.
 - Qualification of authenticated workers, TLS, private endpoints, and remote deployment runbooks.
-- Coordinated database/artifact/configuration/key recovery.
+- Coordinated PostgreSQL/JetStream/artifact/configuration/key recovery, including consumer positions, retained commands, and outbox reconciliation.
 - Restore reconciliation mode and upgrade procedures.
 - Audit export, quotas, retention, dashboards, and operational alerts.
 
@@ -769,6 +803,7 @@ Deliver in separate qualification gates:
 - Upgrade preserves or explicitly blocks incompatible resumptions.
 - Expired grants, abandoned sandboxes, and retained artifacts follow documented policies.
 - Recovery duration and data loss are measured against agreed deployment targets.
+- Qualify the selected broker availability profile, disk/retention limits, service permissions, failure inspection, and worker drain. An old inbox or replayed command cannot repeat a previously dispatched mutation after restore; broker transport health and run outcome are measured separately.
 - An owner-only deployment upgrades without reassigning existing projects, approvals, runs, or connector authority. Role/membership revocation blocks subsequent privileged dispatch and decisions.
 - API, runtime worker, and sandbox worker version mismatches fail safely or use a declared compatible protocol; upgrades do not reinterpret in-flight workflow or execution-request versions.
 
@@ -780,17 +815,17 @@ Deliver in separate qualification gates:
 
 **Milestone:** "The same qualified product installs through Helm and remains correct through pod replacement and scaling."
 
-**Build on:** The Phase 20 qualified distribution, existing worker protocols/fencing, storage interfaces, configuration, and operation locks. Kubernetes packages and scales the same processes; it does not introduce another workflow service, queue, or privileged execution path.
+**Build on:** The Phase 20 qualified distribution, Phase 6A NATS subjects/consumers and PostgreSQL ownership/outbox, existing worker protocols/fencing, storage interfaces, configuration, and operation locks. Kubernetes packages and scales the same processes; it does not introduce another workflow service, broker, or privileged execution path.
 
 Split into:
 
-- **21A:** One supported cluster/runtime combination with a minimal replica count and explicitly durable database/artifact storage; demonstrate restart/replacement before scaling.
+- **21A:** One supported cluster/runtime combination with a minimal replica count and explicitly durable PostgreSQL/JetStream/artifact storage; demonstrate restart/replacement before scaling. Declare whether NATS is managed externally or deployed with persistent volumes; qualify stream replication/quorum against the advertised failure tolerance.
 - **21B:** Multi-worker scaling, rolling upgrade, and failure qualification. Before placing replicas on different nodes, qualify a shared artifact backend and the deployment's database connection/concurrency limits.
 
 **Build**
 
 - Helm packaging, probes, resource requests/limits, and controlled upgrades.
-- External or appropriately managed PostgreSQL and artifact storage.
+- External or appropriately managed PostgreSQL, NATS JetStream, and artifact storage, with pinned server/client versions and explicit stream/consumer configuration.
 - Restricted service accounts and enforced network policies.
 - Compatible sandbox `RuntimeClass`/worker-node configuration.
 - Graceful draining, disruption behavior, and capacity testing.
@@ -801,6 +836,7 @@ Split into:
 
 - The full reference workflow works after pod replacement and rolling upgrade.
 - Additional workers do not violate run ownership or mutation serialization.
+- API replicas receive independent events, worker replicas share execution deliveries, and rolling broker/worker upgrades preserve consumer recovery and fences. Broker replicas use separate persistent storage and the declared failure domains.
 - Network and sandbox isolation tests run against the real cluster configuration.
 - Application pods and generated-code sandboxes remain unprivileged; runtime administration is confined to the designated worker infrastructure.
 - Missing isolation support blocks executable capabilities.
@@ -847,6 +883,6 @@ These distinctions should remain explicit throughout implementation:
 - **A predefined maintenance role is configured once; per-action approval unlocks its temporary use, not new IAM permissions or unrestricted conversation-wide authority.**
 - **An agent workload identity does not replace the human initiator/approver in the audit trail.**
 
-Stronger isolation providers, additional brokers, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
+NATS with JetStream is the selected internal messaging foundation from Phase 6A. Stronger isolation providers, additional external broker adapters, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
 
-**Next commitment:** Review the proposed Phase 5 managed-Connector/S3 specification against the delivered Phase 4 contracts, settle its first credential-source qualification, then review the implementation plan before authorizing product changes. The user has requested Phase 5 design/planning, not implementation. Preserve Phase 4's recorded acceptance/qualification limits and Phase 6's sandbox/mutable-file boundary. The agreed Phase 10B two-role direction does not authorize escalation work in Phase 5.
+**Next commitment:** Review the Phase 6A implementation design for NATS routing, correlated responses, concurrent execution, outbox publication, migration, and operations, then prepare its implementation plan for approval. The user has selected NATS and authorized this architecture documentation change; product implementation remains a separate step. Preserve completed Phases 1–5, the sandbox/mutable-file scope in 6B, and the Phase 10B maintenance-authority boundary.

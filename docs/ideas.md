@@ -2,7 +2,7 @@
 type: story
 summary: Collected ideas, features, and design principles for OpenShip as a co-pilot for DevOps and platform engineers.
 status: in-progress
-date: 2026-09-20
+date: 2026-10-25
 ---
 
 # OpenShip — Ideas
@@ -11,7 +11,7 @@ Recorded ideas, features, and improvements for OpenShip.
 
 ## Status and Current Direction
 
-The [architecture](./architects.md) and [roadmap](./roadmap.md) define the current development direction: a browser client, API server, and durable runtime worker. Phases 1–3 are delivered; later capabilities remain proposals. The CLI and UI experiments live under [`poc/`](../poc/README.md).
+The [architecture](./architects.md) and [roadmap](./roadmap.md) define the current development direction: a browser client, API server, and durable runtime worker. The user confirmed Phases 1–5 complete on 2026-10-25. NATS with JetStream is the accepted messaging direction for Phase 6 onward; its implementation and later capabilities remain pending. The CLI and UI experiments live under [`poc/`](../poc/README.md).
 
 This collection preserves historical intent. Unless explicitly recorded as an accepted decision, an idea is a **Proposal**, not an implementation commitment or a claim of availability. **Stale** annotations identify superseded claims; the remaining parts of a section may still be useful proposals. Follow each annotation's architecture reference for the replacement.
 
@@ -660,7 +660,30 @@ Workflows execute with durable state persistence, supporting pauses of any durat
 
 ---
 
+## NATS Messaging Foundation
+
+**Status: Accepted architectural direction — 2026-10-25. Implementation pending.**
+
+Use **NATS as OpenShip's main internal message broker**, with **JetStream for durable commands and events**. The user selected NATS after comparing it with RabbitMQ. Its subject routing, publish/subscribe, request/reply, and compact, portable server fit a self-hosted installation serving a small team of fewer than 50 users. This decision starts in [Phase 6A](./roadmap.md#phase-6--nats-messaging-and-controlled-execution); completed Phases 1–5 retain their recorded scope.
+
+**Intent and behavior:**
+
+- Replace routine PostgreSQL polling for worker dispatch and browser event delivery with broker subscriptions. PostgreSQL retains authoritative conversations, run state, checkpoints, operation records, and the transactional outbox.
+- Route chat turns, workflow execution, and other background tasks to registered handlers. Workers share a command consumer to divide work; independent event consumers support API instances, notifications, and future integrations.
+- Let workers return correlated responses to the requesting component through NATS. The API can await a response asynchronously and forward it through authenticated SSE, while durable run events and snapshots recover progress after disconnects or restarts. Ordinary request/reply returns one response; progressive chat output uses a response/event subscription.
+- Support several active conversations with bounded concurrent execution and separate capacity for background work. Blocking libraries run outside API and broker event loops; one active run retains one fenced writer.
+- Persist accepted work, confirm publication, acknowledge only after a durable outcome or handoff, and retry eligible failures with bounded backoff. Preserve failed messages for inspection and controlled replay. NATS supplies delivery/error signals; OpenShip owns failure classification, dead-letter handling, and safe retries after uncertain external operations.
+- Reuse this foundation for the external-event inbox in Phase 13, source adapters in Phase 14, and additional channels in Phase 19. External RabbitMQ/Kafka/cloud sources may still be integrated through adapters; they do not become competing internal brokers.
+
+**Decision and trade-offs:** NATS JetStream was selected for its shared stream/consumer model and small deployment. RabbitMQ's queue policies and management UI were attractive, but JetStream better matched the intended event foundation and request/reply communication. OpenShip must provide the failed-message workflow and operational dashboards it needs. PostgreSQL `LISTEN/NOTIFY` alone was not selected as the messaging backend. Core NATS request/reply alone does not provide durable job delivery, and broker redelivery does not guarantee exactly-once model or cloud effects.
+
+See [architecture §5](./architects.md#nats-messaging-foundation) for routing and response semantics, [§10](./architects.md#10-durable-runtime-and-recovery) for consistency/recovery, and the related [event-trigger idea](#event-driven-workflow-triggers). Research: [NATS request/reply](https://docs.nats.io/concepts/request-reply), [JetStream](https://docs.nats.io/concepts/jetstream), and [server/client packaging](https://docs.nats.io/concepts/ecosystem).
+
+---
+
 ## Event-Driven Workflow Triggers
+
+**Relationship to the accepted messaging direction:** Source adapters feed the authorized inbox/admission path and reuse [NATS messaging](#nats-messaging-foundation). The source-specific capabilities below remain proposals until their roadmap phases are accepted.
 
 OpenShip supports event-driven execution where workflows are automatically triggered by various event sources, enabling reactive automation that responds to real-world signals without manual initiation.
 
