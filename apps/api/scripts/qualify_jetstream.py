@@ -164,10 +164,16 @@ authorization {{
             f"{config_file}:/etc/nats/nats.conf:ro{volume_suffix}",
             "--volume",
             f"{store_dir}:/data{volume_suffix}",
+        ]
+        if Path(runtime).name != "podman":
+            command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        command.extend(
+            [
             image,
             "-c",
             "/etc/nats/nats.conf",
-        ]
+            ]
+        )
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
         url = f"nats://127.0.0.1:{port}"
         environment = os.environ.copy()
