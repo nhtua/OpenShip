@@ -77,7 +77,7 @@ reflects the update without a service restart.
 ## Remaining qualification gaps
 
 - The complete non-service API selector was attempted with
-  `uv run pytest tests/ -q -m 'not postgres and not provider_live and not full_stack'`
+  `uv run pytest tests/ -q -m 'not postgres and not provider_live and not full_stack and not jetstream'`
   but did not reach a completion summary. It stopped making progress at the
   existing HTTP binding test
   `test_binding_http_accepts_uuid_strings_and_persists_selected_target`, whose

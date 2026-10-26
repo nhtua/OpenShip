@@ -19,7 +19,8 @@ repos:
 
       # The API's own validation, gated on the API changing so a frontend
       # commit never pays for it. The unit lane is the whole suite minus the
-      # lanes that need a service, a synthetic full stack, or a live provider —
+      # lanes that need PostgreSQL, a synthetic full stack, a live provider,
+      # or the real JetStream broker —
       # the same network-free lane CI runs.
       - id: api-ruff
         name: API Ruff Lint
@@ -31,7 +32,7 @@ repos:
 
       - id: api-tests
         name: API Unit Tests
-        entry: bash -c "cd apps/api && uv run pytest -q -m 'not postgres and not provider_live and not full_stack'"
+        entry: bash -c "cd apps/api && uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'"
         language: system
         types: [python]
         pass_filenames: false

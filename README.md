@@ -106,7 +106,7 @@ Frontend available at [http://localhost:5173](http://localhost:5173) (proxies AP
 
 ```bash
 # Backend
-cd apps/api && uv run pytest tests/ -v -m "not postgres and not provider_live and not full_stack"
+cd apps/api && uv run pytest tests/ -v -m "not postgres and not provider_live and not full_stack and not jetstream"
 
 # Frontend
 cd apps/web && pnpm exec vitest run

@@ -1,17 +1,17 @@
 ---
 type: plan
-summary: Draft implementation sequence for the Phase 6A transport migration, deployment scripts, compatibility qualification and drained cutover.
-status: proposed
+summary: Implementation sequence for the Phase 6A transport migration, deployment scripts, compatibility qualification and drained cutover.
+status: in_progress
 date: 2026-10-25
 ---
 
 # Phase 6A NATS messaging implementation plan
 
-> **For agentic workers:** After design/plan approval, use
+> **For agentic workers:** The user approved implementation on 2026-10-26.
+> Follow the tasks in order, using
 > `superpowers:subagent-driven-development` or `superpowers:executing-plans`
 > task by task. Use failing behavior tests, focused implementation, passing
-> verification and review before each atomic commit. This document proposes
-> implementation; it does not start it.
+> verification and review before each atomic commit.
 
 **Goal:** Deliver existing OpenShip work through JetStream while retaining
 Phase 1–5 behavior and providing reproducible local/dev/prod deployment.
@@ -46,8 +46,9 @@ and [runbook proposal](../../operations/messaging.md).
   and installation IDs, Connector keys/defaults and legacy history intact.
 - Production is single-host Compose with a single persistent broker and no
   high-availability promise. Existing root Compose remains the dev entry point.
-- No runtime implementation until the user reviews this proposal. Finish
-  tooling and restore/cutover rehearsal before changing a real installation.
+- The user approved runtime implementation and selected a drained maintenance
+  cutover. Finish tooling and restore/cutover rehearsal before changing a real
+  installation; this approval does not authorize a production cutover.
 
 ## Review focus
 
@@ -85,21 +86,26 @@ Choose Alembic revision IDs from the actual head when implementing.
 **Depends on:** approved design. **Deliverable:** tested server/client/CLI
 versions and configuration capabilities, without activating transport.
 
-- [ ] Add `tests/integration/test_messaging_topology.py` cases against a
+- [x] Add `tests/integration/test_messaging_topology.py` cases against a
   disposable authenticated broker: file storage, progress ACK, confirmed ACK,
   delayed NAK, consumer filters, ACL-restricted creation and `sync_interval`.
-- [ ] Record exact NATS server image tag/digest, Python distribution/version,
-  CLI/tool image tag/digest and supported Docker Compose version in
-  `deploy/versions.env`. Verify APIs against those release sources, including
-  Python 3.11/3.12/3.13 compatibility. Lock the dependency in `uv.lock`.
-- [ ] Add a `jetstream` pytest marker. Tests requiring a real broker fail in
+- [x] Record exact NATS server image tag/digest, Python distribution/version,
+  NATS CLI release/checksums and supported Docker Compose minimum in
+  `deploy/versions.env`. Verify the APIs against those release sources and
+  lock the dependency in `uv.lock`.
+- [x] Add a `jetstream` pytest marker. Tests requiring a real broker fail in
   their required CI lane if the service is unavailable; no blanket skip.
   Exclude that marker from offline unit/pre-commit selections. Define
   `TEST_NATS_URL` / `TEST_NATS_AUTH_FILE` alongside `TEST_POSTGRES_URL` for the
   integration harness; generate disposable credentials and isolated
   per-test stream/consumer namespaces rather than using application secrets.
-- [ ] Verify with `uv run pytest tests/integration/test_messaging_topology.py -q -m jetstream`
-  from `apps/api` against the declared pins; capture settings/ACL evidence.
+- [x] Verify the declared server/client pins locally using
+  `uv run python scripts/qualify_jetstream.py` from `apps/api`; the real
+  authenticated broker executed 4 tests with no skips on Python 3.13,
+  including ACK timing, delayed NAK, file storage, deduplication, filter and
+  permissions checks.
+- [ ] Confirm the required Python 3.11/3.12/3.13 CI matrix passes before
+  completing the qualification task.
 - [ ] Review and commit the isolated topology/client contract.
 
 ## Task 1 — Make all admissions and events durably publishable
@@ -262,6 +268,10 @@ the map, READMEs/runbooks and `tests/test_messaging_packaging.py`.
 - [ ] Add native localhost instructions, examples for both env files and
   production config, startup/dependency order, broker outage/full-disk
   behavior, non-destructive stop, upgrades, backup, restore and rollback.
+- [ ] Preserve the user's existing native hot-reload workflow: Vite with
+  `pnpm run dev --host 0.0.0.0`, the API with Uvicorn `--reload`, and the
+  worker (plus relay) with Watchdog `watchmedo auto-restart`; verify the dev
+  Compose override watches mounted source and restarts the matching services.
 - [ ] Verify `docker compose config --quiet` for dev/default, dev/override
   and standalone prod, then build and cold-start each declared arrangement.
   Test image probes, actual hot reload, worker/relay restart and existing

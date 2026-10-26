@@ -80,7 +80,28 @@ long-running application services. Only API/worker receive existing Connector
 keyrings; the relay and broker do not need them. Never log effective Compose
 config or credential file contents into public CI artifacts.
 
-## Developer machine startup (proposed)
+## Qualified transport versions
+
+The server image and Python client are pinned in `deploy/versions.env` and
+`apps/api/uv.lock`. The selected client is `nats-py` 2.15.0; the required
+qualification lane runs it against Python 3.11, 3.12 and 3.13. The official
+NATS CLI pin and platform checksums are recorded there for operator tooling.
+The declared Docker Compose floor is 2.24.0; production and dev files are
+qualified against that interface before the stack is released.
+
+Run the authenticated real-broker transport checks from `apps/api`:
+
+```bash
+uv run python scripts/qualify_jetstream.py
+```
+
+The launcher uses the pinned server image, generates disposable credentials in
+a private temporary directory, requires all JetStream tests to execute without
+skips, and removes the broker and credentials when it exits. JetStream
+provides at-least-once delivery, so application ownership fences and duplicate
+handling remain required; see the [NATS JetStream contract](https://docs.nats.io/concepts/jetstream).
+
+## Developer machine startup
 
 Prerequisites remain Python/uv, supported Node/pnpm and PostgreSQL; add the
 qualified NATS server or Docker Compose for the broker dependency. Pin versions
@@ -96,6 +117,29 @@ scripts/openship-stack --environment local init-messaging
 scripts/openship-stack --environment local up-dependencies --only nats
 scripts/openship-stack --environment local bootstrap --apply
 ```
+
+For source development, keep the current native hot-reload workflow. Run each
+process from its existing package directory; the API terminals use the API's
+installed development dependencies, including `watchmedo`:
+
+```bash
+# apps/web
+pnpm run dev --host 0.0.0.0
+
+# apps/api — worker
+uv run watchmedo auto-restart --patterns="*.py" --recursive -- \\
+  python -m src.openship.runs.worker --log-level DEBUG
+
+# apps/api — API
+uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 \\
+  --port 8000 --log-level debug
+```
+
+The messaging migration adds one fourth native process, the outbox relay.
+The dev setup must watch and restart it on Python source changes too. These
+commands are for source development; use the ordinary process commands below
+when reload is not needed. Bind the broker and PostgreSQL to loopback when
+they run natively.
 
 Continue to use the existing API dotenv file, database migrations and artifact
 initialization for a fresh installation. For an existing installation use the
@@ -113,7 +157,7 @@ Connector setup, tool enablement and local artifact configuration unchanged.
 Run `doctor` after all processes start. It checks role connectivity and known
 resources without making a live provider/search/AWS request.
 
-## Development Compose startup (proposed)
+## Development Compose startup
 
 Preserve `docker compose up --build` as the root quick-start command after
 first-time setup. The root file adds persistent NATS, messaging bootstrap and
@@ -127,7 +171,11 @@ scripts/openship-stack --environment dev doctor
 ```
 
 The wrapper's default `dev start` selects the root file; `--reload` selects the
-additional override. API and worker share the same model configuration and
+additional override. The override must mount source read-only, keep dependency
+and virtualenv paths in container volumes, run the API with Uvicorn reload,
+and run worker and relay through `watchmedo auto-restart` patterns that include
+Python source. The web service runs Vite with `--host 0.0.0.0`. API and worker
+share the same model configuration and
 artifact identity as today; NATS/relay must not introduce a second copy of
 provider or Connector configuration. Existing storage initialization remains
 explicit and runs only for a genuinely new empty artifact store.

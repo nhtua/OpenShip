@@ -1,7 +1,7 @@
 ---
 type: spec
-summary: Proposed JetStream delivery migration preserving Phase 1–5 contracts, with a notification-driven outbox, fenced execution and three deployment modes.
-status: proposed
+summary: JetStream delivery migration preserving Phase 1–5 contracts, with a notification-driven outbox, fenced execution and three deployment modes.
+status: in_progress
 date: 2026-10-25
 ---
 
@@ -18,8 +18,9 @@ operations, Connector data and artifact metadata.
 The user confirmed on 2026-10-25 that the roadmap numbering remains **6A for
 messaging** and **6B for generated code**, and selected a **drained cutover in
 a brief maintenance window**. Broker selection was already accepted in the
-[architecture](../../architects.md). The detailed design here is proposed;
-the accompanying plan is a reviewable draft, not authorization to implement.
+[architecture](../../architects.md). The detailed design and accompanying
+plan were approved for implementation on 2026-10-26. Production cutover remains
+separately gated on completed qualification and operator readiness.
 
 This is one migration capability, delivered through four dependent boundaries:
 `durable-publication` → `fenced-delivery` → `live-events`; `deployment` packages
