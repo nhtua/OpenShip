@@ -7,19 +7,25 @@ from dataclasses import asdict, dataclass
 
 from nats.aio.client import Client
 from nats.js.api import (
+    AckPolicy,
+    ConsumerConfig,
+    DeliverPolicy,
     DiscardPolicy,
+    ReplayPolicy,
     RetentionPolicy,
     StorageType,
     StreamConfig,
 )
 from nats.js.errors import NotFoundError
 
+from ..config import settings
 from ..database.session import SessionLocal
 from .connection import connect_nats
 from .models import MessageTransportState
 
 _MIB = 1024 * 1024
 _MAX_MESSAGE_BYTES = 16 * 1024
+EXECUTION_CONSUMERS = (("OS_RUNS", "run-v1"), ("OS_MAINTENANCE", "maintenance-v1"))
 
 
 @dataclass(frozen=True)
@@ -30,24 +36,121 @@ class StreamResult:
 
 
 @dataclass(frozen=True)
+class ConsumerResult:
+    stream: str
+    name: str
+    status: str
+    differences: tuple[str, ...] = ()
+    paused: bool | None = None
+    pause_until: str | None = None
+
+
+@dataclass(frozen=True)
 class TopologyReport:
     installation_id: str
     streams: tuple[StreamResult, ...]
+    consumers: tuple[ConsumerResult, ...]
 
     @property
     def ready(self) -> bool:
-        return all(item.status == "ready" for item in self.streams)
+        return {(item.stream, item.name) for item in self.consumers} == set(
+            EXECUTION_CONSUMERS
+        ) and all(item.status == "ready" for item in (*self.streams, *self.consumers))
 
     def as_dict(self) -> dict:
         return {
             "installation_id": self.installation_id,
             "ready": self.ready,
             "streams": [asdict(item) for item in self.streams],
+            "consumers": [asdict(item) for item in self.consumers],
         }
 
 
 class TopologyCompatibilityError(RuntimeError):
-    """A runtime must not publish through missing or drifted streams."""
+    """A runtime must not use missing or drifted broker resources."""
+
+
+def consumer_configs(
+    installation_id: uuid.UUID,
+) -> tuple[tuple[str, ConsumerConfig], ...]:
+    """Shared pull durables; aggregate capacity changes require operator review."""
+    namespace = f"openship.{installation_id.hex}.v1.command"
+    specifications = (
+        ("run.execute", settings.messaging_run_max_ack_pending),
+        ("maintenance.retention", settings.messaging_maintenance_max_ack_pending),
+    )
+    return tuple(
+        (
+            stream,
+            ConsumerConfig(
+                name=name,
+                durable_name=name,
+                filter_subject=f"{namespace}.{suffix}",
+                ack_policy=AckPolicy.EXPLICIT,
+                deliver_policy=DeliverPolicy.ALL,
+                replay_policy=ReplayPolicy.INSTANT,
+                ack_wait=30.0,
+                max_deliver=10,
+                max_ack_pending=capacity,
+                max_waiting=capacity,
+                num_replicas=1,
+                mem_storage=False,
+                inactive_threshold=0.0,
+            ),
+        )
+        for (stream, name), (suffix, capacity) in zip(
+            EXECUTION_CONSUMERS, specifications, strict=True
+        )
+    )
+
+
+def _compare_consumer(
+    expected: ConsumerConfig, actual: ConsumerConfig
+) -> tuple[str, ...]:
+    differences = []
+    # PauseUntil is dynamic operator state and must never become bootstrap drift.
+    for field in (
+        "name",
+        "durable_name",
+        "filter_subject",
+        "filter_subjects",
+        "ack_policy",
+        "deliver_policy",
+        "replay_policy",
+        "ack_wait",
+        "max_deliver",
+        "max_ack_pending",
+        "max_waiting",
+        "backoff",
+        "inactive_threshold",
+        "num_replicas",
+        "mem_storage",
+        "deliver_subject",
+        "deliver_group",
+        "opt_start_seq",
+        "opt_start_time",
+        "headers_only",
+        "rate_limit_bps",
+        "flow_control",
+        "idle_heartbeat",
+    ):
+        wanted, found = getattr(expected, field), getattr(actual, field)
+        if field in {"backoff", "filter_subjects"}:
+            equal = (wanted or []) == (found or [])
+        elif field in {
+            "inactive_threshold",
+            "mem_storage",
+            "headers_only",
+            "rate_limit_bps",
+            "flow_control",
+            "idle_heartbeat",
+        }:
+            equal = (wanted or 0) == (found or 0)
+        else:
+            equal = wanted == found
+        if not equal:
+            differences.append(field)
+    return tuple(differences)
 
 
 def stream_configs(installation_id: uuid.UUID) -> tuple[StreamConfig, ...]:
@@ -166,15 +269,16 @@ async def ensure_topology(
     js=None,
     installation_id: uuid.UUID | None = None,
 ) -> TopologyReport:
-    """Check streams, or create missing ones without rewriting existing config."""
+    """Check resources or create missing ones, never rewriting existing config."""
     own_connection: Client | None = None
     if js is None:
         own_connection = await connect_nats(
             name="openship-messaging-bootstrap",
             allow_reconnect=False,
         )
-        js = own_connection.jetstream(timeout=5)
     try:
+        if own_connection is not None:
+            js = own_connection.jetstream(timeout=5)
         selected_installation_id = installation_id or _installation_id()
         results: list[StreamResult] = []
         for expected in stream_configs(selected_installation_id):
@@ -194,7 +298,32 @@ async def ensure_topology(
                     differences,
                 )
             )
-        report = TopologyReport(str(selected_installation_id), tuple(results))
+        consumers = []
+        stream_status = {item.name: item.status for item in results}
+        for stream, expected in consumer_configs(selected_installation_id):
+            name = expected.durable_name
+            try:
+                info = await js.consumer_info(stream, name)
+            except NotFoundError:
+                if not apply or stream_status[stream] != "ready":
+                    consumers.append(ConsumerResult(stream, name, "missing"))
+                    continue
+                await js.add_consumer(stream, config=expected)
+                info = await js.consumer_info(stream, name)
+            differences = _compare_consumer(expected, info.config)
+            consumers.append(
+                ConsumerResult(
+                    stream,
+                    name,
+                    "drift" if differences else "ready",
+                    differences,
+                    info.paused,
+                    info.config.pause_until,
+                )
+            )
+        report = TopologyReport(
+            str(selected_installation_id), tuple(results), tuple(consumers)
+        )
         return report
     finally:
         if own_connection is not None:

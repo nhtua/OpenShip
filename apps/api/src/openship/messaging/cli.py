@@ -71,18 +71,22 @@ async def _dispatch(command: str, *, apply: bool = False) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="openship-messaging",
-        description="Check or initialize OpenShip's JetStream streams.",
+        description="Check or initialize OpenShip's JetStream streams and consumers.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    bootstrap = commands.add_parser("bootstrap", help="check or create missing streams")
+    bootstrap = commands.add_parser(
+        "bootstrap", help="check or create missing resources"
+    )
     mode = bootstrap.add_mutually_exclusive_group(required=True)
     mode.add_argument(
-        "--check", action="store_true", help="report missing or drifted streams"
+        "--check", action="store_true", help="report missing or drifted resources"
     )
     mode.add_argument(
-        "--apply", action="store_true", help="create only missing streams"
+        "--apply", action="store_true", help="create only missing resources"
     )
-    commands.add_parser("doctor", help="check database state and stream compatibility")
+    commands.add_parser(
+        "doctor", help="check database state and resource compatibility"
+    )
     return parser
 
 

@@ -6,6 +6,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 import nats
@@ -287,3 +288,217 @@ async def test_bootstrap_apply_reports_drift_without_rewriting_stream(broker):
                 await nc.jetstream().delete_stream(config.name)
             except NotFoundError:
                 pass
+
+
+@pytest_asyncio.fixture
+async def execution_topology(broker):
+    """Disposable exact resources; no production gate or runtime is activated."""
+    from src.openship.messaging.topology import stream_configs
+
+    _, js, *_ = broker
+    installation_id = uuid.uuid4()
+    try:
+        assert (
+            await ensure_topology(apply=True, js=js, installation_id=installation_id)
+        ).ready
+        yield js, installation_id
+    finally:
+        for config in stream_configs(installation_id):
+            try:
+                await js.delete_stream(config.name)
+            except NotFoundError:
+                pass
+
+
+async def test_shared_durables_reapply_preserves_pending_ack_progress_and_pause(
+    execution_topology,
+):
+    from src.openship.messaging.gates import pause_execution_consumers
+
+    js, installation_id = execution_topology
+    subject = f"openship.{installation_id.hex}.v1.command.run.execute"
+    subscription = await js.pull_subscribe_bind(stream="OS_RUNS", durable="run-v1")
+    for body in (b"one", b"two", b"three"):
+        await js.publish(subject, body)
+    first, second = await subscription.fetch(batch=2, timeout=1)
+    await first.ack_sync(timeout=1)
+    before = await js.consumer_info("OS_RUNS", "run-v1")
+    assert before.num_ack_pending == 1
+    assert before.num_pending == 1
+    assert before.config.ack_wait == 30
+    assert before.config.max_deliver == 10
+    assert before.config.max_ack_pending == before.config.max_waiting == 4
+    assert before.config.num_replicas == 1
+    assert not before.config.mem_storage
+    assert not before.config.inactive_threshold
+    assert not before.config.backoff
+    assert (await pause_execution_consumers(js)).complete
+    for apply in (False, True, True):
+        report = await ensure_topology(
+            apply=apply, js=js, installation_id=installation_id
+        )
+        assert report.ready
+        assert all(item.paused for item in report.consumers)
+        assert all(
+            item.pause_until == "2100-01-01T00:00:00Z" for item in report.consumers
+        )
+        after = await js.consumer_info("OS_RUNS", "run-v1")
+        assert after.created == before.created
+        assert after.delivered == before.delivered
+        assert after.ack_floor == before.ack_floor
+        assert after.num_ack_pending == 1
+        assert after.num_pending == 1
+    await second.ack_sync(timeout=1)
+    await subscription.unsubscribe()
+
+
+async def test_paused_consumer_blocks_delivery_and_redelivery_until_explicit_resume(
+    execution_topology,
+):
+    from dataclasses import replace
+
+    from src.openship.messaging.gates import (
+        pause_execution_consumers,
+        resume_execution_consumers,
+    )
+
+    js, installation_id = execution_topology
+    subject = f"openship.{installation_id.hex}.v1.command.run.execute"
+    original = await js.consumer_info("OS_RUNS", "run-v1")
+    assert original.config.ack_wait == 30
+    # Short AckWait only in this dedicated disposable transport fixture.
+    await js.add_consumer("OS_RUNS", config=replace(original.config, ack_wait=0.25))
+    subscription = await js.pull_subscribe_bind(stream="OS_RUNS", durable="run-v1")
+    await js.publish(subject, b"existing")
+    (first,) = await subscription.fetch(batch=1, timeout=1)
+    paused = await pause_execution_consumers(js)
+    assert paused.complete
+    before = await js.consumer_info("OS_RUNS", "run-v1")
+    await js.publish(subject, b"new")
+    with pytest.raises(NatsTimeoutError):
+        await subscription.fetch(batch=2, timeout=0.7)
+    after = await js.consumer_info("OS_RUNS", "run-v1")
+    assert after.paused
+    assert after.delivered == before.delivered
+    assert after.num_redelivered == before.num_redelivered == 0
+    assert after.num_ack_pending == 1
+    assert after.num_pending == 1
+    resumed = await resume_execution_consumers(js)
+    assert resumed.complete
+    assert all(item.paused is False for item in resumed.consumers)
+    messages = await subscription.fetch(batch=2, timeout=1)
+    old = next(item for item in messages if item.data == b"existing")
+    assert old.metadata.sequence.stream == first.metadata.sequence.stream
+    assert old.metadata.num_delivered == 2
+    assert {item.data for item in messages} == {b"existing", b"new"}
+    for message in messages:
+        await message.ack_sync(timeout=1)
+    final = await js.consumer_info("OS_RUNS", "run-v1")
+    assert final.created == original.created
+    assert final.num_ack_pending == 0
+    await subscription.unsubscribe()
+
+
+async def test_missing_consumer_detected_with_all_streams_present(execution_topology):
+    js, installation_id = execution_topology
+    await js.delete_consumer("OS_MAINTENANCE", "maintenance-v1")
+    checked = await ensure_topology(apply=False, js=js, installation_id=installation_id)
+    assert not checked.ready
+    assert all(item.status == "ready" for item in checked.streams)
+    assert checked.consumers[1].status == "missing"
+    with pytest.raises(NotFoundError):
+        await js.consumer_info("OS_MAINTENANCE", "maintenance-v1")
+    assert (
+        await ensure_topology(apply=True, js=js, installation_id=installation_id)
+    ).ready
+
+
+async def test_runtime_role_binds_fetches_acks_but_cannot_mutate_topology_or_pause(
+    execution_topology,
+    broker_credentials,
+):
+    from dataclasses import replace
+
+    js, installation_id = execution_topology
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())["runtime"]
+    permission_errors = []
+
+    async def on_error(error):
+        permission_errors.append(str(error))
+
+    nc = await nats.connect(
+        broker_credentials.url,
+        user=auth["user"],
+        password=auth["password"],
+        inbox_prefix=b"_INBOX.runtime",
+        error_cb=on_error,
+        connect_timeout=2,
+    )
+    runtime = nc.jetstream(timeout=0.2)
+    try:
+        assert (
+            await ensure_topology(
+                apply=False, js=runtime, installation_id=installation_id
+            )
+        ).ready
+        for stream, durable, suffix in (
+            ("OS_RUNS", "run-v1", "run.execute"),
+            ("OS_MAINTENANCE", "maintenance-v1", "maintenance.retention"),
+        ):
+            # Bind only: pull_subscribe would attempt implicit creation.
+            subscription = await runtime.pull_subscribe_bind(
+                stream=stream, durable=durable
+            )
+            peer = await runtime.pull_subscribe_bind(stream=stream, durable=durable)
+            subject = f"openship.{installation_id.hex}.v1.command.{suffix}"
+            await js.publish(subject, b"role-check")
+            (message,) = await subscription.fetch(batch=1, timeout=1)
+            await message.ack_sync(timeout=1)
+            info = await js.consumer_info(stream, durable)
+            assert info.num_ack_pending == 0
+            assert info.ack_floor.stream_seq == message.metadata.sequence.stream
+            before = info
+            attempts = (
+                partial(
+                    runtime.add_consumer,
+                    stream,
+                    config=replace(info.config, ack_wait=31),
+                ),
+                partial(
+                    runtime.add_consumer,
+                    stream,
+                    config=ConsumerConfig(
+                        durable_name="unapproved",
+                        filter_subject=subject,
+                    ),
+                ),
+                partial(runtime.delete_consumer, stream, durable),
+                partial(
+                    runtime.pause_consumer, stream, durable, "2100-01-01T00:00:00Z"
+                ),
+                partial(runtime.resume_consumer, stream, durable),
+                partial(runtime.delete_stream, stream),
+                partial(
+                    runtime.update_stream, config=StreamConfig(name=stream, max_bytes=1)
+                ),
+                partial(
+                    runtime.add_stream,
+                    config=StreamConfig(
+                        name="RUNTIME_DENIED", subjects=["openship.denied.>"]
+                    ),
+                ),
+            )
+            for attempt in attempts:
+                with pytest.raises(NatsTimeoutError):
+                    await attempt()
+            after = await js.consumer_info(stream, durable)
+            assert after.created == before.created
+            assert after.config.ack_wait == 30
+            assert not after.paused
+            await subscription.unsubscribe()
+            await peer.unsubscribe()
+        assert len(permission_errors) >= 16
+        with pytest.raises(NotFoundError):
+            await js.stream_info("RUNTIME_DENIED")
+    finally:
+        await nc.close()

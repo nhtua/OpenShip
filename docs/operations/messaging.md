@@ -9,9 +9,10 @@ date: 2026-10-25
 
 **Proposal, not shipped tooling.** This runbook specifies what Phase 6A must
 implement and qualify. At this revision the application still uses PostgreSQL
-dispatch and SSE polling. `scripts/openship-stack`, `src.openship.messaging.cli`,
-new Compose files, NATS configuration and new settings below do **not** yet
-exist. Command blocks using them are the required future operator interface;
+dispatch and SSE polling. `scripts/openship-stack`, new Compose files and the
+complete gate/cutover tooling below do **not** yet exist. The bounded Python
+bootstrap/doctor and broker primitives described below are available for
+qualification. Wrapper command blocks are the required future operator interface;
 do not run them against a current installation.
 
 Use the [design](../superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md)
@@ -100,6 +101,44 @@ a private temporary directory, requires all JetStream tests to execute without
 skips, and removes the broker and credentials when it exits. JetStream
 provides at-least-once delivery, so application ownership fences and duplicate
 handling remain required; see the [NATS JetStream contract](https://docs.nats.io/concepts/jetstream).
+
+## Shared execution resources and broker primitives
+
+The Python messaging CLI implements `bootstrap --check`, `bootstrap --apply`
+and `doctor`. Checks are read-only. Apply creates missing resources and reports
+existing drift without rewriting streams or consumers. Readiness includes
+`run-v1` on `OS_RUNS` and `maintenance-v1` on `OS_MAINTENANCE`, filtered to this
+installation's exact run and retention command subjects. Both use explicit ACK,
+all-message delivery, instant replay, 30-second AckWait, MaxDeliver 10, no
+BackOff or inactivity deletion, and persistent state with one replica.
+
+| Setting | Default | Allowed range |
+| --- | --- | --- |
+| `WORKER_RUN_CONCURRENCY` | 4 | 1–128 |
+| `WORKER_BACKGROUND_CONCURRENCY` | 1 | 1–128 |
+| `MESSAGING_RUN_MAX_ACK_PENDING` | 4 | 1–1024 |
+| `MESSAGING_MAINTENANCE_MAX_ACK_PENDING` | 1 | 1–1024 |
+
+Local concurrency cannot exceed its corresponding aggregate. Each consumer's
+MaxAckPending and MaxWaiting equal its declared aggregate. Multiple processes
+must budget their combined capacity explicitly; changing the declaration
+reports drift and requires a separate reviewed capacity update. Bootstrap does
+not resize existing consumers or discard pending/ACK progress.
+
+`messaging.gates.pause_execution_consumers(js)` requests the explicit
+`2100-01-01T00:00:00Z` deadline on both consumers; this is a deadline, not an
+indefinite setting. `resume_execution_consumers(js)` uses the client's explicit
+resume API. Results include each confirmed state and deadline; timeouts and
+partial failures remain incomplete, without automatic rollback. Bootstrap
+preserves existing pauses. Runtime credentials cannot pause/resume or mutate
+shared topology; those permissions belong to operator/bootstrap credentials.
+
+These primitives do not change database gates. Task 5 must commit pending
+operation records before sends, serialize and conflict-fence gate operations,
+and resolve unknown broker outcomes before any conflicting action. Never await
+NATS while holding an application transaction. The later runtime must read
+`active` and `execution_open` before fetching. Broker restart persistence of
+pause and the complete gate ordering protocol remain later qualification.
 
 ## Developer machine startup
 

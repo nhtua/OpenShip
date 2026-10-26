@@ -131,6 +131,10 @@ def main() -> int:
                 "user": "relay_" + secrets.token_urlsafe(8),
                 "password": secrets.token_urlsafe(32),
             },
+            "runtime": {
+                "user": "runtime_" + secrets.token_urlsafe(8),
+                "password": secrets.token_urlsafe(32),
+            },
         }
         auth_file = temp_dir / "auth.json"
         config_file = temp_dir / "nats.conf"
@@ -159,7 +163,29 @@ authorization {{
     {{
       user: "{auth["relay"]["user"]}"
       password: "{auth["relay"]["password"]}"
-      permissions: {{ publish: ["openship.>", "$JS.API.STREAM.INFO.>"], subscribe: ["_INBOX.>"] }}
+      permissions: {{
+        publish: ["openship.>", "$JS.API.STREAM.INFO.>",
+          "$JS.API.CONSUMER.INFO.OS_RUNS.run-v1",
+          "$JS.API.CONSUMER.INFO.OS_MAINTENANCE.maintenance-v1"],
+        subscribe: ["_INBOX.>"]
+      }}
+    }}
+    {{
+      user: "{auth["runtime"]["user"]}"
+      password: "{auth["runtime"]["password"]}"
+      permissions: {{
+        publish: [
+          "$JS.API.STREAM.INFO.OS_RUNS", "$JS.API.STREAM.INFO.OS_MAINTENANCE",
+          "$JS.API.STREAM.INFO.OS_EVENTS", "$JS.API.STREAM.INFO.OS_CONTROLS",
+          "$JS.API.STREAM.INFO.OS_FAILURES",
+          "$JS.API.CONSUMER.INFO.OS_RUNS.run-v1",
+          "$JS.API.CONSUMER.INFO.OS_MAINTENANCE.maintenance-v1",
+          "$JS.API.CONSUMER.MSG.NEXT.OS_RUNS.run-v1",
+          "$JS.API.CONSUMER.MSG.NEXT.OS_MAINTENANCE.maintenance-v1",
+          "$JS.ACK.OS_RUNS.run-v1.>", "$JS.ACK.OS_MAINTENANCE.maintenance-v1.>"
+        ],
+        subscribe: ["_INBOX.runtime.>"]
+      }}
     }}
   ]
 }}

@@ -1,7 +1,7 @@
 from pathlib import Path
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -105,6 +105,25 @@ class Settings(BaseSettings):
     nats_tls_ca_file: Path | None = None
     messaging_publish_batch_size: int = Field(default=32, ge=1, le=256)
     messaging_publish_lease_seconds: int = Field(default=30, ge=5, le=300)
+    # Aggregate broker capacity is an explicit installation declaration. Multiple
+    # processes must budget their combined slots before changing this topology.
+    messaging_run_max_ack_pending: int = Field(default=4, ge=1, le=1024)
+    messaging_maintenance_max_ack_pending: int = Field(default=1, ge=1, le=1024)
+    worker_run_concurrency: int = Field(default=4, ge=1, le=128)
+    worker_background_concurrency: int = Field(default=1, ge=1, le=128)
+
+    @model_validator(mode="after")
+    def validate_messaging_capacity(self):
+        if self.worker_run_concurrency > self.messaging_run_max_ack_pending:
+            raise ValueError("worker run concurrency exceeds aggregate run capacity")
+        if (
+            self.worker_background_concurrency
+            > self.messaging_maintenance_max_ack_pending
+        ):
+            raise ValueError(
+                "worker background concurrency exceeds aggregate maintenance capacity"
+            )
+        return self
 
     # JWT
     jwt_secret: str = "dev-secret-change-in-production-123"

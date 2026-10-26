@@ -6,7 +6,7 @@ import uuid
 import pytest
 
 from src.openship.messaging import cli
-from src.openship.messaging.topology import StreamResult, TopologyReport
+from src.openship.messaging.topology import ConsumerResult, StreamResult, TopologyReport
 
 
 def _report(*, status="ready"):
@@ -16,6 +16,10 @@ def _report(*, status="ready"):
             StreamResult(
                 "OS_EVENTS", status, ("max_bytes",) if status == "drift" else ()
             ),
+        ),
+        (
+            ConsumerResult("OS_RUNS", "run-v1", "ready"),
+            ConsumerResult("OS_MAINTENANCE", "maintenance-v1", "ready"),
         ),
     )
 
@@ -83,3 +87,25 @@ def test_doctor_combines_database_and_topology_status(
     output = json.loads(capsys.readouterr().out)
     assert output["database"]["active"] is False
     assert output["ready"] is ready
+
+
+def test_check_and_doctor_report_missing_consumer_as_not_ready(monkeypatch, capsys):
+    report = TopologyReport(
+        "00000000-0000-0000-0000-000000000001",
+        (StreamResult("OS_RUNS", "ready"),),
+        (
+            ConsumerResult("OS_RUNS", "run-v1", "missing"),
+            ConsumerResult("OS_MAINTENANCE", "maintenance-v1", "ready"),
+        ),
+    )
+
+    async def check_only(*, apply):
+        assert not apply
+        return report
+
+    monkeypatch.setattr(cli, "ensure_topology", check_only)
+    monkeypatch.setattr(cli, "_database_report", lambda: {"status": "ready"})
+    assert cli.main(["bootstrap", "--check"]) == 1
+    assert json.loads(capsys.readouterr().out)["consumers"][0]["status"] == "missing"
+    assert cli.main(["doctor"]) == 1
+    assert json.loads(capsys.readouterr().out)["ready"] is False
