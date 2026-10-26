@@ -253,6 +253,23 @@ def test_invalid_envelope_has_safe_error(change):
         assert "secret-hint" not in str(exc.value)
 
 
+def test_json_decoder_recursion_error_is_a_safe_envelope_rejection(monkeypatch):
+    installation_id = uuid.uuid4()
+
+    def exhausted_decoder(*_args, **_kwargs):
+        raise RecursionError("secret-hint decoder detail")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("src.openship.messaging.command.json.loads", exhausted_decoder)
+        with pytest.raises(InvalidCommandEnvelope) as exc:
+            parse_run_command(
+                b"[]",
+                subject=f"openship.{installation_id.hex}.v1.command.run.execute",
+                installation_id=installation_id,
+            )
+    assert str(exc.value) == "invalid_run_command"
+
+
 @pytest.mark.parametrize(
     "field",
     [

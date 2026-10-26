@@ -128,7 +128,7 @@ def parse_run_command(
         if result.installation_id != installation_id:
             raise InvalidCommandEnvelope()
         return result
-    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
         raise InvalidCommandEnvelope() from None
 
 
