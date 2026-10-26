@@ -15,6 +15,8 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
+from src.openship.messaging.topology import ensure_topology
+
 pytestmark = [pytest.mark.jetstream, pytest.mark.asyncio]
 
 
@@ -134,9 +136,7 @@ async def test_file_storage_confirmed_publish_and_duplicate_identity(broker):
 async def test_progress_ack_extends_ack_wait_and_double_ack_confirms(broker):
     nc, js, stream, _, token = broker
     subject = f"openship.test.{token}.commands.run"
-    subscription = await _pull(
-        js, stream, subject, f"progress_{token}", ack_wait=1.0
-    )
+    subscription = await _pull(js, stream, subject, f"progress_{token}", ack_wait=1.0)
     await js.publish(subject, b"one")
     (message,) = await subscription.fetch(batch=1, timeout=1)
     await asyncio.sleep(0.4)
@@ -198,7 +198,9 @@ async def test_restricted_user_cannot_create_stream(broker_credentials):
                     storage=StorageType.FILE,
                 )
             )
-        assert any("permissions violation" in error.lower() for error in permission_errors)
+        assert any(
+            "permissions violation" in error.lower() for error in permission_errors
+        )
 
         admin = await nats.connect(
             broker_credentials.url,
@@ -213,3 +215,75 @@ async def test_restricted_user_cannot_create_stream(broker_credentials):
             await admin.close()
     finally:
         await nc.close()
+
+
+async def test_bootstrap_check_and_apply_are_idempotent(broker):
+    nc, js, _stream, _subject, _token = broker
+    installation_id = uuid.uuid4()
+
+    report = await ensure_topology(
+        apply=False,
+        js=js,
+        installation_id=installation_id,
+    )
+    expected_names = {item.name for item in report.streams}
+    assert len(expected_names) == 5
+    assert {item.status for item in report.streams} == {"missing"}
+    try:
+        applied = await ensure_topology(
+            apply=True,
+            js=js,
+            installation_id=installation_id,
+        )
+        assert {item.status for item in applied.streams} == {"ready"}
+
+        checked = await ensure_topology(
+            apply=False,
+            js=js,
+            installation_id=installation_id,
+        )
+        assert {item.status for item in checked.streams} == {"ready"}
+    finally:
+        for name in expected_names:
+            try:
+                await nc.jetstream().delete_stream(name)
+            except NotFoundError:
+                pass
+
+
+async def test_bootstrap_apply_reports_drift_without_rewriting_stream(broker):
+    nc, js, _stream, _subject, _token = broker
+    installation_id = uuid.uuid4()
+    from src.openship.messaging.topology import stream_configs
+
+    expected = stream_configs(installation_id)[0]
+    drifted = StreamConfig(
+        name=expected.name,
+        subjects=["openship.wrong.v1.command.run.execute"],
+        storage=StorageType.MEMORY,
+        max_bytes=1,
+        max_consumers=3,
+        max_msgs=1,
+        max_msgs_per_subject=5,
+    )
+    await js.add_stream(config=drifted)
+    try:
+        report = await ensure_topology(
+            apply=True,
+            js=js,
+            installation_id=installation_id,
+        )
+        first = next(item for item in report.streams if item.name == expected.name)
+        assert first.status == "drift"
+        assert "max_msgs" in first.differences
+        assert "max_msgs_per_subject" in first.differences
+        assert "max_consumers" in first.differences
+        info = await js.stream_info(expected.name)
+        assert info.config.subjects == drifted.subjects
+        assert info.config.storage == StorageType.MEMORY
+    finally:
+        for config in stream_configs(installation_id):
+            try:
+                await nc.jetstream().delete_stream(config.name)
+            except NotFoundError:
+                pass

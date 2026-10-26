@@ -1,0 +1,201 @@
+"""Declarative JetStream topology and non-destructive bootstrap checks."""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import asdict, dataclass
+
+from nats.aio.client import Client
+from nats.js.api import (
+    DiscardPolicy,
+    RetentionPolicy,
+    StorageType,
+    StreamConfig,
+)
+from nats.js.errors import NotFoundError
+
+from ..database.session import SessionLocal
+from .connection import connect_nats
+from .models import MessageTransportState
+
+_MIB = 1024 * 1024
+_MAX_MESSAGE_BYTES = 16 * 1024
+
+
+@dataclass(frozen=True)
+class StreamResult:
+    name: str
+    status: str
+    differences: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TopologyReport:
+    installation_id: str
+    streams: tuple[StreamResult, ...]
+
+    @property
+    def ready(self) -> bool:
+        return all(item.status == "ready" for item in self.streams)
+
+    def as_dict(self) -> dict:
+        return {
+            "installation_id": self.installation_id,
+            "ready": self.ready,
+            "streams": [asdict(item) for item in self.streams],
+        }
+
+
+class TopologyCompatibilityError(RuntimeError):
+    """A runtime must not publish through missing or drifted streams."""
+
+
+def stream_configs(installation_id: uuid.UUID) -> tuple[StreamConfig, ...]:
+    """Return the immutable initial stream contract for one installation."""
+    namespace = f"openship.{installation_id.hex}.v1"
+    common = {
+        "storage": StorageType.FILE,
+        "num_replicas": 1,
+        "max_msg_size": _MAX_MESSAGE_BYTES,
+        "duplicate_window": 120.0,
+    }
+    return (
+        StreamConfig(
+            name="OS_RUNS",
+            subjects=[f"{namespace}.command.run.execute"],
+            retention=RetentionPolicy.WORK_QUEUE,
+            max_bytes=512 * _MIB,
+            max_age=0.0,
+            discard=DiscardPolicy.NEW,
+            **common,
+        ),
+        StreamConfig(
+            name="OS_MAINTENANCE",
+            subjects=[f"{namespace}.command.maintenance.retention"],
+            retention=RetentionPolicy.WORK_QUEUE,
+            max_bytes=128 * _MIB,
+            max_age=0.0,
+            discard=DiscardPolicy.NEW,
+            **common,
+        ),
+        StreamConfig(
+            name="OS_EVENTS",
+            subjects=[f"{namespace}.event.>"],
+            retention=RetentionPolicy.LIMITS,
+            max_bytes=256 * _MIB,
+            max_age=24 * 60 * 60.0,
+            discard=DiscardPolicy.OLD,
+            **common,
+        ),
+        StreamConfig(
+            name="OS_CONTROLS",
+            subjects=[f"{namespace}.control.>"],
+            retention=RetentionPolicy.LIMITS,
+            max_bytes=64 * _MIB,
+            max_age=24 * 60 * 60.0,
+            discard=DiscardPolicy.OLD,
+            **common,
+        ),
+        StreamConfig(
+            name="OS_FAILURES",
+            subjects=[f"{namespace}.failure.>"],
+            retention=RetentionPolicy.LIMITS,
+            max_bytes=128 * _MIB,
+            max_age=7 * 24 * 60 * 60.0,
+            discard=DiscardPolicy.OLD,
+            **common,
+        ),
+    )
+
+
+def _installation_id() -> uuid.UUID:
+    with SessionLocal() as db:
+        state = db.get(MessageTransportState, 1)
+        if state is None:
+            raise RuntimeError(
+                "messaging state is missing; apply database migrations first"
+            )
+        return state.installation_id
+
+
+def _compare_config(expected: StreamConfig, actual: StreamConfig) -> tuple[str, ...]:
+    differences: list[str] = []
+    fields = (
+        "subjects",
+        "retention",
+        "max_consumers",
+        "max_msgs",
+        "max_bytes",
+        "max_age",
+        "max_msgs_per_subject",
+        "discard",
+        "discard_new_per_subject",
+        "storage",
+        "num_replicas",
+        "max_msg_size",
+        "duplicate_window",
+        "no_ack",
+        "sealed",
+        "deny_delete",
+        "deny_purge",
+        "allow_rollup_hdrs",
+    )
+    for field in fields:
+        expected_value = getattr(expected, field)
+        actual_value = getattr(actual, field)
+        if field == "subjects":
+            equal = sorted(expected_value or []) == sorted(actual_value or [])
+        elif field == "max_age":
+            equal = float(expected_value or 0) == float(actual_value or 0)
+        elif field in {"max_consumers", "max_msgs", "max_msgs_per_subject"}:
+            # NATS represents an unlimited stream limit as either -1 or an
+            # omitted value depending on the server/client API response.
+            equal = (expected_value if expected_value is not None else -1) == (
+                actual_value if actual_value is not None else -1
+            )
+        else:
+            equal = expected_value == actual_value
+        if not equal:
+            differences.append(field)
+    return tuple(differences)
+
+
+async def ensure_topology(
+    *,
+    apply: bool,
+    js=None,
+    installation_id: uuid.UUID | None = None,
+) -> TopologyReport:
+    """Check streams, or create missing ones without rewriting existing config."""
+    own_connection: Client | None = None
+    if js is None:
+        own_connection = await connect_nats(
+            name="openship-messaging-bootstrap",
+            allow_reconnect=False,
+        )
+        js = own_connection.jetstream(timeout=5)
+    try:
+        selected_installation_id = installation_id or _installation_id()
+        results: list[StreamResult] = []
+        for expected in stream_configs(selected_installation_id):
+            try:
+                info = await js.stream_info(expected.name)
+            except NotFoundError:
+                if not apply:
+                    results.append(StreamResult(expected.name, "missing"))
+                    continue
+                await js.add_stream(config=expected)
+                info = await js.stream_info(expected.name)
+            differences = _compare_config(expected, info.config)
+            results.append(
+                StreamResult(
+                    expected.name,
+                    "drift" if differences else "ready",
+                    differences,
+                )
+            )
+        report = TopologyReport(str(selected_installation_id), tuple(results))
+        return report
+    finally:
+        if own_connection is not None:
+            await own_connection.close()

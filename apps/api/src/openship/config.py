@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"
 
+    # JetStream transport. Role credentials live in a protected JSON file with
+    # top-level `user` and `password` keys; they never belong in the server URL.
+    nats_servers: str = "nats://127.0.0.1:4222"
+    nats_auth_file: Path | None = None
+    nats_tls_ca_file: Path | None = None
+    messaging_publish_batch_size: int = Field(default=32, ge=1, le=256)
+    messaging_publish_lease_seconds: int = Field(default=30, ge=5, le=300)
+
     # JWT
     jwt_secret: str = "dev-secret-change-in-production-123"
     jwt_expiry_hours: int = 24
