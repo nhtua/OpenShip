@@ -140,7 +140,7 @@ def phase2_db(database_url, alembic_ini):
                 tables = [
                     name
                     for name in inspect(conn).get_table_names()
-                    if name != "alembic_version"
+                    if name not in {"alembic_version", "messaging_state"}
                 ]
                 if tables:
                     names = ", ".join(
@@ -151,6 +151,14 @@ def phase2_db(database_url, alembic_ini):
                     # violating append-only row triggers while clearing data
                     # left by earlier integration modules on the shared lane.
                     conn.execute(text(f"TRUNCATE TABLE {names} CASCADE"))
+                # The current head's downgrade safety check requires the
+                # installation-wide messaging gate row to remain present.
+                assert (
+                    conn.execute(
+                        text("SELECT active FROM messaging_state WHERE id = 1")
+                    ).scalar_one()
+                    is False
+                )
             else:
                 for table in (
                     "provider_attempts",
