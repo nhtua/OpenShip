@@ -19,7 +19,7 @@ This document redesigns the previous resource-focused architecture using [the pr
 
 | Requirement | Architectural response |
 | --- | --- |
-| Self-hosted on EC2, a remote server, or localhost; browser access | One service distribution with local, remote, and Kubernetes deployment profiles; independently deployable execution workers. |
+| Self-hosted on a remote server or localhost; browser access | One service distribution with native developer processes and separate development/production Docker Compose stacks; independently deployable runtime workers. Kubernetes and ECS are outside Phase 6A. |
 | Natural conversation with frontier models, skills, tools, and MCP | Provider adapters, a general conversational agent loop, and a common capability gateway. |
 | Create workflows from freeform descriptions | A two-phase workflow builder: freeform input is standardized into a formal specification for user review, then cached as JSON for fast deterministic execution. |
 | Integrate workflows into chat and show progress and input/output | Conversations reference durable runs; structured events drive workflow cards, diagrams, step inspectors, and input forms. |
@@ -134,16 +134,15 @@ The initial control plane is a modular monolith: API, registry, runtime, and pol
 
 ## 4. Self-Hosted Deployment
 
-Ship a container-based distribution with configuration and health checks for the API, runtime worker, NATS with persistent JetStream storage, PostgreSQL, artifact storage, and sandbox worker. Docker Compose is the proposed first packaging target for simple deployments; Kubernetes Helm charts provide a production-ready path for team and enterprise deployments. NATS runs as a compact server with an async Python client; its broker and monitoring endpoints remain private. Broker subject permissions supplement application project authorization, not replace it.
+Phase 6A targets native developer processes and separate development/production Docker Compose stacks containing the API, runtime worker, committed-outbox relay, NATS with persistent JetStream storage, PostgreSQL and existing artifact storage. The [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md) and [deployment runbook proposal](./operations/messaging.md) specify a drained cutover, installation scripts, readiness, backup/restore and rollback. The current application still uses PostgreSQL polling; these additions require implementation and qualification. Sandbox workers remain Phase 6B. Kubernetes, Helm and ECS packaging are outside this migration. Broker and monitoring endpoints remain private; subject permissions supplement application project authorization.
 
 | Profile | Arrangement | Access and isolation |
 | --- | --- | --- |
-| Local workstation | Control plane and database run locally; sandbox worker runs on Linux or in a dedicated Linux VM. | Bind web access to loopback by default; provision an authenticated local session. Never expose the user's home directory to execution. |
-| EC2 or remote Linux server | One host can run the distribution; execution uses a separate worker process with the required sandbox runtime. | TLS and authentication for browser access; restrict ingress through a private network, VPN, or configured reverse proxy. Block sandbox access to instance metadata. |
-| Team deployment | API/runtime, database, storage, and execution workers can be separated across hosts. | Project membership, connector policies, worker authentication, private internal endpoints, independently scalable execution. |
-| Kubernetes cluster | API and runtime workers as Deployments with horizontal scaling; PostgreSQL as StatefulSet or external managed database; artifact storage on persistent volumes or S3-compatible service; sandbox workers as separate Deployment with privileged node access. | Network policies for service isolation; ingress controller for TLS and routing; service accounts and RBAC for least-privilege access; pod security policies or admission controllers for sandbox isolation. |
+| Developer workstation | Native API/runtime/relay/web; native or Compose PostgreSQL/NATS. | Loopback access and explicit role credentials; retain existing local artifact/key paths. |
+| Development Compose | Existing root stack plus broker/relay/bootstrap; optional hot reload override. | Preserve current project/volume identities and loopback ports; persistent broker state. |
+| Production Compose | Standalone single-host stack with immutable release images and one persistent broker. | HTTPS browser ingress, private DB/broker/monitoring, broker TLS/auth, protected secrets and coordinated recovery. Single node does not promise host-failure availability. |
 
-For Kubernetes, use standard Kubernetes practices: declarative configurations, readiness/liveness probes, resource requests/limits, rolling updates, and proper secret management (Kubernetes Secrets or external secret management).
+Later sandbox deployment must qualify its Linux/VM execution boundary separately; it is not a prerequisite for this transport migration.
 
 On macOS or Windows, use a dedicated Linux VM or a remote Linux worker for untrusted execution. The installer checks sandbox support before enabling executable capabilities. A machine lacking that support can still serve chat and workflow authoring; execution requests remain blocked until a compatible worker is available. There is no automatic fallback to host subprocess execution.
 

@@ -85,3 +85,18 @@ Use any available tools to complete tasks efficiently.
 - `poc/` — Historical agent CLI and Vue UI/UX prototypes.
 - `apps/api/` — API server and durable runtime worker.
 - `apps/web/` — Browser client.
+
+## Autonomous Execution Protocol
+
+### Rule 1: Infrastructure & Workflow Execution
+
+Always use the `superpowers` execution harness for session lifecycle, git worktrees, subagent dispatch, and branch management.
+
+### Rule 2: Automatic Skill Selection
+
+Do NOT wait for explicit slash commands (/spec, /plan, /build, /test).
+At the beginning of any user task:
+
+1. Consult `using-agent-skills/SKILL.md` to map the task to the correct domain skill (e.g., `spec-driven-development`, `doubt-driven-development`, or `frontend-ui-engineering`).
+2. Follow the anti-rationalization guidelines and quality gates in the selected skill.
+3. Apply `superpowers` TDD and subagent execution workflows to write, verify, and commit the code.

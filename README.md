@@ -12,9 +12,9 @@ The [ideas collection](docs/ideas.md) preserves proposals and historical context
 
 ## Current Status
 
-**Roadmap Phases 1–3 are delivered:** authenticated project chat, a durable PostgreSQL-backed runtime with reconnectable events and cancellation, and explicit model-provider profiles. See the [provider support matrix](docs/provider-support.md) for qualified provider/model combinations.
+**Roadmap Phases 1–5 are complete**, as confirmed by the project owner on 2026-10-25: authenticated project chat, durable runs/events, explicit model profiles, trusted tools and persistent artifacts, managed Connectors, and AWS basic-role discovery and bounded reads. Qualification claims remain scoped by the [provider support matrix](docs/provider-support.md) and phase-specific evidence.
 
-**Phase 4 implementation is in acceptance review.** It adds independent Brave and Tavily search tools, model-directed OpenAI tool calls, and persistent conversation workspaces for immutable filesystem artifacts. The acceptance record identifies which PostgreSQL and synthetic full-stack checks have run and which still need a configured test database. Tools use the existing runtime worker; sandbox execution and mutable logical files stay in Phase 6. Connectors, reusable workflows, approvals, and broader deployment qualification remain later roadmap phases.
+**Phase 6A messaging is in design review.** The current runtime still uses PostgreSQL dispatch and event polling. The proposed NATS JetStream migration preserves existing features and configuration while adding broker/relay setup for native development, development Compose and production Compose. Read the [source review](docs/reviews/2026-10-25-phase6a-messaging-review.md), [design](docs/superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](docs/superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook proposal](docs/operations/messaging.md). New commands in those proposals are not shipped yet. Sandbox execution and mutable logical files remain Phase 6B.
 
 ## How It Works
 
@@ -34,12 +34,14 @@ From the repository root:
 ```bash
 cp .env.example .env
 # Set a strong JWT_SECRET and a unique stable ARTIFACT_STORAGE_ID.
-# Add search keys and exact tool IDs only if you want to enable search.
+# Configure managed Connectors and tool availability after startup if needed.
 docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance init
 docker compose up --build
 ```
 
 Compose starts PostgreSQL, migrations, the API server, runtime worker, and web client. The API and worker share the persistent `artifactdata` volume; ports bind to loopback by default. Search keys are passed only to the worker. Open [http://localhost:8080](http://localhost:8080). See [provider setup](docs/provider-support.md) before sending a chat message and the [artifact storage runbook](docs/operations/artifact-storage.md) for backup and restore. Docker with Compose is required for this route; the tools below are for running processes directly.
+
+This is the current development stack. Phase 6A proposes a separate production Compose manifest and coordinated migration/backup procedures in the [messaging runbook](docs/operations/messaging.md); the current file is not a production deployment qualification.
 
 ## Local Development
 

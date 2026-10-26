@@ -7,6 +7,13 @@ status: current
 
 # Managed Connector operations
 
+The proposed [Phase 6A messaging runbook](messaging.md) adds broker/relay
+deployment and coordinated restore gates for local, development Compose and
+production Compose installations. It preserves this keyring lifecycle and
+Connector setup. Its commands are not implemented yet. After that migration,
+restoring JetStream requires a global execution gate as well as the managed
+dispatch lock below; the Connector lock alone does not stop plain model calls.
+
 Managed Connector encryption and idempotency keys are independent of the
 database and artifact volume. Keep both key files in a protected directory,
 outside source control and outside ordinary database backups. The Compose API

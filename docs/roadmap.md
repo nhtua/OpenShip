@@ -234,6 +234,8 @@ historical data migrations remain part of the application.
 
 #### Phase 5 — First Read-Only Cloud Connector
 
+**Status:** Complete, as confirmed by the user on 2026-10-25. Earlier qualification records and the implementation-era descriptions below retain their original evidence scope; this confirmation does not broaden provider/cloud qualification claims.
+
 **Milestone:** "OpenShip can discover and inspect AWS resources through my configured basic role and show evidence—for example, an S3 bucket stats report."
 
 **Build on:** Phase 4's gateway, tool loop, operation records, and artifacts. Add project-scoped connectors and managed credentials through the gateway's existing capability contract; do not create a parallel provider-adapter or permission path for external services.
@@ -279,6 +281,8 @@ historical data migrations remain part of the application.
 **Acceptance units:** Qualify and accept **6A** before extending the runtime in **6B**. Each is a usable increment with its own evidence and user decision.
 
 ##### 6A — NATS Foundation and Concurrent Chat
+
+**Status:** Design review. The [source review](./reviews/2026-10-25-phase6a-messaging-review.md), [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [draft implementation plan](./superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook proposal](./operations/messaging.md) cover the current PostgreSQL runtime, a drained cutover and native/development Compose/production Compose environments. The user confirmed this numbering and the drained cutover on 2026-10-25. Runtime implementation has not started. Kubernetes and ECS are outside this migration.
 
 **Build**
 
