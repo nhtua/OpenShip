@@ -178,9 +178,13 @@ routes an allowlisted kind to existing execution or explicit retention.
   claim only the exact due generation under conversation → run → job → shared
   transport-state locks. Local unit cases and real PostgreSQL contention,
   state-lock compatibility and non-claim cases pass.
-- [ ] **3B — Durable consumer and execution slots:** implement bounded pull
-  delivery, reuse `process_job` in per-slot execution contexts, supervision,
-  durable outcomes and confirmed-ACK rules below.
+- [x] **3B1 — Delivery outcomes and execution resources:** classify ACK intent
+  from committed state, keep preparation/execution/settlement explicit, and
+  provide independent bounded slot threads with cancellation retention and
+  Worker/checkpointer/session cleanup. Focused worker regressions and the full
+  API commit gate pass; task review is clean.
+- [ ] **3B2 — Broker consumer and supervision:** integrate bounded pulls,
+  owner controls, independent progress/recovery and confirmed-ACK rules below.
 
 - [ ] Add failing `test_messaging_consumer.py` and PG/broker cases for every
   spec delivery-state branch, especially redelivery after dedup expiry,
