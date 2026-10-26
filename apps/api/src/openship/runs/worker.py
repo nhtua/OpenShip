@@ -180,6 +180,7 @@ class Worker:
             worker_id = f"worker-{uuid.uuid4().hex[:8]}"
         self.worker_id = worker_id
         self.running = True
+        self._closed = False
 
         # Set up database connection
         self.engine = create_engine(settings.database_url)
@@ -210,17 +211,47 @@ class Worker:
                     )
                     connection_fields.update(self.engine.url.query)
                     checkpoint_url = make_conninfo(**connection_fields)
-                self._checkpointer_ctx = PostgresSaver.from_conn_string(checkpoint_url)
-                self.checkpointer = self._checkpointer_ctx.__enter__()
+                context = PostgresSaver.from_conn_string(checkpoint_url)
+                self.checkpointer = context.__enter__()
+                self._checkpointer_ctx = context
                 # The saver's tables are what make a thread resumable; without
                 # this the graph silently has nowhere to write a checkpoint.
                 self.checkpointer.setup()
                 logger.info("Checkpointer initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize checkpointer: {e}")
+                context, self._checkpointer_ctx = self._checkpointer_ctx, None
+                if context is not None:
+                    try:
+                        context.__exit__(None, None, None)
+                    except Exception:
+                        logger.warning("Failed to close checkpointer after setup failure")
                 self.checkpointer = None
 
         logger.info(f"Worker {self.worker_id} initialized")
+
+    def close(self):
+        """Release this resource's checkpointer and engine exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        self.running = False
+        context, self._checkpointer_ctx = self._checkpointer_ctx, None
+        try:
+            if context is not None:
+                context.__exit__(None, None, None)
+        finally:
+            self.checkpointer = None
+            self.engine.dispose()
+
+    def _supervise_in_thread(self, supervision, run_id, fence):
+        # Session creation, use and closure all belong to this thread.
+        try:
+            with self.Session() as db:
+                self._supervise(supervision, db, run_id, fence)
+        except Exception:
+            supervision.deny_lease()
+            logger.warning("Worker supervisor session failed")
 
     def _supervise(self, supervision, db, run_id, fence):
         """Watch the run while its turn runs, and keep its lease alive.
@@ -408,7 +439,6 @@ class Worker:
         self,
         claim,
         job,
-        supervisor_db,
         supervision,
         run,
         conversation,
@@ -502,8 +532,8 @@ class Worker:
             "execution_configuration": run.execution_configuration or "",
         }
         supervisor_thread = threading.Thread(
-            target=self._supervise,
-            args=(supervision, supervisor_db, run.id, claim.fence),
+            target=self._supervise_in_thread,
+            args=(supervision, run.id, claim.fence),
             daemon=True,
         )
         supervisor_thread.start()
@@ -531,7 +561,7 @@ class Worker:
         finally:
             supervision.interrupt()
             if supervisor_thread.is_alive():
-                supervisor_thread.join(timeout=5)
+                supervisor_thread.join()
 
         if supervision.lease_lost():
             return False
@@ -616,7 +646,7 @@ class Worker:
         cleaned = re.sub(r"(?m)^## Title:[^\r\n]*(?:\r?\n|$)", "", response)
         return cleaned.strip() if cleaned != response else response
 
-    def process_job(self, claim):
+    def process_job(self, claim, *, supervision: Supervision | None = None):
         """Process a single claimed job: supervise one model turn, then publish it."""
         run_id = claim.run_id
         fence = claim.fence
@@ -624,12 +654,12 @@ class Worker:
 
         # One session per thread: the worker's own work stays in one transaction,
         # and the supervisor thread gets a session of its own.
-        job = self.Session()
-        supervisor_db = self.Session()
-        supervision = Supervision()
+        job = None
+        supervision = supervision if supervision is not None else Supervision()
         supervisor_thread = None
 
         try:
+            job = self.Session()
             from ..events.service import append_event
 
             run = job.query(Run).filter(Run.id == run_id).first()
@@ -683,7 +713,6 @@ class Worker:
                 return self._process_tool_job(
                     claim,
                     job,
-                    supervisor_db,
                     supervision,
                     run,
                     conv,
@@ -929,8 +958,8 @@ class Worker:
 
             # Start the supervisor: it watches the run while its turn runs.
             supervisor_thread = threading.Thread(
-                target=self._supervise,
-                args=(supervision, supervisor_db, run_id, fence),
+                target=self._supervise_in_thread,
+                args=(supervision, run_id, fence),
                 daemon=True,
             )
             supervisor_thread.start()
@@ -956,7 +985,7 @@ class Worker:
             # Stop the heartbeat before reading anything it may have changed.
             supervision.interrupt()
             if supervisor_thread.is_alive():
-                supervisor_thread.join(timeout=5)
+                supervisor_thread.join()
 
             # A lease this worker no longer holds publishes nothing: another
             # worker owns the run, and the reconciler will finish it.
@@ -1099,7 +1128,8 @@ class Worker:
             # attempts, or event in this session. Discard all of it before a
             # fresh fenced transaction publishes the failure atomically.
             try:
-                job.rollback()
+                if job is not None:
+                    job.rollback()
                 failure_db = self.Session()
                 finalized = finalize(
                     db=failure_db,
@@ -1144,13 +1174,21 @@ class Worker:
                     pass
             return False
         finally:
+            supervision.interrupt()
             if supervisor_thread and supervisor_thread.is_alive():
-                supervisor_thread.join(timeout=5)
-            job.close()
-            supervisor_db.close()
+                supervisor_thread.join()
+            if job is not None:
+                job.close()
 
     def run(self):
-        """Main worker loop with automatic reconciliation."""
+        """Main worker loop with automatic reconciliation and resource cleanup."""
+        try:
+            self._run_loop()
+        finally:
+            self.close()
+        logger.info(f"[{self.worker_id}] Shutdown complete")
+
+    def _run_loop(self):
         logger.info(f"[{self.worker_id}] Starting worker loop")
         last_reconcile = time.time()
         reconcile_interval = settings.reconciler_interval
@@ -1222,10 +1260,6 @@ class Worker:
                 if db is not None:
                     db.close()
 
-        # Cleanup
-        self.engine.dispose()
-        logger.info(f"[{self.worker_id}] Shutdown complete")
-
 
 def main():
     parser = argparse.ArgumentParser(description="OpenShip chat turn worker")
@@ -1247,7 +1281,10 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    worker.run()
+    try:
+        worker.run()
+    finally:
+        worker.close()
 
 
 if __name__ == "__main__":
