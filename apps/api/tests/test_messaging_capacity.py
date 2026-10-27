@@ -86,7 +86,7 @@ async def test_retained_source_scan_is_subject_filtered_bounded_and_resumable():
             return builtins.next(
                 message
                 for message in messages
-                if message.subject == subject and message.seq > seq
+                if message.subject == subject and message.seq >= seq
             )
 
     first = await scan_retained_run_sources(

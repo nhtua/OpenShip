@@ -94,7 +94,11 @@ async def scan_retained_run_sources(
     truncated = False
     while cursor < through_sequence:
         try:
-            message = await js.get_msg(stream, seq=cursor, subject=subject, next=True)
+            # next_by_subj treats seq as the first eligible stream position,
+            # so advance one past the last returned message to avoid repeats.
+            message = await js.get_msg(
+                stream, seq=cursor + 1, subject=subject, next=True
+            )
         except NotFoundError:
             break
         sequence = getattr(message, "seq", None)

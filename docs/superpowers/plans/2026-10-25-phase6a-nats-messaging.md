@@ -308,7 +308,11 @@ routes an allowlisted kind to existing execution or explicit retention.
     an explicit stream name and the fanout test publishes the two rows in
     successive batches. PostgreSQL migration tests also had stale head-version
     assertions; they now expect `phase6a019`. The corrected real-broker and
-    PostgreSQL lanes must pass before closing the slice.
+    PostgreSQL rerun passed all three PostgreSQL lanes and confirmed the
+    fanout and lost-advisory recovery cases. The subject-scan contract test then
+    exposed that pinned `next_by_subj` treats its sequence as the first eligible
+    position; the scanner now advances its request cursor by one to avoid
+    returning the prior message twice. A fresh JetStream rerun is required.
   - [x] **3B2e.5 — Explicit retention maintenance:** accept only an explicitly
     enqueued, bounded retention task with operator identity and durable
     requested/running/completed/failed state; preserve direct maintenance CLI.
