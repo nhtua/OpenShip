@@ -150,6 +150,19 @@ def test_upgrade_and_safe_pre_activation_downgrade(legacy_schema):
         }
         assert "dispatch_generation" in columns
 
+        exhaustion_columns = {
+            row["column_name"]
+            for row in connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'message_exhaustions'"
+                )
+            ).mappings()
+        }
+        assert "discovery_method" in exhaustion_columns
+        assert "recovery_operator" in exhaustion_columns
+
         outbox_schema = (
             connection.execute(
                 text(
@@ -230,6 +243,33 @@ def test_upgrade_and_safe_pre_activation_downgrade(legacy_schema):
         )
         connection.execute(
             text("DELETE FROM message_failures WHERE id = :id"), {"id": failure_id}
+        )
+
+    capacity_scan_id = uuid.uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO message_exhaustions "
+                "(id, installation_id, source_transport_epoch, source_stream, "
+                "source_sequence, source_timestamp, consumer_name, delivery_count, "
+                "discovery_method, recovery_operator, state) "
+                "VALUES (:id, :installation, :epoch, 'OS_RUNS', 123, :timestamp, "
+                "'run-v1', 0, 'capacity_scan', 'migration-test', 'blocked')"
+            ),
+            {
+                "id": capacity_scan_id,
+                "installation": installation_id,
+                "epoch": epoch,
+                "timestamp": datetime.now(UTC),
+            },
+        )
+    refused = alembic("downgrade", "phase6a018")
+    assert refused.returncode != 0
+    assert "capacity-scan exhaustion audit rows exist" in refused.stderr
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM message_exhaustions WHERE id = :id"),
+            {"id": capacity_scan_id},
         )
 
     downgraded = alembic("downgrade", "phase5b014")

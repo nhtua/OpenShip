@@ -337,6 +337,8 @@ def record_exhaustion_observation(
     delivery_count: int,
     checked_at: datetime | None = None,
     advisory_sequence: int | None = None,
+    discovery_method: str = "advisory",
+    recovery_operator: str | None = None,
 ) -> ExhaustionObservationReceipt | UnboundExhaustionSource | None:
     """Persist an observation or classify a definitively unbound source.
 
@@ -344,10 +346,22 @@ def record_exhaustion_observation(
     retried. Only ``UnboundExhaustionSource`` authorizes the quarantine path.
     """
     source = source_identity.validated()
+    operator = recovery_operator.strip() if isinstance(recovery_operator, str) else None
+    valid_discovery = (
+        discovery_method == "advisory"
+        and type(delivery_count) is int
+        and delivery_count >= 1
+        and recovery_operator is None
+    ) or (
+        discovery_method == "capacity_scan"
+        and type(delivery_count) is int
+        and delivery_count == 0
+        and operator is not None
+        and 1 <= len(operator) <= 255
+    )
     if (
         source is None
-        or type(delivery_count) is not int
-        or delivery_count < 1
+        or not valid_discovery
         or not isinstance(body, bytes)
         or (
             advisory_sequence is not None
@@ -406,6 +420,8 @@ def record_exhaustion_observation(
                 source_timestamp=source.timestamp,
                 consumer_name="run-v1",
                 delivery_count=delivery_count,
+                discovery_method=discovery_method,
+                recovery_operator=operator,
                 state="pending",
             )
             db.add(observation)

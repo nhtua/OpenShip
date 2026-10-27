@@ -16,6 +16,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
+from src.openship.messaging.capacity import scan_retained_run_sources
 from src.openship.messaging.topology import (
     EXHAUSTION_ADVISORY_SUBJECT,
     ensure_topology,
@@ -135,6 +136,34 @@ async def test_file_storage_confirmed_publish_and_duplicate_identity(broker):
     assert first.seq > 0
     assert duplicate.duplicate is True
     assert duplicate.seq == first.seq
+
+
+async def test_next_by_subject_source_scan_skips_other_subjects_and_honors_watermark(
+    broker,
+):
+    _, js, _stream, _, token = broker
+    run_subject = f"openship.test.{token}.commands.run"
+    event_subject = f"openship.test.{token}.events.run"
+    first = await js.publish(run_subject, b"first-run")
+    await js.publish(event_subject, b"interleaved-event")
+    second = await js.publish(run_subject, b"second-run")
+    await js.publish(run_subject, b"after-watermark")
+
+    scanned = await scan_retained_run_sources(
+        js,
+        subject=run_subject,
+        after_sequence=0,
+        through_sequence=second.seq,
+        limit=10,
+    )
+
+    assert [message.seq for message in scanned.messages] == [first.seq, second.seq]
+    assert [message.data for message in scanned.messages] == [
+        b"first-run",
+        b"second-run",
+    ]
+    assert scanned.truncated is False
+    assert scanned.next_after_sequence == second.seq
 
 
 async def test_progress_ack_extends_ack_wait_and_double_ack_confirms(broker):
@@ -398,6 +427,10 @@ async def test_exhaustion_advisory_is_durable_across_unbind_and_source_is_retrie
 
     with pytest.raises(NatsTimeoutError):
         await source.fetch(batch=1, timeout=0.2)
+
+    exhausted_consumer = await js.consumer_info("OS_RUNS", "run-v1")
+    assert exhausted_consumer.delivered.stream_seq >= source_publish.seq
+    assert exhausted_consumer.num_ack_pending == 0
 
     deadline = asyncio.get_running_loop().time() + 3
     while asyncio.get_running_loop().time() < deadline:

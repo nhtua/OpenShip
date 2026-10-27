@@ -72,14 +72,32 @@ class RetentionTask(Base):
     result_json = Column(Text, nullable=True)
 
     __table_args__ = (
-        CheckConstraint("length(trim(requested_by)) BETWEEN 1 AND 255", name="ck_retention_requested_by"),
-        CheckConstraint("event_retention_days BETWEEN 1 AND 36500", name="ck_retention_event_days"),
-        CheckConstraint("checkpoint_retention_days BETWEEN 1 AND 36500", name="ck_retention_checkpoint_days"),
-        CheckConstraint("messaging_retention_days BETWEEN 1 AND 36500", name="ck_retention_messaging_days"),
-        CheckConstraint("batch_size BETWEEN 1 AND 10000", name="ck_retention_batch_size"),
-        CheckConstraint("state IN ('requested', 'running', 'completed', 'failed')", name="ck_retention_task_state"),
+        CheckConstraint(
+            "length(trim(requested_by)) BETWEEN 1 AND 255",
+            name="ck_retention_requested_by",
+        ),
+        CheckConstraint(
+            "event_retention_days BETWEEN 1 AND 36500", name="ck_retention_event_days"
+        ),
+        CheckConstraint(
+            "checkpoint_retention_days BETWEEN 1 AND 36500",
+            name="ck_retention_checkpoint_days",
+        ),
+        CheckConstraint(
+            "messaging_retention_days BETWEEN 1 AND 36500",
+            name="ck_retention_messaging_days",
+        ),
+        CheckConstraint(
+            "batch_size BETWEEN 1 AND 10000", name="ck_retention_batch_size"
+        ),
+        CheckConstraint(
+            "state IN ('requested', 'running', 'completed', 'failed')",
+            name="ck_retention_task_state",
+        ),
         CheckConstraint("attempts >= 0", name="ck_retention_task_attempts"),
-        CheckConstraint("state = 'failed' OR error_code IS NULL", name="ck_retention_task_error"),
+        CheckConstraint(
+            "state = 'failed' OR error_code IS NULL", name="ck_retention_task_error"
+        ),
         CheckConstraint(
             "(consumer_stream_sequence IS NULL AND consumer_sequence IS NULL "
             "AND ack_pending_at IS NULL AND consumer_acked_at IS NULL) OR "
@@ -231,6 +249,10 @@ class MessageExhaustion(Base):
     source_timestamp = Column(DateTime(timezone=True), nullable=True)
     consumer_name = Column(String(64), nullable=False)
     delivery_count = Column(Integer, nullable=False)
+    discovery_method = Column(
+        String(24), nullable=False, default="advisory", server_default="advisory"
+    )
+    recovery_operator = Column(String(255), nullable=True)
     state = Column(String(32), nullable=False)
     payload_digest = Column(String(64), nullable=True)
     message_id = Column(UUID(as_uuid=True), nullable=True)
@@ -263,7 +285,21 @@ class MessageExhaustion(Base):
         CheckConstraint("source_stream = 'OS_RUNS'", name="ck_exhaustion_stream"),
         CheckConstraint("source_sequence > 0", name="ck_exhaustion_sequence"),
         CheckConstraint("consumer_name = 'run-v1'", name="ck_exhaustion_consumer"),
-        CheckConstraint("delivery_count > 0", name="ck_exhaustion_deliveries"),
+        CheckConstraint(
+            "delivery_count >= 0 AND "
+            "(discovery_method = 'capacity_scan' OR delivery_count > 0)",
+            name="ck_exhaustion_deliveries",
+        ),
+        CheckConstraint(
+            "discovery_method IN ('advisory', 'capacity_scan')",
+            name="ck_exhaustion_discovery_method",
+        ),
+        CheckConstraint(
+            "(discovery_method = 'capacity_scan' AND recovery_operator IS NOT NULL "
+            "AND length(trim(recovery_operator)) BETWEEN 1 AND 255) OR "
+            "(discovery_method = 'advisory' AND recovery_operator IS NULL)",
+            name="ck_exhaustion_recovery_operator",
+        ),
         CheckConstraint(
             "state IN ('pending', 'watching_live_owner', 'settling', 'resolved', "
             "'source_missing', 'blocked')",

@@ -39,15 +39,22 @@ from src.openship.auth.models import User
 from src.openship.chat.models import Conversation
 from src.openship.events.service import append_event
 from src.openship.messaging import relay
+from src.openship.messaging.capacity import scan_retained_run_sources
+from src.openship.messaging.capacity_recovery import recovery_gate_errors
 from src.openship.messaging.command import claim_command
 from src.openship.messaging.delivery import prepare_run_delivery, settle_run_delivery
+from src.openship.messaging.exhaustion_supervisor import ExhaustionSupervisor
 from src.openship.messaging.health import (
     check_worker_health,
     health_reply_subject,
     health_request_subject,
     subscribe_worker_health,
 )
-from src.openship.messaging.models import MessageDisposition, MessageTransportState
+from src.openship.messaging.models import (
+    MessageDisposition,
+    MessageExhaustion,
+    MessageTransportState,
+)
 from src.openship.messaging.outbox import enqueue_run
 from src.openship.messaging.relay import (
     _settle_publication,
@@ -597,7 +604,10 @@ async def test_startup_catchup_notifications_and_conversation_order(
         await _wait_processed(sessions, next_events)
         messages = await subscription.fetch(batch=3, timeout=3)
         envelopes = [json.loads(item.data) for item in messages]
-        assert [item["sequence"] for item in envelopes] == [0, 1, 2]
+        assert [item["event_id"] for item in envelopes] == [
+            str(event_id) for event_id in (first_event, *next_events)
+        ]
+        assert all(set(item) == {"event_id"} for item in envelopes)
         assert all("private-" not in item.data.decode() for item in messages)
         for message in messages:
             await message.ack_sync(timeout=1)
@@ -1084,6 +1094,108 @@ async def test_api_event_fanouts_replay_and_independently_receive_live_events(
         for stream in streams:
             await stream.aclose()
         await asyncio.gather(*(fanout.close() for fanout in fanouts))
+
+
+@pytest.mark.asyncio
+async def test_capacity_recovery_finds_and_safely_requeues_a_lost_advisory(
+    relay_postgres, relay_broker
+):
+    _database_url, sessions, installation_id = relay_postgres
+    js = relay_broker.js
+    run_id, _job_id, body, subject = _pg_command(sessions)
+    run_config = await js.consumer_info("OS_RUNS", "run-v1")
+    await js.add_consumer(
+        "OS_RUNS", config=replace(run_config.config, ack_wait=0.1, max_deliver=2)
+    )
+    source_publish = await js.publish(subject, body)
+    source_consumer = await js.pull_subscribe_bind(stream="OS_RUNS", durable="run-v1")
+    for attempt in (1, 2):
+        (delivery,) = await source_consumer.fetch(batch=1, timeout=2)
+        assert delivery.metadata.num_delivered == attempt
+        await delivery.nak(delay=0.01)
+    with pytest.raises(NatsTimeoutError):
+        await source_consumer.fetch(batch=1, timeout=0.2)
+
+    for _ in range(100):
+        advisory_info = await js.stream_info("OS_ADVISORIES")
+        if advisory_info.state.messages:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("MaxDeliver advisory was not stored for the recovery scenario")
+
+    advisory = await js.get_msg("OS_ADVISORIES", seq=advisory_info.state.last_seq)
+    assert json.loads(advisory.data)["stream_seq"] == source_publish.seq
+    assert await js.delete_msg("OS_ADVISORIES", advisory.seq)
+    exhausted = await js.consumer_info("OS_RUNS", "run-v1")
+    assert exhausted.delivered.stream_seq >= source_publish.seq
+    assert exhausted.num_ack_pending == 0
+
+    with sessions() as db:
+        state = db.get(MessageTransportState, 1)
+        state.admission_open = False
+        state.execution_open = False
+        db.commit()
+    from src.openship.messaging.gates import pause_execution_consumers
+
+    assert (await pause_execution_consumers(js)).complete
+    consumers = {
+        ("OS_RUNS", "run-v1"): await js.consumer_info("OS_RUNS", "run-v1"),
+        ("OS_MAINTENANCE", "maintenance-v1"): await js.consumer_info(
+            "OS_MAINTENANCE", "maintenance-v1"
+        ),
+    }
+    with sessions() as db:
+        state = db.get(MessageTransportState, 1)
+        assert (
+            recovery_gate_errors(
+                transport_active=state.active,
+                admission_open=state.admission_open,
+                execution_open=state.execution_open,
+                consumers=consumers,
+            )
+            == ()
+        )
+
+    scan = await scan_retained_run_sources(
+        js,
+        subject=subject,
+        after_sequence=0,
+        through_sequence=consumers[("OS_RUNS", "run-v1")].delivered.stream_seq,
+        limit=10,
+    )
+    assert [message.seq for message in scan.messages] == [source_publish.seq]
+    raw_source = scan.messages[0]
+
+    class Client:
+        def jetstream(self, *, timeout):
+            assert timeout == 2.0
+            return js
+
+    supervisor = ExhaustionSupervisor(
+        Client(), installation_id=installation_id, session_factory=sessions
+    )
+    async with supervisor.operator_recovery_session():
+        outcome = await supervisor.reconcile_capacity_candidate(
+            raw_source, operator="jetstream-ci-operator"
+        )
+
+    assert outcome == "resolved"
+    with sessions() as db:
+        observation = (
+            db.query(MessageExhaustion)
+            .filter_by(source_sequence=source_publish.seq)
+            .one()
+        )
+        job = db.query(RunJob).filter_by(run_id=run_id).one()
+        assert observation.discovery_method == "capacity_scan"
+        assert observation.recovery_operator == "jetstream-ci-operator"
+        assert observation.delivery_count == 0
+        assert observation.state == "resolved"
+        assert job.dispatch_generation == 2
+    with pytest.raises(NotFoundError):
+        await js.get_msg("OS_RUNS", seq=source_publish.seq)
+    await source_consumer.unsubscribe()
 
 
 @pytest.mark.asyncio

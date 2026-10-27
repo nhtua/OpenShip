@@ -41,7 +41,7 @@ environment. It never shells `source` on a dotenv file. Commands:
 | `... rollback ACTION --cutover-id UUID` | ACTION is `preview` or `apply`. Validate and freeze the new epoch, account for in-flight work, retain additive DB schema; never deploy an old release automatically. |
 | `... backup --output PATH` | Require stopped writers/consumers and a consistent cutover/recovery point; capture DB, artifacts, JetStream and non-secret version/identity manifest. Separate protected secret backup remains required. |
 | `... restore --input PATH --verify-only` / `--apply` | Verify-only inspects without mutation. Apply requires stopped writers/consumers and restores to an explicitly empty recovery target; refuse overwrite of a running/nonempty target. Keep execution closed after restore. |
-| `... reconcile --dry-run` / `--apply` | Compare broker/ledger/run/job/generation/dispatch state, inspect uncertain effects; apply only safe dispositions and emits a reviewable report. |
+| `... reconcile --preview` / `--apply` | Preview retained `OS_RUNS` sources by exact installation subject; apply only with closed DB gates, paused/drained execution durables, and an operator identity. |
 | `... rotate-auth --role ROLE` | Stage a new role credential, reload compatible broker config, roll that role's processes, verify reconnect, then explicitly retire the old credential; do not touch Connector keys. |
 
 The wrapper delegates DB/broker operations to
@@ -112,9 +112,10 @@ handling remain required; see the [NATS JetStream contract](https://docs.nats.io
 
 ## Shared execution resources and broker primitives
 
-The Python messaging CLI implements `bootstrap --check`, `bootstrap --apply`
-and `doctor`. Checks are read-only. Apply creates missing resources and reports
-existing drift without rewriting streams or consumers. Readiness includes
+The Python messaging CLI implements `bootstrap --check`, `bootstrap --apply`,
+`doctor`, and the bounded exhaustion `reconcile --preview` / `--apply` flow.
+Bootstrap checks are read-only. Bootstrap apply creates missing resources and
+reports existing drift without rewriting streams or consumers. Readiness includes
 `run-v1` on `OS_RUNS`, `maintenance-v1` on `OS_MAINTENANCE`, and `exhaustion-v1`
 on `OS_ADVISORIES`. The execution durables are filtered to this installation's
 exact command subjects. `exhaustion-v1` is filtered to
@@ -128,22 +129,56 @@ inactivity deletion.
 `OS_ADVISORIES` is a 64 MiB, no-age-expiry work-queue stream with `DiscardNew`.
 Its durable consumer must be bound before the worker binds `run-v1`; worker
 health remains unavailable if that observer exits. Monitor its stored bytes
-and messages. Configure and test an alert at 48 MiB (75% of the byte limit)
-before production cutover. At that threshold, pause the execution consumers
-with the operator gate and let `exhaustion-v1` drain the advisory backlog;
-resume only after the stream is below the alert threshold.
+and messages. The exhaustion supervisor emits `advisory_capacity_alert` when
+stored bytes reach 48 MiB (75% of the configured limit),
+`advisory_capacity_full` at the byte limit, and
+`advisory_capacity_recovered` after usage falls below 75%. `doctor` includes an
+`advisory_capacity` JSON section and exits nonzero at or above the alert
+threshold. Route the structured worker log event through the deployment's
+existing log alerting before production cutover. At the threshold, close
+admission and execution with the operator gate, drain active work, then let
+`exhaustion-v1` drain the advisory backlog. Resume only after the stream is
+below the alert threshold and the recovery report is complete.
 
 At 64 MiB, `DiscardNew` can reject new advisory capture. The corresponding
-`OS_RUNS` source remains stored, but the current supervisor cannot discover an
-advisory that JetStream did not retain. This slice has no automatic scanner or
-operator command to identify those unnotified sequences. Treat a full stream as
-a production stop condition: keep execution consumers paused and preserve both
-streams. Do not resume until a reviewed operator tool has reconciled retained
-`OS_RUNS` sequences against PostgreSQL. Do not clear either stream or recreate
-its durable as a repair. Phase 6A is not production-ready until the 75% alert
-and the full-capacity reconciliation tool and procedure have been implemented
-and tested. Do not deploy or cut over while the stream is at the alert
-threshold.
+`OS_RUNS` source remains stored. The `reconcile --preview` tool scans retained
+run-subject sources up through the `run-v1` delivered high-water mark in bounded
+batches and reports exact sequence, timestamp and body digest without exposing
+the command body. These are reconciliation candidates: JetStream's consumer
+info has aggregate counters and cannot establish an exact per-message delivery
+count. Preview is read-only.
+
+Use the reviewed recovery procedure after a capacity stop:
+
+1. Keep admission closed. Close execution, pause both `run-v1` and
+   `maintenance-v1`, and drain active work until both consumers report zero
+   pending acknowledgements. Stop any old process that does not honor these
+   gates. Preserve both streams and their durables.
+2. Run `reconcile --preview` and retain its JSON report. For a large backlog,
+   review each bounded batch and continue with the emitted
+   `next_after_sequence` until `truncated` is false.
+3. Apply the reviewed batch with `reconcile --apply --operator IDENTIFIER`.
+   Apply refuses an inactive transport, open DB gates, unpaused consumers, or
+   any in-flight execution acknowledgement. It stores
+   `discovery_method=capacity_scan`, the operator identity, and an unknown
+   delivery count (`0`) in PostgreSQL. It then delegates disposition to the
+   existing fenced exhaustion state machine. It never treats the scan as an
+   authoritative MaxDeliver count or auto-quarantines an unbound command.
+4. Keep execution closed if the report contains `blocked`, `settling`, or
+   `manual_review_unbound_source` outcomes. Resolve those cases through the
+   existing operator recovery path and repeat the preview. Resume only when
+   every candidate is resolved, the advisory observer has drained the
+   retained advisory backlog, and `doctor` reports capacity below 75%.
+
+The scan is deliberately bounded to 500 sources per invocation; the CLI default
+is 100. A truncated apply is incomplete and returns nonzero so the operator
+continues from the reported cursor. A later received MaxDeliver advisory can
+upgrade an operator-discovered row with its real diagnostic count without
+overwriting who discovered it. Do not clear either stream or recreate its
+durable as a repair. Phase 6A remains blocked from production cutover until the
+capacity alert, real-broker scan contract, recovery procedure and full
+PostgreSQL/JetStream qualification pass. Do not deploy or cut over while the
+stream is at the alert threshold.
 
 Do not delete advisory messages or exhausted sources manually.
 

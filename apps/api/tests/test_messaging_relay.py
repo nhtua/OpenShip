@@ -142,7 +142,7 @@ def test_lost_confirmation_republishes_immutable_command_after_generation_advanc
     )
 
 
-def test_event_claims_preserve_sequence_and_exclude_event_content():
+def test_event_claims_publish_only_authorized_reference():
     with SessionLocal() as db:
         conversation = _conversation(db)
         conversation_id = conversation.id
@@ -167,8 +167,12 @@ def test_event_claims_preserve_sequence_and_exclude_event_content():
     first_batch = claim_outbox_batch(conversation_id=conversation_id)
     assert len(first_batch) == 1
     first_envelope = json.loads(first_batch[0].body)
-    assert first_envelope["event_id"] == str(first_id)
-    assert first_envelope["sequence"] == 0
+    assert first_envelope == {"event_id": str(first_id)}
+    with SessionLocal() as db:
+        installation_id = db.get(MessageTransportState, 1).installation_id
+    assert first_batch[0].subject == (
+        f"openship.{installation_id.hex}.v1.event.{conversation_id.hex}"
+    )
     assert "private prompt" not in first_batch[0].body.decode()
     assert "private answer" not in first_batch[0].body.decode()
 
@@ -178,8 +182,7 @@ def test_event_claims_preserve_sequence_and_exclude_event_content():
     second_batch = claim_outbox_batch(conversation_id=conversation_id)
     assert len(second_batch) == 1
     second_envelope = json.loads(second_batch[0].body)
-    assert second_envelope["event_id"] == str(second_id)
-    assert second_envelope["sequence"] == 1
+    assert second_envelope == {"event_id": str(second_id)}
 
 
 @pytest.mark.asyncio

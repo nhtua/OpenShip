@@ -109,9 +109,23 @@ def _record_envelope(
     if row.dispatch_generation is not None:
         record["dispatch_generation"] = row.dispatch_generation
     if row.destination == "event":
-        if event is None:
+        if (
+            event is None
+            or event.id != row.event_id
+            or event.conversation_id != row.conversation_id
+        ):
             raise ValueError("event publication refers to a missing event")
-        record["kind"] = "event"
+        expected_event_subject = (
+            f"openship.{state.installation_id.hex}.v1.event.{event.conversation_id.hex}"
+        )
+        if row.subject != expected_event_subject:
+            raise ValueError(
+                "event publication subject does not match its conversation"
+            )
+        # API consumers use this reference to read the authorized event from
+        # PostgreSQL. Keep prompts, event payloads and application metadata out
+        # of the broker notice.
+        record = {"event_id": str(event.id)}
     elif row.destination == "command":
         if run is None or row.dispatch_generation is None:
             raise ValueError("run command is missing its durable run reference")

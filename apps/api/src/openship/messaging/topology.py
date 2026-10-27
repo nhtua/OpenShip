@@ -21,6 +21,7 @@ from nats.js.errors import BadRequestError, NotFoundError
 
 from ..config import settings
 from ..database.session import SessionLocal
+from .capacity import ADVISORY_STREAM_MAX_BYTES
 from .connection import connect_nats
 from .models import MessageTransportState
 
@@ -270,7 +271,7 @@ def stream_configs(installation_id: uuid.UUID) -> tuple[StreamConfig, ...]:
             name="OS_ADVISORIES",
             subjects=[EXHAUSTION_ADVISORY_SUBJECT],
             retention=RetentionPolicy.WORK_QUEUE,
-            max_bytes=64 * _MIB,
+            max_bytes=ADVISORY_STREAM_MAX_BYTES,
             max_age=0.0,
             discard=DiscardPolicy.NEW,
             **common,

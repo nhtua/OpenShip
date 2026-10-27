@@ -207,6 +207,118 @@ def test_live_owner_observation_is_durable_and_delivery_count_is_diagnostic():
         assert persisted.payload_digest == command.body_digest
 
 
+def test_capacity_scan_records_unknown_delivery_count_and_operator_provenance():
+    _installation_id, body, command = _create_claimed_run()
+    source = JetStreamSourceIdentity("OS_RUNS", 8822, datetime.now(UTC))
+
+    with SessionLocal() as db:
+        receipt = record_exhaustion_observation(
+            db,
+            body=body,
+            subject=command.subject,
+            source_identity=source,
+            delivery_count=0,
+            discovery_method="capacity_scan",
+            recovery_operator="oncall@example.test",
+        )
+        persisted = db.get(MessageExhaustion, receipt.id)
+
+    assert receipt.state == "watching_live_owner"
+    assert persisted.delivery_count == 0
+    assert persisted.discovery_method == "capacity_scan"
+    assert persisted.recovery_operator == "oncall@example.test"
+    _OBSERVATION_IDS.append(receipt.id)
+
+    with SessionLocal() as db:
+        updated = record_exhaustion_observation(
+            db,
+            body=body,
+            subject=command.subject,
+            source_identity=source,
+            delivery_count=10,
+            advisory_sequence=source.sequence,
+        )
+        persisted = db.get(MessageExhaustion, receipt.id)
+
+    assert updated.id == receipt.id
+    assert persisted.delivery_count == 10
+    assert persisted.discovery_method == "capacity_scan"
+    assert persisted.recovery_operator == "oncall@example.test"
+
+
+def test_capacity_scan_requires_unknown_count_and_operator_identity():
+    _installation_id, body, command = _create_claimed_run()
+    source = JetStreamSourceIdentity("OS_RUNS", 8823, datetime.now(UTC))
+
+    with SessionLocal() as db:
+        assert (
+            record_exhaustion_observation(
+                db,
+                body=body,
+                subject=command.subject,
+                source_identity=source,
+                delivery_count=0,
+            )
+            is None
+        )
+
+    with SessionLocal() as db:
+        assert (
+            record_exhaustion_observation(
+                db,
+                body=body,
+                subject=command.subject,
+                source_identity=source,
+                delivery_count=0,
+                discovery_method="capacity_scan",
+            )
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_capacity_recovery_records_operator_and_keeps_live_owner_source():
+    _installation_id, body, command = _create_claimed_run()
+    source_time = datetime.now(UTC)
+    raw_message = SimpleNamespace(
+        seq=8824,
+        time=source_time,
+        subject=command.subject,
+        data=body,
+    )
+
+    class Client:
+        def jetstream(self, *, timeout):
+            assert timeout == 2.0
+            return SimpleNamespace()
+
+    supervisor = ExhaustionSupervisor(
+        Client(),
+        installation_id=command.installation_id,
+        session_factory=SessionLocal,
+    )
+
+    async def run_sync(function, *args, **kwargs):
+        with SessionLocal() as db:
+            return function(db, *args, **kwargs)
+
+    supervisor._run_sync = run_sync
+    result = await supervisor.reconcile_capacity_candidate(
+        raw_message, operator="oncall@example.test"
+    )
+
+    assert result == "watching_live_owner"
+    with SessionLocal() as db:
+        observation = (
+            db.query(MessageExhaustion).filter_by(source_sequence=raw_message.seq).one()
+        )
+        assert observation.discovery_method == "capacity_scan"
+        assert observation.delivery_count == 0
+        assert observation.recovery_operator == "oncall@example.test"
+        assert observation.state == "watching_live_owner"
+        _OBSERVATION_IDS.append(observation.id)
+
+
 def _record_observation():
     _installation_id, body, command = _create_claimed_run()
     source = JetStreamSourceIdentity(

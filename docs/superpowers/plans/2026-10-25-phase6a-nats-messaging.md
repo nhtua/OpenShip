@@ -285,7 +285,20 @@ routes an allowlisted kind to existing execution or explicit retention.
     alert at 75% of `OS_ADVISORIES` capacity and a reviewed recovery
     tool/procedure for advisories rejected at full capacity; this slice has no
     command that discovers rejected advisories from retained `OS_RUNS` state.
-    Keep production cutover blocked until that recovery gap is closed.
+    The missing capacity guard is now implemented locally: the supervisor emits
+    transition logs at the 75%/full/recovered boundaries, `doctor` reports
+    stored bytes and fails readiness at the alert threshold, and bounded
+    `reconcile --preview` / `--apply` scans exact retained run subjects through
+    the consumer delivered high-water mark. Apply requires the active transport,
+    both DB gates closed, and both execution durables paused with zero pending
+    ACKs. Migration 019 records `capacity_scan`, operator identity, and a zero
+    delivery count until an advisory supplies its real diagnostic count. Apply
+    reuses the existing fenced state machine, preserves uncertain/unbound
+    sources, and reports a resumable cursor. The runbook now describes the
+    recovery sequence. Focused local capacity, CLI and exhaustion suites pass
+    (33 tests); the real broker next-by-subject test and pinned 3.11–3.13
+    qualifier still need to pass before closing this slice. Production cutover
+    remains blocked until those checks pass.
   - [x] **3B2e.5 — Explicit retention maintenance:** accept only an explicitly
     enqueued, bounded retention task with operator identity and durable
     requested/running/completed/failed state; preserve direct maintenance CLI.
@@ -363,6 +376,13 @@ Reuse the existing event projection; no broker types leak to the web client.
   not block history, auth, cancel or readiness requests.
 - [ ] Verify event suites and `pnpm test:run`, `pnpm typecheck`, affected
   Playwright journeys; trace idle SSE SQL and review/commit.
+
+  The implementation is committed in `6c3fad2`; the first pinned JetStream
+  run found that relay event publications still carried the generic envelope,
+  while `EventFanout` requires an exact `{"event_id": ...}` reference. The
+  relay now publishes only that reference and validates its conversation
+  subject. The two-API fanout qualification needs a fresh real-broker pass
+  before this task can be closed.
 
 ## Task 5 — Build resumable cutover, rollback and inspection commands
 

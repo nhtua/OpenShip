@@ -11,12 +11,14 @@ import logging
 import math
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.errors import NotFoundError
 from sqlalchemy.orm import Session
 
+from .capacity import capacity_report
 from .command import InvalidCommandEnvelope
 from .delivery import DeliveryDisposition, PreparedDelivery
 from .exhaustion import (
@@ -77,6 +79,50 @@ class ExhaustionSupervisor:
         self.ack_timeout = ack_timeout
         self.poll_interval = poll_interval
         self._pool = None
+        self._capacity_alert: bool | None = None
+        self._capacity_full: bool | None = None
+
+    async def _check_advisory_capacity(self) -> None:
+        """Emit one structured alert on entering/leaving the 75% threshold."""
+        try:
+            info = await self.js.stream_info("OS_ADVISORIES")
+            report = capacity_report(info.state.bytes, info.config.max_bytes)
+        except Exception as error:
+            logger.warning(
+                "advisory_capacity_check_unavailable type=%s", type(error).__name__
+            )
+            return
+
+        if report.full and self._capacity_full is not True:
+            logger.error(
+                "advisory_capacity_full stored_bytes=%s max_bytes=%s "
+                "alert_bytes=%s utilization_percent=%s",
+                report.stored_bytes,
+                report.max_bytes,
+                report.alert_bytes,
+                report.utilization_percent,
+            )
+        elif report.alert and self._capacity_alert is not True:
+            logger.warning(
+                "advisory_capacity_alert stored_bytes=%s max_bytes=%s "
+                "alert_bytes=%s utilization_percent=%s full=%s",
+                report.stored_bytes,
+                report.max_bytes,
+                report.alert_bytes,
+                report.utilization_percent,
+                report.full,
+            )
+        elif not report.alert and self._capacity_alert is True:
+            logger.info(
+                "advisory_capacity_recovered stored_bytes=%s max_bytes=%s "
+                "alert_bytes=%s utilization_percent=%s",
+                report.stored_bytes,
+                report.max_bytes,
+                report.alert_bytes,
+                report.utilization_percent,
+            )
+        self._capacity_alert = report.alert
+        self._capacity_full = report.full
 
     async def _run_sync(self, function, *args, **kwargs):
         if self._pool is None:
@@ -90,6 +136,21 @@ class ExhaustionSupervisor:
             raise RuntimeError("exhaustion supervisor is not running")
         async with self._pool.reserve() as slot:
             return await slot.run(_call_without_resource, function, args, kwargs)
+
+    @asynccontextmanager
+    async def operator_recovery_session(self):
+        """Provide the same bounded DB executor to an explicit recovery command."""
+        from .executor import ExecutionPool
+
+        if self._pool is not None:
+            raise RuntimeError("exhaustion supervisor already owns an execution pool")
+        pool = ExecutionPool(1, self.session_factory)
+        self._pool = pool
+        try:
+            yield self
+        finally:
+            self._pool = None
+            await pool.close()
 
     async def _pause(self, stop: asyncio.Event, delay: float = 0.25) -> None:
         try:
@@ -178,6 +239,7 @@ class ExhaustionSupervisor:
                         continue
 
                 if time.monotonic() >= next_recovery:
+                    await self._check_advisory_capacity()
                     await self._recover_observations()
                     next_recovery = time.monotonic() + self.poll_interval
                 try:
@@ -450,6 +512,76 @@ class ExhaustionSupervisor:
         elif receipt.state == "blocked":
             logger.warning("max_deliver_observation_blocked")
         await self._ack_advisory(message)
+
+    async def reconcile_capacity_candidate(self, raw_message, *, operator: str) -> str:
+        """Reconcile one retained source discovered without an advisory count."""
+        source_identity = self._source_identity(raw_message)
+        expected_subject = f"openship.{self.installation_id.hex}.v1.command.run.execute"
+        if (
+            source_identity is None
+            or raw_message.subject != expected_subject
+            or not isinstance(raw_message.data, bytes)
+        ):
+            return "source_binding_mismatch"
+
+        handoff = await self._load_failure_handoff(source_identity)
+        if handoff is not None:
+            disposition = DeliveryDisposition(
+                handoff.classification, handoff.error_code
+            )
+            if not handoff_matches_delivery(
+                handoff,
+                installation_id=self.installation_id,
+                source_identity=source_identity,
+                disposition=disposition,
+                body=raw_message.data,
+            ):
+                await self._run_sync(
+                    record_failure_source_conflict,
+                    installation_id=self.installation_id,
+                    source_identity=source_identity,
+                    body=raw_message.data,
+                )
+                return "failure_source_conflict"
+            if not await self._publish_failure(handoff):
+                return "failure_notice_unconfirmed"
+            if not await self._delete_exact_source(
+                raw_message, source_identity, handoff.body_digest
+            ):
+                return "failure_source_delete_unconfirmed"
+            return "resolved_failure"
+
+        if await self._run_sync(
+            failure_record_exists,
+            installation_id=self.installation_id,
+            source_identity=source_identity,
+        ):
+            await self._run_sync(
+                record_failure_source_conflict,
+                installation_id=self.installation_id,
+                source_identity=source_identity,
+                body=raw_message.data,
+            )
+            return "failure_handoff_incomplete"
+
+        receipt = await self._run_sync(
+            record_exhaustion_observation,
+            body=raw_message.data,
+            subject=raw_message.subject,
+            source_identity=source_identity,
+            delivery_count=0,
+            discovery_method="capacity_scan",
+            recovery_operator=operator,
+        )
+        if receipt is None:
+            return "observation_unavailable"
+        if isinstance(receipt, UnboundExhaustionSource):
+            return "manual_review_unbound_source"
+        if receipt.state == "settling":
+            if await self._settle_observation(receipt.id):
+                return "resolved"
+            return "settling"
+        return receipt.state
 
     async def _handoff_unbound_source(
         self, advisory_message, raw_message, source_identity
