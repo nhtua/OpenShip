@@ -191,7 +191,7 @@ routes an allowlisted kind to existing execution or explicit retention.
   expose confirmed pause/resume, and preserve existing broker state during
   bootstrap races. Pinned real-broker race tests and scoped review pass.
 
-- [ ] **3B2b — Inactive-safe exact acquisition:** require both
+- [x] **3B2b — Inactive-safe exact acquisition:** require both
   `transport.active` and `execution_open` under the shared state lock before a
   claim; preserve distinct closed-gate outcomes so a fetched delivery can be
   held with progress rather than NAKed until exhaustion. Restore messaging
@@ -200,7 +200,9 @@ routes an allowlisted kind to existing execution or explicit retention.
 - [ ] **3B2c — Bounded run pulls and committed ACKs:** use one bound pull
   subscription per reserved run slot, stop fetches while disconnected/closed,
   progress fetched messages independently, and ACK only after committed
-  settlement. Keep background capacity and legacy production entry unchanged.
+  settlement. Preserve exact claim evidence through settlement; a deferred
+  unclaimed command cannot authorize ACK. Keep background capacity and legacy
+  production entry unchanged.
 
 - [ ] **3B2d — Owner controls and supervision:** add bounded per-run control
   subscriptions, initial authoritative ownership checks, wakeable 0.5-second
