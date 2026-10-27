@@ -495,6 +495,8 @@ class _RunBroker:
             self.messages.put_nowait(message)
         self.bindings, self.fetches, self.unsubscribed = [], [], []
         self.control_subscriptions = []
+        self.rpc_order = []
+        self.published = []
         self.on_fetch = lambda: None
         self.topology_checks = 0
         self.consumer = None
@@ -503,6 +505,7 @@ class _RunBroker:
         return self
 
     async def pull_subscribe_bind(self, **kwargs):
+        self.rpc_order.append("pull_subscribe")
         self.bindings.append(kwargs)
         broker = self
 
@@ -525,6 +528,7 @@ class _RunBroker:
         return Subscription()
 
     async def subscribe(self, subject, *, cb, **kwargs):
+        self.rpc_order.append("subscribe")
         subscription = (subject, cb, kwargs)
         self.control_subscriptions.append(subscription)
         broker = self
@@ -537,6 +541,10 @@ class _RunBroker:
 
     async def flush(self, *, timeout):
         assert timeout > 0
+        self.rpc_order.append("flush")
+
+    async def publish(self, subject, payload, *, reply=""):
+        self.published.append((subject, payload, reply))
 
 
 def _loop_fixture(
@@ -1011,6 +1019,135 @@ async def test_consumer_runs_recovery_while_broker_fetches_are_unavailable(
     finally:
         f.stop.set()
         await asyncio.wait_for(task, 2)
+
+
+@pytest.mark.asyncio
+async def test_consumer_health_rpc_is_ready_before_run_pulls_and_is_cleaned_up(
+    monkeypatch,
+):
+    f = _loop_fixture(monkeypatch, empty=True)
+    with SessionLocal() as db:
+        f.consumer._installation_id = db.get(MessageTransportState, 1).installation_id
+    intake_open = True
+
+    async def test_gate():
+        return intake_open
+
+    async def idle_consumer(_subscription, stop, started):
+        started.set()
+        await stop.wait()
+
+    class NoopPool:
+        async def close(self):
+            return None
+
+    f.consumer._fetch_allowed = test_gate
+    f.consumer._consume = idle_consumer
+    f.consumer._pool = NoopPool()
+    f.consumer._metadata = NoopPool()
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await _until(lambda: f.consumer._intake_ready)
+        installation_id = f.consumer._installation_id
+        health_subject = f"openship.{installation_id.hex}.v1.rpc.worker.health"
+        assert f.broker.rpc_order[:3] == ["subscribe", "flush", "pull_subscribe"]
+        subject, callback, options = next(
+            item for item in f.broker.control_subscriptions if item[0] == health_subject
+        )
+        assert subject == health_subject
+        assert options == {
+            "pending_msgs_limit": 1,
+            "pending_bytes_limit": 16 * 1024,
+        }
+
+        api_instance_id, request_id = uuid.uuid4(), uuid.uuid4()
+        reply_subject = (
+            f"openship.{installation_id.hex}.v1.reply."
+            f"{api_instance_id.hex}.{request_id.hex}"
+        )
+        request = {
+            "schema_version": 1,
+            "kind": "worker.health",
+            "installation_id": str(installation_id),
+            "api_instance_id": str(api_instance_id),
+            "request_id": str(request_id),
+            "source_service": "api",
+        }
+        await callback(
+            SimpleNamespace(
+                subject=health_subject,
+                data=json.dumps(request).encode(),
+                reply=reply_subject,
+            )
+        )
+        assert len(f.broker.published) == 1
+        assert f.broker.published[0][0] == reply_subject
+        assert json.loads(f.broker.published[0][1]) == {
+            "schema_version": 1,
+            "kind": "worker.health.result",
+            "installation_id": str(installation_id),
+            "api_instance_id": str(api_instance_id),
+            "request_id": str(request_id),
+            "source_service": "worker",
+            "ready": True,
+        }
+
+        with SessionLocal() as db:
+            db.get(MessageTransportState, 1).execution_open = False
+            db.commit()
+        intake_open = False
+        await callback(
+            SimpleNamespace(
+                subject=health_subject,
+                data=json.dumps(request).encode(),
+                reply=reply_subject,
+            )
+        )
+        assert len(f.broker.published) == 1
+    finally:
+        f.stop.set()
+        await asyncio.wait_for(task, 5)
+    assert not f.broker.control_subscriptions
+
+
+@pytest.mark.asyncio
+async def test_worker_health_requires_bound_run_intake(monkeypatch):
+    f = _loop_fixture(monkeypatch, empty=True)
+
+    async def fetch_allowed():
+        return True
+
+    f.consumer._fetch_allowed = fetch_allowed
+    recovery_task = asyncio.create_task(asyncio.Event().wait())
+    f.consumer._recovery_task = recovery_task
+    try:
+        assert not await f.consumer._health_ready(f.stop)
+    finally:
+        recovery_task.cancel()
+        await asyncio.gather(recovery_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_worker_health_rechecks_intake_after_gate_check(monkeypatch):
+    f = _loop_fixture(monkeypatch, empty=True)
+    intake_task = asyncio.create_task(asyncio.Event().wait())
+    recovery_task = asyncio.create_task(asyncio.Event().wait())
+    f.consumer._consumer_tasks = (intake_task,)
+    f.consumer._recovery_task = recovery_task
+    f.consumer._intake_ready = True
+
+    async def gate_check_during_shutdown():
+        f.consumer._intake_ready = False
+        f.consumer._consumer_tasks = ()
+        return True
+
+    f.consumer._fetch_allowed = gate_check_during_shutdown
+    try:
+        assert not await f.consumer._health_ready(f.stop)
+    finally:
+        intake_task.cancel()
+        recovery_task.cancel()
+        await asyncio.gather(intake_task, recovery_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

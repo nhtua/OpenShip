@@ -81,6 +81,14 @@ long-running application services. Only API/worker receive existing Connector
 keyrings; the relay and broker do not need them. Never log effective Compose
 config or credential file contents into public CI artifacts.
 
+For worker health checks, the API role may publish only to
+`openship.I.v1.rpc.worker.health` and subscribe to its installation's reply
+subjects. Runtime workers subscribe only to that installation's health request
+subject and publish only to its health reply subjects. The API mints a unique
+reply subject for each request and accepts only a matching response; no broad
+`_INBOX.>` permission is required for this RPC. A worker that cannot currently
+admit a run stays silent, and the API reports unavailable within two seconds.
+
 ## Qualified transport versions
 
 The server image and Python client are pinned in `deploy/versions.env` and

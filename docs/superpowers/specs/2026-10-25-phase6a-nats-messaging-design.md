@@ -190,14 +190,24 @@ loading/projecting data; a subject is never authority. Use
 [NATS authorization](https://docs.nats.io/reference/config/authorization) as
 the broker permission mechanism, alongside application checks.
 
-Source reply subjects are minted by the server and bound to a registered
-request/source, not supplied by a browser. A health RPC wait is at most two
-seconds, with safe unavailable/timeout results. A durable run response, where
-used internally, references its committed outcome and original correlation;
-SSE remains the public progress channel. Subscribe before sending. Disappeared
-inboxes, no responders and timeouts never alter run outcomes or authorize a
-new effect. JetStream's delivery acknowledgement reply subject is reserved
-for broker ACKs. See [NATS request/reply](https://docs.nats.io/concepts/request-reply).
+The API mints one API-instance UUID and a request UUID for each worker health
+check. It subscribes to the exact
+`openship.I.v1.reply.API_INSTANCE.REQUEST` subject and flushes that subscription
+before publishing to `openship.I.v1.rpc.worker.health`. Requests and replies
+bind schema, kind, installation, API instance, request and source service. A
+worker replies only while its run consumer, recovery supervisor, broker
+topology and authoritative execution gate are ready. Multiple workers may
+receive the core request; the API accepts the first strictly bound ready reply.
+Workers that are not ready remain silent, so no responder yields the same safe
+unavailable result as a timeout. The full RPC wait is at most two seconds.
+This is an internal probe; public HTTP health routes remain a separate concern.
+
+A durable run response, where used internally, references its committed
+outcome and original correlation; SSE remains the public progress channel.
+Disappeared reply subscriptions, no responders and timeouts never alter run
+outcomes or authorize a new effect. JetStream's delivery acknowledgement reply
+subject is reserved for broker ACKs. See
+[NATS request/reply](https://docs.nats.io/concepts/request-reply).
 
 ## Stream and consumer proposal
 

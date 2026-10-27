@@ -41,6 +41,12 @@ from src.openship.events.service import append_event
 from src.openship.messaging import relay
 from src.openship.messaging.command import claim_command
 from src.openship.messaging.delivery import prepare_run_delivery, settle_run_delivery
+from src.openship.messaging.health import (
+    check_worker_health,
+    health_reply_subject,
+    health_request_subject,
+    subscribe_worker_health,
+)
 from src.openship.messaging.models import MessageDisposition, MessageTransportState
 from src.openship.messaging.outbox import enqueue_run
 from src.openship.messaging.relay import (
@@ -978,6 +984,168 @@ async def _runtime_client(*, reconnected_cb=None, allow_reconnect=True, error_cb
         allow_reconnect=allow_reconnect,
         error_cb=error_cb,
     )
+
+
+async def _api_client(*, error_cb=None):
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())["api"]
+    return await nats.connect(
+        os.environ["TEST_NATS_URL"],
+        user=auth["user"],
+        password=auth["password"],
+        connect_timeout=2,
+        error_cb=error_cb,
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_worker_health_rpc_is_bound_and_installation_scoped(
+    relay_postgres, relay_broker
+):
+    _url, _sessions, installation_id = relay_postgres
+    runtime = await _runtime_client()
+    api = await _api_client()
+
+    async def ready():
+        return True
+
+    worker_subscription = await subscribe_worker_health(
+        runtime,
+        installation_id=installation_id,
+        is_ready=ready,
+    )
+    try:
+        result = await check_worker_health(
+            api,
+            installation_id=installation_id,
+            api_instance_id=uuid.uuid4(),
+        )
+        assert result.ready
+
+        other_installation = uuid.uuid4()
+        permission_errors = []
+
+        async def on_error(error):
+            permission_errors.append(str(error))
+
+        denied = await _api_client(error_cb=on_error)
+        flush_errors = []
+        try:
+            await denied.publish(
+                health_request_subject(other_installation),
+                b"{}",
+                reply=health_reply_subject(
+                    other_installation, uuid.uuid4(), uuid.uuid4()
+                ),
+            )
+            try:
+                await denied.flush(timeout=1)
+            except NatsError as error:
+                flush_errors.append(error)
+            await _wait_condition(lambda: permission_errors or flush_errors)
+            assert any(
+                "permissions violation" in error.lower() for error in permission_errors
+            ) or any(isinstance(error, AuthorizationError) for error in flush_errors)
+        finally:
+            await denied.close()
+
+        runtime_errors = []
+
+        async def on_runtime_error(error):
+            runtime_errors.append(str(error))
+
+        denied_runtime = await _runtime_client(error_cb=on_runtime_error)
+        runtime_flush_errors = []
+
+        async def ignore_health_request(_message):
+            return None
+
+        try:
+            await denied_runtime.subscribe(
+                health_request_subject(other_installation),
+                cb=ignore_health_request,
+                pending_msgs_limit=1,
+                pending_bytes_limit=16 * 1024,
+            )
+            try:
+                await denied_runtime.flush(timeout=1)
+            except NatsError as error:
+                runtime_flush_errors.append(error)
+            await _wait_condition(lambda: runtime_errors or runtime_flush_errors)
+            assert any(
+                "permissions violation" in error.lower() for error in runtime_errors
+            ) or any(
+                isinstance(error, AuthorizationError) for error in runtime_flush_errors
+            )
+        finally:
+            await denied_runtime.close()
+
+        denied_runtime_reply_errors = []
+
+        async def on_runtime_reply_error(error):
+            denied_runtime_reply_errors.append(str(error))
+
+        denied_runtime_reply = await _runtime_client(error_cb=on_runtime_reply_error)
+        runtime_reply_flush_errors = []
+        try:
+            await denied_runtime_reply.publish(
+                health_reply_subject(other_installation, uuid.uuid4(), uuid.uuid4()),
+                b"{}",
+            )
+            try:
+                await denied_runtime_reply.flush(timeout=1)
+            except NatsError as error:
+                runtime_reply_flush_errors.append(error)
+            await _wait_condition(
+                lambda: denied_runtime_reply_errors or runtime_reply_flush_errors
+            )
+            assert any(
+                "permissions violation" in error.lower()
+                for error in denied_runtime_reply_errors
+            ) or any(
+                isinstance(error, AuthorizationError)
+                for error in runtime_reply_flush_errors
+            )
+        finally:
+            await denied_runtime_reply.close()
+
+        denied_api_reply_errors = []
+
+        async def on_api_reply_error(error):
+            denied_api_reply_errors.append(str(error))
+
+        denied_api_reply = await _api_client(error_cb=on_api_reply_error)
+        api_reply_flush_errors = []
+
+        async def ignore_health_reply(_message):
+            return None
+
+        try:
+            await denied_api_reply.subscribe(
+                health_reply_subject(other_installation, uuid.uuid4(), uuid.uuid4()),
+                cb=ignore_health_reply,
+                pending_msgs_limit=1,
+                pending_bytes_limit=16 * 1024,
+            )
+            try:
+                await denied_api_reply.flush(timeout=1)
+            except NatsError as error:
+                api_reply_flush_errors.append(error)
+            await _wait_condition(
+                lambda: denied_api_reply_errors or api_reply_flush_errors
+            )
+            assert any(
+                "permissions violation" in error.lower()
+                for error in denied_api_reply_errors
+            ) or any(
+                isinstance(error, AuthorizationError)
+                for error in api_reply_flush_errors
+            )
+        finally:
+            await denied_api_reply.close()
+    finally:
+        await worker_subscription.unsubscribe()
+        await runtime.close()
+        await api.close()
 
 
 @pytest.mark.asyncio

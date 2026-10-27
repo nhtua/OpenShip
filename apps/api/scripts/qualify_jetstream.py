@@ -136,6 +136,10 @@ def main() -> int:
                 "user": "runtime_" + secrets.token_urlsafe(8),
                 "password": secrets.token_urlsafe(32),
             },
+            "api": {
+                "user": "api_" + secrets.token_urlsafe(8),
+                "password": secrets.token_urlsafe(32),
+            },
         }
         auth_file = temp_dir / "auth.json"
         config_file = temp_dir / "nats.conf"
@@ -183,10 +187,20 @@ authorization {{
           "$JS.API.CONSUMER.INFO.OS_MAINTENANCE.maintenance-v1",
           "$JS.API.CONSUMER.MSG.NEXT.OS_RUNS.run-v1",
           "$JS.API.CONSUMER.MSG.NEXT.OS_MAINTENANCE.maintenance-v1",
-          "$JS.ACK.OS_RUNS.run-v1.>", "$JS.ACK.OS_MAINTENANCE.maintenance-v1.>"
+          "$JS.ACK.OS_RUNS.run-v1.>", "$JS.ACK.OS_MAINTENANCE.maintenance-v1.>",
+          "openship.{control_installation_id.hex}.v1.reply.*.*"
         ],
         subscribe: ["_INBOX.runtime.>",
+          "openship.{control_installation_id.hex}.v1.rpc.worker.health",
           "openship.{control_installation_id.hex}.v1.control.*"]
+      }}
+    }}
+    {{
+      user: "{auth["api"]["user"]}"
+      password: "{auth["api"]["password"]}"
+      permissions: {{
+        publish: ["openship.{control_installation_id.hex}.v1.rpc.worker.health"],
+        subscribe: ["openship.{control_installation_id.hex}.v1.reply.*.*"]
       }}
     }}
   ]

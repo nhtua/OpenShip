@@ -227,10 +227,21 @@ routes an allowlisted kind to existing execution or explicit retention.
     consumer factory assertion passed separately (1 test), Ruff and diff checks
     passed, and independent review approved. The pinned PostgreSQL/JetStream
     qualifier was not rerun because `TEST_POSTGRES_URL` is not configured here.
-  - [ ] **3B2e.2 — Bounded worker health RPC:** add source-owned request/reply
+  - [x] **3B2e.2 — Bounded worker health RPC:** add source-owned request/reply
     subjects, subscribe-before-publish, strict reply/request binding, and a
-    two-second unavailable result. Task 4 may consume this contract for API
-    readiness without changing browser or run-result semantics.
+    two-second total unavailable deadline. Use the exact reply subject
+    `openship.<installation>.v1.reply.<api-instance>.<request-id>` with
+    server-generated UUID tokens. A worker responds only while its consumer,
+    recovery supervisor, broker topology and authoritative execution gate are
+    ready; multiple workers may receive the broadcast and the API accepts the
+    first valid ready reply. Recheck intake and worker task liveness after the
+    awaited gate/topology check so shutdown cannot race a ready response. No
+    responder returns safe `unavailable`. Task 4 may consume this contract for
+    API readiness without changing browser or run-result semantics; do not
+    change HTTP health routes in this subtask. Seven focused health/readiness
+    unit tests passed; the pinned PostgreSQL/JetStream qualifier passed all 48
+    cases with no skips; Ruff, formatting and diff checks passed; independent
+    follow-up review approved.
   - [ ] **3B2e.3 — Durable failure handoff:** persist safe failure records and
     failure-notice outbox references before a quarantine/reconcile handler can
     authorize ACK; failed or uncertain confirmation retains the original

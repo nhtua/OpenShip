@@ -33,6 +33,7 @@ from .delivery import (
     settle_run_delivery,
 )
 from .executor import ExecutionPool
+from .health import subscribe_worker_health
 from .models import MessageTransportState
 from .recovery import RecoverySupervisor
 from .topology import TopologyCompatibilityError, ensure_topology
@@ -190,6 +191,9 @@ class RunConsumer:
             worker_id=owner_id,
             session_factory=session_factory,
         )
+        self._recovery_task: asyncio.Task | None = None
+        self._consumer_tasks: tuple[asyncio.Task, ...] = ()
+        self._intake_ready = False
         # Metadata has independent bounded capacity; never queues behind graphs
         # or uses the application's shared/default executor.
         self._metadata = ExecutionPool(1, session_factory)
@@ -229,17 +233,49 @@ class RunConsumer:
                 and self._client.stats["reconnects"] == self._checked_reconnect
             )
 
+    def _health_runtime_ready(self, stop: asyncio.Event) -> bool:
+        recovery_task = self._recovery_task
+        return (
+            not stop.is_set()
+            and self._intake_ready
+            and bool(self._consumer_tasks)
+            and all(not task.done() for task in self._consumer_tasks)
+            and recovery_task is not None
+            and not recovery_task.done()
+        )
+
+    async def _health_ready(self, stop: asyncio.Event) -> bool:
+        """Answer only while intake, recovery, and current broker checks are ready."""
+        if not self._health_runtime_ready(stop):
+            return False
+        try:
+            if not await self._fetch_allowed():
+                return False
+            return self._health_runtime_ready(stop)
+        except Exception as error:
+            logger.warning("worker_health_check_failed type=%s", type(error).__name__)
+            return False
+
     async def run(self, stop: asyncio.Event):
         """Drain owned work on stop; retain unclaimed/unconfirmed deliveries."""
         subscriptions = []
         tasks = []
         recovery_task = None
+        health_subscription = None
         try:
             recovery_task = asyncio.create_task(self._recovery.run(stop))
-            while not stop.is_set() and not await self._fetch_allowed():
+            while not stop.is_set():
+                if await self._fetch_allowed():
+                    break
                 await self._pause(stop)
             if stop.is_set():
                 return
+            self._recovery_task = recovery_task
+            health_subscription = await subscribe_worker_health(
+                self._client,
+                installation_id=self._installation_id,
+                is_ready=lambda: self._health_ready(stop),
+            )
             for _ in range(self.concurrency):
                 subscriptions.append(
                     await self._js.pull_subscribe_bind(
@@ -249,11 +285,20 @@ class RunConsumer:
                         pending_bytes_limit=16 * 1024,
                     )
                 )
+            started = [asyncio.Event() for _ in subscriptions]
             tasks = [
-                asyncio.create_task(self._consume(sub, stop)) for sub in subscriptions
+                asyncio.create_task(self._consume(sub, stop, ready))
+                for sub, ready in zip(subscriptions, started, strict=True)
             ]
+            self._consumer_tasks = tuple(tasks)
+            await asyncio.gather(*(ready.wait() for ready in started))
+            self._intake_ready = not stop.is_set() and all(
+                not task.done() for task in tasks
+            )
             await asyncio.gather(*tasks)
         finally:
+            self._intake_ready = False
+            self._consumer_tasks = ()
             # On peer failure/cancellation, join synchronous work before closing
             # its thread-owned session/Worker and release every private inbox.
             for task in tasks:
@@ -266,6 +311,11 @@ class RunConsumer:
                 await asyncio.gather(recovery_task, return_exceptions=True)
             results = await asyncio.gather(
                 *(sub.unsubscribe() for sub in subscriptions),
+                *(
+                    (health_subscription.unsubscribe(),)
+                    if health_subscription is not None
+                    else ()
+                ),
                 self._pool.close(),
                 self._metadata.close(),
                 return_exceptions=True,
@@ -276,7 +326,9 @@ class RunConsumer:
                         "run_consumer_cleanup_failed type=%s", type(result).__name__
                     )
 
-    async def _consume(self, subscription, stop):
+    async def _consume(self, subscription, stop, started: asyncio.Event | None = None):
+        if started is not None:
+            started.set()
         while not stop.is_set():
             async with self._pool.reserve() as slot:
                 if not await self._fetch_allowed():
