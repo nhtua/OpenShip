@@ -553,6 +553,9 @@ def _loop_fixture(
 ):
     from src.openship.messaging import consumer
 
+    async def idle_recovery(stop):
+        await stop.wait()
+
     stop = asyncio.Event()
     with SessionLocal() as db:
         run_id, _, row_id = _command(db)
@@ -611,6 +614,7 @@ def _loop_fixture(
         fetch_timeout=0.03,
         retry_interval=0.01,
         handlers=handlers,
+        recovery_supervisor=SimpleNamespace(run=idle_recovery),
     )
     broker.consumer = instance
     return SimpleNamespace(
@@ -907,14 +911,15 @@ async def test_default_consumer_fails_closed_if_worker_checkpoint_setup_is_unava
 
     f = _loop_fixture(monkeypatch)
     closed = []
+    worker_options = {}
 
     class BrokenWorker:
         Session = SessionLocal
         checkpointer = None
         worker_id = "no-checkpointer"
 
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            worker_options.update(kwargs)
 
         def close(self):
             closed.append(True)
@@ -926,11 +931,13 @@ async def test_default_consumer_fails_closed_if_worker_checkpoint_setup_is_unava
         session_factory=SessionLocal,
         fetch_timeout=0.03,
         progress_interval=0.01,
+        recovery_supervisor=f.consumer._recovery,
     )
     f.broker.consumer = replacement
     with pytest.raises(RuntimeError, match="checkpointer"):
         await asyncio.wait_for(replacement.run(f.stop), 4)
     assert f.message.acks == 0 and f.message.naks == [] and closed == [True]
+    assert worker_options["refresh_availability_during_run"] is False
 
 
 @pytest.mark.asyncio
@@ -981,6 +988,29 @@ async def test_unconfirmed_handler_releases_uncommitted_database_transaction(
     finally:
         f.stop.set()
         await asyncio.wait_for(task, 4)
+
+
+@pytest.mark.asyncio
+async def test_consumer_runs_recovery_while_broker_fetches_are_unavailable(
+    monkeypatch,
+):
+    f = _loop_fixture(monkeypatch, empty=True)
+    recovery_started = asyncio.Event()
+    f.broker.is_connected = False
+
+    class Recovery:
+        async def run(self, stop):
+            recovery_started.set()
+            await stop.wait()
+
+    f.consumer._recovery = Recovery()
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await asyncio.wait_for(recovery_started.wait(), 1)
+        assert not f.broker.fetches
+    finally:
+        f.stop.set()
+        await asyncio.wait_for(task, 2)
 
 
 @pytest.mark.asyncio

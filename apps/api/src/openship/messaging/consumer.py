@@ -34,6 +34,7 @@ from .delivery import (
 )
 from .executor import ExecutionPool
 from .models import MessageTransportState
+from .recovery import RecoverySupervisor
 from .topology import TopologyCompatibilityError, ensure_topology
 
 logger = logging.getLogger(__name__)
@@ -146,6 +147,7 @@ class RunConsumer:
         retry_interval: float = 0.25,
         ack_timeout: float = 2.0,
         handlers: Mapping[str, ConfirmedHandler] | None = None,
+        recovery_supervisor: RecoverySupervisor | None = None,
     ):
         self.concurrency = (
             settings.worker_run_concurrency if concurrency is None else concurrency
@@ -162,15 +164,20 @@ class RunConsumer:
                 raise ValueError("consumer timing must be positive and finite")
         self._client = client
         self._js = client.jetstream(timeout=ack_timeout)
+        self._worker_id = f"worker-{uuid.uuid4().hex}"
         self._lease_seconds = lease_seconds
         self._progress_interval, self._fetch_timeout = progress_interval, fetch_timeout
         self._retry_interval, self._ack_timeout = retry_interval, ack_timeout
         self._handlers = dict(handlers or {})
-        owner_id = f"worker-{uuid.uuid4().hex}"
+        owner_id = self._worker_id
         if worker_factory is None:
 
             def worker_factory():
-                worker = Worker(worker_id=owner_id, session_factory=session_factory)
+                worker = Worker(
+                    worker_id=owner_id,
+                    session_factory=session_factory,
+                    refresh_availability_during_run=False,
+                )
                 if worker.checkpointer is None:
                     worker.close()
                     raise RuntimeError("run consumer checkpointer is unavailable")
@@ -178,6 +185,10 @@ class RunConsumer:
 
         self._pool = ExecutionPool(
             self.concurrency, lambda: _RunResource(worker_factory)
+        )
+        self._recovery = recovery_supervisor or RecoverySupervisor(
+            worker_id=owner_id,
+            session_factory=session_factory,
         )
         # Metadata has independent bounded capacity; never queues behind graphs
         # or uses the application's shared/default executor.
@@ -222,7 +233,9 @@ class RunConsumer:
         """Drain owned work on stop; retain unclaimed/unconfirmed deliveries."""
         subscriptions = []
         tasks = []
+        recovery_task = None
         try:
+            recovery_task = asyncio.create_task(self._recovery.run(stop))
             while not stop.is_set() and not await self._fetch_allowed():
                 await self._pause(stop)
             if stop.is_set():
@@ -247,6 +260,10 @@ class RunConsumer:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if recovery_task is not None:
+                if not stop.is_set() and not recovery_task.done():
+                    recovery_task.cancel()
+                await asyncio.gather(recovery_task, return_exceptions=True)
             results = await asyncio.gather(
                 *(sub.unsubscribe() for sub in subscriptions),
                 self._pool.close(),

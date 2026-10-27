@@ -217,6 +217,37 @@ routes an allowlisted kind to existing execution or explicit retention.
   RPC; persist failure/quarantine before acknowledging exhausted deliveries;
   preserve healthy live owners and require explicit retention enqueue.
 
+  - [x] **3B2e.1 — Independent recovery scheduler:** run 10-second tool
+    availability and 60-second Connector/lease recovery on a dedicated bounded
+    execution resource, independent of broker connectivity and run slots. Keep
+    the legacy polling entry's recovery behavior unchanged. The JetStream
+    consumer starts this scheduler before broker admission; its run Workers
+    disable per-run readiness refreshes while legacy polling Workers retain
+    their long-turn refresh. The focused API modules passed (103 tests), the
+    consumer factory assertion passed separately (1 test), Ruff and diff checks
+    passed, and independent review approved. The pinned PostgreSQL/JetStream
+    qualifier was not rerun because `TEST_POSTGRES_URL` is not configured here.
+  - [ ] **3B2e.2 — Bounded worker health RPC:** add source-owned request/reply
+    subjects, subscribe-before-publish, strict reply/request binding, and a
+    two-second unavailable result. Task 4 may consume this contract for API
+    readiness without changing browser or run-result semantics.
+  - [ ] **3B2e.3 — Durable failure handoff:** persist safe failure records and
+    failure-notice outbox references before a quarantine/reconcile handler can
+    authorize ACK; failed or uncertain confirmation retains the original
+    delivery.
+  - [ ] **3B2e.4 — Exhaustion and live-owner observation:** qualify pinned
+    MaxDeliver advisory and stream/consumer recovery behavior; persist
+    `watching_live_owner` until a committed outcome or lease expiry, and resume
+    observations after restart without treating delivery count as authority.
+  - [ ] **3B2e.5 — Explicit retention maintenance:** accept only an explicitly
+    enqueued, bounded retention task with operator identity and durable
+    requested/running/completed/failed state; preserve direct maintenance CLI.
+
+  **Source constraint:** the pinned NATS MaxDeliver advisory identifies the
+  failed stream sequence and delivery count. Advisory-only handling is not
+  sufficient for the spec's missed-advisory recovery requirement; the
+  exhaustion slice must prove a durable restart/reconnect discovery path.
+
 - [ ] **3B2f — Production entry switch:** remove `claim_next` discovery and idle
   polling from the production entry only after 3B2b–3B2e are qualified. Keep no
   automatic polling fallback.

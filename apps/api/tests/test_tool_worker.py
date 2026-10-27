@@ -753,7 +753,10 @@ def test_worker_ownership_check_requires_running_status(status):
         db.close()
 
 
-def test_worker_lease_renewal_uses_monotonic_ten_second_deadlines(monkeypatch):
+@pytest.mark.parametrize("refresh_availability", [True, False])
+def test_worker_lease_renewal_uses_monotonic_ten_second_deadlines(
+    monkeypatch, refresh_availability
+):
     from types import SimpleNamespace
 
     import src.openship.runs.worker as worker_module
@@ -782,13 +785,19 @@ def test_worker_lease_renewal_uses_monotonic_ten_second_deadlines(monkeypatch):
     clock = Clock()
     worker = Worker.__new__(Worker)
     worker.worker_id = "monotonic-worker"
+    worker.refresh_availability_during_run = refresh_availability
     monkeypatch.setattr(
         worker_module, "time", SimpleNamespace(monotonic=clock.monotonic)
     )
     monkeypatch.setattr(settings, "worker_cancellation_poll_seconds", 0.5)
     monkeypatch.setattr(settings, "worker_heartbeat_interval", 10)
     monkeypatch.setattr(worker, "_ownership_lost", lambda *_args: False)
-    monkeypatch.setattr(worker, "_refresh_tool_availability", lambda _db: None)
+    availability_refreshes = []
+    monkeypatch.setattr(
+        worker,
+        "_refresh_tool_availability",
+        lambda _db: availability_refreshes.append(clock.value),
+    )
     renewals = []
 
     def renew(_db, _run_id, _fence):
@@ -800,6 +809,9 @@ def test_worker_lease_renewal_uses_monotonic_ten_second_deadlines(monkeypatch):
     worker._supervise(supervision, object(), uuid.uuid4(), 7)
 
     assert renewals == [110.0, 120.0, 130.0]
+    assert availability_refreshes == (
+        [110.0, 120.0, 130.0] if refresh_availability else []
+    )
     assert supervision.stopped
 
 

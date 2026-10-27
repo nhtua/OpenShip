@@ -31,14 +31,12 @@ from ..capabilities.contracts import (
     ToolInvocationContext,
     decode_execution_config,
 )
-from ..capabilities.policy import read_effective_tool_policy
 from ..chat.models import Conversation, Message
 from ..config import settings
 from ..connectors.blockers import park_connector_wait
 from ..connectors.readiness import preflight_connector_references
 from ..execution.availability import (
-    observe_tool_availability,
-    publish_tool_availability,
+    refresh_tool_availability,
 )
 from ..execution.gateway import ToolGateway
 from ..providers.attempts import DatabaseAttemptRecorder
@@ -194,12 +192,14 @@ class Worker:
         worker_id: str | None = None,
         session_factory=None,
         checkpointer=_INSTALLATION,
+        refresh_availability_during_run: bool = True,
     ):
         if worker_id is None:
             worker_id = f"worker-{uuid.uuid4().hex[:8]}"
         self.worker_id = worker_id
         self.running = True
         self._closed = False
+        self.refresh_availability_during_run = refresh_availability_during_run
 
         # Set up database connection
         self.engine = create_engine(settings.database_url)
@@ -311,14 +311,18 @@ class Worker:
         renewing the lease so a long turn is not reclaimed by another worker.
         A write on the short interval would race the worker's own open
         transaction, which is exactly what a short turn on SQLite does, so the
-        two intervals are kept apart.
+        two intervals are kept apart. The legacy polling worker also refreshes
+        readiness here during long turns. The NATS consumer disables that refresh
+        because its independent RecoverySupervisor owns the schedule.
         """
         poll = getattr(settings, "worker_cancellation_poll_seconds", 0.5)
         renew_every = getattr(settings, "worker_heartbeat_interval", 10)
 
         now = time.monotonic()
         next_renewal = now + renew_every
-        next_availability_refresh = now + 10
+        next_availability_refresh = (
+            now + 10 if self.refresh_availability_during_run else None
+        )
         while not supervision.stop():
             try:
                 if self._ownership_lost(db, run_id, fence):
@@ -335,7 +339,10 @@ class Worker:
                 return
 
             now = time.monotonic()
-            if now >= next_availability_refresh:
+            if (
+                next_availability_refresh is not None
+                and now >= next_availability_refresh
+            ):
                 try:
                     self._refresh_tool_availability(db)
                 except Exception:
@@ -363,8 +370,12 @@ class Worker:
                 timeout = min(
                     poll,
                     max(0.0, next_renewal - now),
-                    max(0.0, next_availability_refresh - now),
                 )
+                if next_availability_refresh is not None:
+                    timeout = min(
+                        timeout,
+                        max(0.0, next_availability_refresh - now),
+                    )
                 supervision.wait_for_wakeup(timeout)
 
     def _ownership_lost(self, db, run_id, fence) -> bool:
@@ -398,10 +409,7 @@ class Worker:
         return lease_until <= datetime.now(UTC)
 
     def _refresh_tool_availability(self, db) -> None:
-        policy = read_effective_tool_policy(db)
-        observations = observe_tool_availability(enabled_ids=policy.effective_ids)
-        publish_tool_availability(db, self.worker_id, observations)
-        db.commit()
+        refresh_tool_availability(db, self.worker_id)
 
     def _tool_context(self, claim, run, conversation, execution):
         try:
