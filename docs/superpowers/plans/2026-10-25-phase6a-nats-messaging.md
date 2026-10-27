@@ -185,8 +185,8 @@ routes an allowlisted kind to existing execution or explicit retention.
   provide independent bounded slot threads with cancellation retention and
   Worker/checkpointer/session cleanup. Focused worker regressions and the full
   API commit gate pass; task review is clean.
-- [ ] **3B2 — Broker consumer and supervision:** complete the ordered slices
-  below. Production remains on the legacy entry point until 3B2f.
+- [x] **3B2 — Broker consumer and supervision:** complete the ordered slices
+  below. The production entry switches only after 3B2b–3B2e qualify.
 
 - [x] **3B2a — Shared consumer topology and pause primitives:** declare and
   verify the two shared execution durables, bound aggregate pending capacity,
@@ -214,7 +214,7 @@ routes an allowlisted kind to existing execution or explicit retention.
   tests), pinned PostgreSQL/JetStream qualification passed (47 tests, no
   skips), and independent spec/quality review approved.
 
-- [ ] **3B2e — Independent recovery, health and exhaustion:** run availability,
+- [x] **3B2e — Independent recovery, health and exhaustion:** run availability,
   Connector expiry and lease recovery outside run slots; add bounded health
   RPC; persist failure/quarantine before acknowledging exhausted deliveries;
   preserve healthy live owners and require explicit retention enqueue.
@@ -345,34 +345,40 @@ routes an allowlisted kind to existing execution or explicit retention.
   sufficient for the spec's missed-advisory recovery requirement; the
   exhaustion slice must prove a durable restart/reconnect discovery path.
 
-- [ ] **3B2f — Production entry switch:** remove `claim_next` discovery and idle
+- [x] **3B2f — Production entry switch:** remove `claim_next` discovery and idle
   polling from the production entry only after 3B2b–3B2e are qualified. Keep no
   automatic polling fallback. `python -m src.openship.runs.worker` now starts
   `RunConsumer`, preserves `--worker-id` and `--log-level`, drains on SIGINT or
   SIGTERM, and closes its owned NATS client. The synthetic full-stack fixtures
   use an explicit test-only legacy polling harness until Task 7 converts them
-  to real JetStream consumers. Five focused entry/identity tests pass; Ruff and
-  diff checks pass. Complete this slice after the pushed CI matrix passes.
+  to real JetStream consumers. Five focused entry/identity tests and all commit
+  hooks pass. CI run `40491206490` passed API unit, PostgreSQL, JetStream and
+  full-stack lanes; frontend checks and lint passed as well.
 
-- [ ] Add failing unit and PG/broker cases for every spec delivery-state
-  branch, especially inactive/closed gates, redelivery after dedup expiry,
-  old-generation arrival after resume, another live owner and stale fences.
-- [ ] Reuse `process_job` through per-slot execution objects in a bounded
-  executor. Test two slots progressing while another fixture blocks and
-  background slots are full; do not execute synchronous work on the broker/API
-  loop. Keep `model_interrupted`/`execution_interrupted` behavior.
-- [ ] Commit outcomes/waits before confirmed ACK; requeue plus new generation
-  plus outbox is atomic. Test crashes before/after model/tool dispatch and
-  after result commit.
-- [ ] Implement quarantine ledger/notices, exhaustion recovery and guarded
-  replay, including failure before quarantine confirmation. Add explicit
-  `enqueue-retention --dry-run` task arguments without changing direct CLI.
-  Test MaxDeliver reached while a healthy long-running owner still holds its
-  lease: retain a durable observation handoff until outcome or lease expiry;
-  never fail or replay the effect based on transport count alone.
-- [ ] Verify consumer, recovery, tool safety and provider worker suites plus
-  real broker crash cases. Check executor/checkpointer/DB resources close;
-  review and commit in focused independently verified slices.
+- [x] Add failing unit and PG/broker cases for every spec delivery-state
+  branch, including inactive/closed gates, lost-ACK redelivery, obsolete
+  generation, other live owner, stale fence and gate-owner settlement. The
+  command, delivery, consumer and exhaustion suites cover these branches; the
+  PostgreSQL/JetStream qualifier passed in CI run `40491206490`.
+- [x] Reuse `process_job` through per-slot execution objects in a bounded
+  executor. `test_two_slots_execute_independently_while_one_worker_setup_blocks`
+  proves another slot progresses while setup blocks; executor tests cover
+  cancellation, progress, independent resources and
+  `model_interrupted`/`execution_interrupted` cleanup.
+- [x] Commit outcomes/waits before confirmed ACK; requeue plus new generation
+  plus outbox is atomic. Unit tests cover failed commits, pre-dispatch restart,
+  and atomic generation handoff; broker tests cover lost ACK after committed
+  result and transport loss without repeating the effect.
+- [x] Implement quarantine ledger/notices, exhaustion recovery and guarded
+  replay, including unconfirmed publication. `enqueue-retention --dry-run`
+  carries explicit task arguments without changing direct retention. Tests
+  preserve a healthy live owner's observation until outcome/lease expiry and
+  never use transport delivery count as replay authority.
+- [x] Verify consumer, recovery, tool safety and provider worker suites plus
+  real-broker ACK-loss and transport-loss cases. Resource close behavior is
+  covered by executor and broker tests; CI run `40491206490` passed all unit,
+  PostgreSQL, JetStream and full-stack lanes. Task 7 retains the broader
+  process-kill and restore rehearsal.
 
 ## Task 4 — Bridge replay and live SSE through independent API consumers
 
@@ -402,8 +408,11 @@ Reuse the existing event projection; no broker types leak to the web client.
   run found that relay event publications still carried the generic envelope,
   while `EventFanout` requires an exact `{"event_id": ...}` reference. The
   relay now publishes only that reference and validates its conversation
-  subject. The two-API fanout qualification needs a fresh real-broker pass
-  before this task can be closed.
+  subject. A late-old-notice regression now covers both the unit fanout and
+  real two-API path: after replay has advanced, the stale reference must not
+  emit a duplicate or prevent the next committed event. All 14 focused SSE
+  tests pass locally; the updated real-broker lane must pass before closing
+  this task.
 
 ## Task 5 — Build resumable cutover, rollback and inspection commands
 

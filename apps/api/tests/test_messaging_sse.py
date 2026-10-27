@@ -237,6 +237,43 @@ async def test_subscriber_replays_then_repairs_out_of_order_live_notices():
 
 
 @pytest.mark.asyncio
+async def test_late_old_notice_does_not_duplicate_or_block_following_events():
+    db, scope, initial_events = _conversation_with_events(count=2)
+    stale_event_id = initial_events[0].id
+    db.close()
+    fanout = EventFanout(
+        session_factory=SessionLocal,
+        installation_id=uuid.uuid4(),
+        run_sync=_run_inline,
+    )
+    stream = fanout.subscribe_conversation(scope, after_sequence=-1)
+    pending = None
+    try:
+        received = [await anext(stream), await anext(stream)]
+        first_live_id = _append_events(scope.conversation_id, (2,))[0]
+        fanout._publish_notice(EventNotice(scope.conversation_id, first_live_id))
+        received.append(await asyncio.wait_for(anext(stream), timeout=1))
+
+        pending = asyncio.create_task(anext(stream))
+        fanout._publish_notice(EventNotice(scope.conversation_id, stale_event_id))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(pending), timeout=0.05)
+
+        next_live_id = _append_events(scope.conversation_id, (3,))[0]
+        fanout._publish_notice(EventNotice(scope.conversation_id, next_live_id))
+        following = await asyncio.wait_for(pending, timeout=1)
+
+        assert [event.sequence for event in received] == [0, 1, 2]
+        assert following.sequence == 3
+        assert following.id == str(next_live_id)
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
 async def test_bounded_client_queue_requires_snapshot_on_overflow():
     db, scope, _events = _conversation_with_events(count=1)
     db.close()

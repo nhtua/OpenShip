@@ -1040,6 +1040,21 @@ async def test_api_event_fanouts_replay_and_independently_receive_live_events(
         )
         for _ in range(2)
     ]
+    stale_notice_received = [asyncio.Event() for _ in fanouts]
+    for fanout, received_notice in zip(fanouts, stale_notice_received, strict=True):
+        publish_notice = fanout._publish_notice
+
+        def observe_stale_notice(
+            notice,
+            *,
+            publish_notice=publish_notice,
+            received_notice=received_notice,
+        ):
+            publish_notice(notice)
+            if notice.event_id == replay_event_id:
+                received_notice.set()
+
+        fanout._publish_notice = observe_stale_notice
     streams = []
     next_events = []
     try:
@@ -1090,6 +1105,36 @@ async def test_api_event_fanouts_replay_and_independently_receive_live_events(
             ] * 2
             if expected_sequence == 1:
                 next_events = [asyncio.create_task(anext(stream)) for stream in streams]
+
+        next_events = [asyncio.create_task(anext(stream)) for stream in streams]
+        await relay_broker.js.publish(
+            f"openship.{installation_id.hex}.v1.event.{conversation_id.hex}",
+            json.dumps({"event_id": str(replay_event_id)}).encode("utf-8"),
+        )
+        await asyncio.gather(
+            *(
+                asyncio.wait_for(event.wait(), timeout=3)
+                for event in stale_notice_received
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert all(not task.done() for task in next_events)
+
+        following_event_id = _append_events(
+            sessions,
+            conversation_id,
+            count=1,
+            prefix="api-event-after-stale-notice",
+        )[0]
+        result = await publish_pending_batch(
+            relay_broker.js, sessions, conversation_id=conversation_id
+        )
+        assert result.published == 1
+        following = await asyncio.gather(
+            *(asyncio.wait_for(task, timeout=3) for task in next_events)
+        )
+        assert [event.sequence for event in following] == [3, 3]
+        assert [event.id for event in following] == [str(following_event_id)] * 2
     finally:
         for task in next_events:
             if not task.done():
