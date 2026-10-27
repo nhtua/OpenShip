@@ -16,7 +16,10 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
-from src.openship.messaging.topology import ensure_topology
+from src.openship.messaging.topology import (
+    EXHAUSTION_ADVISORY_SUBJECT,
+    ensure_topology,
+)
 
 pytestmark = [pytest.mark.jetstream, pytest.mark.asyncio]
 
@@ -228,7 +231,7 @@ async def test_bootstrap_check_and_apply_are_idempotent(broker):
         installation_id=installation_id,
     )
     expected_names = {item.name for item in report.streams}
-    assert len(expected_names) == 5
+    assert len(expected_names) == 6
     assert {item.status for item in report.streams} == {"missing"}
     try:
         applied = await ensure_topology(
@@ -352,6 +355,82 @@ async def test_shared_durables_reapply_preserves_pending_ack_progress_and_pause(
     await subscription.unsubscribe()
 
 
+async def test_exhaustion_advisory_is_durable_across_unbind_and_source_is_retrievable(
+    execution_topology,
+):
+    from dataclasses import replace
+
+    js, installation_id = execution_topology
+    source_subject = f"openship.{installation_id.hex}.v1.command.run.execute"
+    advisory_subject = EXHAUSTION_ADVISORY_SUBJECT
+    advisory_info = await js.stream_info("OS_ADVISORIES")
+    assert advisory_info.config.subjects == [advisory_subject]
+    advisory_consumer = await js.consumer_info("OS_ADVISORIES", "exhaustion-v1")
+    assert advisory_consumer.config.filter_subject == advisory_subject
+    assert advisory_consumer.config.max_deliver == -1
+
+    # The disposable fixture lowers MaxDeliver/AckWait to exercise exhaustion
+    # quickly. The production topology still requires MaxDeliver=10.
+    run_consumer = await js.consumer_info("OS_RUNS", "run-v1")
+    await js.add_consumer(
+        "OS_RUNS",
+        config=replace(run_consumer.config, ack_wait=0.1, max_deliver=2),
+    )
+    source = await js.pull_subscribe_bind(stream="OS_RUNS", durable="run-v1")
+    source_publish = await js.publish(source_subject, b"exhaustion-source")
+
+    # Deliberately emit the advisory before binding the durable observer.
+    for attempt in (1, 2):
+        (delivery,) = await source.fetch(batch=1, timeout=2)
+        assert delivery.metadata.num_delivered == attempt
+        assert delivery.metadata.sequence.stream == source_publish.seq
+        await delivery.nak(delay=0.01)
+
+    with pytest.raises(NatsTimeoutError):
+        await source.fetch(batch=1, timeout=0.2)
+
+    deadline = asyncio.get_running_loop().time() + 3
+    while asyncio.get_running_loop().time() < deadline:
+        stored = await js.stream_info("OS_ADVISORIES")
+        if stored.state.messages:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("MaxDeliver advisory was not captured in OS_ADVISORIES")
+
+    # A durable pull consumer can be unbound and rebound without losing the
+    # captured advisory; an unacked observation must be delivered again.
+    observer = await js.pull_subscribe_bind(
+        stream="OS_ADVISORIES", durable="exhaustion-v1"
+    )
+    (first_observation,) = await observer.fetch(batch=1, timeout=2)
+    payload = json.loads(first_observation.data)
+    advisory_sequence = first_observation.metadata.sequence.stream
+    assert payload["type"] == "io.nats.jetstream.advisory.v1.max_deliver"
+    assert payload["stream"] == "OS_RUNS"
+    assert payload["consumer"] == "run-v1"
+    assert payload["stream_seq"] == source_publish.seq
+    assert payload["deliveries"] == 2
+    await first_observation.nak(delay=0.05)
+    await observer.unsubscribe()
+
+    rebound = await js.pull_subscribe_bind(
+        stream="OS_ADVISORIES", durable="exhaustion-v1"
+    )
+    (redelivery,) = await rebound.fetch(batch=1, timeout=2)
+    assert redelivery.metadata.sequence.stream == advisory_sequence
+    assert redelivery.metadata.num_delivered == 2
+    await redelivery.ack_sync(timeout=1)
+
+    original = await js.get_msg("OS_RUNS", seq=source_publish.seq)
+    assert original.data == b"exhaustion-source"
+    assert await js.delete_msg("OS_RUNS", source_publish.seq)
+    with pytest.raises(NotFoundError):
+        await js.get_msg("OS_RUNS", seq=source_publish.seq)
+    await source.unsubscribe()
+    await rebound.unsubscribe()
+
+
 async def test_paused_consumer_blocks_delivery_and_redelivery_until_explicit_resume(
     execution_topology,
 ):
@@ -413,6 +492,43 @@ async def test_missing_consumer_detected_with_all_streams_present(execution_topo
     ).ready
 
 
+async def test_missing_exhaustion_capture_or_durable_blocks_topology_readiness(
+    execution_topology,
+):
+    js, installation_id = execution_topology
+    await js.delete_stream("OS_ADVISORIES")
+    missing_stream = await ensure_topology(
+        apply=False, js=js, installation_id=installation_id
+    )
+    assert not missing_stream.ready
+    assert (
+        next(
+            item for item in missing_stream.streams if item.name == "OS_ADVISORIES"
+        ).status
+        == "missing"
+    )
+    assert (
+        await ensure_topology(apply=True, js=js, installation_id=installation_id)
+    ).ready
+
+    await js.delete_consumer("OS_ADVISORIES", "exhaustion-v1")
+    missing_consumer = await ensure_topology(
+        apply=False, js=js, installation_id=installation_id
+    )
+    assert not missing_consumer.ready
+    assert (
+        next(
+            item
+            for item in missing_consumer.consumers
+            if item.stream == "OS_ADVISORIES"
+        ).status
+        == "missing"
+    )
+    assert (
+        await ensure_topology(apply=True, js=js, installation_id=installation_id)
+    ).ready
+
+
 async def test_runtime_role_binds_fetches_acks_but_cannot_mutate_topology_or_pause(
     execution_topology,
     broker_credentials,
@@ -441,6 +557,24 @@ async def test_runtime_role_binds_fetches_acks_but_cannot_mutate_topology_or_pau
                 apply=False, js=runtime, installation_id=installation_id
             )
         ).ready
+        advisory_observer = await runtime.pull_subscribe_bind(
+            stream="OS_ADVISORIES", durable="exhaustion-v1"
+        )
+        await advisory_observer.unsubscribe()
+
+        # The worker can inspect and remove only an exact exhausted source
+        # sequence from OS_RUNS. It cannot delete a message from another stream.
+        run_subject = f"openship.{installation_id.hex}.v1.command.run.execute"
+        source_publish = await js.publish(run_subject, b"runtime-source-check")
+        source_message = await runtime.get_msg("OS_RUNS", seq=source_publish.seq)
+        assert source_message.data == b"runtime-source-check"
+        assert await runtime.delete_msg("OS_RUNS", source_publish.seq)
+        event_subject = f"openship.{installation_id.hex}.v1.event.runtime-check"
+        event_publish = await js.publish(event_subject, b"must-not-delete")
+        with pytest.raises(NatsTimeoutError):
+            await runtime.get_msg("OS_EVENTS", seq=event_publish.seq)
+        with pytest.raises(NatsTimeoutError):
+            await runtime.delete_msg("OS_EVENTS", event_publish.seq)
         for stream, durable, suffix in (
             ("OS_RUNS", "run-v1", "run.execute"),
             ("OS_MAINTENANCE", "maintenance-v1", "maintenance.retention"),
@@ -497,7 +631,7 @@ async def test_runtime_role_binds_fetches_acks_but_cannot_mutate_topology_or_pau
             assert not after.paused
             await subscription.unsubscribe()
             await peer.unsubscribe()
-        assert len(permission_errors) >= 16
+        assert len(permission_errors) >= 18
         with pytest.raises(NotFoundError):
             await js.stream_info("RUNTIME_DENIED")
     finally:

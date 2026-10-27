@@ -182,12 +182,17 @@ authorization {{
         publish: [
           "$JS.API.STREAM.INFO.OS_RUNS", "$JS.API.STREAM.INFO.OS_MAINTENANCE",
           "$JS.API.STREAM.INFO.OS_EVENTS", "$JS.API.STREAM.INFO.OS_CONTROLS",
-          "$JS.API.STREAM.INFO.OS_FAILURES",
+          "$JS.API.STREAM.INFO.OS_FAILURES", "$JS.API.STREAM.INFO.OS_ADVISORIES",
           "$JS.API.CONSUMER.INFO.OS_RUNS.run-v1",
           "$JS.API.CONSUMER.INFO.OS_MAINTENANCE.maintenance-v1",
+          "$JS.API.CONSUMER.INFO.OS_ADVISORIES.exhaustion-v1",
           "$JS.API.CONSUMER.MSG.NEXT.OS_RUNS.run-v1",
           "$JS.API.CONSUMER.MSG.NEXT.OS_MAINTENANCE.maintenance-v1",
+          "$JS.API.CONSUMER.MSG.NEXT.OS_ADVISORIES.exhaustion-v1",
+          "$JS.API.STREAM.MSG.GET.OS_RUNS",
+          "$JS.API.STREAM.MSG.DELETE.OS_RUNS",
           "$JS.ACK.OS_RUNS.run-v1.>", "$JS.ACK.OS_MAINTENANCE.maintenance-v1.>",
+          "$JS.ACK.OS_ADVISORIES.exhaustion-v1.>",
           "openship.{control_installation_id.hex}.v1.reply.*.*"
         ],
         subscribe: ["_INBOX.runtime.>",

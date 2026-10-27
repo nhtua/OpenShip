@@ -27,6 +27,11 @@ from .models import MessageTransportState
 _MIB = 1024 * 1024
 _MAX_MESSAGE_BYTES = 16 * 1024
 EXECUTION_CONSUMERS = (("OS_RUNS", "run-v1"), ("OS_MAINTENANCE", "maintenance-v1"))
+EXHAUSTION_ADVISORY_SUBJECT = (
+    "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.OS_RUNS.run-v1"
+)
+EXHAUSTION_CONSUMER = ("OS_ADVISORIES", "exhaustion-v1")
+REQUIRED_CONSUMERS = (*EXECUTION_CONSUMERS, EXHAUSTION_CONSUMER)
 
 
 @dataclass(frozen=True)
@@ -55,7 +60,7 @@ class TopologyReport:
     @property
     def ready(self) -> bool:
         return {(item.stream, item.name) for item in self.consumers} == set(
-            EXECUTION_CONSUMERS
+            REQUIRED_CONSUMERS
         ) and all(item.status == "ready" for item in (*self.streams, *self.consumers))
 
     def as_dict(self) -> dict:
@@ -109,7 +114,7 @@ def consumer_configs(
         ("run.execute", settings.messaging_run_max_ack_pending),
         ("maintenance.retention", settings.messaging_maintenance_max_ack_pending),
     )
-    return tuple(
+    execution = tuple(
         (
             stream,
             ConsumerConfig(
@@ -131,6 +136,28 @@ def consumer_configs(
         for (stream, name), (suffix, capacity) in zip(
             EXECUTION_CONSUMERS, specifications, strict=True
         )
+    )
+    observer_capacity = settings.messaging_run_max_ack_pending
+    return (
+        *execution,
+        (
+            EXHAUSTION_CONSUMER[0],
+            ConsumerConfig(
+                name=EXHAUSTION_CONSUMER[1],
+                durable_name=EXHAUSTION_CONSUMER[1],
+                filter_subject=EXHAUSTION_ADVISORY_SUBJECT,
+                ack_policy=AckPolicy.EXPLICIT,
+                deliver_policy=DeliverPolicy.ALL,
+                replay_policy=ReplayPolicy.INSTANT,
+                ack_wait=30.0,
+                max_deliver=-1,
+                max_ack_pending=observer_capacity,
+                max_waiting=observer_capacity,
+                num_replicas=1,
+                mem_storage=False,
+                inactive_threshold=0.0,
+            ),
+        ),
     )
 
 
@@ -200,6 +227,7 @@ def stream_configs(installation_id: uuid.UUID) -> tuple[StreamConfig, ...]:
             max_bytes=512 * _MIB,
             max_age=0.0,
             discard=DiscardPolicy.NEW,
+            deny_delete=False,
             **common,
         ),
         StreamConfig(
@@ -236,6 +264,15 @@ def stream_configs(installation_id: uuid.UUID) -> tuple[StreamConfig, ...]:
             max_bytes=128 * _MIB,
             max_age=7 * 24 * 60 * 60.0,
             discard=DiscardPolicy.OLD,
+            **common,
+        ),
+        StreamConfig(
+            name="OS_ADVISORIES",
+            subjects=[EXHAUSTION_ADVISORY_SUBJECT],
+            retention=RetentionPolicy.WORK_QUEUE,
+            max_bytes=64 * _MIB,
+            max_age=0.0,
+            discard=DiscardPolicy.NEW,
             **common,
         ),
     )

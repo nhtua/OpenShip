@@ -115,10 +115,44 @@ handling remain required; see the [NATS JetStream contract](https://docs.nats.io
 The Python messaging CLI implements `bootstrap --check`, `bootstrap --apply`
 and `doctor`. Checks are read-only. Apply creates missing resources and reports
 existing drift without rewriting streams or consumers. Readiness includes
-`run-v1` on `OS_RUNS` and `maintenance-v1` on `OS_MAINTENANCE`, filtered to this
-installation's exact run and retention command subjects. Both use explicit ACK,
-all-message delivery, instant replay, 30-second AckWait, MaxDeliver 10, no
-BackOff or inactivity deletion, and persistent state with one replica.
+`run-v1` on `OS_RUNS`, `maintenance-v1` on `OS_MAINTENANCE`, and `exhaustion-v1`
+on `OS_ADVISORIES`. The execution durables are filtered to this installation's
+exact command subjects. `exhaustion-v1` is filtered to
+`$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.OS_RUNS.run-v1`; it captures
+MaxDeliver notices so a worker restart does not lose exhaustion observations.
+All three use explicit ACK, instant replay, persistent state and one replica.
+The run and maintenance consumers use MaxDeliver 10; the advisory observer
+uses unlimited redelivery. All use a 30-second AckWait with no BackOff or
+inactivity deletion.
+
+`OS_ADVISORIES` is a 64 MiB, no-age-expiry work-queue stream with `DiscardNew`.
+Its durable consumer must be bound before the worker binds `run-v1`; worker
+health remains unavailable if that observer exits. Monitor its stored bytes
+and messages. Configure and test an alert at 48 MiB (75% of the byte limit)
+before production cutover. At that threshold, pause the execution consumers
+with the operator gate and let `exhaustion-v1` drain the advisory backlog;
+resume only after the stream is below the alert threshold.
+
+At 64 MiB, `DiscardNew` can reject new advisory capture. The corresponding
+`OS_RUNS` source remains stored, but the current supervisor cannot discover an
+advisory that JetStream did not retain. This slice has no automatic scanner or
+operator command to identify those unnotified sequences. Treat a full stream as
+a production stop condition: keep execution consumers paused and preserve both
+streams. Do not resume until a reviewed operator tool has reconciled retained
+`OS_RUNS` sequences against PostgreSQL. Do not clear either stream or recreate
+its durable as a repair. Phase 6A is not production-ready until the 75% alert
+and the full-capacity reconciliation tool and procedure have been implemented
+and tested. Do not deploy or cut over while the stream is at the alert
+threshold.
+
+Do not delete advisory messages or exhausted sources manually.
+
+The runtime role can retrieve and delete an exact source sequence only in
+`OS_RUNS`; it cannot retrieve or delete messages in another stream. Exhaustion
+cleanup first verifies the committed run/outbox state or committed failure
+notice, then rechecks the original subject, JetStream timestamp and body digest
+before deleting that exact sequence. If state is uncertain or those fields do
+not match, the source stays in `OS_RUNS` for recovery or operator inspection.
 
 | Setting | Default | Allowed range |
 | --- | --- | --- |

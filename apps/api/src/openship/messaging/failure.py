@@ -227,6 +227,111 @@ def _matching_outbox(
     return row
 
 
+def failure_handoff_for_source(
+    db: Session,
+    *,
+    installation_id: uuid.UUID,
+    source_identity: JetStreamSourceIdentity,
+    epoch: uuid.UUID | None = None,
+) -> FailureHandoff | None:
+    """Load one previously committed handoff for an exhausted source."""
+    source = source_identity.validated()
+    state = db.get(MessageTransportState, 1)
+    if source is None or state is None or state.installation_id != installation_id:
+        return None
+    epoch = epoch or state.transport_epoch
+    if state.transport_epoch != epoch:
+        return None
+    failure = _identity_query(db, installation_id, epoch, source).one_or_none()
+    if failure is None:
+        return None
+    outbox = _matching_outbox(
+        db,
+        installation_id=installation_id,
+        epoch=epoch,
+        failure=failure,
+    )
+    if outbox is None:
+        return None
+    return _handoff_from_rows(failure, outbox)
+
+
+def failure_record_exists(
+    db: Session,
+    *,
+    installation_id: uuid.UUID,
+    source_identity: JetStreamSourceIdentity,
+) -> bool:
+    """Distinguish an absent handoff from a broken existing failure record."""
+    source = source_identity.validated()
+    state = db.get(MessageTransportState, 1)
+    if source is None or state is None or state.installation_id != installation_id:
+        return False
+    return (
+        _identity_query(
+            db, installation_id, state.transport_epoch, source
+        ).one_or_none()
+        is not None
+    )
+
+
+def record_failure_source_conflict(
+    db: Session,
+    *,
+    installation_id: uuid.UUID,
+    source_identity: JetStreamSourceIdentity,
+    body: bytes,
+) -> bool:
+    """Record a digest-only conflict when a stored handoff mismatches source."""
+    source = source_identity.validated()
+    if source is None or not isinstance(body, bytes):
+        db.rollback()
+        return False
+    try:
+        state = db.get(MessageTransportState, 1)
+        if state is None or state.installation_id != installation_id:
+            db.rollback()
+            return False
+        failure = _identity_query(
+            db, installation_id, state.transport_epoch, source
+        ).one_or_none()
+        if failure is None:
+            db.rollback()
+            return False
+        digest = hashlib.sha256(body).hexdigest()
+        if failure.body_digest != digest:
+            conflict_code = "source_digest_conflict"
+        elif not _same_timestamp(failure.source_timestamp, source.timestamp):
+            conflict_code = "failure_row_mismatch"
+        elif (
+            _matching_outbox(
+                db,
+                installation_id=installation_id,
+                epoch=state.transport_epoch,
+                failure=failure,
+            )
+            is None
+        ):
+            conflict_code = "outbox_missing"
+        else:
+            conflict_code = "failure_row_mismatch"
+        _record_conflict(
+            db,
+            installation_id=installation_id,
+            epoch=state.transport_epoch,
+            source=source,
+            observed_digest=digest,
+            classification="quarantine",
+            error_code="failure_source_conflict",
+            conflict_code=conflict_code,
+        )
+        db.commit()
+        return True
+    except SQLAlchemyError:
+        db.rollback()
+        return False
+
+
 def persist_failure_handoff(
     db: Session,
     prepared: PreparedDelivery,

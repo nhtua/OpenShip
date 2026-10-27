@@ -25,6 +25,7 @@ from ..execution.models import (
 )
 from ..messaging.models import (
     MessageDisposition,
+    MessageExhaustion,
     MessageFailure,
     MessageFailureConflict,
     MessageTransportState,
@@ -64,6 +65,7 @@ __all__ = [
     "ExecutionSlot",
     "Message",
     "MessageDisposition",
+    "MessageExhaustion",
     "MessageFailure",
     "MessageFailureConflict",
     "MessageTransportState",

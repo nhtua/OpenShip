@@ -72,6 +72,8 @@ Choose Alembic revision IDs from the actual head when implementing.
 | --- | --- |
 | `src/openship/messaging/{contracts,models,outbox}.py`, `runs/models.py`, new Alembic revision | Envelope/disposition/gate records, additive outbox/job fields and constraints, transactional enqueue, outbox wakeup trigger. |
 | `src/openship/messaging/{connection,topology,relay}.py` | Async connection lifecycle, declared resources, confirmed publication and notification-driven catch-up. |
+| `src/openship/messaging/{exhaustion,exhaustion_supervisor}.py` | Content-free observation state machine plus durable MaxDeliver consumption, restart recovery and exact source cleanup. |
+| `message_exhaustions` / Alembic 017 | Content-free, source-keyed recovery state with bounded rechecks and settlement claims. |
 | `src/openship/messaging/{consumer,handlers,supervisor}.py`, `runs/{queue,worker}.py` | Exact fenced acquisition, bounded execution, cancellation controls and recovery. |
 | `events/{service,routes}.py`, `messaging/fanout.py`, `main.py` | Transactional event coverage, API connection lifespan, authorized SSE replay/live bridge, readiness. |
 | `runs/service.py`, `connectors/blockers.py`, `providers/attempts.py`, `execution/{publication,recovery}.py`, artifact/workspace event producers | Preserve domain transactions while adding complete command/event notifications. |
@@ -261,6 +263,26 @@ routes an allowlisted kind to existing execution or explicit retention.
     MaxDeliver advisory and stream/consumer recovery behavior; persist
     `watching_live_owner` until a committed outcome or lease expiry, and resume
     observations after restart without treating delivery count as authority.
+
+    Implementation is in progress: `OS_ADVISORIES` captures the pinned
+    MaxDeliver subject in a durable stream; `exhaustion-v1` is required before
+    worker run intake/readiness, and runtime ACLs add `exhaustion-v1` consume
+    APIs plus exact `OS_RUNS` source GET/DELETE. Alembic 017 and the
+    content-free observation ledger cover live fenced owners, safe requeue,
+    terminal settlement, uncertain dispatch blocking and restart recovery.
+    Focused SQLite tests cover parser/state transitions, failure conflicts,
+    readiness and topology (15 exhaustion, including the mocked supervisor
+    persist/delete/ACK ordering path, 11 failure, 4 consumer lifecycle, and 35
+    topology/CLI tests passed on 2026-10-27). The real-broker test for advisory
+    capture across observer unbind/rebind and exact-sequence source deletion
+    was added and collects, but was not executed: the disposable
+    pinned-server environment is unavailable here. Keep this checkbox open
+    until the authenticated pinned NATS qualifier passes, including runtime
+    denial for other-stream GET/DELETE. Production acceptance also requires a
+    tested alert at 75% of `OS_ADVISORIES` capacity and a reviewed recovery
+    tool/procedure for advisories rejected at full capacity; this slice has no
+    command that discovers rejected advisories from retained `OS_RUNS` state.
+    Keep production cutover blocked until that recovery gap is closed.
   - [ ] **3B2e.5 — Explicit retention maintenance:** accept only an explicitly
     enqueued, bounded retention task with operator identity and durable
     requested/running/completed/failed state; preserve direct maintenance CLI.

@@ -221,6 +221,7 @@ These are proposed initial values, qualified in the deployment slice:
 | `OS_EVENTS` | event notices | Limits retention; 256 MiB / 24 hours; oldest notices may expire; DB history is authoritative. |
 | `OS_CONTROLS` | control notices | Limits retention; 64 MiB / 24 hours; owner checks also read durable state. |
 | `OS_FAILURES` | safe failure notices | Limits retention; 128 MiB / 7 days; durable failure ledger survives notice expiry. |
+| `OS_ADVISORIES` | pinned MaxDeliver advisory for `OS_RUNS.run-v1` | Work queue; 64 MiB; no age expiry; reject new at capacity. |
 
 Commands have a two-minute duplicate window, explicit ACKs, 30-second AckWait
 and progress ACK every 10 seconds while supervised. Proposed `MaxDeliver=10`;
@@ -234,6 +235,24 @@ inactive cleanup threshold; durable worker consumers have no inactivity
 deletion. Control filters cover only active runs; initial DB checks and
 supervisor safety checks cover subscription races and missed notices.
 
+The required `exhaustion-v1` durable on `OS_ADVISORIES` explicitly ACKs the
+exact `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.OS_RUNS.run-v1` subject, uses
+all-message delivery, a 30-second AckWait, unlimited redelivery, one file-backed
+replica and no inactivity deletion. The stream persists server advisories while
+the worker is offline; `exhaustion-v1` must be bound before run intake becomes
+ready. Runtime credentials may inspect and delete an exact `OS_RUNS` source
+sequence only after the terminal/requeue observation or failure handoff commits;
+they cannot read or delete messages in another stream. The 64 MiB advisory
+budget is finite. `DiscardNew` can reject new capture at capacity; the
+corresponding source stays in `OS_RUNS`, but the current supervisor cannot
+discover an advisory that was not retained, and this slice has no operator
+command to identify such sequences. Production cutover requires a tested 75%
+capacity alert and a reviewed full-capacity per-sequence reconciliation tool
+and procedure. At the alert threshold, operators pause execution consumers
+while the exhaustion observer drains. At full capacity, keep them paused until
+the tool has reconciled retained source messages against PostgreSQL. This is a
+production acceptance gate, not an automatic recovery path.
+
 NATS retains messages that hit MaxDeliver; it does not automatically move
 them to a dead-letter queue. The recovery supervisor must inspect exhausted
 deliveries/advisories on startup/reconnect and during its bounded recovery
@@ -245,6 +264,16 @@ uncertain run into execution. Exact API details must be verified against the
 selected release; the [consumer contract](https://github.com/nats-io/nats.docs/blob/master/nats-concepts/jetstream/consumers.md)
 describes explicit acknowledgements and exhaustion. Stream retention and
 bounded deduplication follow the [JetStream model](https://github.com/nats-io/nats.docs/blob/master/using-nats/jetstream/model_deep_dive.md).
+
+An exhaustion observation is keyed to the authoritative installation,
+transport epoch and exact `OS_RUNS` sequence. The advisory's delivery count is
+diagnostic only. A live owner remains in `watching_live_owner` until its fenced
+lease changes or a committed run outcome permits settlement. Recovery verifies
+the source subject, JetStream timestamp and stored body digest before exact
+sequence deletion. Uncertain dispatch or mismatched source identity remains
+blocked with the source retained. A durable observation resumes this check
+after a worker restart; the durable advisory stream preserves an event that
+arrived while no worker was bound.
 
 For immediate run-message quarantine, store a content-free failure record
 keyed by installation, the authoritative `messaging_state.transport_epoch`,

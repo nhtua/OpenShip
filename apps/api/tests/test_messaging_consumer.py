@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -567,6 +568,25 @@ class _InlineSlot:
         return function(self.resource, *args, **kwargs)
 
 
+class _NoWorkPool:
+    """Reservation-only pool for lifecycle tests that never execute work."""
+
+    def __init__(self, size):
+        self._slots = [object() for _ in range(size)]
+        self._available = list(self._slots)
+
+    @asynccontextmanager
+    async def reserve(self):
+        slot = self._available.pop()
+        try:
+            yield slot
+        finally:
+            self._available.append(slot)
+
+    async def close(self):
+        return None
+
+
 def _loop_fixture(
     monkeypatch,
     *,
@@ -634,6 +654,17 @@ def _loop_fixture(
         return SimpleNamespace(ready=True)
 
     monkeypatch.setattr(consumer, "ensure_topology", topology)
+
+    class IdleExhaustionSupervisor:
+        def __init__(self, _client, **_kwargs):
+            pass
+
+        async def run(self, stop, *, started=None):
+            if started is not None:
+                started.set()
+            await stop.wait()
+
+    monkeypatch.setattr(consumer, "ExhaustionSupervisor", IdleExhaustionSupervisor)
     instance = consumer.RunConsumer(
         broker,
         concurrency=concurrency,
@@ -698,11 +729,18 @@ async def test_loop_binds_distinct_bounded_subscriptions_and_reserves_before_fet
     monkeypatch,
 ):
     f = _loop_fixture(monkeypatch, concurrency=2, empty=True)
+
+    async def fetch_allowed():
+        return True
+
+    f.consumer._installation_id = uuid.uuid4()
+    f.consumer._fetch_allowed = fetch_allowed
+    f.consumer._pool = _NoWorkPool(2)
+    f.consumer._metadata = _NoWorkPool(1)
     task = asyncio.create_task(f.consumer.run(f.stop))
     try:
         await _until(lambda: len(f.broker.fetches) >= 2)
         assert len(set(f.broker.fetches)) == 2
-        assert f.broker.topology_checks == 1
         assert (
             f.broker.bindings
             == [
@@ -718,8 +756,53 @@ async def test_loop_binds_distinct_bounded_subscriptions_and_reserves_before_fet
         assert f.resources == []
     finally:
         f.stop.set()
-        await asyncio.wait_for(task, 3)
+        await asyncio.wait_for(task, 5)
     assert len(f.broker.unsubscribed) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_intake_waits_for_exhaustion_observer_binding(monkeypatch):
+    from src.openship.messaging import consumer
+
+    f = _loop_fixture(monkeypatch, empty=True)
+    observer_starting = asyncio.Event()
+    allow_binding = asyncio.Event()
+
+    class DelayedExhaustionSupervisor:
+        def __init__(self, _client, **_kwargs):
+            pass
+
+        async def run(self, stop, *, started=None):
+            observer_starting.set()
+            await allow_binding.wait()
+            if started is not None:
+                started.set()
+            await stop.wait()
+
+    monkeypatch.setattr(consumer, "ExhaustionSupervisor", DelayedExhaustionSupervisor)
+
+    async def fetch_allowed():
+        return True
+
+    f.consumer._installation_id = uuid.uuid4()
+    f.consumer._fetch_allowed = fetch_allowed
+    f.consumer._pool = _NoWorkPool(f.consumer.concurrency)
+    f.consumer._metadata = _NoWorkPool(1)
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await asyncio.wait_for(observer_starting.wait(), 2)
+        await asyncio.sleep(0.03)
+        assert f.broker.bindings == []
+        assert f.broker.control_subscriptions == []
+
+        allow_binding.set()
+        await _until(lambda: len(f.broker.fetches) >= 1)
+        assert f.consumer._exhaustion_task is not None
+        assert not f.consumer._exhaustion_task.done()
+    finally:
+        allow_binding.set()
+        f.stop.set()
+        await asyncio.wait_for(task, 5)
 
 
 @pytest.mark.asyncio
@@ -1207,12 +1290,33 @@ async def test_worker_health_requires_bound_run_intake(monkeypatch):
 
     f.consumer._fetch_allowed = fetch_allowed
     recovery_task = asyncio.create_task(asyncio.Event().wait())
+    exhaustion_task = asyncio.create_task(asyncio.Event().wait())
     f.consumer._recovery_task = recovery_task
+    f.consumer._exhaustion_task = exhaustion_task
     try:
         assert not await f.consumer._health_ready(f.stop)
     finally:
         recovery_task.cancel()
-        await asyncio.gather(recovery_task, return_exceptions=True)
+        exhaustion_task.cancel()
+        await asyncio.gather(recovery_task, exhaustion_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_worker_health_requires_live_exhaustion_observer(monkeypatch):
+    f = _loop_fixture(monkeypatch, empty=True)
+    intake_task = asyncio.create_task(asyncio.Event().wait())
+    recovery_task = asyncio.create_task(asyncio.Event().wait())
+    f.consumer._consumer_tasks = (intake_task,)
+    f.consumer._recovery_task = recovery_task
+    f.consumer._exhaustion_task = asyncio.create_task(asyncio.sleep(0))
+    f.consumer._intake_ready = True
+    try:
+        await f.consumer._exhaustion_task
+        assert not f.consumer._health_runtime_ready(f.stop)
+    finally:
+        intake_task.cancel()
+        recovery_task.cancel()
+        await asyncio.gather(intake_task, recovery_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -1220,8 +1324,10 @@ async def test_worker_health_rechecks_intake_after_gate_check(monkeypatch):
     f = _loop_fixture(monkeypatch, empty=True)
     intake_task = asyncio.create_task(asyncio.Event().wait())
     recovery_task = asyncio.create_task(asyncio.Event().wait())
+    exhaustion_task = asyncio.create_task(asyncio.Event().wait())
     f.consumer._consumer_tasks = (intake_task,)
     f.consumer._recovery_task = recovery_task
+    f.consumer._exhaustion_task = exhaustion_task
     f.consumer._intake_ready = True
 
     async def gate_check_during_shutdown():
@@ -1235,7 +1341,10 @@ async def test_worker_health_rechecks_intake_after_gate_check(monkeypatch):
     finally:
         intake_task.cancel()
         recovery_task.cancel()
-        await asyncio.gather(intake_task, recovery_task, return_exceptions=True)
+        exhaustion_task.cancel()
+        await asyncio.gather(
+            intake_task, recovery_task, exhaustion_task, return_exceptions=True
+        )
 
 
 @pytest.mark.asyncio

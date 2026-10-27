@@ -15,8 +15,10 @@ from src.openship.messaging.failure import (
     JetStreamSourceIdentity,
     MessageFailure,
     MessageFailureConflict,
+    failure_record_exists,
     handoff_matches_delivery,
     persist_failure_handoff,
+    record_failure_source_conflict,
     source_identity_from_message,
 )
 from src.openship.messaging.models import MessageTransportState
@@ -194,6 +196,63 @@ def test_source_identity_conflict_is_recorded_without_changing_canonical_failure
             == 1
         )
         assert db.query(Outbox).filter_by(failure_id=canonical.failure_id).count() == 1
+
+
+def test_observed_failure_handoff_conflict_is_content_free_and_idempotent():
+    source = _source()
+    canonical = _persist(source, b"canonical body")
+    assert canonical is not None
+    observed = b"changed body"
+
+    with SessionLocal() as db:
+        assert record_failure_source_conflict(
+            db,
+            installation_id=canonical.installation_id,
+            source_identity=source,
+            body=observed,
+        )
+    with SessionLocal() as db:
+        conflict = (
+            db.query(MessageFailureConflict)
+            .filter_by(source_sequence=source.sequence)
+            .one()
+        )
+        _CONFLICT_IDS.append(conflict.id)
+        assert conflict.observed_digest != canonical.body_digest
+        assert conflict.observed_classification == "quarantine"
+        assert conflict.observed_error_code == "failure_source_conflict"
+        assert conflict.conflict_code == "source_digest_conflict"
+        assert observed.decode() not in repr(conflict)
+
+
+def test_incomplete_failure_outbox_is_observed_and_blocks_generic_recovery():
+    source = _source()
+    canonical = _persist(source, b"canonical body")
+    assert canonical is not None
+    with SessionLocal() as db:
+        db.query(Outbox).filter_by(id=canonical.outbox_id).delete()
+        db.commit()
+    with SessionLocal() as db:
+        assert failure_record_exists(
+            db,
+            installation_id=canonical.installation_id,
+            source_identity=source,
+        )
+    with SessionLocal() as db:
+        assert record_failure_source_conflict(
+            db,
+            installation_id=canonical.installation_id,
+            source_identity=source,
+            body=b"canonical body",
+        )
+    with SessionLocal() as db:
+        conflict = (
+            db.query(MessageFailureConflict)
+            .filter_by(source_sequence=source.sequence)
+            .one()
+        )
+        _CONFLICT_IDS.append(conflict.id)
+        assert conflict.conflict_code == "outbox_missing"
 
 
 def test_handoff_marker_is_bound_to_exact_source_body_and_classification():

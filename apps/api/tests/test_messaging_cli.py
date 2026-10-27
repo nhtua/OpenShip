@@ -16,10 +16,16 @@ def _report(*, status="ready"):
             StreamResult(
                 "OS_EVENTS", status, ("max_bytes",) if status == "drift" else ()
             ),
+            StreamResult(
+                "OS_ADVISORIES",
+                status,
+                ("max_bytes",) if status == "drift" else (),
+            ),
         ),
         (
             ConsumerResult("OS_RUNS", "run-v1", "ready"),
             ConsumerResult("OS_MAINTENANCE", "maintenance-v1", "ready"),
+            ConsumerResult("OS_ADVISORIES", "exhaustion-v1", "ready"),
         ),
     )
 
@@ -92,10 +98,14 @@ def test_doctor_combines_database_and_topology_status(
 def test_check_and_doctor_report_missing_consumer_as_not_ready(monkeypatch, capsys):
     report = TopologyReport(
         "00000000-0000-0000-0000-000000000001",
-        (StreamResult("OS_RUNS", "ready"),),
+        (
+            StreamResult("OS_RUNS", "ready"),
+            StreamResult("OS_ADVISORIES", "ready"),
+        ),
         (
             ConsumerResult("OS_RUNS", "run-v1", "missing"),
             ConsumerResult("OS_MAINTENANCE", "maintenance-v1", "ready"),
+            ConsumerResult("OS_ADVISORIES", "exhaustion-v1", "ready"),
         ),
     )
 

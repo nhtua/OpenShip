@@ -17,7 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 
 from ..auth.models import Base
-from ..messaging.models import MessageFailure  # noqa: F401
+from ..messaging.models import MessageExhaustion, MessageFailure  # noqa: F401
 from ..workspace.models import Project  # noqa: F401
 
 

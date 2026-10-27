@@ -33,6 +33,7 @@ from .delivery import (
     settle_run_delivery,
 )
 from .executor import ExecutionPool
+from .exhaustion_supervisor import ExhaustionSupervisor
 from .failure import (
     FailureHandoff,
     JetStreamSourceIdentity,
@@ -219,6 +220,7 @@ class RunConsumer:
             session_factory=session_factory,
         )
         self._recovery_task: asyncio.Task | None = None
+        self._exhaustion_task: asyncio.Task | None = None
         self._consumer_tasks: tuple[asyncio.Task, ...] = ()
         self._intake_ready = False
         # Metadata has independent bounded capacity; never queues behind graphs
@@ -262,6 +264,7 @@ class RunConsumer:
 
     def _health_runtime_ready(self, stop: asyncio.Event) -> bool:
         recovery_task = self._recovery_task
+        exhaustion_task = self._exhaustion_task
         return (
             not stop.is_set()
             and self._intake_ready
@@ -269,6 +272,8 @@ class RunConsumer:
             and all(not task.done() for task in self._consumer_tasks)
             and recovery_task is not None
             and not recovery_task.done()
+            and exhaustion_task is not None
+            and not exhaustion_task.done()
         )
 
     async def _health_ready(self, stop: asyncio.Event) -> bool:
@@ -288,6 +293,7 @@ class RunConsumer:
         subscriptions = []
         tasks = []
         recovery_task = None
+        exhaustion_task = None
         health_subscription = None
         try:
             recovery_task = asyncio.create_task(self._recovery.run(stop))
@@ -298,6 +304,30 @@ class RunConsumer:
             if stop.is_set():
                 return
             self._recovery_task = recovery_task
+            exhaustion_started = asyncio.Event()
+            exhaustion_supervisor = ExhaustionSupervisor(
+                self._client,
+                installation_id=self._installation_id,
+                session_factory=self._session_factory,
+                failure_publisher=self._failure_publisher,
+                ack_timeout=self._ack_timeout,
+            )
+            exhaustion_task = asyncio.create_task(
+                exhaustion_supervisor.run(stop, started=exhaustion_started)
+            )
+            self._exhaustion_task = exhaustion_task
+            while not exhaustion_started.is_set():
+                if exhaustion_task.done():
+                    await exhaustion_task
+                    raise RuntimeError("exhaustion supervisor exited before binding")
+                if stop.is_set():
+                    return
+                await self._pause(stop)
+            if stop.is_set():
+                return
+            if exhaustion_task.done():
+                await exhaustion_task
+                raise RuntimeError("exhaustion supervisor exited after binding")
             health_subscription = await subscribe_worker_health(
                 self._client,
                 installation_id=self._installation_id,
@@ -322,10 +352,11 @@ class RunConsumer:
             self._intake_ready = not stop.is_set() and all(
                 not task.done() for task in tasks
             )
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, exhaustion_task)
         finally:
             self._intake_ready = False
             self._consumer_tasks = ()
+            self._exhaustion_task = None
             # On peer failure/cancellation, join synchronous work before closing
             # its thread-owned session/Worker and release every private inbox.
             for task in tasks:
@@ -336,6 +367,10 @@ class RunConsumer:
                 if not stop.is_set() and not recovery_task.done():
                     recovery_task.cancel()
                 await asyncio.gather(recovery_task, return_exceptions=True)
+            if exhaustion_task is not None:
+                if not exhaustion_task.done():
+                    exhaustion_task.cancel()
+                await asyncio.gather(exhaustion_task, return_exceptions=True)
             results = await asyncio.gather(
                 *(sub.unsubscribe() for sub in subscriptions),
                 *(

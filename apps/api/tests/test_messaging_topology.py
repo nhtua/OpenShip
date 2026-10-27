@@ -100,7 +100,11 @@ async def test_all_streams_present_is_not_ready_until_consumers_are_provisioned(
     )
     assert checked.ready is False
     assert not js.consumers
-    assert [item.status for item in checked.consumers] == ["missing", "missing"]
+    assert [item.status for item in checked.consumers] == [
+        "missing",
+        "missing",
+        "missing",
+    ]
     applied = await topology.ensure_topology(
         apply=True, js=js, installation_id=installation_id
     )
@@ -114,6 +118,10 @@ async def test_all_streams_present_is_not_ready_until_consumers_are_provisioned(
     assert run.config.max_ack_pending == run.config.max_waiting == 4
     maintenance = js.consumers["OS_MAINTENANCE", "maintenance-v1"]
     assert maintenance.config.max_ack_pending == maintenance.config.max_waiting == 1
+    exhaustion = js.consumers["OS_ADVISORIES", "exhaustion-v1"]
+    assert exhaustion.config.filter_subject == topology.EXHAUSTION_ADVISORY_SUBJECT
+    assert exhaustion.config.max_deliver == -1
+    assert exhaustion.config.max_ack_pending == exhaustion.config.max_waiting == 4
     run.config.pause_until = "2100-01-01T00:00:00Z"
     run.paused = True
     reapplied = await topology.ensure_topology(
