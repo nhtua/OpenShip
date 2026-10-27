@@ -341,10 +341,20 @@ async def test_shared_durables_reapply_preserves_pending_ack_progress_and_pause(
             apply=apply, js=js, installation_id=installation_id
         )
         assert report.ready
-        assert all(item.paused for item in report.consumers)
+        execution_consumers = [
+            item
+            for item in report.consumers
+            if item.stream in {"OS_RUNS", "OS_MAINTENANCE"}
+        ]
+        assert len(execution_consumers) == 2
+        assert all(item.paused for item in execution_consumers)
         assert all(
-            item.pause_until == "2100-01-01T00:00:00Z" for item in report.consumers
+            item.pause_until == "2100-01-01T00:00:00Z" for item in execution_consumers
         )
+        advisory = next(
+            item for item in report.consumers if item.stream == "OS_ADVISORIES"
+        )
+        assert advisory.paused is False
         after = await js.consumer_info("OS_RUNS", "run-v1")
         assert after.created == before.created
         assert after.delivered == before.delivered

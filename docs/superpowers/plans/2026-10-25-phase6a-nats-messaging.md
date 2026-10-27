@@ -273,13 +273,15 @@ routes an allowlisted kind to existing execution or explicit retention.
     Focused SQLite tests cover parser/state transitions, failure conflicts,
     readiness and topology (15 exhaustion, including the mocked supervisor
     persist/delete/ACK ordering path, 11 failure, 4 consumer lifecycle, and 35
-    topology/CLI tests passed on 2026-10-27). The real-broker test for advisory
-    capture across observer unbind/rebind and exact-sequence source deletion
-    was added and collects, but was not executed: the disposable
-    pinned-server environment is unavailable here. Keep this checkbox open
-    until the authenticated pinned NATS qualifier passes, including runtime
-    denial for other-stream GET/DELETE. Production acceptance also requires a
-    tested alert at 75% of `OS_ADVISORIES` capacity and a reviewed recovery
+    topology/CLI tests passed on 2026-10-27). The authenticated pinned CI
+    qualifier executed 50 cases per Python version; Python 3.12 reported 48
+    passed and 2 failed, and all three matrix jobs failed. The log identified
+    two regressions: the shared-pause assertion included the advisory durable,
+    and the relay qualification role lacked advisory-durable INFO permission.
+    Both corrections are applied and await CI rerun. Keep this checkbox open
+    until all 50 cases pass without skips, including runtime denial for
+    other-stream GET/DELETE. Production acceptance also requires a tested
+    alert at 75% of `OS_ADVISORIES` capacity and a reviewed recovery
     tool/procedure for advisories rejected at full capacity; this slice has no
     command that discovers rejected advisories from retained `OS_RUNS` state.
     Keep production cutover blocked until that recovery gap is closed.

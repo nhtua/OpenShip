@@ -171,7 +171,8 @@ authorization {{
       permissions: {{
         publish: ["openship.>", "$JS.API.STREAM.INFO.>",
           "$JS.API.CONSUMER.INFO.OS_RUNS.run-v1",
-          "$JS.API.CONSUMER.INFO.OS_MAINTENANCE.maintenance-v1"],
+          "$JS.API.CONSUMER.INFO.OS_MAINTENANCE.maintenance-v1",
+          "$JS.API.CONSUMER.INFO.OS_ADVISORIES.exhaustion-v1"],
         subscribe: ["_INBOX.>"]
       }}
     }}

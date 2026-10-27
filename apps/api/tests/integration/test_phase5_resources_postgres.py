@@ -503,7 +503,7 @@ def test_resource_migration_enforces_scope_immutability_and_retention(database_u
         # PostgreSQL rolls back the refused downgrade to the head. SQLite keeps
         # the last successfully applied revision before the refusal.
         expected_head = (
-            "phase6a015" if database_url.startswith("postgresql") else "phase5a010"
+            "phase6a017" if database_url.startswith("postgresql") else "phase5a010"
         )
         assert current == expected_head
     engine.dispose()
@@ -569,7 +569,7 @@ def test_purged_connector_credential_prevents_irreversible_downgrade(database_ur
         # PostgreSQL rolls back to the head; SQLite retains the last successful
         # revision before the secret-purge downgrade refusal.
         expected_head = (
-            "phase6a015" if database_url.startswith("postgresql") else "phase5a012"
+            "phase6a017" if database_url.startswith("postgresql") else "phase5a012"
         )
         assert current == expected_head
     engine.dispose()
