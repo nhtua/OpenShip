@@ -17,11 +17,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 
 from ..auth.models import Base
+from ..messaging.models import MessageFailure  # noqa: F401
 from ..workspace.models import Project  # noqa: F401
 
 
 class Run(Base):
     """A durable run within a conversation/project. Tracks execution state and fencing."""
+
     __tablename__ = "runs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -92,6 +94,7 @@ class Run(Base):
 
 class RunJob(Base):
     """A job entry for a run, used for queueing and distributed execution."""
+
     __tablename__ = "run_jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -100,7 +103,9 @@ class RunJob(Base):
         ForeignKey("runs.id", ondelete="CASCADE"),
         nullable=False,
     )
-    available_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    available_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     lease_until = Column(DateTime(timezone=True), nullable=True)
     owner_id = Column(String(50), nullable=True)
     fence = Column(Integer, nullable=False, server_default="0")
@@ -120,6 +125,7 @@ class ProviderAttempt(Base):
     Metadata and outcomes only: no prompt, no provider response body, and no
     credential ever belongs here.
     """
+
     __tablename__ = "provider_attempts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -148,7 +154,9 @@ class ProviderAttempt(Base):
     reserved_total_tokens = Column(Integer, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("run_id", "ordinal", name="uq_provider_attempts_run_id_ordinal"),
+        UniqueConstraint(
+            "run_id", "ordinal", name="uq_provider_attempts_run_id_ordinal"
+        ),
         CheckConstraint(
             "outcome IN ('started', 'succeeded', 'failed', 'cancelled')",
             name="ck_provider_attempts_outcome",
@@ -179,13 +187,17 @@ class RunTranscriptRecord(Base):
     __tablename__ = "run_transcript_entries"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    run_id = Column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(
+        UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
     ordinal = Column(Integer, nullable=False)
     model_turn_ordinal = Column(Integer, nullable=False)
     message_json = Column(Text, nullable=False)
     logical_call_ids_json = Column(Text, nullable=False, server_default="[]")
     logical_call_id = Column(String(128), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         UniqueConstraint("run_id", "ordinal", name="uq_run_transcript_run_ordinal"),
@@ -197,6 +209,7 @@ class RunTranscriptRecord(Base):
 
 class Event(Base):
     """An event in a conversation's lifecycle, with sequence numbering."""
+
     __tablename__ = "events"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(
@@ -225,20 +238,23 @@ class Event(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        UniqueConstraint("conversation_id", "sequence", name="uq_events_conversation_sequence"),
+        UniqueConstraint(
+            "conversation_id", "sequence", name="uq_events_conversation_sequence"
+        ),
         Index("ix_events_conversation_id_sequence", "conversation_id", "sequence"),
     )
 
 
 class Outbox(Base):
     """Transactional records waiting for transport publication."""
+
     __tablename__ = "outbox"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     conversation_id = Column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     event_id = Column(
         UUID(as_uuid=True),
@@ -253,7 +269,14 @@ class Outbox(Base):
     schema_version = Column(Integer, nullable=False, server_default="1")
     message_id = Column(UUID(as_uuid=True), nullable=False, default=uuid.uuid4)
     subject = Column(String(255), nullable=True)
-    run_id = Column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=True)
+    run_id = Column(
+        UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=True
+    )
+    failure_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("message_failures.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     dispatch_generation = Column(Integer, nullable=True)
     transport_epoch = Column(UUID(as_uuid=True), nullable=True)
     publish_attempts = Column(Integer, nullable=False, server_default="0")
@@ -269,7 +292,22 @@ class Outbox(Base):
         ),
         CheckConstraint("schema_version >= 1", name="ck_outbox_schema_version"),
         CheckConstraint("publish_attempts >= 0", name="ck_outbox_publish_attempts"),
+        CheckConstraint(
+            "(destination = 'failure' AND failure_id IS NOT NULL "
+            "AND conversation_id IS NULL AND run_id IS NULL AND event_id IS NULL "
+            "AND dispatch_generation IS NULL) OR "
+            "(destination <> 'failure' AND failure_id IS NULL "
+            "AND conversation_id IS NOT NULL)",
+            name="ck_outbox_failure_scope",
+        ),
         Index("uq_outbox_message_id", "message_id", unique=True),
+        Index(
+            "uq_outbox_failure_id",
+            "failure_id",
+            unique=True,
+            postgresql_where=text("destination = 'failure'"),
+            sqlite_where=text("destination = 'failure'"),
+        ),
         Index("ix_outbox_conversation_id", "conversation_id"),
         Index("ix_outbox_processed_at", "processed_at"),
         Index(

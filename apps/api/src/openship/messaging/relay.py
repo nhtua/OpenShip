@@ -23,7 +23,8 @@ from ..database.session import SessionLocal
 from ..events.service import Event
 from ..runs.models import Outbox, Run, RunJob
 from .connection import connect_nats
-from .models import MessageTransportState
+from .failure import FailureHandoff
+from .models import MessageFailure, MessageTransportState
 from .topology import TopologyCompatibilityError, ensure_topology
 
 logger = logging.getLogger("openship.messaging.relay")
@@ -74,6 +75,7 @@ def _record_envelope(
     event: Event | None,
     run: Run | None,
     job: RunJob | None,
+    failure: MessageFailure | None = None,
 ) -> OutboxEnvelope:
     record: dict[str, object] = {
         "schema_version": row.schema_version,
@@ -85,7 +87,12 @@ def _record_envelope(
         "created_at": _utc_iso(row.created_at),
         "subject": row.subject,
     }
-    record["conversation_id"] = str(row.conversation_id)
+    if row.destination != "failure":
+        if row.conversation_id is None:
+            raise ValueError(
+                "conversation-scoped publication is missing its conversation"
+            )
+        record["conversation_id"] = str(row.conversation_id)
     if event is not None:
         record["project_id"] = str(event.project_id) if event.project_id else None
         record["event_id"] = str(event.id)
@@ -117,8 +124,19 @@ def _record_envelope(
         if run is None or event is None:
             raise ValueError("control publication is missing its durable run or event")
     elif row.destination == "failure":
-        if run is None:
-            raise ValueError("failure publication is missing its durable run reference")
+        if (
+            failure is None
+            or row.failure_id != failure.id
+            or failure.classification != row.type
+            or row.conversation_id is not None
+            or row.run_id is not None
+            or row.event_id is not None
+        ):
+            raise ValueError(
+                "failure publication is missing its durable failure reference"
+            )
+        record["kind"] = f"failure.{failure.classification}"
+        record["failure_id"] = str(failure.id)
     else:
         raise ValueError("outbox destination is not publishable")
 
@@ -131,6 +149,12 @@ def _record_envelope(
     if not row.subject.startswith(expected_subject_prefix):
         raise ValueError(
             "outbox publication subject is outside its installation namespace"
+        )
+    if row.destination == "failure" and row.subject != (
+        f"{expected_subject_prefix}failure.{failure.classification}"
+    ):
+        raise ValueError(
+            "failure publication subject does not match its classification"
         )
     return OutboxEnvelope(row.id, claim_id, row.message_id, row.subject, body)
 
@@ -158,6 +182,8 @@ def claim_outbox_batch(
     lease_seconds: int | None = None,
     now: datetime | None = None,
     conversation_id: uuid.UUID | None = None,
+    outbox_id: uuid.UUID | None = None,
+    failure_id: uuid.UUID | None = None,
 ) -> list[OutboxEnvelope]:
     """Claim due publications in a short transaction, preserving event order."""
     claim_id = uuid.uuid4()
@@ -195,6 +221,12 @@ def claim_outbox_batch(
         )
         if conversation_id is not None:
             query = query.filter(Outbox.conversation_id == conversation_id)
+        if outbox_id is not None:
+            query = query.filter(Outbox.id == outbox_id)
+        if failure_id is not None:
+            query = query.filter(
+                Outbox.destination == "failure", Outbox.failure_id == failure_id
+            )
         query = (
             query.order_by(
                 Outbox.created_at.asc(), Event.sequence.asc(), Outbox.id.asc()
@@ -208,9 +240,11 @@ def claim_outbox_batch(
             return records
         event_ids = {row.event_id for row in rows if row.event_id is not None}
         run_ids = {row.run_id for row in rows if row.run_id is not None}
+        failure_ids = {row.failure_id for row in rows if row.failure_id is not None}
         events = {}
         runs = {}
         jobs = {}
+        failures = {}
         if event_ids:
             events = {
                 event.id: event
@@ -224,6 +258,13 @@ def claim_outbox_batch(
                 job.run_id: job
                 for job in db.query(RunJob).filter(RunJob.run_id.in_(run_ids)).all()
             }
+        if failure_ids:
+            failures = {
+                failure.id: failure
+                for failure in db.query(MessageFailure)
+                .filter(MessageFailure.id.in_(failure_ids))
+                .all()
+            }
         for row in rows:
             row.publisher_claim_id = claim_id
             row.publisher_lease_until = claimed_at + timedelta(seconds=lease_duration)
@@ -236,6 +277,7 @@ def claim_outbox_batch(
                     event=events.get(row.event_id),
                     run=runs.get(row.run_id),
                     job=jobs.get(row.run_id),
+                    failure=failures.get(row.failure_id),
                 )
             )
         db.commit()
@@ -254,6 +296,115 @@ async def publish_record(js, record: OutboxEnvelope) -> PublicationReceipt:
         stream=ack.stream,
         sequence=ack.seq,
         duplicate=bool(ack.duplicate),
+    )
+
+
+def failure_handoff_state(
+    session_factory: sessionmaker,
+    handoff: FailureHandoff,
+) -> tuple[bool, bool]:
+    """Return whether the ledger/outbox binding is valid and already settled."""
+    with session_factory() as db:
+        row = (
+            db.query(Outbox)
+            .filter_by(
+                id=handoff.outbox_id,
+                failure_id=handoff.failure_id,
+                destination="failure",
+            )
+            .one_or_none()
+        )
+        failure = db.get(MessageFailure, handoff.failure_id)
+        state = db.get(MessageTransportState, 1)
+        timestamp = failure.source_timestamp if failure is not None else None
+        if timestamp is not None and timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        expected_payload = json.dumps(
+            {"failure_id": str(handoff.failure_id)}, separators=(",", ":")
+        )
+        expected_subject = (
+            f"openship.{handoff.installation_id.hex}.v1.failure."
+            f"{handoff.classification}"
+        )
+        valid = (
+            row is not None
+            and failure is not None
+            and state is not None
+            and state.installation_id == handoff.installation_id
+            and state.transport_epoch == handoff.source_transport_epoch
+            and failure.installation_id == handoff.installation_id
+            and failure.source_transport_epoch == handoff.source_transport_epoch
+            and failure.source_stream == handoff.source_identity.stream
+            and failure.source_sequence == handoff.source_identity.sequence
+            and timestamp == handoff.source_identity.timestamp
+            and failure.body_digest == handoff.body_digest
+            and failure.classification == handoff.classification
+            and failure.error_code == handoff.error_code
+            and row.type == handoff.classification
+            and row.message_id
+            == uuid.uuid5(
+                handoff.installation_id,
+                f"failure.notice:{handoff.failure_id}",
+            )
+            and row.subject == expected_subject
+            and row.payload == expected_payload
+            and row.transport_epoch == handoff.source_transport_epoch
+            and row.conversation_id is None
+            and row.run_id is None
+            and row.event_id is None
+            and row.dispatch_generation is None
+        )
+        return valid, bool(valid and row.processed_at is not None)
+
+
+async def publish_failure_handoff(
+    js,
+    handoff: FailureHandoff,
+    *,
+    session_factory: sessionmaker = SessionLocal,
+    run_sync: Callable = asyncio.to_thread,
+    now: datetime | None = None,
+) -> bool:
+    """Confirm one exact failure row under the general relay's lease protocol."""
+    valid, processed = await run_sync(failure_handoff_state, session_factory, handoff)
+    if not valid:
+        return False
+    if processed:
+        return True
+    records = await run_sync(
+        claim_outbox_batch,
+        session_factory,
+        limit=1,
+        now=now,
+        outbox_id=handoff.outbox_id,
+        failure_id=handoff.failure_id,
+    )
+    if not records:
+        valid, processed = await run_sync(
+            failure_handoff_state, session_factory, handoff
+        )
+        return valid and processed
+    record = records[0]
+    try:
+        await publish_record(js, record)
+    except Exception as error:  # noqa: BLE001 - retain source until confirmed
+        await run_sync(
+            _settle_publication,
+            session_factory,
+            record,
+            error=error,
+        )
+        logger.warning(
+            "failure_notice_publish_deferred failure_id=%s error_kind=%s",
+            handoff.failure_id,
+            type(error).__name__,
+        )
+        return False
+    return await run_sync(
+        _settle_publication,
+        session_factory,
+        record,
+        error=None,
     )
 
 

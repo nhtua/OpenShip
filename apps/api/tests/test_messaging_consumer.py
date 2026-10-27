@@ -12,7 +12,11 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from sqlalchemy.exc import OperationalError
 
 from src.openship.database.session import SessionLocal
-from src.openship.messaging.models import MessageDisposition, MessageTransportState
+from src.openship.messaging.models import (
+    MessageDisposition,
+    MessageFailure,
+    MessageTransportState,
+)
 from src.openship.messaging.outbox import enqueue_run
 from src.openship.runs.models import Outbox, Run, RunJob
 from src.openship.runs.queue import finalize
@@ -464,11 +468,17 @@ def test_duplicate_decision_preserves_admitted_owners_settlement(duplicate_after
 
 # Real sessions/acquisition/settlement; controlled broker and synthetic effect.
 class _RunMessage:
-    def __init__(self, body, subject, stop):
+    def __init__(self, body, subject, stop, *, metadata=None, num_delivered=1):
         self.data, self.subject, self.stop = body, subject, stop
         self.progress, self.acks, self.naks = 0, 0, []
         self.on_ack = lambda: None
         self.ack_failure = False
+        self.metadata = metadata or SimpleNamespace(
+            stream="OS_RUNS",
+            sequence=SimpleNamespace(stream=uuid.uuid4().int % (2**63 - 1) + 1),
+            timestamp=datetime.now(UTC),
+            num_delivered=num_delivered,
+        )
 
     async def in_progress(self):
         self.progress += 1
@@ -543,8 +553,18 @@ class _RunBroker:
         assert timeout > 0
         self.rpc_order.append("flush")
 
-    async def publish(self, subject, payload, *, reply=""):
-        self.published.append((subject, payload, reply))
+    async def publish(self, subject, payload, *, reply="", headers=None):
+        self.published.append((subject, payload, reply, headers))
+
+
+class _InlineSlot:
+    def __init__(self):
+        self.resource = SimpleNamespace(
+            db=SessionLocal(), worker=SimpleNamespace(worker_id="inline-test")
+        )
+
+    async def run(self, function, *args, **kwargs):
+        return function(self.resource, *args, **kwargs)
 
 
 def _loop_fixture(
@@ -556,6 +576,7 @@ def _loop_fixture(
     empty=False,
     factory_hook=lambda: None,
     handlers=None,
+    failure_publisher=None,
     owner_check_hook=lambda: None,
     execution_hook=lambda _supervision: None,
 ):
@@ -622,6 +643,7 @@ def _loop_fixture(
         fetch_timeout=0.03,
         retry_interval=0.01,
         handlers=handlers,
+        failure_publisher=failure_publisher,
         recovery_supervisor=SimpleNamespace(run=idle_recovery),
     )
     broker.consumer = instance
@@ -790,50 +812,70 @@ async def test_loop_stops_new_pulls_until_transport_reopens(monkeypatch, gate):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("confirmation", ["absent", "false", "error", "confirmed"])
-@pytest.mark.parametrize("outcome", ["quarantine", "reconcile"])
-async def test_unconfirmed_durable_handoff_retains_and_progresses_delivery(
-    monkeypatch, confirmation, outcome
+@pytest.mark.parametrize(
+    "publisher_result",
+    ["unconfirmed", "confirmed_without_marker", "confirmed_and_settled"],
+)
+async def test_quarantine_source_ack_requires_confirmed_failure_publication(
+    monkeypatch, publisher_result
 ):
     from src.openship.messaging import consumer
     from src.openship.messaging.delivery import DeliveryDisposition, PreparedDelivery
 
-    confirmations = []
+    published = []
 
-    def handler(db, prepared, disposition):
-        assert threading.get_ident() != threading.main_thread().ident
-        assert disposition.action == outcome
-        confirmations.append(disposition.code)
-        if confirmation == "error":
-            raise RuntimeError("private-handler-error")
-        db.commit()
-        return confirmation == "confirmed"
+    async def publish(handoff):
+        with SessionLocal() as db:
+            failure = db.get(MessageFailure, handoff.failure_id)
+            outbox = db.get(Outbox, handoff.outbox_id)
+            assert failure is not None and outbox is not None
+            assert outbox.processed_at is None
+        published.append(handoff)
+        if publisher_result == "confirmed_and_settled":
+            with SessionLocal() as db:
+                outbox = db.get(Outbox, handoff.outbox_id)
+                outbox.processed_at = datetime.now(UTC)
+                db.commit()
+        return publisher_result != "unconfirmed"
 
-    f = _loop_fixture(
-        monkeypatch, handlers=None if confirmation == "absent" else {outcome: handler}
-    )
+    f = _loop_fixture(monkeypatch, failure_publisher=publish)
+    with SessionLocal() as db:
+        f.consumer._installation_id = db.get(MessageTransportState, 1).installation_id
+
+    async def run_metadata(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    f.consumer._run_metadata = run_metadata
     monkeypatch.setattr(
         consumer,
         "prepare_run_delivery",
         lambda *_a, **_kw: PreparedDelivery(
-            None, None, DeliveryDisposition(outcome, "needs_durable_handoff")
+            None, None, DeliveryDisposition("quarantine", "invalid_run_command")
         ),
     )
-    task = asyncio.create_task(f.consumer.run(f.stop))
+    slot = _InlineSlot()
     try:
-        if confirmation == "confirmed":
-            await asyncio.wait_for(task, 4)
+        await f.consumer._handle(slot, f.message, f.stop)
+        if publisher_result == "confirmed_and_settled":
             assert f.message.acks == 1
+            assert f.message.naks == []
         else:
-            await _until(lambda: f.message.progress >= 3)
-            assert f.message.acks == 0 and f.message.naks == [] and f.effects == []
-            assert len(f.broker.fetches) == 1
-            f.stop.set()
-            await asyncio.wait_for(task, 4)
-        assert len(confirmations) == (0 if confirmation == "absent" else 1)
+            assert f.message.acks == 0 and f.message.naks == [1.0]
+        assert f.effects == []
+        assert len(published) == 1
     finally:
         f.stop.set()
-        await task
+        slot.resource.db.close()
+        if published:
+            with SessionLocal() as db:
+                failure_ids = [handoff.failure_id for handoff in published]
+                db.query(Outbox).filter(Outbox.failure_id.in_(failure_ids)).delete(
+                    synchronize_session=False
+                )
+                db.query(MessageFailure).filter(
+                    MessageFailure.id.in_(failure_ids)
+                ).delete(synchronize_session=False)
+                db.commit()
 
 
 @pytest.mark.asyncio
@@ -842,7 +884,7 @@ async def test_lost_ack_and_reconnect_redelivery_never_repeats_effect(monkeypatc
     first = f.message
     first.stop = asyncio.Event()
     first.ack_failure = True
-    replay = _RunMessage(first.data, first.subject, f.stop)
+    replay = _RunMessage(first.data, first.subject, f.stop, metadata=first.metadata)
     f.broker.messages.put_nowait(replay)
 
     def reconnect_after_commit():
@@ -964,6 +1006,22 @@ async def test_ordinary_future_deferral_uses_bounded_delayed_nak_without_claim(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "delivery_count,expected_delay",
+    [(1, 1.0), (2, 5.0), (3, 15.0), (4, 30.0), (5, 60.0), (20, 60.0)],
+)
+async def test_failure_handoff_nak_uses_bounded_redelivery_backoff(
+    monkeypatch, delivery_count, expected_delay
+):
+    f = _loop_fixture(monkeypatch, empty=True)
+    f.message.metadata.num_delivered = delivery_count
+
+    await f.consumer._retry_delivery(f.message, "invalid_run_command")
+
+    assert f.message.naks == [expected_delay]
+
+
+@pytest.mark.asyncio
 async def test_unconfirmed_handler_releases_uncommitted_database_transaction(
     monkeypatch,
 ):
@@ -972,30 +1030,60 @@ async def test_unconfirmed_handler_releases_uncommitted_database_transaction(
 
     observed = []
 
-    def uncertain_handler(db, _prepared, _disposition):
+    def uncertain_handler(db, _prepared, _disposition, _source, _body):
         db.get(Run, f.run_id).status = "failed"
         db.flush()
         observed.append(db)
-        return False
 
     f = _loop_fixture(monkeypatch, handlers={"reconcile": uncertain_handler})
     monkeypatch.setattr(
         consumer,
         "prepare_run_delivery",
         lambda *_args, **_kwargs: PreparedDelivery(
-            None, None, DeliveryDisposition("reconcile", "ownership_expired")
+            None, None, DeliveryDisposition("reconcile", "durable_state_incomplete")
         ),
     )
-    task = asyncio.create_task(f.consumer.run(f.stop))
+    slot = _InlineSlot()
     try:
-        await _until(lambda: observed and f.message.progress >= 3)
+        await f.consumer._handle(slot, f.message, f.stop)
+        assert observed
         assert not observed[0].in_transaction()
         with SessionLocal() as observer:
             assert observer.get(Run, f.run_id).status == "queued"
-        assert f.message.acks == 0 and f.message.naks == []
+        assert f.message.acks == 0 and f.message.naks == [1.0]
     finally:
         f.stop.set()
-        await asyncio.wait_for(task, 4)
+        slot.resource.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["ownership_expired", "ownership_moved"])
+async def test_live_owner_reconcile_is_delayed_without_failure_ack(monkeypatch, code):
+    from src.openship.messaging import consumer
+    from src.openship.messaging.delivery import DeliveryDisposition, PreparedDelivery
+
+    called = []
+
+    def handler(*_args):
+        called.append(True)
+        raise AssertionError("live-owner states cannot use generic failure handoff")
+
+    f = _loop_fixture(monkeypatch, handlers={"reconcile": handler})
+    monkeypatch.setattr(
+        consumer,
+        "prepare_run_delivery",
+        lambda *_args, **_kwargs: PreparedDelivery(
+            None, None, DeliveryDisposition("reconcile", code)
+        ),
+    )
+    slot = _InlineSlot()
+    try:
+        await f.consumer._handle(slot, f.message, f.stop)
+        assert f.message.acks == 0 and f.message.naks == [1.0]
+        assert called == []
+    finally:
+        f.stop.set()
+        slot.resource.db.close()
 
 
 @pytest.mark.asyncio

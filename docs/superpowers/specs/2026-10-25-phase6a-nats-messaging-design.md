@@ -246,6 +246,60 @@ selected release; the [consumer contract](https://github.com/nats-io/nats.docs/b
 describes explicit acknowledgements and exhaustion. Stream retention and
 bounded deduplication follow the [JetStream model](https://github.com/nats-io/nats.docs/blob/master/using-nats/jetstream/model_deep_dive.md).
 
+For immediate run-message quarantine, store a content-free failure record
+keyed by installation, the authoritative `messaging_state.transport_epoch`,
+JetStream source stream and stream sequence. The source stream must be
+`OS_RUNS`; never use an untrusted envelope epoch or subject as source identity.
+Store JetStream's message timestamp as provenance, not as a generation key.
+The transport epoch must remain unchanged until source deliveries and failure
+handoffs in that epoch are resolved; rotate it before recreating `OS_RUNS` so
+reused stream sequences cannot collide with the prior stream generation. The
+record stores a fixed classification/error code, body digest and optional UUID
+references parsed from a fully valid envelope; never persist the raw body or
+untrusted subject. A conflict for the same source identity with a different
+digest or classification is unconfirmed and leaves the original delivery
+recoverable; store the conflicting digest/classification as a separate
+content-free observation for operator diagnosis without modifying the
+canonical failure.
+
+In the same PostgreSQL transaction, insert one `destination='failure'` outbox
+row referencing the failure record. The source delivery may be ACKed only after
+that transaction commits, the reference notice receives a JetStream PubAck,
+and the outbox `processed_at` marker commits. The consumer may claim only that
+failure's exact outbox row and must use the same publisher claim/lease and
+settlement functions as the general relay. If the general relay already owns
+the lease, the consumer waits for its committed marker or retries after the
+lease expires; it never publishes around the lease. No database transaction
+remains open across a broker publish. A failed or uncertain PubAck/marker
+leaves the original delivery recoverable and schedules a delayed NAK so it
+releases a run slot. If retries reach `MaxDeliver`, B2e.4 must recover the
+durable failure handoff and complete the source disposition only after the
+notice is confirmed. Notices contain only the stable `failure_id` reference
+and use a stable `Nats-Msg-Id`. Because JetStream's
+duplicate window is bounded, notices are at-least-once across a sufficiently
+long uncertain publish; any failure-notice consumer must durably deduplicate
+by `failure_id`. The notice keeps the common v1 envelope fields, sets
+`kind` to `failure.KIND`, and adds only `failure_id`; it has no conversation,
+run, project, correlation or causation fields. The classification appears in
+the fixed failure subject suffix and does not copy the diagnostic error code.
+
+Malformed messages require trusted JetStream metadata. If stream, sequence or
+timestamp cannot be read or validated, retain the source delivery without
+creating a failure row. Reconcile outcomes that may have a live owner or an
+uncertain external effect (including `ownership_moved` and
+`ownership_expired`) remain recoverable and cannot use the generic quarantine
+handoff to authorize ACK. B2e.4 owns their durable observation and safe
+terminal/requeue decision. A future reconcile handler may ACK only after it
+proves and commits a safe state repair, then completes the same failure
+handoff.
+
+Failure records and their outbox rows do not cascade with run or conversation
+deletion. Failure outbox rows require a failure-record reference and carry no
+run, event or conversation foreign-key scope; only failure rows may have a
+null conversation. The ledger has no automatic pruning in this slice. B2e.5
+must add explicit bounded retention that never removes an unprocessed failure
+outbox row.
+
 Before classifying exhaustion as failure, inspect the authoritative run and
 lease under the established locks. A healthy owned run can outlive ten
 redeliveries after progress-ACK loss; MaxDeliver alone must never fail it or

@@ -16,7 +16,7 @@ import asyncio
 import logging
 import math
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from nats.errors import TimeoutError as NatsTimeoutError
@@ -33,17 +33,34 @@ from .delivery import (
     settle_run_delivery,
 )
 from .executor import ExecutionPool
+from .failure import (
+    FailureHandoff,
+    JetStreamSourceIdentity,
+    handoff_matches_delivery,
+    persist_failure_handoff,
+    source_identity_from_message,
+)
 from .health import subscribe_worker_health
 from .models import MessageTransportState
 from .recovery import RecoverySupervisor
+from .relay import failure_handoff_state, publish_failure_handoff
 from .topology import TopologyCompatibilityError, ensure_topology
 
 logger = logging.getLogger(__name__)
+_HANDOFF_RETRY_DELAYS = (1.0, 5.0, 15.0, 30.0, 60.0)
 
-# A True result promises a committed durable disposition/handoff and any
-# required confirmed failure publication. An absent/uncertain handler must not
-# release the original delivery. B2e supplies the production implementations.
-ConfirmedHandler = Callable[[Session, PreparedDelivery, DeliveryDisposition], bool]
+# A handoff is returned only after the durable record and outbox commit. The
+# consumer then confirms publication before it is allowed to ACK the source.
+ConfirmedHandler = Callable[
+    [
+        Session,
+        PreparedDelivery,
+        DeliveryDisposition,
+        JetStreamSourceIdentity | None,
+        bytes,
+    ],
+    FailureHandoff | None,
+]
 
 
 @dataclass(frozen=True)
@@ -114,12 +131,19 @@ def _execute(resource, prepared, supervision):
     return settle_run_delivery(resource.db, prepared.command, prepared.decision.claim)
 
 
-def _confirm(resource, handler, prepared, disposition):
+def _confirm(resource, handler, prepared, disposition, source_identity, body):
     try:
-        return handler(resource.db, prepared, disposition) is True
+        result = handler(
+            resource.db,
+            prepared,
+            disposition,
+            source_identity,
+            body,
+        )
+        return result if isinstance(result, FailureHandoff) else None
     except Exception as error:
         logger.warning("run_handoff_unconfirmed type=%s", type(error).__name__)
-        return False
+        return None
     finally:
         # A confirmed handler must have committed already. Uncertain handlers
         # must not leave staged writes/locks open while we retain delivery.
@@ -148,6 +172,7 @@ class RunConsumer:
         retry_interval: float = 0.25,
         ack_timeout: float = 2.0,
         handlers: Mapping[str, ConfirmedHandler] | None = None,
+        failure_publisher: Callable[[FailureHandoff], Awaitable[bool]] | None = None,
         recovery_supervisor: RecoverySupervisor | None = None,
     ):
         self.concurrency = (
@@ -169,7 +194,9 @@ class RunConsumer:
         self._lease_seconds = lease_seconds
         self._progress_interval, self._fetch_timeout = progress_interval, fetch_timeout
         self._retry_interval, self._ack_timeout = retry_interval, ack_timeout
-        self._handlers = dict(handlers or {})
+        self._handlers = {"quarantine": persist_failure_handoff, **dict(handlers or {})}
+        self._failure_publisher = failure_publisher
+        self._session_factory = session_factory
         owner_id = self._worker_id
         if worker_factory is None:
 
@@ -416,8 +443,67 @@ class RunConsumer:
                 logger.warning("run_progress_unavailable type=%s", type(error).__name__)
             await asyncio.sleep(self._progress_interval)
 
+    async def _run_metadata(self, function, *args, **kwargs):
+        async with self._metadata.reserve() as slot:
+            return await slot.run(function, *args, **kwargs)
+
+    async def _publish_failure(self, handoff: FailureHandoff) -> bool:
+        if self._failure_publisher is not None:
+            try:
+                confirmed = await self._failure_publisher(handoff) is True
+            except Exception as error:
+                logger.warning(
+                    "failure_notice_unconfirmed type=%s", type(error).__name__
+                )
+                return False
+        else:
+            try:
+                confirmed = await publish_failure_handoff(
+                    self._js,
+                    handoff,
+                    session_factory=self._session_factory,
+                    run_sync=self._run_metadata,
+                )
+            except Exception as error:
+                logger.warning(
+                    "failure_notice_unconfirmed type=%s", type(error).__name__
+                )
+                return False
+        if not confirmed:
+            return False
+        try:
+            valid, processed = await self._run_metadata(
+                failure_handoff_state,
+                self._session_factory,
+                handoff,
+            )
+            return valid and processed
+        except Exception as error:
+            logger.warning("failure_notice_unconfirmed type=%s", type(error).__name__)
+            return False
+
+    async def _retry_delivery(self, message, code: str):
+        try:
+            delivered = message.metadata.num_delivered
+        except Exception:  # absent metadata uses conservative retry
+            delivered = 2
+        if type(delivered) is not int or delivered < 1:
+            delivered = 2
+        delay = _HANDOFF_RETRY_DELAYS[
+            min(delivered - 1, len(_HANDOFF_RETRY_DELAYS) - 1)
+        ]
+        try:
+            await message.nak(delay=delay)
+        except Exception as error:
+            logger.warning(
+                "run_retry_unconfirmed code=%s type=%s",
+                code,
+                type(error).__name__,
+            )
+
     async def _handle(self, slot, message, stop):
         progress = asyncio.create_task(self._progress(message))
+        source_identity = source_identity_from_message(message)
         try:
             # Let progress start before lazy resource/Worker construction.
             await asyncio.sleep(0)
@@ -431,15 +517,42 @@ class RunConsumer:
                         await self._pause(stop)
                     continue
                 if disposition.action in {"quarantine", "reconcile"}:
+                    if disposition.action == "reconcile" and disposition.code in {
+                        "ownership_expired",
+                        "ownership_moved",
+                    }:
+                        # Recovery/owner observation owns these states. Never
+                        # generic-quarantine or ACK a possibly live run owner.
+                        await self._retry_delivery(message, disposition.code)
+                        return
                     handler = self._handlers.get(disposition.action)
-                    confirmed = handler is not None and await slot.run(
-                        _confirm, handler, prepared, disposition
+                    handoff = (
+                        await slot.run(
+                            _confirm,
+                            handler,
+                            prepared,
+                            disposition,
+                            source_identity,
+                            message.data,
+                        )
+                        if handler is not None
+                        else None
                     )
-                    if not confirmed:
+                    if (
+                        handoff is None
+                        or not handoff_matches_delivery(
+                            handoff,
+                            installation_id=self._installation_id,
+                            source_identity=source_identity,
+                            disposition=disposition,
+                            body=message.data,
+                        )
+                        or not await self._publish_failure(handoff)
+                    ):
                         logger.warning(
                             "run_handoff_unavailable code=%s", disposition.code
                         )
-                        await stop.wait()
+                        await self._retry_delivery(message, disposition.code)
                         return
                     disposition = DeliveryDisposition("ack", "durable_handoff")
                 try:

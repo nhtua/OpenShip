@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -107,23 +108,33 @@ def test_upgrade_and_safe_pre_activation_downgrade(legacy_schema):
     assert upgraded.returncode == 0, upgraded.stderr
 
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT active FROM messaging_state WHERE id = 1")
-        ).scalar_one() is False
-        assert connection.execute(
-            text(
-                "SELECT COUNT(*) FROM pg_trigger "
-                "WHERE tgrelid = 'outbox'::regclass "
-                "AND tgname = 'trg_outbox_notify' AND NOT tgisinternal"
+        assert (
+            connection.execute(
+                text("SELECT active FROM messaging_state WHERE id = 1")
+            ).scalar_one()
+            is False
+        )
+        assert (
+            connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM pg_trigger "
+                    "WHERE tgrelid = 'outbox'::regclass "
+                    "AND tgname = 'trg_outbox_notify' AND NOT tgisinternal"
+                )
+            ).scalar_one()
+            == 1
+        )
+        migrated = (
+            connection.execute(
+                text(
+                    "SELECT destination, schema_version, message_id, publish_attempts "
+                    "FROM outbox WHERE id = :id"
+                ),
+                {"id": outbox_id},
             )
-        ).scalar_one() == 1
-        migrated = connection.execute(
-            text(
-                "SELECT destination, schema_version, message_id, publish_attempts "
-                "FROM outbox WHERE id = :id"
-            ),
-            {"id": outbox_id},
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert migrated["destination"] == "legacy"
         assert migrated["schema_version"] == 1
         assert migrated["message_id"] is not None
@@ -139,15 +150,100 @@ def test_upgrade_and_safe_pre_activation_downgrade(legacy_schema):
         }
         assert "dispatch_generation" in columns
 
+        outbox_schema = (
+            connection.execute(
+                text(
+                    "SELECT column_name, is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'outbox'"
+                )
+            )
+            .mappings()
+            .all()
+        )
+        nullable_columns = {
+            row["column_name"] for row in outbox_schema if row["is_nullable"] == "YES"
+        }
+        assert "failure_id" in nullable_columns
+        assert "conversation_id" in nullable_columns
+        assert (
+            connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_schema = current_schema() AND table_name IN "
+                    "('message_failures', 'message_failure_conflicts')"
+                )
+            ).scalar_one()
+            == 2
+        )
+
+    installation_id, epoch = None, None
+    with engine.connect() as connection:
+        installation_id, epoch = connection.execute(
+            text(
+                "SELECT installation_id, transport_epoch FROM messaging_state WHERE id = 1"
+            )
+        ).one()
+    failure_id, failure_outbox_id, failure_message_id = (
+        uuid.uuid4(),
+        uuid.uuid4(),
+        uuid.uuid4(),
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO message_failures "
+                "(id, installation_id, source_transport_epoch, source_stream, "
+                "source_sequence, source_timestamp, body_digest, classification, error_code) "
+                "VALUES (:id, :installation, :epoch, 'OS_RUNS', 123, :timestamp, "
+                ":digest, 'quarantine', 'invalid_run_command')"
+            ),
+            {
+                "id": failure_id,
+                "installation": installation_id,
+                "epoch": epoch,
+                "timestamp": datetime.now(UTC),
+                "digest": "a" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO outbox "
+                "(id, conversation_id, event_id, type, payload, destination, "
+                "schema_version, message_id, subject, run_id, failure_id, "
+                "transport_epoch, publish_attempts, next_attempt_at) "
+                "VALUES (:id, NULL, NULL, 'quarantine', :payload, 'failure', 1, "
+                ":message_id, :subject, NULL, :failure_id, :epoch, 0, :timestamp)"
+            ),
+            {
+                "id": failure_outbox_id,
+                "payload": '{"failure_id":"' + str(failure_id) + '"}',
+                "message_id": failure_message_id,
+                "subject": f"openship.{installation_id.hex}.v1.failure.quarantine",
+                "failure_id": failure_id,
+                "epoch": epoch,
+                "timestamp": datetime.now(UTC),
+            },
+        )
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM outbox WHERE id = :id"), {"id": failure_outbox_id}
+        )
+        connection.execute(
+            text("DELETE FROM message_failures WHERE id = :id"), {"id": failure_id}
+        )
+
     downgraded = alembic("downgrade", "phase5b014")
     assert downgraded.returncode == 0, downgraded.stderr
     with engine.connect() as connection:
-        assert connection.execute(
-            text(
-                "SELECT count(*) FROM information_schema.tables "
-                "WHERE table_schema = current_schema() AND table_name = 'messaging_state'"
-            )
-        ).scalar_one() == 0
+        assert (
+            connection.execute(
+                text(
+                    "SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_schema = current_schema() AND table_name = 'messaging_state'"
+                )
+            ).scalar_one()
+            == 0
+        )
 
 
 def test_duplicate_legacy_jobs_block_upgrade_without_partial_schema(legacy_schema):
@@ -159,10 +255,16 @@ def test_duplicate_legacy_jobs_block_upgrade_without_partial_schema(legacy_schem
                 "INSERT INTO users (id, username, email, password_hash) "
                 "VALUES (:id, :username, :email, 'test-only')"
             ),
-            {"id": user_id, "username": f"msg_{user_id.hex}", "email": f"{user_id.hex}@example.test"},
+            {
+                "id": user_id,
+                "username": f"msg_{user_id.hex}",
+                "email": f"{user_id.hex}@example.test",
+            },
         )
         connection.execute(
-            text("INSERT INTO projects (id, owner_user_id, name) VALUES (:id, :owner, 'migration test')"),
+            text(
+                "INSERT INTO projects (id, owner_user_id, name) VALUES (:id, :owner, 'migration test')"
+            ),
             {"id": project_id, "owner": user_id},
         )
         connection.execute(
@@ -180,7 +282,9 @@ def test_duplicate_legacy_jobs_block_upgrade_without_partial_schema(legacy_schem
             {"id": run_id, "conversation": conversation_id, "project": project_id},
         )
         connection.execute(
-            text("INSERT INTO run_jobs (id, run_id, fence) VALUES (:id, :run, 0), (:other, :run, 0)"),
+            text(
+                "INSERT INTO run_jobs (id, run_id, fence) VALUES (:id, :run, 0), (:other, :run, 0)"
+            ),
             {"id": uuid.uuid4(), "other": uuid.uuid4(), "run": run_id},
         )
 

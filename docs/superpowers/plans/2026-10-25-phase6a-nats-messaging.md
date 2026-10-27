@@ -242,10 +242,21 @@ routes an allowlisted kind to existing execution or explicit retention.
     unit tests passed; the pinned PostgreSQL/JetStream qualifier passed all 48
     cases with no skips; Ruff, formatting and diff checks passed; independent
     follow-up review approved.
-  - [ ] **3B2e.3 — Durable failure handoff:** persist safe failure records and
+  - [x] **3B2e.3 — Durable failure handoff:** persist safe failure records and
     failure-notice outbox references before a quarantine/reconcile handler can
-    authorize ACK; failed or uncertain confirmation retains the original
-    delivery.
+    authorize ACK; require JetStream PubAck and committed outbox settlement
+    before source ACK. Key source identity from trusted stream metadata plus the
+    database transport epoch, use the shared exact-row relay lease, record
+    digest conflicts without payloads, and delayed-NAK uncertain handoffs to
+    free run capacity. Ownership/recovery reconciliation stays recoverable for
+    3B2e.4; ledger pruning is deferred to 3B2e.5. The focused failure/relay and
+    outbox suites passed (24 tests), focused consumer handoff/backoff cases
+    passed (12 tests), and Alembic SQLite upgrade/downgrade passed. Ruff,
+    formatting and diff checks passed; independent review approved after the
+    publisher seam was tightened to require the committed marker. Full SQLite
+    consumer/recovery tests still encounter the existing executor-to-event-loop
+    wakeup stall, and the real PostgreSQL/JetStream qualifier remains in the
+    overall Task 7 acceptance gate.
   - [ ] **3B2e.4 — Exhaustion and live-owner observation:** qualify pinned
     MaxDeliver advisory and stream/consumer recovery behavior; persist
     `watching_live_owner` until a committed outcome or lease expiry, and resume
