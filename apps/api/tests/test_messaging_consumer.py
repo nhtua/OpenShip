@@ -494,6 +494,7 @@ class _RunBroker:
         for message in messages:
             self.messages.put_nowait(message)
         self.bindings, self.fetches, self.unsubscribed = [], [], []
+        self.control_subscriptions = []
         self.on_fetch = lambda: None
         self.topology_checks = 0
         self.consumer = None
@@ -523,6 +524,20 @@ class _RunBroker:
 
         return Subscription()
 
+    async def subscribe(self, subject, *, cb, **kwargs):
+        subscription = (subject, cb, kwargs)
+        self.control_subscriptions.append(subscription)
+        broker = self
+
+        class ControlSubscription:
+            async def unsubscribe(self):
+                broker.control_subscriptions.remove(subscription)
+
+        return ControlSubscription()
+
+    async def flush(self, *, timeout):
+        assert timeout > 0
+
 
 def _loop_fixture(
     monkeypatch,
@@ -533,6 +548,8 @@ def _loop_fixture(
     empty=False,
     factory_hook=lambda: None,
     handlers=None,
+    owner_check_hook=lambda: None,
+    execution_hook=lambda _supervision: None,
 ):
     from src.openship.messaging import consumer
 
@@ -543,6 +560,7 @@ def _loop_fixture(
     message = _RunMessage(body, subject, stop)
     broker = _RunBroker([] if empty else [message])
     resources, effects, calls = [], [], []
+    owner_checks = []
 
     class SyntheticWorker:
         Session = SessionLocal
@@ -555,8 +573,10 @@ def _loop_fixture(
             resources.append(self)
             factory_hook()
 
-        def process_job(self, claim):
+        def process_job(self, claim, *, supervision=None):
             assert threading.get_ident() == self.thread
+            if supervision is not None:
+                execution_hook(supervision)
             effects.append(claim.run_id)
             calls.append("effect")
             if terminal:
@@ -569,6 +589,12 @@ def _loop_fixture(
         def close(self):
             assert threading.get_ident() == self.thread
             self.closed = True
+
+        def _ownership_lost(self, db, run_id, _fence):
+            assert db.query(Run).filter_by(id=run_id).one_or_none() is not None
+            owner_check_hook()
+            owner_checks.append(threading.get_ident())
+            return False
 
     async def topology(**kwargs):
         assert kwargs["apply"] is False and kwargs["js"] is broker
@@ -596,6 +622,7 @@ def _loop_fixture(
         effects=effects,
         run_id=run_id,
         calls=calls,
+        owner_checks=owner_checks,
     )
 
 
@@ -954,3 +981,271 @@ async def test_unconfirmed_handler_releases_uncommitted_database_transaction(
     finally:
         f.stop.set()
         await asyncio.wait_for(task, 4)
+
+
+@pytest.mark.asyncio
+async def test_run_control_subscription_is_ready_before_owner_check_and_only_wakes(
+    monkeypatch,
+):
+    from src.openship.messaging import consumer
+
+    order = []
+    callbacks = []
+    f = _loop_fixture(monkeypatch)
+    with SessionLocal() as db:
+        prepared = consumer.prepare_run_delivery(
+            db,
+            f.message.data,
+            subject=f.message.subject,
+            worker_id="consumer-test",
+            lease_seconds=30,
+        )
+    assert prepared.decision.kind == "claimed"
+
+    async def subscribe(subject, *, cb, pending_msgs_limit, pending_bytes_limit):
+        order.append("subscribe")
+        assert subject == (
+            f"openship.{json.loads(f.message.data)['installation_id'].replace('-', '')}"
+            f".v1.control.{f.run_id.hex}"
+        )
+        assert pending_msgs_limit == 1 and pending_bytes_limit == 16 * 1024
+        callbacks.append(cb)
+
+        class Subscription:
+            async def unsubscribe(self):
+                order.append("unsubscribe")
+
+        return Subscription()
+
+    async def flush(*, timeout):
+        assert timeout > 0
+        order.append("flush")
+        # This stale notice can wake a check but cannot directly stop the new owner.
+        await callbacks[0](SimpleNamespace(data=b"stale-control"))
+
+    monkeypatch.setattr(f.broker, "subscribe", subscribe, raising=False)
+    monkeypatch.setattr(f.broker, "flush", flush, raising=False)
+    wakeups = []
+    signal = SimpleNamespace(wake=lambda: wakeups.append(True))
+
+    subscription = await f.consumer._subscribe_control(prepared, signal)
+    await subscription.unsubscribe()
+
+    assert order == ["subscribe", "flush", "unsubscribe"]
+    assert wakeups == [True]
+
+
+@pytest.mark.asyncio
+async def test_run_control_subscription_is_removed_when_flush_fails(monkeypatch):
+    from src.openship.messaging import consumer
+
+    f = _loop_fixture(monkeypatch)
+    with SessionLocal() as db:
+        prepared = consumer.prepare_run_delivery(
+            db,
+            f.message.data,
+            subject=f.message.subject,
+            worker_id="consumer-test",
+            lease_seconds=30,
+        )
+    assert prepared.decision.kind == "claimed"
+    unsubscribed = []
+
+    async def subscribe(_subject, *, cb, **kwargs):
+        class Subscription:
+            async def unsubscribe(self):
+                unsubscribed.append(True)
+
+        return Subscription()
+
+    async def fail_flush(*, timeout):
+        raise TimeoutError("flush not confirmed")
+
+    monkeypatch.setattr(f.broker, "subscribe", subscribe, raising=False)
+    monkeypatch.setattr(f.broker, "flush", fail_flush, raising=False)
+
+    with pytest.raises(TimeoutError, match="flush not confirmed"):
+        await f.consumer._subscribe_control(
+            prepared, SimpleNamespace(wake=lambda: None)
+        )
+
+    assert unsubscribed == [True]
+
+
+@pytest.mark.asyncio
+async def test_run_control_subscription_is_removed_when_flush_is_cancelled(monkeypatch):
+    from src.openship.messaging import consumer
+
+    f = _loop_fixture(monkeypatch)
+    with SessionLocal() as db:
+        prepared = consumer.prepare_run_delivery(
+            db,
+            f.message.data,
+            subject=f.message.subject,
+            worker_id="consumer-test",
+            lease_seconds=30,
+        )
+    assert prepared.decision.kind == "claimed"
+
+    unsubscribed = []
+
+    async def subscribe(_subject, *, cb, **kwargs):
+        class Subscription:
+            async def unsubscribe(self):
+                unsubscribed.append(True)
+
+        return Subscription()
+
+    async def cancel_flush(*, timeout):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(f.broker, "subscribe", subscribe, raising=False)
+    monkeypatch.setattr(f.broker, "flush", cancel_flush, raising=False)
+
+    with pytest.raises(asyncio.CancelledError):
+        await f.consumer._subscribe_control(
+            prepared, SimpleNamespace(wake=lambda: None)
+        )
+
+    assert unsubscribed == [True]
+
+
+@pytest.mark.asyncio
+async def test_run_execution_cancellation_interrupts_supervision_and_unsubscribes(
+    monkeypatch,
+):
+    from src.openship.messaging import consumer
+
+    f = _loop_fixture(monkeypatch)
+    with SessionLocal() as db:
+        prepared = consumer.prepare_run_delivery(
+            db,
+            f.message.data,
+            subject=f.message.subject,
+            worker_id="consumer-test",
+            lease_seconds=30,
+        )
+    assert prepared.decision.kind == "claimed"
+    unsubscribed = []
+
+    async def subscribe(_subject, *, cb, **kwargs):
+        class Subscription:
+            async def unsubscribe(self):
+                unsubscribed.append(True)
+
+        return Subscription()
+
+    monkeypatch.setattr(f.broker, "subscribe", subscribe, raising=False)
+
+    class CancelledSlot:
+        async def run(self, _call, *_args, stop=None, **_kwargs):
+            assert stop is not None
+            stop()
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await f.consumer._execute_controlled(CancelledSlot(), prepared)
+
+    assert unsubscribed == [True]
+
+
+@pytest.mark.asyncio
+async def test_run_handle_checks_authoritative_owner_after_control_subscription(
+    monkeypatch,
+):
+    order = []
+    callbacks = []
+
+    def execution_hook(supervision):
+        order.append("execute")
+        assert not supervision.stop() and not supervision.lease_lost()
+        assert supervision.wait_for_wakeup(0)
+
+    f = _loop_fixture(
+        monkeypatch,
+        owner_check_hook=lambda: order.append("owner_check"),
+        execution_hook=execution_hook,
+    )
+
+    async def subscribe(_subject, *, cb, pending_msgs_limit, pending_bytes_limit):
+        order.append("subscribe")
+        assert pending_msgs_limit == 1 and pending_bytes_limit == 16 * 1024
+        callbacks.append(cb)
+
+        class Subscription:
+            async def unsubscribe(self):
+                order.append("unsubscribe")
+
+        return Subscription()
+
+    async def flush(*, timeout):
+        assert timeout > 0
+        order.append("flush")
+        await callbacks[0](SimpleNamespace(data=b"stale-control"))
+
+    monkeypatch.setattr(f.broker, "subscribe", subscribe, raising=False)
+    monkeypatch.setattr(f.broker, "flush", flush, raising=False)
+    f.message.on_ack = lambda: order.append("ack")
+
+    resource = f.consumer._pool._slots[0]._factory()
+    process_job = resource.worker.process_job
+
+    def check_no_open_claim_transaction(claim, *, supervision):
+        assert not resource.db.in_transaction()
+        return process_job(claim, supervision=supervision)
+
+    resource.worker.process_job = check_no_open_claim_transaction
+
+    class InlineSlot:
+        async def run(self, call, *args, stop=None, **kwargs):
+            return call(resource, *args, **kwargs)
+
+    try:
+        await f.consumer._handle(InlineSlot(), f.message, f.stop)
+    finally:
+        resource.close()
+
+    assert order == [
+        "subscribe",
+        "flush",
+        "owner_check",
+        "execute",
+        "unsubscribe",
+        "ack",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_closed_nats_connection_does_not_hide_committed_run_settlement(
+    monkeypatch,
+):
+    from nats.errors import ConnectionClosedError
+
+    f = _loop_fixture(monkeypatch)
+    unsubscribed = []
+
+    async def subscribe(_subject, *, cb, **kwargs):
+        class Subscription:
+            async def unsubscribe(self):
+                unsubscribed.append(True)
+                raise ConnectionClosedError
+
+        return Subscription()
+
+    monkeypatch.setattr(f.broker, "subscribe", subscribe, raising=False)
+    monkeypatch.setattr(f.broker, "flush", lambda **_kwargs: asyncio.sleep(0))
+
+    resource = f.consumer._pool._slots[0]._factory()
+
+    class InlineSlot:
+        async def run(self, call, *args, stop=None, **kwargs):
+            return call(resource, *args, **kwargs)
+
+    try:
+        await f.consumer._handle(InlineSlot(), f.message, f.stop)
+    finally:
+        resource.close()
+
+    assert unsubscribed == [True]
+    assert f.message.acks == 1
+    assert f.effects == [f.run_id]

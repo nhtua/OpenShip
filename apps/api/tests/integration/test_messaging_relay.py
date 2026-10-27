@@ -19,6 +19,8 @@ from pathlib import Path
 import nats
 import pytest
 import pytest_asyncio
+from nats.errors import AuthorizationError
+from nats.errors import Error as NatsError
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import (
     AckPolicy,
@@ -372,6 +374,10 @@ def relay_postgres(tmp_path_factory):
         with sessions() as db:
             state = db.get(MessageTransportState, 1)
             assert state is not None
+            configured_installation = os.environ.get("TEST_NATS_INSTALLATION_ID")
+            if configured_installation is not None:
+                state.installation_id = uuid.UUID(configured_installation)
+                db.commit()
             installation_id = state.installation_id
         yield (
             schema_url.render_as_string(hide_password=False),
@@ -959,7 +965,7 @@ async def _wait_condition(predicate, timeout=5):
             await asyncio.sleep(0.01)
 
 
-async def _runtime_client(*, reconnected_cb=None, allow_reconnect=True):
+async def _runtime_client(*, reconnected_cb=None, allow_reconnect=True, error_cb=None):
     auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())["runtime"]
     return await nats.connect(
         os.environ["TEST_NATS_URL"],
@@ -970,7 +976,124 @@ async def _runtime_client(*, reconnected_cb=None, allow_reconnect=True):
         reconnect_time_wait=0.05,
         reconnected_cb=reconnected_cb,
         allow_reconnect=allow_reconnect,
+        error_cb=error_cb,
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_control_subscription_is_limited_to_installation_scope(
+    relay_postgres, relay_broker
+):
+    _url, _sessions, installation_id = relay_postgres
+    run_id = uuid.uuid4()
+    subject = f"openship.{installation_id.hex}.v1.control.{run_id.hex}"
+    delivered = asyncio.Event()
+    subjects = []
+
+    async def on_control(message):
+        subjects.append(message.subject)
+        delivered.set()
+
+    runtime = await _runtime_client()
+    subscription = await runtime.subscribe(
+        subject,
+        cb=on_control,
+        pending_msgs_limit=1,
+        pending_bytes_limit=16 * 1024,
+    )
+    try:
+        await runtime.flush(timeout=1)
+        await relay_broker.js.publish(subject, b"cancel-wake")
+        await asyncio.wait_for(delivered.wait(), 2)
+        assert subjects == [subject]
+    finally:
+        await subscription.unsubscribe()
+        await runtime.close()
+
+    permission_errors = []
+
+    async def on_error(error):
+        permission_errors.append(str(error))
+
+    other_install = uuid.uuid4().hex
+    denied = await _runtime_client(error_cb=on_error)
+    flush_errors = []
+    try:
+        await denied.subscribe(
+            f"openship.{other_install}.v1.control.{run_id.hex}",
+            cb=on_control,
+            pending_msgs_limit=1,
+            pending_bytes_limit=16 * 1024,
+        )
+        try:
+            await denied.flush(timeout=1)
+        except NatsError as error:
+            flush_errors.append(error)
+        await _wait_condition(lambda: permission_errors or flush_errors, timeout=2)
+        assert any(
+            "permissions violation" in item.lower() for item in permission_errors
+        ) or any(isinstance(error, AuthorizationError) for error in flush_errors)
+    finally:
+        await denied.close()
+
+
+@pytest.mark.asyncio
+async def test_committed_cancel_outbox_wakes_only_its_current_owner(
+    relay_postgres, relay_broker
+):
+    from src.openship.messaging.consumer import RunConsumer
+    from src.openship.runs.service import request_cancel
+    from src.openship.runs.worker import Worker
+
+    _url, sessions, _installation_id = relay_postgres
+    run_id, _job_id, body, subject = _pg_command(sessions)
+    with sessions() as db:
+        prepared = prepare_run_delivery(
+            db,
+            body,
+            subject=subject,
+            worker_id="control-owner",
+            lease_seconds=30,
+        )
+        assert prepared.decision.kind == "claimed"
+        run = db.get(Run, run_id)
+        conversation = db.get(Conversation, run.conversation_id)
+        user_id = conversation.user_id
+
+    client = await _runtime_client()
+    consumer = RunConsumer(client, concurrency=1, session_factory=sessions)
+    woken = asyncio.Event()
+    signal = type("Signal", (), {"wake": lambda _self: woken.set()})()
+    worker = Worker(
+        worker_id=prepared.decision.claim.worker_id,
+        session_factory=sessions,
+        checkpointer=None,
+    )
+    subscription = None
+    try:
+        subscription = await consumer._subscribe_control(prepared, signal)
+        with sessions() as db:
+            cancelled = request_cancel(db, user_id, str(run_id))
+            assert cancelled.status == "cancelled"
+        result = await publish_pending_batch(
+            relay_broker.js,
+            sessions,
+            limit=16,
+            conversation_id=prepared.command.conversation_id,
+        )
+        assert result.published >= 1
+        await asyncio.wait_for(woken.wait(), 2)
+        with sessions() as db:
+            control = (
+                db.query(Outbox).filter_by(destination="control", run_id=run_id).one()
+            )
+            assert control.processed_at is not None
+            assert worker._ownership_lost(db, run_id, prepared.decision.claim.fence)
+    finally:
+        if subscription is not None:
+            await subscription.unsubscribe()
+        worker.close()
+        await client.close()
 
 
 def _consumer_worker_factory(sessions, effects, *, block=None):
@@ -984,8 +1107,26 @@ def _consumer_worker_factory(sessions, effects, *, block=None):
             self.thread = threading.get_ident()
             self.closed = False
 
-        def process_job(self, claim):
+        def _ownership_lost(self, db, run_id, fence):
+            run = db.query(Run).filter_by(id=run_id).populate_existing().one_or_none()
+            job = (
+                db.query(RunJob)
+                .filter_by(run_id=run_id)
+                .populate_existing()
+                .one_or_none()
+            )
+            return (
+                run is None
+                or run.status != "running"
+                or run.fence != fence
+                or job is None
+                or job.fence != fence
+                or job.owner_id != self.worker_id
+            )
+
+        def process_job(self, claim, *, supervision=None):
             assert threading.get_ident() == self.thread
+            assert supervision is not None
             effects.append(claim.run_id)
             if block is not None:
                 assert block.wait(10)

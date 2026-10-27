@@ -151,6 +151,8 @@ class Supervision:
     def __init__(self):
         self._stop = threading.Event()
         self._lease_lost = threading.Event()
+        self._wakeup = threading.Condition()
+        self._wake_pending = False
 
     def stop(self) -> bool:
         return self._stop.is_set()
@@ -158,13 +160,30 @@ class Supervision:
     def lease_lost(self) -> bool:
         return self._lease_lost.is_set()
 
+    def wake(self) -> None:
+        """Request an immediate authoritative ownership check."""
+        with self._wakeup:
+            self._wake_pending = True
+            self._wakeup.notify_all()
+
+    def wait_for_wakeup(self, timeout: float) -> bool:
+        """Wait for a control hint without losing a concurrent wake signal."""
+        with self._wakeup:
+            if not self._wake_pending and not self.stop():
+                self._wakeup.wait(timeout)
+            signaled = self._wake_pending
+            self._wake_pending = False
+            return signaled
+
     def interrupt(self) -> None:
         self._stop.set()
+        self.wake()
 
     def deny_lease(self) -> None:
         """A denied heartbeat or failed ownership check stops the turn."""
         self._stop.set()
         self._lease_lost.set()
+        self.wake()
 
 
 class Worker:
@@ -297,17 +316,10 @@ class Worker:
         poll = getattr(settings, "worker_cancellation_poll_seconds", 0.5)
         renew_every = getattr(settings, "worker_heartbeat_interval", 10)
 
-        waited = 0.0
-        availability_waited = 0.0
+        now = time.monotonic()
+        next_renewal = now + renew_every
+        next_availability_refresh = now + 10
         while not supervision.stop():
-            # A poll on an interval: the first check happens while the turn is
-            # still running, so a lease that moved interrupts a blocked read
-            # rather than deciding the turn before it began.
-            time.sleep(poll)
-            waited += poll
-            availability_waited += poll
-            if supervision.stop():
-                return
             try:
                 if self._ownership_lost(db, run_id, fence):
                     logger.warning(
@@ -322,35 +334,38 @@ class Worker:
                 supervision.deny_lease()
                 return
 
-            if waited < renew_every:
-                if availability_waited >= 10:
-                    availability_waited = 0.0
-                    try:
-                        self._refresh_tool_availability(db)
-                    except Exception:
-                        db.rollback()
-                        logger.warning("Runtime tool availability refresh failed")
-                continue
-            waited = 0.0
-            if availability_waited >= 10:
-                availability_waited = 0.0
+            now = time.monotonic()
+            if now >= next_availability_refresh:
                 try:
                     self._refresh_tool_availability(db)
                 except Exception:
                     db.rollback()
                     logger.warning("Runtime tool availability refresh failed")
-            try:
-                if not renew(db, run_id, fence):
-                    logger.warning(
-                        f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})"
-                    )
+                next_availability_refresh = time.monotonic() + 10
+
+            if now >= next_renewal:
+                try:
+                    if not renew(db, run_id, fence):
+                        logger.warning(
+                            f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})"
+                        )
+                        supervision.deny_lease()
+                        return
+                except Exception:
+                    db.rollback()
+                    logger.warning("Worker heartbeat failed")
                     supervision.deny_lease()
                     return
-            except Exception:
-                db.rollback()
-                logger.warning("Worker heartbeat failed")
-                supervision.deny_lease()
-                return
+                next_renewal = time.monotonic() + renew_every
+
+            if not supervision.stop():
+                now = time.monotonic()
+                timeout = min(
+                    poll,
+                    max(0.0, next_renewal - now),
+                    max(0.0, next_availability_refresh - now),
+                )
+                supervision.wait_for_wakeup(timeout)
 
     def _ownership_lost(self, db, run_id, fence) -> bool:
         """Whether this worker is still the owner of the run it is working on.
@@ -363,12 +378,24 @@ class Worker:
         run = db.query(Run).filter(Run.id == run_id).populate_existing().first()
         if run is None or run.fence != fence:
             return True
-        if run.status not in ("queued", "running", "paused"):
+        if run.status != "running":
             return True
         job = (
             db.query(RunJob).filter(RunJob.run_id == run_id).populate_existing().first()
         )
-        return job is None or job.fence != fence
+        if (
+            job is None
+            or job.fence != fence
+            or job.owner_id != self.worker_id
+            or job.lease_until is None
+        ):
+            return True
+        lease_until = (
+            job.lease_until.replace(tzinfo=UTC)
+            if job.lease_until.tzinfo is None
+            else job.lease_until.astimezone(UTC)
+        )
+        return lease_until <= datetime.now(UTC)
 
     def _refresh_tool_availability(self, db) -> None:
         policy = read_effective_tool_policy(db)

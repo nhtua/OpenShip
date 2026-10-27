@@ -110,6 +110,7 @@ def main() -> int:
         )
     image = versions["NATS_SERVER_IMAGE"]
     runtime = _runtime()
+    control_installation_id = uuid.UUID("00000000-0000-0000-0000-000000006a00")
     container_name = f"openship-jetstream-qual-{uuid.uuid4().hex[:12]}"
     port = _port()
 
@@ -184,7 +185,8 @@ authorization {{
           "$JS.API.CONSUMER.MSG.NEXT.OS_MAINTENANCE.maintenance-v1",
           "$JS.ACK.OS_RUNS.run-v1.>", "$JS.ACK.OS_MAINTENANCE.maintenance-v1.>"
         ],
-        subscribe: ["_INBOX.runtime.>"]
+        subscribe: ["_INBOX.runtime.>",
+          "openship.{control_installation_id.hex}.v1.control.*"]
       }}
     }}
   ]
@@ -224,6 +226,7 @@ authorization {{
         environment["TEST_NATS_URL"] = url
         environment["TEST_NATS_AUTH_FILE"] = str(auth_file)
         environment["TEST_NATS_SERVER_CONFIG"] = str(config_file)
+        environment["TEST_NATS_INSTALLATION_ID"] = str(control_installation_id)
         try:
             asyncio.run(
                 _wait_for_server(url, auth["admin"]["user"], auth["admin"]["password"])

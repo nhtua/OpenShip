@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database.session import SessionLocal
-from ..runs.worker import Worker
+from ..runs.worker import Supervision, Worker
 from .delivery import (
     DeliveryDisposition,
     PreparedDelivery,
@@ -90,11 +90,23 @@ def _prepare(resource, message, lease_seconds):
     )
 
 
-def _execute(resource, prepared):
+def _execute(resource, prepared, supervision):
     try:
         # A returned boolean is deliberately ignored. Even raised execution
         # may have committed a result; settlement is the only ACK authority.
-        resource.worker.process_job(prepared.decision.claim)
+        claim = prepared.decision.claim
+        try:
+            ownership_lost = resource.worker._ownership_lost(
+                resource.db, claim.run_id, claim.fence
+            )
+        finally:
+            # The ownership query must not hold a transaction open for the
+            # duration of a model turn on this slot's long-lived session.
+            resource.db.rollback()
+        if ownership_lost:
+            supervision.deny_lease()
+        else:
+            resource.worker.process_job(claim, supervision=supervision)
     except Exception as error:
         logger.warning("run_execution_failed type=%s", type(error).__name__)
     return settle_run_delivery(resource.db, prepared.command, prepared.decision.claim)
@@ -271,6 +283,62 @@ class RunConsumer:
                 if messages:
                     await self._handle(slot, messages[0], stop)
 
+    async def _subscribe_control(self, prepared, supervision):
+        command = prepared.command
+        if (
+            command is None
+            or prepared.decision is None
+            or prepared.decision.claim is None
+        ):
+            raise ValueError("control subscription requires an admitted run claim")
+        subject = (
+            f"openship.{command.installation_id.hex}.v1.control.{command.run_id.hex}"
+        )
+
+        async def wake_owner(_message):
+            # The notice only wakes the owner thread; PostgreSQL decides whether
+            # this claim is still current before it interrupts model/tool work.
+            supervision.wake()
+
+        subscription = await self._client.subscribe(
+            subject,
+            cb=wake_owner,
+            pending_msgs_limit=1,
+            pending_bytes_limit=16 * 1024,
+        )
+        try:
+            await self._client.flush(timeout=self._ack_timeout)
+        except BaseException:
+            await self._unsubscribe_control(subscription)
+            raise
+        return subscription
+
+    async def _unsubscribe_control(self, subscription):
+        try:
+            await subscription.unsubscribe()
+        except Exception as error:
+            # Closing the connection already removes its subscriptions. Preserve
+            # durable run settlement if that happens while an execution drains.
+            logger.warning(
+                "run_control_unsubscribe_unavailable type=%s",
+                type(error).__name__,
+            )
+
+    async def _execute_controlled(self, slot, prepared):
+        supervision = Supervision()
+        subscription = await self._subscribe_control(prepared, supervision)
+        try:
+            # The synchronous path's first action is an authoritative check,
+            # now that cancellation notices for this run are being received.
+            return await slot.run(
+                _execute,
+                prepared,
+                supervision,
+                stop=supervision.interrupt,
+            )
+        finally:
+            await self._unsubscribe_control(subscription)
+
     async def _progress(self, message):
         while True:
             try:
@@ -288,7 +356,7 @@ class RunConsumer:
                 prepared = await slot.run(_prepare, message, self._lease_seconds)
                 disposition = prepared.disposition
                 if disposition is None:
-                    disposition = await slot.run(_execute, prepared)
+                    disposition = await self._execute_controlled(slot, prepared)
                 if disposition.action == "hold":
                     while not stop.is_set() and not await self._fetch_allowed():
                         await self._pause(stop)

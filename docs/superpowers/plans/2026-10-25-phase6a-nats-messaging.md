@@ -197,17 +197,20 @@ routes an allowlisted kind to existing execution or explicit retention.
   held with progress rather than NAKed until exhaustion. Restore messaging
   fixture gates after each SQLite test.
 
-- [ ] **3B2c — Bounded run pulls and committed ACKs:** use one bound pull
+- [x] **3B2c — Bounded run pulls and committed ACKs:** use one bound pull
   subscription per reserved run slot, stop fetches while disconnected/closed,
   progress fetched messages independently, and ACK only after committed
   settlement. Preserve exact claim evidence through settlement; a deferred
-  unclaimed command cannot authorize ACK. Keep background capacity and legacy
-  production entry unchanged.
+  unclaimed command cannot authorize ACK. Focused unit and pinned
+  PostgreSQL/JetStream qualification passed; independent review approved.
+  Keep background capacity and legacy production entry unchanged.
 
-- [ ] **3B2d — Owner controls and supervision:** add bounded per-run control
+- [x] **3B2d — Owner controls and supervision:** add bounded per-run control
   subscriptions, initial authoritative ownership checks, wakeable 0.5-second
   safety supervision, monotonic 10-second renewals, correct-owner cancellation,
-  and isolated resource cleanup.
+  and isolated resource cleanup. The affected API unit modules passed (88
+  tests), pinned PostgreSQL/JetStream qualification passed (47 tests, no
+  skips), and independent spec/quality review approved.
 
 - [ ] **3B2e — Independent recovery, health and exhaustion:** run availability,
   Connector expiry and lease recovery outside run slots; add bounded health
