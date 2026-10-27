@@ -951,3 +951,340 @@ async def test_broker_full_keeps_outbox_pending_and_schedules_retry(
         except NotFoundError:
             pass
         await client.close()
+
+
+async def _wait_condition(predicate, timeout=5):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+
+async def _runtime_client(*, reconnected_cb=None, allow_reconnect=True):
+    auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())["runtime"]
+    return await nats.connect(
+        os.environ["TEST_NATS_URL"],
+        user=auth["user"],
+        password=auth["password"],
+        inbox_prefix=b"_INBOX.runtime",
+        connect_timeout=2,
+        reconnect_time_wait=0.05,
+        reconnected_cb=reconnected_cb,
+        allow_reconnect=allow_reconnect,
+    )
+
+
+def _consumer_worker_factory(sessions, effects, *, block=None):
+    import threading
+
+    class SyntheticWorker:
+        Session = sessions
+        worker_id = "pg-consumer"
+
+        def __init__(self):
+            self.thread = threading.get_ident()
+            self.closed = False
+
+        def process_job(self, claim):
+            assert threading.get_ident() == self.thread
+            effects.append(claim.run_id)
+            if block is not None:
+                assert block.wait(10)
+            with self.Session() as db:
+                assert finalize(db, claim.run_id, claim.fence, {"status": "success"})
+            # Deliberately false: committed state alone must authorize ACK.
+            return False
+
+        def close(self):
+            assert threading.get_ident() == self.thread
+            self.closed = True
+
+    return SyntheticWorker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_ack", [False, True])
+async def test_run_consumer_committed_ack_and_reconnect_redelivery_without_second_effect(
+    relay_postgres, relay_broker, monkeypatch, lost_ack
+):
+    from nats.aio.msg import Msg
+
+    from src.openship.messaging.consumer import RunConsumer
+
+    _url, sessions, _installation_id = relay_postgres
+    run_id, job_id, body, subject = _pg_command(sessions)
+    await relay_broker.js.publish(subject, body)
+    stop, reconnected = asyncio.Event(), asyncio.Event()
+
+    async def on_reconnected():
+        reconnected.set()
+
+    client = await _runtime_client(reconnected_cb=on_reconnected)
+    effects, acknowledgments = [], []
+    original_ack = Msg.ack_sync
+
+    async def checked_ack(message, *, timeout):
+        # Verify committed state in a different connection before the broker
+        # confirmation. Lost first ACK sends nothing; real AckWait redelivers.
+        with sessions() as observer:
+            row = observer.get(
+                MessageDisposition, uuid.UUID(json.loads(body)["message_id"])
+            )
+            assert row.disposition == "completed"
+            assert observer.get(Run, run_id).status == "completed"
+        acknowledgments.append(message.metadata.num_delivered)
+        if lost_ack and len(acknowledgments) == 1:
+            await client.force_reconnect()
+            raise NatsTimeoutError
+        result = await original_ack(message, timeout=timeout)
+        stop.set()
+        return result
+
+    monkeypatch.setattr(Msg, "ack_sync", checked_ack)
+    consumer = RunConsumer(
+        client,
+        concurrency=1,
+        session_factory=sessions,
+        worker_factory=_consumer_worker_factory(sessions, effects),
+        fetch_timeout=0.2,
+        retry_interval=0.02,
+        progress_interval=0.05,
+    )
+    task = asyncio.create_task(consumer.run(stop))
+    try:
+        await asyncio.wait_for(task, 40 if lost_ack else 8)
+        assert effects == [run_id]
+        assert acknowledgments == ([1, 2] if lost_ack else [1])
+        if lost_ack:
+            assert reconnected.is_set() and client.stats["reconnects"] >= 1
+            assert consumer._checked_reconnect == client.stats["reconnects"]
+        with sessions() as db:
+            assert db.get(RunJob, job_id).fence == 1
+        info = await relay_broker.js.consumer_info("OS_RUNS", "run-v1")
+        assert info.num_ack_pending == 0
+        assert (await relay_broker.js.stream_info("OS_RUNS")).state.messages == 0
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 5)
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_run_consumer_broker_transport_loss_keeps_committed_result_and_original_recoverable(
+    relay_postgres, relay_broker, monkeypatch
+):
+    import threading
+
+    from nats.aio.msg import Msg
+
+    from src.openship.messaging.consumer import RunConsumer
+
+    _url, sessions, _installation_id = relay_postgres
+    run_id, job_id, body, subject = _pg_command(sessions)
+    await relay_broker.js.publish(subject, body)
+    stop, release = asyncio.Event(), threading.Event()
+    client = await _runtime_client(allow_reconnect=False)
+    effects, ack_failures = [], []
+    original_ack = Msg.ack_sync
+
+    async def disconnected_ack(message, *, timeout):
+        try:
+            return await original_ack(message, timeout=timeout)
+        except Exception as error:
+            ack_failures.append(type(error).__name__)
+            stop.set()
+            raise
+
+    monkeypatch.setattr(Msg, "ack_sync", disconnected_ack)
+    consumer = RunConsumer(
+        client,
+        concurrency=1,
+        session_factory=sessions,
+        worker_factory=_consumer_worker_factory(sessions, effects, block=release),
+        fetch_timeout=0.2,
+        retry_interval=0.02,
+        progress_interval=0.02,
+    )
+    task = asyncio.create_task(consumer.run(stop))
+    try:
+        await _wait_condition(lambda: effects == [run_id])
+        # Lose the complete worker-to-broker transport while synchronous work
+        # holds its DB claim. No transport callback is permitted to redo it.
+        await client.close()
+        release.set()
+        await asyncio.wait_for(task, 8)
+        assert ack_failures and effects == [run_id]
+        with sessions() as db:
+            assert db.get(Run, run_id).status == "completed"
+            assert db.get(RunJob, job_id).fence == 1
+            row = db.get(MessageDisposition, uuid.UUID(json.loads(body)["message_id"]))
+            assert row.disposition == "completed"
+            replay = prepare_run_delivery(
+                db, body, subject=subject, worker_id="recovery", lease_seconds=30
+            )
+            assert replay.disposition.action == "ack" and replay.decision.claim is None
+        info = await relay_broker.js.consumer_info("OS_RUNS", "run-v1")
+        assert info.num_ack_pending == 1
+        assert (await relay_broker.js.stream_info("OS_RUNS")).state.messages == 1
+    finally:
+        release.set()
+        stop.set()
+        await asyncio.wait_for(task, 5)
+        await client.close()
+
+
+def test_worker_checkpointer_setup_serializes_independent_engines(
+    relay_postgres, monkeypatch
+):
+    import threading
+
+    from langgraph.checkpoint.postgres import PostgresSaver
+
+    from src.openship.config import settings
+    from src.openship.runs.worker import Worker
+
+    database_url, sessions, _installation_id = relay_postgres
+    monkeypatch.setattr(settings, "database_url", database_url)
+    entered, release, raced = threading.Event(), threading.Event(), threading.Event()
+    original_setup = PostgresSaver.setup
+    connections = []
+    lock = threading.Lock()
+
+    def guarded_setup(saver):
+        with lock:
+            connections.append(saver.conn)
+            first = len(connections) == 1
+        if first:
+            entered.set()
+            assert release.wait(8)
+        else:
+            raced.set()
+        original_setup(saver)
+
+    monkeypatch.setattr(PostgresSaver, "setup", guarded_setup)
+
+    def build_worker():
+        worker = Worker(session_factory=sessions)
+        try:
+            return worker.checkpointer is not None
+        finally:
+            worker.close()
+
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        first = threads.submit(build_worker)
+        assert entered.wait(5)
+        second = threads.submit(build_worker)
+        try:
+            deadline = time.monotonic() + 5
+            waiting = False
+            while not raced.is_set() and not waiting and time.monotonic() < deadline:
+                with sessions() as db:
+                    waiting = bool(
+                        db.execute(
+                            text(
+                                "SELECT count(*) FROM pg_stat_activity "
+                                "WHERE application_name = 'openship-checkpointer-setup' "
+                                "AND query LIKE '%pg_try_advisory_lock%' "
+                                "AND xact_start IS NULL"
+                            )
+                        ).scalar_one()
+                        == 2
+                    )
+                if not waiting:
+                    raced.wait(0.01)
+            assert not raced.is_set(), (
+                "both independent savers entered setup concurrently"
+            )
+            assert waiting, "second worker never attempted the database advisory lock"
+        finally:
+            release.set()
+        assert first.result(timeout=8) and second.result(timeout=8)
+        assert len(connections) == 2 and connections[0] is not connections[1]
+
+
+def test_worker_checkpointer_setup_lock_spans_processes(relay_postgres, tmp_path):
+    database_url, sessions, _installation_id = relay_postgres
+    release = tmp_path / "release"
+    markers = [tmp_path / "first-setup", tmp_path / "second-setup"]
+    program = """
+import sys
+import time
+from pathlib import Path
+from langgraph.checkpoint.postgres import PostgresSaver
+from src.openship.runs.worker import Worker
+
+marker, release = map(Path, sys.argv[1:])
+setup = PostgresSaver.setup
+
+def tracked_setup(saver):
+    marker.touch()
+    deadline = time.monotonic() + 15
+    while not release.exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("test setup release timed out")
+        time.sleep(.01)
+    setup(saver)
+
+PostgresSaver.setup = tracked_setup
+worker = Worker()
+try:
+    assert worker.checkpointer is not None
+finally:
+    worker.close()
+"""
+    processes = []
+    environment = {**os.environ, "DATABASE_URL": database_url}
+    try:
+        for index, marker in enumerate(markers):
+            processes.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", program, str(marker), str(release)],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            )
+            deadline = time.monotonic() + 8
+            if index == 0:
+                while not marker.exists() and time.monotonic() < deadline:
+                    assert processes[0].poll() is None, (
+                        "first worker exited before setup"
+                    )
+                    time.sleep(0.01)
+                assert marker.exists()
+            else:
+                waiting = False
+                while (
+                    not marker.exists() and not waiting and time.monotonic() < deadline
+                ):
+                    assert processes[1].poll() is None, (
+                        "second worker exited before lock"
+                    )
+                    with sessions() as db:
+                        waiting = bool(
+                            db.execute(
+                                text(
+                                    "SELECT count(*) FROM pg_stat_activity "
+                                    "WHERE application_name = 'openship-checkpointer-setup' "
+                                    "AND query LIKE '%pg_try_advisory_lock%' "
+                                    "AND xact_start IS NULL"
+                                )
+                            ).scalar_one()
+                            == 2
+                        )
+                    if not waiting:
+                        time.sleep(0.01)
+                assert waiting and not marker.exists(), (
+                    "second process entered setup before the first released its lock"
+                )
+        release.touch()
+        for process in processes:
+            _stdout, stderr = process.communicate(timeout=10)
+            assert process.returncode == 0, stderr
+        assert all(marker.exists() for marker in markers)
+    finally:
+        release.touch()
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+            process.communicate(timeout=5)

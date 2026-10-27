@@ -1,9 +1,14 @@
 """Delivery ACKs require durable database outcomes, never Worker booleans."""
 
+import asyncio
 import json
+import threading
+import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
+from nats.errors import TimeoutError as NatsTimeoutError
 from sqlalchemy.exc import OperationalError
 
 from src.openship.database.session import SessionLocal
@@ -392,3 +397,560 @@ def test_missing_transport_state_is_recoverable():
             make_transient(state)
             db.add(state)
             db.commit()
+
+
+@pytest.mark.parametrize("deferred_by", ["future", "inactive"])
+def test_never_admitted_deferred_ledger_with_null_error_cannot_settle(deferred_by):
+    from src.openship.messaging.delivery import settle_run_delivery
+    from src.openship.runs.queue import Claim
+
+    with SessionLocal() as db:
+        run_id, job_id, row_id = _command(db)
+        body, subject = _body(db, row_id)
+        if deferred_by == "future":
+            db.get(RunJob, job_id).available_at = datetime.now(UTC) + timedelta(days=1)
+        else:
+            db.get(MessageTransportState, 1).active = False
+        db.commit()
+        prepared = _prepare(db, body, subject)
+        assert prepared.decision.claim is None
+        row = db.get(MessageDisposition, prepared.command.message_id)
+        assert row.disposition == "deferred"
+        # A NULL error code is not proof that this command acquired a lease.
+        row.error_code = None
+        db.get(Run, run_id).status = "completed"
+        db.commit()
+        result = settle_run_delivery(
+            db, prepared.command, Claim(run_id, 0, datetime.now(UTC), "delivery-worker")
+        )
+        assert (result.action, result.code) == ("reconcile", "admission_unproven")
+
+
+@pytest.mark.parametrize("duplicate_after", ["live", "terminal", "obsolete"])
+def test_duplicate_decision_preserves_admitted_owners_settlement(duplicate_after):
+    with SessionLocal() as db:
+        run_id, job_id, row_id = _command(db)
+        body, subject = _body(db, row_id)
+        original = _prepare(db, body, subject)
+        if duplicate_after == "terminal":
+            assert finalize(
+                db, run_id, original.decision.claim.fence, {"status": "success"}
+            )
+        elif duplicate_after == "obsolete":
+            job = db.get(RunJob, job_id)
+            db.get(Run, run_id).status = "queued"
+            job.owner_id = None
+            job.lease_until = None
+            job.dispatch_generation += 1
+            enqueue_run(
+                db,
+                run_id,
+                job.dispatch_generation,
+                epoch=original.command.transport_epoch,
+            )
+            db.commit()
+        duplicate = _prepare(db, body, subject)
+        assert duplicate.decision.claim is None
+        assert (
+            db.get(MessageDisposition, original.command.message_id).disposition
+            == "claimed"
+        )
+        if duplicate_after == "live":
+            assert finalize(
+                db, run_id, original.decision.claim.fence, {"status": "success"}
+            )
+        assert _settle(db, original).action == "ack"
+
+
+# Real sessions/acquisition/settlement; controlled broker and synthetic effect.
+class _RunMessage:
+    def __init__(self, body, subject, stop):
+        self.data, self.subject, self.stop = body, subject, stop
+        self.progress, self.acks, self.naks = 0, 0, []
+        self.on_ack = lambda: None
+        self.ack_failure = False
+
+    async def in_progress(self):
+        self.progress += 1
+
+    async def ack_sync(self, *, timeout):
+        assert 0 < timeout <= 5
+        self.on_ack()
+        self.acks += 1
+        self.stop.set()
+        if self.ack_failure:
+            raise NatsTimeoutError
+
+    async def nak(self, *, delay):
+        self.naks.append(delay)
+        self.stop.set()
+
+
+class _RunBroker:
+    def __init__(self, messages):
+        self.is_connected = True
+        self.stats = {"reconnects": 0}
+        self.messages = asyncio.Queue()
+        for message in messages:
+            self.messages.put_nowait(message)
+        self.bindings, self.fetches, self.unsubscribed = [], [], []
+        self.on_fetch = lambda: None
+        self.topology_checks = 0
+        self.consumer = None
+
+    def jetstream(self, *, timeout):
+        return self
+
+    async def pull_subscribe_bind(self, **kwargs):
+        self.bindings.append(kwargs)
+        broker = self
+
+        class Subscription:
+            async def fetch(self, *, batch, timeout):
+                assert batch == 1 and 0 < timeout <= 5
+                assert (
+                    len(broker.consumer._pool._available) < broker.consumer.concurrency
+                )
+                broker.fetches.append(self)
+                broker.on_fetch()
+                try:
+                    return [await asyncio.wait_for(broker.messages.get(), timeout)]
+                except TimeoutError:
+                    raise NatsTimeoutError from None
+
+            async def unsubscribe(self):
+                broker.unsubscribed.append(self)
+
+        return Subscription()
+
+
+def _loop_fixture(
+    monkeypatch,
+    *,
+    concurrency=1,
+    worker_result=False,
+    terminal=True,
+    empty=False,
+    factory_hook=lambda: None,
+    handlers=None,
+):
+    from src.openship.messaging import consumer
+
+    stop = asyncio.Event()
+    with SessionLocal() as db:
+        run_id, _, row_id = _command(db)
+        body, subject = _body(db, row_id)
+    message = _RunMessage(body, subject, stop)
+    broker = _RunBroker([] if empty else [message])
+    resources, effects, calls = [], [], []
+
+    class SyntheticWorker:
+        Session = SessionLocal
+
+        def __init__(self):
+            self.thread = threading.get_ident()
+            self.worker_id = "consumer-test"
+            self.checkpointer = object()
+            self.closed = False
+            resources.append(self)
+            factory_hook()
+
+        def process_job(self, claim):
+            assert threading.get_ident() == self.thread
+            effects.append(claim.run_id)
+            calls.append("effect")
+            if terminal:
+                with self.Session() as db:
+                    assert finalize(
+                        db, claim.run_id, claim.fence, {"status": "success"}
+                    )
+            return worker_result
+
+        def close(self):
+            assert threading.get_ident() == self.thread
+            self.closed = True
+
+    async def topology(**kwargs):
+        assert kwargs["apply"] is False and kwargs["js"] is broker
+        broker.topology_checks += 1
+        return SimpleNamespace(ready=True)
+
+    monkeypatch.setattr(consumer, "ensure_topology", topology)
+    instance = consumer.RunConsumer(
+        broker,
+        concurrency=concurrency,
+        session_factory=SessionLocal,
+        worker_factory=SyntheticWorker,
+        progress_interval=0.01,
+        fetch_timeout=0.03,
+        retry_interval=0.01,
+        handlers=handlers,
+    )
+    broker.consumer = instance
+    return SimpleNamespace(
+        consumer=instance,
+        broker=broker,
+        stop=stop,
+        message=message,
+        resources=resources,
+        effects=effects,
+        run_id=run_id,
+        calls=calls,
+    )
+
+
+async def _until(predicate, timeout=3):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_result,terminal", [(False, True), (True, False)])
+async def test_loop_acks_committed_state_independently_of_worker_bool(
+    monkeypatch, worker_result, terminal
+):
+    f = _loop_fixture(monkeypatch, worker_result=worker_result, terminal=terminal)
+
+    def checked_ack():
+        with SessionLocal() as db:
+            row = db.get(
+                MessageDisposition, uuid.UUID(json.loads(f.message.data)["message_id"])
+            )
+            assert row.disposition == "completed"
+            assert db.get(Run, f.run_id).status == "completed"
+        f.calls.append("ack")
+
+    f.message.on_ack = checked_ack
+    await asyncio.wait_for(f.consumer.run(f.stop), 4)
+    assert f.effects == [f.run_id]
+    assert f.message.acks == int(terminal)
+    assert f.message.naks == ([] if terminal else [5.0])
+    assert f.calls == (["effect", "ack"] if terminal else ["effect"])
+    assert f.message.progress >= 1
+    assert all(resource.closed for resource in f.resources)
+    assert len(f.broker.unsubscribed) == 1
+
+
+@pytest.mark.asyncio
+async def test_loop_binds_distinct_bounded_subscriptions_and_reserves_before_fetch(
+    monkeypatch,
+):
+    f = _loop_fixture(monkeypatch, concurrency=2, empty=True)
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await _until(lambda: len(f.broker.fetches) >= 2)
+        assert len(set(f.broker.fetches)) == 2
+        assert f.broker.topology_checks == 1
+        assert (
+            f.broker.bindings
+            == [
+                {
+                    "stream": "OS_RUNS",
+                    "consumer": "run-v1",
+                    "pending_msgs_limit": 1,
+                    "pending_bytes_limit": 16384,
+                },
+            ]
+            * 2
+        )
+        assert f.resources == []
+    finally:
+        f.stop.set()
+        await asyncio.wait_for(task, 3)
+    assert len(f.broker.unsubscribed) == 2
+
+
+@pytest.mark.asyncio
+async def test_slow_slot_setup_keeps_immediate_periodic_progress_and_other_capacity(
+    monkeypatch,
+):
+    started, release = threading.Event(), threading.Event()
+
+    def setup():
+        started.set()
+        assert release.wait(4)
+
+    f = _loop_fixture(monkeypatch, concurrency=2, factory_hook=setup)
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await _until(started.is_set)
+        await _until(lambda: f.message.progress >= 3)
+        assert f.message.acks == 0
+        assert len(set(f.broker.fetches)) == 2
+        from src.openship.messaging.executor import ExecutionPool
+
+        background = ExecutionPool(1, lambda: SimpleNamespace(close=lambda: None))
+        try:
+            async with background.reserve() as slot:
+                assert await slot.run(lambda _: "independent") == "independent"
+        finally:
+            await background.close()
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 4)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", ["active", "execution_open"])
+async def test_fetched_gate_hold_progresses_without_claim_or_nak_and_retries_same_message(
+    monkeypatch, gate
+):
+    f = _loop_fixture(monkeypatch)
+
+    def close_gate():
+        with SessionLocal() as db:
+            setattr(db.get(MessageTransportState, 1), gate, False)
+            db.commit()
+        f.broker.on_fetch = lambda: None
+
+    f.broker.on_fetch = close_gate
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await _until(lambda: f.message.progress >= 3)
+        assert f.effects == [] and f.message.naks == [] and f.message.acks == 0
+        assert len(f.broker.fetches) == 1
+        with SessionLocal() as db:
+            assert db.get(Run, f.run_id).fence == 0
+            setattr(db.get(MessageTransportState, 1), gate, True)
+            db.commit()
+        await asyncio.wait_for(task, 4)
+        assert f.effects == [f.run_id] and f.message.acks == 1
+        assert len(f.broker.fetches) == 1
+    finally:
+        f.stop.set()
+        await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", ["active", "execution_open", "disconnected"])
+async def test_loop_stops_new_pulls_until_transport_reopens(monkeypatch, gate):
+    f = _loop_fixture(monkeypatch)
+    if gate == "disconnected":
+        f.broker.is_connected = False
+    else:
+        with SessionLocal() as db:
+            setattr(db.get(MessageTransportState, 1), gate, False)
+            db.commit()
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await asyncio.sleep(0.06)
+        assert f.broker.fetches == []
+        if gate == "disconnected":
+            f.broker.is_connected = True
+            f.broker.stats["reconnects"] += 1
+        else:
+            with SessionLocal() as db:
+                setattr(db.get(MessageTransportState, 1), gate, True)
+                db.commit()
+        await asyncio.wait_for(task, 4)
+        assert f.message.acks == 1
+    finally:
+        f.stop.set()
+        await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmation", ["absent", "false", "error", "confirmed"])
+@pytest.mark.parametrize("outcome", ["quarantine", "reconcile"])
+async def test_unconfirmed_durable_handoff_retains_and_progresses_delivery(
+    monkeypatch, confirmation, outcome
+):
+    from src.openship.messaging import consumer
+    from src.openship.messaging.delivery import DeliveryDisposition, PreparedDelivery
+
+    confirmations = []
+
+    def handler(db, prepared, disposition):
+        assert threading.get_ident() != threading.main_thread().ident
+        assert disposition.action == outcome
+        confirmations.append(disposition.code)
+        if confirmation == "error":
+            raise RuntimeError("private-handler-error")
+        db.commit()
+        return confirmation == "confirmed"
+
+    f = _loop_fixture(
+        monkeypatch, handlers=None if confirmation == "absent" else {outcome: handler}
+    )
+    monkeypatch.setattr(
+        consumer,
+        "prepare_run_delivery",
+        lambda *_a, **_kw: PreparedDelivery(
+            None, None, DeliveryDisposition(outcome, "needs_durable_handoff")
+        ),
+    )
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        if confirmation == "confirmed":
+            await asyncio.wait_for(task, 4)
+            assert f.message.acks == 1
+        else:
+            await _until(lambda: f.message.progress >= 3)
+            assert f.message.acks == 0 and f.message.naks == [] and f.effects == []
+            assert len(f.broker.fetches) == 1
+            f.stop.set()
+            await asyncio.wait_for(task, 4)
+        assert len(confirmations) == (0 if confirmation == "absent" else 1)
+    finally:
+        f.stop.set()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_lost_ack_and_reconnect_redelivery_never_repeats_effect(monkeypatch):
+    f = _loop_fixture(monkeypatch)
+    first = f.message
+    first.stop = asyncio.Event()
+    first.ack_failure = True
+    replay = _RunMessage(first.data, first.subject, f.stop)
+    f.broker.messages.put_nowait(replay)
+
+    def reconnect_after_commit():
+        with SessionLocal() as db:
+            assert db.get(Run, f.run_id).status == "completed"
+        f.broker.stats["reconnects"] += 1
+
+    first.on_ack = reconnect_after_commit
+    await asyncio.wait_for(f.consumer.run(f.stop), 4)
+    assert f.effects == [f.run_id]
+    assert first.acks == replay.acks == 1
+    assert f.broker.topology_checks == 2
+    assert f.resources[0].closed
+
+
+@pytest.mark.asyncio
+async def test_two_slots_execute_independently_while_one_worker_setup_blocks(
+    monkeypatch,
+):
+    entered, release = threading.Event(), threading.Event()
+    once = threading.Lock()
+
+    def block_first_setup():
+        if once.acquire(blocking=False):
+            entered.set()
+            assert release.wait(4)
+
+    f = _loop_fixture(monkeypatch, concurrency=2, factory_hook=block_first_setup)
+    f.message.stop = asyncio.Event()
+    with SessionLocal() as db:
+        second_run, _, row_id = _command(db)
+        body, subject = _body(db, row_id)
+    second = _RunMessage(body, subject, asyncio.Event())
+    f.broker.messages.put_nowait(second)
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await _until(entered.is_set)
+        await _until(lambda: sum(message.acks for message in [f.message, second]) == 1)
+        assert not release.is_set()
+        assert sum(message.acks for message in [f.message, second]) == 1
+        assert len(f.resources) == 2
+        assert f.resources[0].thread != f.resources[1].thread
+        assert f.resources[0].checkpointer is not f.resources[1].checkpointer
+        release.set()
+        await _until(lambda: sum(message.acks for message in [f.message, second]) == 2)
+        assert set(f.effects) == {f.run_id, second_run}
+    finally:
+        release.set()
+        f.stop.set()
+        await asyncio.wait_for(task, 4)
+
+
+@pytest.mark.asyncio
+async def test_topology_drift_rejects_run_binding_and_fetch(monkeypatch):
+    from src.openship.messaging import consumer
+    from src.openship.messaging.topology import TopologyCompatibilityError
+
+    f = _loop_fixture(monkeypatch)
+
+    async def drift(**_kwargs):
+        return SimpleNamespace(ready=False)
+
+    monkeypatch.setattr(consumer, "ensure_topology", drift)
+    with pytest.raises(TopologyCompatibilityError):
+        await f.consumer.run(f.stop)
+    assert f.broker.bindings == [] and f.broker.fetches == [] and f.effects == []
+
+
+@pytest.mark.asyncio
+async def test_default_consumer_fails_closed_if_worker_checkpoint_setup_is_unavailable(
+    monkeypatch,
+):
+    from src.openship.messaging import consumer
+
+    f = _loop_fixture(monkeypatch)
+    closed = []
+
+    class BrokenWorker:
+        Session = SessionLocal
+        checkpointer = None
+        worker_id = "no-checkpointer"
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(consumer, "Worker", BrokenWorker)
+    replacement = consumer.RunConsumer(
+        f.broker,
+        concurrency=1,
+        session_factory=SessionLocal,
+        fetch_timeout=0.03,
+        progress_interval=0.01,
+    )
+    f.broker.consumer = replacement
+    with pytest.raises(RuntimeError, match="checkpointer"):
+        await asyncio.wait_for(replacement.run(f.stop), 4)
+    assert f.message.acks == 0 and f.message.naks == [] and closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_future_deferral_uses_bounded_delayed_nak_without_claim(
+    monkeypatch,
+):
+    f = _loop_fixture(monkeypatch)
+    with SessionLocal() as db:
+        job = db.query(RunJob).filter_by(run_id=f.run_id).one()
+        job.available_at = datetime.now(UTC) + timedelta(days=1)
+        db.commit()
+    await asyncio.wait_for(f.consumer.run(f.stop), 4)
+    assert f.message.naks == [60.0] and f.message.acks == 0 and f.effects == []
+    with SessionLocal() as db:
+        assert db.get(Run, f.run_id).fence == 0
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_handler_releases_uncommitted_database_transaction(
+    monkeypatch,
+):
+    from src.openship.messaging import consumer
+    from src.openship.messaging.delivery import DeliveryDisposition, PreparedDelivery
+
+    observed = []
+
+    def uncertain_handler(db, _prepared, _disposition):
+        db.get(Run, f.run_id).status = "failed"
+        db.flush()
+        observed.append(db)
+        return False
+
+    f = _loop_fixture(monkeypatch, handlers={"reconcile": uncertain_handler})
+    monkeypatch.setattr(
+        consumer,
+        "prepare_run_delivery",
+        lambda *_args, **_kwargs: PreparedDelivery(
+            None, None, DeliveryDisposition("reconcile", "ownership_expired")
+        ),
+    )
+    task = asyncio.create_task(f.consumer.run(f.stop))
+    try:
+        await _until(lambda: observed and f.message.progress >= 3)
+        assert not observed[0].in_transaction()
+        with SessionLocal() as observer:
+            assert observer.get(Run, f.run_id).status == "queued"
+        assert f.message.acks == 0 and f.message.naks == []
+    finally:
+        f.stop.set()
+        await asyncio.wait_for(task, 4)

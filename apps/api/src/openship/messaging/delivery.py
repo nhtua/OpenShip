@@ -149,7 +149,7 @@ def _settle_locked(
     if (
         claim.run_id != command.run_id
         or previous is None
-        or previous.disposition not in {"claimed", "deferred", "completed"}
+        or previous.disposition not in {"claimed", "completed"}
         or (previous.disposition != "completed" and previous.error_code is not None)
     ):
         return DeliveryDisposition("reconcile", "admission_unproven")

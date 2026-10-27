@@ -216,7 +216,33 @@ class Worker:
                 self._checkpointer_ctx = context
                 # The saver's tables are what make a thread resumable; without
                 # this the graph silently has nowhere to write a checkpoint.
-                self.checkpointer.setup()
+                if self.engine.dialect.name == "postgresql":
+                    import psycopg
+
+                    # Saver setup runs DDL outside our SQLAlchemy transaction.
+                    # Serialize independent slots/processes on a separate
+                    # autocommit connection; closing it also releases the lock
+                    # if setup raises. Each saver keeps its own connection.
+                    with psycopg.connect(
+                        checkpoint_url,
+                        autocommit=True,
+                        connect_timeout=5,
+                        application_name="openship-checkpointer-setup",
+                    ) as setup_guard:
+                        # A blocking lock statement would leave a transaction
+                        # open while waiting. Saver's concurrent-index DDL can
+                        # itself wait for that transaction, deadlocking startup.
+                        # Try in short autocommit statements on this slot thread.
+                        deadline = time.monotonic() + 30
+                        while not setup_guard.execute(
+                            "SELECT pg_try_advisory_lock(5716001871110882128)"
+                        ).fetchone()[0]:
+                            if time.monotonic() >= deadline:
+                                raise RuntimeError("checkpointer setup lock timed out")
+                            time.sleep(0.05)
+                        self.checkpointer.setup()
+                else:
+                    self.checkpointer.setup()
                 logger.info("Checkpointer initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize checkpointer: {e}")
@@ -225,7 +251,9 @@ class Worker:
                     try:
                         context.__exit__(None, None, None)
                     except Exception:
-                        logger.warning("Failed to close checkpointer after setup failure")
+                        logger.warning(
+                            "Failed to close checkpointer after setup failure"
+                        )
                 self.checkpointer = None
 
         logger.info(f"Worker {self.worker_id} initialized")
