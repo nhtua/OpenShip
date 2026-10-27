@@ -68,8 +68,12 @@ def parse_servers(value: str | None = None) -> list[str]:
 async def connect_nats(
     *,
     name: str,
+    error_cb=None,
+    disconnected_cb=None,
+    closed_cb=None,
     reconnected_cb=None,
     allow_reconnect: bool = True,
+    inbox_prefix: bytes | None = None,
 ) -> Client:
     """Connect using the current process role's credentials without logging them."""
     credentials = load_credentials()
@@ -83,14 +87,21 @@ async def connect_nats(
             raise ValueError(
                 "NATS_TLS_CA_FILE could not initialize certificate validation"
             ) from error
+    connection_options = {}
+    if inbox_prefix is not None:
+        connection_options["inbox_prefix"] = inbox_prefix
     return await nats.connect(
         servers=parse_servers(),
         user=credentials.user,
         password=credentials.password,
         tls=tls_context,
         name=name,
+        error_cb=error_cb,
+        disconnected_cb=disconnected_cb,
+        closed_cb=closed_cb,
         reconnected_cb=reconnected_cb,
         allow_reconnect=allow_reconnect,
         max_reconnect_attempts=-1 if allow_reconnect else 0,
         connect_timeout=3,
+        **connection_options,
     )

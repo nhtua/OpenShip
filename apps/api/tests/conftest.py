@@ -135,7 +135,9 @@ def restore_transport_gates(request, setup_db):
     if Path(request.node.fspath).name not in {
         "test_messaging_command_claim.py",
         "test_messaging_consumer.py",
+        "test_messaging_exhaustion.py",
         "test_messaging_executor.py",
+        "test_messaging_maintenance.py",
         "test_messaging_outbox.py",
     }:
         yield

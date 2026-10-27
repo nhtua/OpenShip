@@ -3,6 +3,7 @@
 import pytest
 
 from src.openship.config import settings
+from src.openship.messaging import connection
 from src.openship.messaging.connection import (
     connect_nats,
     load_credentials,
@@ -38,6 +39,31 @@ def test_parse_servers_trims_multiple_urls_and_rejects_other_schemes():
     ]
     with pytest.raises(ValueError, match="NATS_SERVERS"):
         parse_servers("http://not-nats")
+
+
+@pytest.mark.asyncio
+async def test_connect_nats_forwards_scoped_inbox_prefix(tmp_path, monkeypatch):
+    auth_path = tmp_path / "api.json"
+    auth_path.write_text('{"user":"api","password":"test-password"}')
+    auth_path.chmod(0o600)
+    monkeypatch.setattr(settings, "nats_auth_file", auth_path)
+    monkeypatch.setattr(settings, "nats_servers", "nats://localhost:4222")
+    sentinel = object()
+    received = {}
+
+    async def fake_connect(**options):
+        received.update(options)
+        return sentinel
+
+    monkeypatch.setattr(connection.nats, "connect", fake_connect)
+
+    result = await connect_nats(
+        name="openship-api-events",
+        inbox_prefix=b"openship.installation.v1.inbox.api",
+    )
+
+    assert result is sentinel
+    assert received["inbox_prefix"] == b"openship.installation.v1.inbox.api"
 
 
 @pytest.mark.asyncio

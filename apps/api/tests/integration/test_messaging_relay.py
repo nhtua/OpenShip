@@ -986,15 +986,104 @@ async def _runtime_client(*, reconnected_cb=None, allow_reconnect=True, error_cb
     )
 
 
-async def _api_client(*, error_cb=None):
+async def _api_client(**connection_options):
     auth = json.loads(Path(os.environ["TEST_NATS_AUTH_FILE"]).read_text())["api"]
     return await nats.connect(
         os.environ["TEST_NATS_URL"],
         user=auth["user"],
         password=auth["password"],
         connect_timeout=2,
-        error_cb=error_cb,
+        **connection_options,
     )
+
+
+@pytest.mark.asyncio
+async def test_api_event_fanouts_replay_and_independently_receive_live_events(
+    relay_postgres, relay_broker, monkeypatch
+):
+    from src.openship.events.fanout import EventFanout
+
+    _url, sessions, installation_id = relay_postgres
+    monkeypatch.setattr(
+        "src.openship.events.fanout.settings.nats_auth_file",
+        Path(os.environ["TEST_NATS_AUTH_FILE"]),
+    )
+    conversation_id = _new_conversation(sessions)
+    with sessions() as db:
+        conversation = db.get(Conversation, conversation_id)
+        user_id = conversation.user_id
+
+    # This notice is already in JetStream when the process consumers start.
+    replay_event_id = _append_events(
+        sessions, conversation_id, prefix="api-event-replay"
+    )[0]
+    replay_result = await publish_pending_batch(
+        relay_broker.js, sessions, conversation_id=conversation_id
+    )
+    assert replay_result.published == 1
+
+    fanouts = [
+        EventFanout(
+            session_factory=sessions,
+            installation_id=installation_id,
+            nats_client_factory=_api_client,
+        )
+        for _ in range(2)
+    ]
+    streams = []
+    next_events = []
+    try:
+        for fanout in fanouts:
+            await fanout.start()
+        await _wait_condition(lambda: all(fanout.ready for fanout in fanouts))
+
+        from src.openship.events.service import AuthorizedScope
+
+        scope = AuthorizedScope(
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        streams = [
+            fanout.subscribe_conversation(scope, after_sequence=-1)
+            for fanout in fanouts
+        ]
+        replayed = await asyncio.gather(*(anext(stream) for stream in streams))
+        assert [event.id for event in replayed] == [str(replay_event_id)] * 2
+        assert [event.sequence for event in replayed] == [0, 0]
+
+        next_events = [asyncio.create_task(anext(stream)) for stream in streams]
+        await _wait_condition(
+            lambda: all(conversation_id in fanout._clients for fanout in fanouts)
+        )
+        live_event_ids = _append_events(
+            sessions,
+            conversation_id,
+            count=2,
+            prefix="api-event-live",
+        )
+        live_result = await publish_pending_batch(
+            relay_broker.js, sessions, conversation_id=conversation_id
+        )
+        assert live_result.published == 2
+
+        for expected_sequence in (1, 2):
+            live = await asyncio.gather(
+                *(asyncio.wait_for(task, timeout=3) for task in next_events)
+            )
+            assert [event.sequence for event in live] == [expected_sequence] * 2
+            assert [event.id for event in live] == [
+                str(live_event_ids[expected_sequence - 1])
+            ] * 2
+            if expected_sequence == 1:
+                next_events = [asyncio.create_task(anext(stream)) for stream in streams]
+    finally:
+        for task in next_events:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*next_events, return_exceptions=True)
+        for stream in streams:
+            await stream.aclose()
+        await asyncio.gather(*(fanout.close() for fanout in fanouts))
 
 
 @pytest.mark.asyncio

@@ -57,9 +57,10 @@ function frame(
   type: string,
   runId: string,
   payload: Record<string, unknown> = {},
+  eventId = `evt-${sequence}`,
 ): string {
   const event = {
-    id: `evt-${sequence}`,
+    id: eventId,
     conversation_id: 'c1',
     run_id: runId,
     sequence,
@@ -424,7 +425,7 @@ describe('chat store', () => {
     chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
     chat.messages = []
 
-    // Mock SSE stream (empty — no events)
+    // A closed stream triggers one snapshot when no run remains active.
     const mockStream = new ReadableStream({
       start(controller) {
         controller.close()
@@ -467,6 +468,58 @@ describe('chat store', () => {
       expect.stringContaining('/events/stream?after_sequence='),
       expect.anything(),
     )
+  })
+
+  it('resumes the SSE stream after snapshot recovery from the broker', async () => {
+    vi.useFakeTimers()
+    const chat = useChatStore()
+    const recovered: Array<{ sequence: number; type: string }> = []
+    const response = (...frames: string[]) => {
+      const encoder = new TextEncoder()
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream({
+          start(controller) {
+            for (const item of frames) controller.enqueue(encoder.encode(item))
+            controller.close()
+          },
+        }),
+      } as Response
+    }
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        response(
+          'id: pruned\nevent: snapshot.required\ndata: {"conversation_id":"c1"}\n\n',
+        ),
+      )
+      .mockResolvedValueOnce(response(frame(8, 'run.succeeded', 'run-8')))
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: {
+        conversation_id: 'c1',
+        sequence: 7,
+        runs: [{ id: 'run-8', status: 'running' }],
+        events: [],
+      },
+    } as never)
+
+    try {
+      const operation = chat.subscribeToEvents('c1', -1, (event) => {
+        recovered.push({ sequence: event.sequence, type: event.type })
+      })
+      await vi.advanceTimersByTimeAsync(250)
+      await operation
+
+      expect(mockRunsApi.getSnapshot).toHaveBeenCalledWith('c1')
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+      expect(globalThis.fetch).toHaveBeenLastCalledWith(
+        expect.stringContaining('after_sequence=7'),
+        expect.anything(),
+      )
+      expect(recovered).toEqual([{ sequence: 8, type: 'run.succeeded' }])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('uses persisted event time to keep a live turn and its tools after existing history', async () => {
@@ -935,46 +988,87 @@ describe('chat store', () => {
   })
 
   it('does not show false completed card when stream reconnects mid-run', async () => {
-    mockRunsApi.submitTurn.mockResolvedValue({
-      data: {
-        id: 'run-mid-1',
-        conversation_id: 'c1',
-        status: 'running',
-        created_at: '2026-10-04T00:00:00Z',
-        attempt: 0,
-      },
-    })
-
     const chat = useChatStore()
     chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
     chat.messages = []
+    chat.runCards.set('c1', {
+      run_id: 'run-mid-1',
+      kind: 'chat',
+      graph_version: 1,
+      status: 'running',
+      started_at: null,
+      ended_at: null,
+      usage: null,
+      error_code: null,
+      error_message: null,
+      model: null,
+      attempts: [],
+      operations: [],
+      operations_next_cursor: null,
+    })
+    mockRunsApi.getSnapshot.mockImplementationOnce(async () => {
+      expect(chat.runCards.get('c1')?.status).toBe('running')
+      return {
+        data: {
+          conversation_id: 'c1',
+          sequence: 1,
+          runs: [{ id: 'run-mid-1', status: 'running' }],
+          events: [
+            { id: 'evt-1', conversation_id: 'c1', run_id: 'run-mid-1', sequence: 0, type: 'turn_submitted', payload: {}, created_at: '' },
+            { id: 'evt-2', conversation_id: 'c1', run_id: 'run-mid-1', sequence: 1, type: 'run.started', payload: {}, created_at: '' },
+          ],
+        },
+      } as never
+    })
 
     const encoder = new TextEncoder()
     const mockStream = new ReadableStream({
       start(controller) {
         // Simulate: stream starts, run is running, stream disconnects
         // (no run.succeeded event ever received)
-        const submitted = 'data: {"id":"evt-1","sequence":0,"type":"turn_submitted","payload":{"content":"Hello"}}\n\n'
-        controller.enqueue(encoder.encode(submitted))
-        const started = 'data: {"id":"evt-2","sequence":1,"type":"run.started","payload":{}}\n\n'
-        controller.enqueue(encoder.encode(started))
+        controller.enqueue(encoder.encode(frame(1, 'run.started', 'run-mid-1')))
         // Stream ends without completion — run is still in progress
         controller.close()
       },
     })
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
       status: 200,
       body: mockStream,
     } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(
+              frame(2, 'run.succeeded', 'run-mid-1', {}, 'evt-mid-done'),
+            ))
+            controller.close()
+          },
+        }),
+      } as Response)
 
-    await chat.sendMessage('Hello', 'c1')
+    vi.useFakeTimers()
+    try {
+      const received: string[] = []
+      const operation = chat.subscribeToEvents('c1', 0, (event) => {
+        received.push(event.type)
+        chat.processDurableEvent(event)
+      })
+      await vi.advanceTimersByTimeAsync(250)
+      await operation
 
-    // Run card should NOT show succeeded/failed/cancelled
-    const card = chat.runCards.get('c1')
-    expect(card).toBeTruthy()
-    expect(['succeeded', 'failed', 'cancelled']).not.toContain(card?.status)
-    expect(card?.status).toBe('running')
+      // The snapshot observed the in-progress state before the resumed stream
+      // delivered completion.
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+      expect(received).toEqual(['run.started', 'run.succeeded'])
+      const card = chat.runCards.get('c1')
+      expect(card).toBeTruthy()
+      expect(card?.status).toBe('succeeded')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('switching conversations during stream does not mix messages', async () => {

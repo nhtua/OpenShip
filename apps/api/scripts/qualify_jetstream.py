@@ -205,8 +205,14 @@ authorization {{
       user: "{auth["api"]["user"]}"
       password: "{auth["api"]["password"]}"
       permissions: {{
-        publish: ["openship.{control_installation_id.hex}.v1.rpc.worker.health"],
-        subscribe: ["openship.{control_installation_id.hex}.v1.reply.*.*"]
+        publish: [
+          "openship.{control_installation_id.hex}.v1.rpc.worker.health",
+          "$JS.API.CONSUMER.CREATE.OS_EVENTS.*.openship.{control_installation_id.hex}.v1.event.>"
+        ],
+        subscribe: [
+          "openship.{control_installation_id.hex}.v1.reply.*.*",
+          "openship.{control_installation_id.hex}.v1.inbox.api.>"
+        ]
       }}
     }}
   ]

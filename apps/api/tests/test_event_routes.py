@@ -499,24 +499,33 @@ def test_sse_stream_pruned_cursor():
 
         conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
         conv.next_event_sequence = 150
+        db.flush()
+        db.query(Event).filter(
+            Event.conversation_id == conv_id,
+            Event.sequence < 50,
+        ).delete(synchronize_session=False)
         db.commit()
+        assert (
+            db.query(Event.sequence)
+            .filter(Event.conversation_id == conv_id)
+            .order_by(Event.sequence.asc())
+            .first()[0]
+            == 50
+        )
     finally:
         db.close()
 
     token = get_user_token(user_id)
     with TestClient(app_test) as client:
-        # min_sequence = 150 - 100 = 50
-        # Pruned check: after_sequence < 50 - 1 => after_sequence < 49
-        # Use after_sequence=10 which is pruned
+        # The earliest retained event is sequence 50; sequence 10 is pruned.
         resp = client.get(
             f"/api/conversations/{conv_id}/events/stream?after_sequence=10",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/event-stream")
-        text = resp.text
-        assert "snapshot.required" in text
-        assert "pruned" in text
+        assert "snapshot.required" in resp.text
+        assert "pruned" in resp.text
 
 
 def test_sse_stream_future_cursor():
