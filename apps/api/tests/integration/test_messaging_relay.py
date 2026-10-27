@@ -1071,10 +1071,14 @@ async def test_api_event_fanouts_replay_and_independently_receive_live_events(
             count=2,
             prefix="api-event-live",
         )
-        live_result = await publish_pending_batch(
-            relay_broker.js, sessions, conversation_id=conversation_id
-        )
-        assert live_result.published == 2
+        live_results = []
+        for _ in live_event_ids:
+            live_results.append(
+                await publish_pending_batch(
+                    relay_broker.js, sessions, conversation_id=conversation_id
+                )
+            )
+        assert [result.published for result in live_results] == [1, 1]
 
         for expected_sequence in (1, 2):
             live = await asyncio.gather(
@@ -1159,6 +1163,7 @@ async def test_capacity_recovery_finds_and_safely_requeues_a_lost_advisory(
 
     scan = await scan_retained_run_sources(
         js,
+        stream="OS_RUNS",
         subject=subject,
         after_sequence=0,
         through_sequence=consumers[("OS_RUNS", "run-v1")].delivered.stream_seq,

@@ -140,6 +140,7 @@ async def _dispatch_reconcile(
             raise ValueError("after-sequence must be a non-negative integer")
         scan = await scan_retained_run_sources(
             js,
+            stream="OS_RUNS",
             subject=f"openship.{installation_id.hex}.v1.command.run.execute",
             after_sequence=after_sequence,
             through_sequence=high_water,

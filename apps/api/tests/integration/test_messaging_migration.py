@@ -390,4 +390,4 @@ def test_retention_task_history_blocks_phase6a_downgrade(legacy_schema):
         current = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-        assert current == "phase6a018"
+        assert current == "phase6a019"

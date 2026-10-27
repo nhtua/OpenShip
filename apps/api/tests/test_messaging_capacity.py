@@ -90,7 +90,12 @@ async def test_retained_source_scan_is_subject_filtered_bounded_and_resumable():
             )
 
     first = await scan_retained_run_sources(
-        JetStream(), subject=subject, after_sequence=0, through_sequence=8, limit=2
+        JetStream(),
+        stream="OS_RUNS",
+        subject=subject,
+        after_sequence=0,
+        through_sequence=8,
+        limit=2,
     )
     assert [message.seq for message in first.messages] == [2, 5]
     assert first.truncated is True
@@ -98,6 +103,7 @@ async def test_retained_source_scan_is_subject_filtered_bounded_and_resumable():
 
     second = await scan_retained_run_sources(
         JetStream(),
+        stream="OS_RUNS",
         subject=subject,
         after_sequence=first.next_after_sequence,
         through_sequence=8,

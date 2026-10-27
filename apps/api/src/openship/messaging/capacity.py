@@ -63,6 +63,7 @@ def capacity_report(stored_bytes: int, max_bytes: int) -> AdvisoryCapacityReport
 async def scan_retained_run_sources(
     js,
     *,
+    stream: str,
     subject: str,
     after_sequence: int,
     through_sequence: int,
@@ -75,7 +76,9 @@ async def scan_retained_run_sources(
     counts or independently authorize a source disposition.
     """
     if (
-        not isinstance(subject, str)
+        not isinstance(stream, str)
+        or not stream
+        or not isinstance(subject, str)
         or not subject
         or type(after_sequence) is not int
         or after_sequence < 0
@@ -91,9 +94,7 @@ async def scan_retained_run_sources(
     truncated = False
     while cursor < through_sequence:
         try:
-            message = await js.get_msg(
-                "OS_RUNS", seq=cursor, subject=subject, next=True
-            )
+            message = await js.get_msg(stream, seq=cursor, subject=subject, next=True)
         except NotFoundError:
             break
         sequence = getattr(message, "seq", None)

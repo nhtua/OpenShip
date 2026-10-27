@@ -299,6 +299,16 @@ routes an allowlisted kind to existing execution or explicit retention.
     (33 tests); the real broker next-by-subject test and pinned 3.11–3.13
     qualifier still need to pass before closing this slice. Production cutover
     remains blocked until those checks pass.
+
+    The first real-broker rerun passed the end-to-end lost-advisory recovery
+    case. It exposed two fixture/assertion issues: the generic topology fixture
+    queried `OS_RUNS` instead of its disposable stream, and the fanout test
+    expected two ordered event outbox rows from one batch even though relay
+    ordering claims one event per conversation at a time. The scanner now takes
+    an explicit stream name and the fanout test publishes the two rows in
+    successive batches. PostgreSQL migration tests also had stale head-version
+    assertions; they now expect `phase6a019`. The corrected real-broker and
+    PostgreSQL lanes must pass before closing the slice.
   - [x] **3B2e.5 — Explicit retention maintenance:** accept only an explicitly
     enqueued, bounded retention task with operator identity and durable
     requested/running/completed/failed state; preserve direct maintenance CLI.

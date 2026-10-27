@@ -141,7 +141,7 @@ async def test_file_storage_confirmed_publish_and_duplicate_identity(broker):
 async def test_next_by_subject_source_scan_skips_other_subjects_and_honors_watermark(
     broker,
 ):
-    _, js, _stream, _, token = broker
+    _, js, stream, _, token = broker
     run_subject = f"openship.test.{token}.commands.run"
     event_subject = f"openship.test.{token}.events.run"
     first = await js.publish(run_subject, b"first-run")
@@ -151,6 +151,7 @@ async def test_next_by_subject_source_scan_skips_other_subjects_and_honors_water
 
     scanned = await scan_retained_run_sources(
         js,
+        stream=stream,
         subject=run_subject,
         after_sequence=0,
         through_sequence=second.seq,
