@@ -502,3 +502,61 @@ async def test_runtime_role_binds_fetches_acks_but_cannot_mutate_topology_or_pau
             await js.stream_info("RUNTIME_DENIED")
     finally:
         await nc.close()
+
+
+@pytest.mark.parametrize("drifted", [False, True])
+async def test_concurrent_creation_preserves_operator_pause_and_reports_drift(
+    execution_topology,
+    monkeypatch,
+    drifted,
+):
+    from dataclasses import replace
+
+    js, installation_id = execution_topology
+    original_info = js.consumer_info
+    expected = (await original_info("OS_RUNS", "run-v1")).config
+    await js.delete_consumer("OS_RUNS", "run-v1")
+    concurrent = None
+
+    async def create_between_lookup_and_apply(stream, consumer):
+        nonlocal concurrent
+        try:
+            return await original_info(stream, consumer)
+        except NotFoundError:
+            assert (stream, consumer) == ("OS_RUNS", "run-v1")
+            # Another operator wins after this bootstrap observed missing.
+            await js.add_consumer(
+                stream,
+                config=replace(
+                    expected,
+                    ack_wait=31 if drifted else 30,
+                ),
+            )
+            subscription = await js.pull_subscribe_bind(stream=stream, durable=consumer)
+            for body in (b"acknowledged", b"in-flight", b"pending"):
+                await js.publish(expected.filter_subject, body)
+            first, _second = await subscription.fetch(batch=2, timeout=1)
+            await first.ack_sync(timeout=1)
+            await js.pause_consumer(stream, consumer, "2100-01-01T00:00:00Z")
+            concurrent = await original_info(stream, consumer)
+            await subscription.unsubscribe()
+            raise
+
+    monkeypatch.setattr(js, "consumer_info", create_between_lookup_and_apply)
+    report = await ensure_topology(apply=True, js=js, installation_id=installation_id)
+    after = await original_info("OS_RUNS", "run-v1")
+    assert after.paused is True
+    assert after.config.pause_until == "2100-01-01T00:00:00Z"
+    assert after.created == concurrent.created
+    assert after.num_pending == concurrent.num_pending == 1
+    assert after.num_ack_pending == concurrent.num_ack_pending == 1
+    assert after.delivered == concurrent.delivered
+    assert after.ack_floor == concurrent.ack_floor
+    assert after.delivered.consumer_seq == 2
+    assert after.ack_floor.consumer_seq == 1
+    assert after.config.ack_wait == (31 if drifted else 30)
+    assert report.consumers[0].paused is True
+    assert report.consumers[0].status == ("drift" if drifted else "ready")
+    assert report.ready is (not drifted)
+    if drifted:
+        assert report.consumers[0].differences == ("ack_wait",)

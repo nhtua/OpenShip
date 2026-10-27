@@ -41,6 +41,11 @@ class MemoryJetStream:
     def __init__(self, installation_id):
         from types import SimpleNamespace
 
+        from nats.aio.client import ServerVersion
+
+        self._prefix = "$JS.API"
+        self._timeout = 5
+        self._nc = SimpleNamespace(connected_server_version=ServerVersion("2.15.1"))
         self.streams = {
             config.name: SimpleNamespace(config=config)
             for config in topology.stream_configs(installation_id)
@@ -64,6 +69,24 @@ class MemoryJetStream:
         key = stream, config.durable_name
         assert key not in self.consumers, "bootstrap must never rewrite a durable"
         self.consumers[key] = SimpleNamespace(config=config, paused=False)
+
+    async def _api_request(self, subject, body, *, timeout):
+        import json
+
+        from nats.js.api import ConsumerConfig
+        from nats.js.errors import BadRequestError
+
+        request = json.loads(body)
+        assert request["action"] == "create"
+        stream = request["stream_name"]
+        config = ConsumerConfig.from_response(request["config"])
+        assert subject == (
+            f"{self._prefix}.CONSUMER.CREATE.{stream}.{config.name}.{config.filter_subject}"
+        )
+        assert timeout == self._timeout
+        if (stream, config.durable_name) in self.consumers:
+            raise BadRequestError(code=400, err_code=10148)
+        await self.add_consumer(stream, config=config)
 
 
 @pytest.mark.asyncio
@@ -191,3 +214,61 @@ async def test_owned_connection_closes_on_consumer_and_context_failures(
     with pytest.raises(RuntimeError, match="broker unavailable"):
         await topology.ensure_topology(apply=True, installation_id=installation_id)
     assert client.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "version",
+    ["2.9.0", "2.15.0", "2.15.2", "2.15.1-rc.1", "2.15.1+build.1", "0.0.0-unknown"],
+)
+async def test_apply_refuses_unqualified_consumer_creation_before_sending(version):
+    import uuid
+    from types import SimpleNamespace
+
+    from nats.aio.client import ServerVersion
+
+    installation_id = uuid.uuid4()
+    js = MemoryJetStream(installation_id)
+    js._nc = SimpleNamespace(connected_server_version=ServerVersion(version))
+    with pytest.raises(topology.TopologyCompatibilityError, match="qualified"):
+        await topology.ensure_topology(
+            apply=True, js=js, installation_id=installation_id
+        )
+    assert not js.consumers
+
+
+@pytest.mark.asyncio
+async def test_create_only_uses_selected_context_prefix_and_timeout():
+    import uuid
+
+    installation_id = uuid.uuid4()
+    js = MemoryJetStream(installation_id)
+    js._prefix = "$JS.tenant.API"
+    js._timeout = 0.75
+    assert (
+        await topology.ensure_topology(
+            apply=True, js=js, installation_id=installation_id
+        )
+    ).ready
+
+
+@pytest.mark.parametrize("err_code", [10012, 10149])
+@pytest.mark.asyncio
+async def test_create_only_does_not_swallow_unrelated_api_errors(monkeypatch, err_code):
+    import uuid
+
+    from nats.js.errors import BadRequestError
+
+    installation_id = uuid.uuid4()
+    js = MemoryJetStream(installation_id)
+
+    async def failed(*args, **kwargs):
+        raise BadRequestError(code=400, err_code=err_code)
+
+    monkeypatch.setattr(js, "_api_request", failed)
+    with pytest.raises(BadRequestError) as caught:
+        await topology.ensure_topology(
+            apply=True, js=js, installation_id=installation_id
+        )
+    assert caught.value.err_code == err_code
+    assert not js.consumers

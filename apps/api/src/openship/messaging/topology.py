@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import asdict, dataclass
 
@@ -16,7 +17,7 @@ from nats.js.api import (
     StorageType,
     StreamConfig,
 )
-from nats.js.errors import NotFoundError
+from nats.js.errors import BadRequestError, NotFoundError
 
 from ..config import settings
 from ..database.session import SessionLocal
@@ -68,6 +69,35 @@ class TopologyReport:
 
 class TopologyCompatibilityError(RuntimeError):
     """A runtime must not use missing or drifted broker resources."""
+
+
+async def _create_consumer_only(js, stream: str, config: ConsumerConfig) -> None:
+    """Create without upserting a concurrently provisioned or paused durable."""
+    # nats-py 2.15.0's public add_consumer omits the server's top-level action.
+    # Keep this pinned private-client dependency isolated, preserving the context
+    # API prefix, request timeout and API error translation. Server 2.15.1 checks
+    # action=create atomically before updating an existing differing config.
+    version = js._nc.connected_server_version
+    if (version.major, version.minor, version.patch) != (2, 15, 1) or (
+        version.prerelease or version.build
+    ):
+        raise TopologyCompatibilityError(
+            "consumer creation requires qualified NATS server 2.15.1"
+        )
+    request = json.dumps(
+        {"stream_name": stream, "config": config.as_dict(), "action": "create"}
+    ).encode()
+    try:
+        await js._api_request(
+            f"{js._prefix}.CONSUMER.CREATE.{stream}.{config.name}.{config.filter_subject}",
+            request,
+            timeout=js._timeout,
+        )
+    except BadRequestError as error:
+        # Pinned server JSConsumerAlreadyExists. The caller must reread and
+        # compare the winner rather than turning this conflict into an update.
+        if error.err_code != 10148:
+            raise
 
 
 def consumer_configs(
@@ -308,7 +338,7 @@ async def ensure_topology(
                 if not apply or stream_status[stream] != "ready":
                     consumers.append(ConsumerResult(stream, name, "missing"))
                     continue
-                await js.add_consumer(stream, config=expected)
+                await _create_consumer_only(js, stream, expected)
                 info = await js.consumer_info(stream, name)
             differences = _compare_consumer(expected, info.config)
             consumers.append(
