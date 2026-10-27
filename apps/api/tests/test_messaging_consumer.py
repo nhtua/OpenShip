@@ -75,7 +75,7 @@ def test_preparation_commits_non_executable_noop_before_ack(status):
             assert row.disposition == "disposed"
 
 
-@pytest.mark.parametrize("state", ["live", "future", "gate", "expired", "obsolete"])
+@pytest.mark.parametrize("state", ["live", "future", "expired", "obsolete"])
 def test_preparation_maps_recoverable_and_obsolete_states(state):
     with SessionLocal() as db:
         run_id, job_id, row_id = _command(db)
@@ -88,8 +88,6 @@ def test_preparation_maps_recoverable_and_obsolete_states(state):
             db.get(Run, run_id).status = "running"
         elif state == "future":
             job.available_at = datetime.now(UTC) + timedelta(minutes=5)
-        elif state == "gate":
-            db.get(MessageTransportState, 1).execution_open = False
         else:
             job.dispatch_generation += 1
         db.commit()
@@ -106,6 +104,46 @@ def test_preparation_maps_recoverable_and_obsolete_states(state):
         assert prepared.decision.claim is None
         if expected == "defer":
             assert prepared.disposition.delay >= 1
+
+
+@pytest.mark.parametrize(
+    "active,execution_open,code",
+    [
+        (False, True, "transport_inactive"),
+        (True, False, "execution_closed"),
+        (False, False, "transport_inactive"),
+    ],
+)
+def test_closed_transport_holds_delivery_until_reopen(active, execution_open, code):
+    with SessionLocal() as db:
+        run_id, job_id, row_id = _command(db)
+        body, subject = _body(db, row_id)
+        state = db.get(MessageTransportState, 1)
+        state.active, state.execution_open = active, execution_open
+        db.commit()
+
+        for _ in range(2):
+            prepared = _prepare(db, body, subject)
+            assert prepared.decision.kind == "defer"
+            assert prepared.decision.code == code
+            assert prepared.decision.claim is None
+            assert prepared.disposition.action == "hold"
+            assert prepared.disposition.code == code
+            assert prepared.disposition.delay is None
+            with SessionLocal() as observer:
+                run, job = observer.get(Run, run_id), observer.get(RunJob, job_id)
+                assert (run.status, run.fence, job.fence) == ("queued", 0, 0)
+                assert job.owner_id is None and job.lease_until is None
+                row = observer.get(MessageDisposition, prepared.command.message_id)
+                assert row.disposition == "deferred"
+                assert row.error_code == code
+
+        state.active, state.execution_open = True, True
+        db.commit()
+        prepared = _prepare(db, body, subject)
+        assert prepared.disposition is None
+        assert prepared.decision.kind == "claimed"
+        assert prepared.decision.claim.fence == 1
 
 
 @pytest.mark.parametrize("mutation", ["malformed", "identity", "digest"])

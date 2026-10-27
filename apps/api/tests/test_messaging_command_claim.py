@@ -24,6 +24,7 @@ from src.openship.workspace.models import Project
 
 def _command(db):
     state = db.get(MessageTransportState, 1)
+    state.active = True
     state.execution_open = True
     user = User(
         username=f"claim_{uuid.uuid4().hex[:12]}",
@@ -108,6 +109,56 @@ def test_exact_due_claim_increments_fence_once_and_does_not_steal_another_run():
             ).kind
             == "defer"
         )
+
+
+@pytest.mark.parametrize("entry_point", ["run", "command"])
+@pytest.mark.parametrize(
+    "active,execution_open,code",
+    [
+        (False, True, "transport_inactive"),
+        (True, False, "execution_closed"),
+        (False, False, "transport_inactive"),
+    ],
+)
+def test_closed_transport_refuses_exact_claim_without_ownership(
+    entry_point, active, execution_open, code
+):
+    with SessionLocal() as db:
+        run_id, job_id, row_id = _command(db)
+        body, subject = _body(db, row_id)
+        state = db.get(MessageTransportState, 1)
+        state.active, state.execution_open = active, execution_open
+        epoch = state.transport_epoch
+        message_id = db.get(Outbox, row_id).message_id
+        db.commit()
+
+        if entry_point == "run":
+            decision = claim_run(
+                db,
+                run_id=run_id,
+                generation=1,
+                epoch=epoch,
+                worker_id="worker",
+                lease_seconds=30,
+            )
+        else:
+            decision = claim_command(
+                db, body, subject=subject, worker_id="worker", lease_seconds=30
+            )
+
+        assert (decision.kind, decision.code, decision.claim) == ("defer", code, None)
+    with SessionLocal() as observer:
+        run, job = observer.get(Run, run_id), observer.get(RunJob, job_id)
+        assert (run.status, run.fence, job.fence) == ("queued", 0, 0)
+        assert job.owner_id is None and job.lease_until is None
+        disposition = observer.get(MessageDisposition, message_id)
+        if entry_point == "command":
+            assert (disposition.disposition, disposition.error_code) == (
+                "deferred",
+                code,
+            )
+        else:
+            assert disposition is None
 
 
 @pytest.mark.parametrize(

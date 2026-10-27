@@ -183,30 +183,55 @@ routes an allowlisted kind to existing execution or explicit retention.
   provide independent bounded slot threads with cancellation retention and
   Worker/checkpointer/session cleanup. Focused worker regressions and the full
   API commit gate pass; task review is clean.
-- [ ] **3B2 — Broker consumer and supervision:** integrate bounded pulls,
-  owner controls, independent progress/recovery and confirmed-ACK rules below.
+- [ ] **3B2 — Broker consumer and supervision:** complete the ordered slices
+  below. Production remains on the legacy entry point until 3B2f.
 
-- [ ] Add failing `test_messaging_consumer.py` and PG/broker cases for every
-  spec delivery-state branch, especially redelivery after dedup expiry,
+- [x] **3B2a — Shared consumer topology and pause primitives:** declare and
+  verify the two shared execution durables, bound aggregate pending capacity,
+  expose confirmed pause/resume, and preserve existing broker state during
+  bootstrap races. Pinned real-broker race tests and scoped review pass.
+
+- [ ] **3B2b — Inactive-safe exact acquisition:** require both
+  `transport.active` and `execution_open` under the shared state lock before a
+  claim; preserve distinct closed-gate outcomes so a fetched delivery can be
+  held with progress rather than NAKed until exhaustion. Restore messaging
+  fixture gates after each SQLite test.
+
+- [ ] **3B2c — Bounded run pulls and committed ACKs:** use one bound pull
+  subscription per reserved run slot, stop fetches while disconnected/closed,
+  progress fetched messages independently, and ACK only after committed
+  settlement. Keep background capacity and legacy production entry unchanged.
+
+- [ ] **3B2d — Owner controls and supervision:** add bounded per-run control
+  subscriptions, initial authoritative ownership checks, wakeable 0.5-second
+  safety supervision, monotonic 10-second renewals, correct-owner cancellation,
+  and isolated resource cleanup.
+
+- [ ] **3B2e — Independent recovery, health and exhaustion:** run availability,
+  Connector expiry and lease recovery outside run slots; add bounded health
+  RPC; persist failure/quarantine before acknowledging exhausted deliveries;
+  preserve healthy live owners and require explicit retention enqueue.
+
+- [ ] **3B2f — Production entry switch:** remove `claim_next` discovery and idle
+  polling from the production entry only after 3B2b–3B2e are qualified. Keep no
+  automatic polling fallback.
+
+- [ ] Add failing unit and PG/broker cases for every spec delivery-state
+  branch, especially inactive/closed gates, redelivery after dedup expiry,
   old-generation arrival after resume, another live owner and stale fences.
-  Preserve existing queue/recovery tests by testing exact acquisition.
 - [ ] Reuse `process_job` through per-slot execution objects in a bounded
-  executor. Add independent lease/progress/expiry/availability supervision;
-  do not execute synchronous work on the broker/API loop. Test two slots
-  progressing while a third fixture blocks and background slots are full.
+  executor. Test two slots progressing while another fixture blocks and
+  background slots are full; do not execute synchronous work on the broker/API
+  loop. Keep `model_interrupted`/`execution_interrupted` behavior.
 - [ ] Commit outcomes/waits before confirmed ACK; requeue plus new generation
-  plus outbox is atomic. Test crash before/after model/tool dispatch and after
-  result commit. Keep `model_interrupted`/`execution_interrupted` behavior.
-- [ ] Add independent control delivery plus initial/durable ownership checks;
-  test correct-owner cancellation with two workers and broker loss.
+  plus outbox is atomic. Test crashes before/after model/tool dispatch and
+  after result commit.
 - [ ] Implement quarantine ledger/notices, exhaustion recovery and guarded
   replay, including failure before quarantine confirmation. Add explicit
   `enqueue-retention --dry-run` task arguments without changing direct CLI.
   Test MaxDeliver reached while a healthy long-running owner still holds its
   lease: retain a durable observation handoff until outcome or lease expiry;
   never fail or replay the effect based on transport count alone.
-- [ ] Remove `claim_next` discovery and idle worker sleep from the production
-  entry point. No automatic polling fallback or permanent backend flag.
 - [ ] Verify consumer, recovery, tool safety and provider worker suites plus
   real broker crash cases. Check executor/checkpointer/DB resources close;
   review and commit in focused independently verified slices.

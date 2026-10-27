@@ -130,6 +130,42 @@ datefmt = %H:%M:%S
 
 
 @pytest.fixture(autouse=True)
+def restore_transport_gates(request, setup_db):
+    """Keep messaging tests from changing later tests' shared SQLite gates."""
+    if Path(request.node.fspath).name not in {
+        "test_messaging_command_claim.py",
+        "test_messaging_consumer.py",
+        "test_messaging_executor.py",
+        "test_messaging_outbox.py",
+    }:
+        yield
+        return
+
+    from src.openship.messaging.models import MessageTransportState
+
+    with TestSessionLocal() as db:
+        try:
+            state = db.get(MessageTransportState, 1)
+        except OperationalError:
+            db.rollback()
+            state = None
+        gates = (
+            (state.active, state.admission_open, state.execution_open)
+            if state is not None
+            else None
+        )
+
+    yield
+
+    if gates is not None:
+        with TestSessionLocal() as db:
+            state = db.get(MessageTransportState, 1)
+            if state is not None:
+                state.active, state.admission_open, state.execution_open = gates
+                db.commit()
+
+
+@pytest.fixture(autouse=True)
 def cleanup_global_connector_fixtures(setup_db):
     """Keep installation-global Connector fixtures isolated between tests."""
     from src.openship.connectors.models import (

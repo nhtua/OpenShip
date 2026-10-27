@@ -203,6 +203,10 @@ def _claim_run_exact(
         "waiting_connector",
     }:
         return ClaimDecision("disposed", code="run_not_executable")
+    if not state.active:
+        return ClaimDecision("defer", code="transport_inactive")
+    if not state.execution_open:
+        return ClaimDecision("defer", code="execution_closed")
     now = _py_now()
     lease_until = _as_utc(job.lease_until) if job.lease_until is not None else None
     if job.owner_id is not None:
@@ -219,8 +223,6 @@ def _claim_run_exact(
         )
     if run.status != "queued":
         return ClaimDecision("reconcile_required")
-    if not state.execution_open:
-        return ClaimDecision("defer", delay=30.0)
     available_at = _as_utc(job.available_at)
     if available_at > now:
         return ClaimDecision(

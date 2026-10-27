@@ -28,7 +28,7 @@ from .models import MessageDisposition, MessageTransportState
 
 @dataclass(frozen=True)
 class DeliveryDisposition:
-    action: Literal["ack", "defer", "reconcile", "quarantine"]
+    action: Literal["ack", "hold", "defer", "reconcile", "quarantine"]
     code: str
     delay: float | None = None
 
@@ -44,6 +44,8 @@ def _unclaimed(decision: ClaimDecision) -> DeliveryDisposition | None:
     if decision.kind == "claimed":
         return None
     if decision.kind == "defer":
+        if decision.code in {"transport_inactive", "execution_closed"}:
+            return DeliveryDisposition("hold", decision.code)
         return DeliveryDisposition("defer", "claim_deferred", decision.delay or 1.0)
     if decision.kind == "reconcile_required":
         return DeliveryDisposition("reconcile", "ownership_expired")

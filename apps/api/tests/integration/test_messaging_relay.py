@@ -38,6 +38,7 @@ from src.openship.chat.models import Conversation
 from src.openship.events.service import append_event
 from src.openship.messaging import relay
 from src.openship.messaging.command import claim_command
+from src.openship.messaging.delivery import prepare_run_delivery
 from src.openship.messaging.models import MessageDisposition, MessageTransportState
 from src.openship.messaging.outbox import enqueue_run
 from src.openship.messaging.relay import (
@@ -52,6 +53,7 @@ from src.openship.messaging.topology import (
     stream_configs,
 )
 from src.openship.runs.models import Outbox, Run, RunJob
+from src.openship.runs.queue import claim_run
 from src.openship.workspace.models import Project
 
 pytestmark = [pytest.mark.postgres, pytest.mark.jetstream]
@@ -61,6 +63,7 @@ _native_to_thread = asyncio.to_thread
 def _pg_command(sessions):
     with sessions() as db:
         state = db.get(MessageTransportState, 1)
+        state.active = True
         state.execution_open = True
         user = User(
             username=f"claim_{uuid.uuid4().hex[:12]}",
@@ -162,6 +165,65 @@ def test_pg_independent_claims_share_transport_state_lock(relay_postgres):
         assert decision.kind == "claimed"
         assert decision.claim.run_id == run_id
         state_reader.rollback()
+
+
+@pytest.mark.parametrize("entry_point", ["run", "delivery"])
+@pytest.mark.parametrize(
+    "active,execution_open,code",
+    [
+        (False, True, "transport_inactive"),
+        (True, False, "execution_closed"),
+        (False, False, "transport_inactive"),
+    ],
+)
+def test_pg_closed_transport_refuses_exact_acquisition(
+    relay_postgres, entry_point, active, execution_open, code
+):
+    _url, sessions, _installation_id = relay_postgres
+    run_id, job_id, body, subject = _pg_command(sessions)
+    with sessions() as db:
+        # The initial observation is stale; only the shared locked read can
+        # authorize execution after the concurrent gate writer commits.
+        observed = db.get(MessageTransportState, 1)
+        assert observed.active and observed.execution_open
+        with sessions() as writer:
+            state = writer.query(MessageTransportState).with_for_update().one()
+            state.active, state.execution_open = active, execution_open
+            writer.commit()
+
+        if entry_point == "run":
+            decision = claim_run(
+                db,
+                run_id=run_id,
+                generation=1,
+                epoch=observed.transport_epoch,
+                worker_id="pg-worker",
+                lease_seconds=30,
+            )
+        else:
+            prepared = prepare_run_delivery(
+                db, body, subject=subject, worker_id="pg-worker", lease_seconds=30
+            )
+            decision = prepared.decision
+            assert prepared.disposition.action == "hold"
+            assert prepared.disposition.code == code
+            assert prepared.disposition.delay is None
+        assert (decision.kind, decision.code, decision.claim) == ("defer", code, None)
+
+    with sessions() as observer:
+        run, job = observer.get(Run, run_id), observer.get(RunJob, job_id)
+        assert (run.status, run.fence, job.fence) == ("queued", 0, 0)
+        assert job.owner_id is None and job.lease_until is None
+        disposition = observer.get(
+            MessageDisposition, uuid.UUID(json.loads(body)["message_id"])
+        )
+        if entry_point == "delivery":
+            assert (disposition.disposition, disposition.error_code) == (
+                "deferred",
+                code,
+            )
+        else:
+            assert disposition is None
 
 
 @pytest.mark.parametrize(
