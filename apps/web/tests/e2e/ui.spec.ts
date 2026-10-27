@@ -98,7 +98,7 @@ test.describe('visual contract: chat shell (7.3)', () => {
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/')
-    const row = page.getByRole('button', { name: /Deploy pipeline/ })
+    const row = page.getByRole('button', { name: 'Open conversation Deploy pipeline' })
     await row.waitFor()
 
     const sidebarBox = await page
@@ -173,7 +173,7 @@ test.describe('responsive layout (7.4)', () => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/')
     await page.getByRole('button', { name: 'Show 42 more' }).click()
-    await page.getByRole('button', { name: /Conversation 50/ }).waitFor()
+    await page.getByRole('button', { name: 'Open conversation Conversation 50' }).waitFor()
 
     // Open the long-title conversation to load 100 messages.
     // Scroll sidebar into view then click (force: true avoids stability waits
@@ -271,7 +271,7 @@ test.describe('responsive layout (7.4)', () => {
     await setAuthToken(page)
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/')
-    await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+    await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
 
     await page.getByRole('button', { name: 'Toggle Sidebar' }).click()
     // The sidebar animates (200ms); poll the settled width instead of
@@ -320,9 +320,9 @@ test.describe('responsive layout (7.4)', () => {
     await setAuthToken(page)
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/')
-    await page.getByRole('button', { name: /Scale up web/ }).waitFor()
+    await page.getByRole('button', { name: 'Open conversation Scale up web' }).waitFor()
 
-    const row = page.getByRole('button', { name: /Scale up web/ })
+    const row = page.getByRole('button', { name: 'Open conversation Scale up web' })
     await row.focus()
     await page.keyboard.press('Enter')
     await page.getByText('Scale web to 3 replicas').waitFor()
@@ -434,7 +434,7 @@ test.describe('theme and icons (7.5)', () => {
     await mockApi(page)
     await setAuthToken(page)
     await page.goto('/')
-    await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+    await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
 
     expect(failedAssets).toEqual([])
     // The browser's automatic /favicon.ico probe is not an application error.

@@ -31,7 +31,7 @@ import type { Page } from '@playwright/test'
 async function openConversation(page: Page): Promise<void> {
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
   await page.getByRole('button', { name: /Open conversation Deploy/ }).click()
   await page.getByTestId('provider-selector').waitFor()
 }

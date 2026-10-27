@@ -389,30 +389,34 @@ lifespan/readiness, event tests and browser regression tests.
 `resolve_event_cursor(db, scope: AuthorizedScope, header: str | None, query: int) -> CursorDecision`.
 Reuse the existing event projection; no broker types leak to the web client.
 
-- [ ] Add failing `test_messaging_sse.py` and real two-API tests: commit during
+- [x] Add failing `test_messaging_sse.py` and real two-API tests: commit during
   subscription, replay/live overlap, out-of-order notices, late old events,
   UUID/numeric headers, foreign-conversation UUID, pruned history and overflow.
-- [ ] Implement subscribe/flush-before-high-water, bounded replay, dedup and
+- [x] Implement subscribe/flush-before-high-water, bounded replay, dedup and
   gap repair with short-lived off-loop sessions. Enforce 256-notice client
   queues; emit `snapshot.required` and close on unsafe overflow.
-- [ ] Remove the one-second DB event polling loop. Keep 15-second heartbeat,
+- [x] Remove the one-second DB event polling loop. Keep 15-second heartbeat,
   HTTP auth/snapshot routes and event UUID `id`. Broker disconnect closes
   streams for existing browser recovery; test reopened clients on both APIs.
-- [ ] Add readiness detail and two-second health RPC with source-owned reply
+- [x] Add readiness detail and two-second health RPC with source-owned reply
   validation; timeout/no-responder cannot repeat a run. Prove slow work does
   not block history, auth, cancel or readiness requests.
-- [ ] Verify event suites and `pnpm test:run`, `pnpm typecheck`, affected
+- [x] Verify event suites and `pnpm test:run`, `pnpm typecheck`, affected
   Playwright journeys; trace idle SSE SQL and review/commit.
 
   The implementation is committed in `6c3fad2`; the first pinned JetStream
   run found that relay event publications still carried the generic envelope,
   while `EventFanout` requires an exact `{"event_id": ...}` reference. The
   relay now publishes only that reference and validates its conversation
-  subject. A late-old-notice regression now covers both the unit fanout and
-  real two-API path: after replay has advanced, the stale reference must not
-  emit a duplicate or prevent the next committed event. All 14 focused SSE
-  tests pass locally; the updated real-broker lane must pass before closing
-  this task.
+  subject. A late-old-notice regression covers both the unit fanout and real
+  two-API path: after replay advances, the stale reference emits no duplicate
+  and does not prevent the next committed event. All 14 focused SSE tests pass;
+  PR CI run `40494389435` passes the Python 3.11–3.13 unit, PostgreSQL and
+  JetStream matrices, both full-stack lanes, frontend typecheck/tests/build and
+  lint. The complete Playwright E2E suite passes (66 tests). Its existing
+  conversation-row locators and two stale text assertions were corrected to
+  match current accessible names and user-facing copy. Idle-stream tests and
+  the browser reconnect journey pass.
 
 ## Task 5 — Build resumable cutover, rollback and inspection commands
 

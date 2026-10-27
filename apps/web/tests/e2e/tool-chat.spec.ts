@@ -57,7 +57,7 @@ test('automatically invokes the authorized search tools from the composer withou
   })
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
   await expect(page.getByTestId('automatic-tool-chip')).toBeVisible()
 
   await page.getByLabel('Message').fill('What is the nearest star system?')
