@@ -383,6 +383,11 @@ def test_retention_task_history_blocks_phase6a_downgrade(legacy_schema):
             {"id": task_id},
         )
 
+    with engine.connect() as connection:
+        head_revision = connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
+
     refused = alembic("downgrade", "phase6a017")
     assert refused.returncode != 0
     assert "refusing phase 6a downgrade" in refused.stderr.lower()
@@ -390,4 +395,4 @@ def test_retention_task_history_blocks_phase6a_downgrade(legacy_schema):
         current = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-        assert current == "phase6a019"
+        assert current == head_revision
