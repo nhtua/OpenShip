@@ -178,7 +178,7 @@ def test_migration_preserves_existing_project_references_and_refuses_unsafe_down
             connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            == "phase6a017"
+            == "phase6a018"
         )
 
 

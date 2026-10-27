@@ -24,7 +24,7 @@ from ..events.service import Event
 from ..runs.models import Outbox, Run, RunJob
 from .connection import connect_nats
 from .failure import FailureHandoff
-from .models import MessageFailure, MessageTransportState
+from .models import MessageFailure, MessageTransportState, RetentionTask
 from .topology import TopologyCompatibilityError, ensure_topology
 
 logger = logging.getLogger("openship.messaging.relay")
@@ -33,7 +33,7 @@ _NOTIFY_CHANNEL = "openship_outbox"
 _LEADER_KEY_A = 0x4F534850
 _LEADER_KEY_B = 0x4D534731
 _MAX_ENVELOPE_BYTES = 16 * 1024
-_PUBLISHABLE = ("event", "command", "control", "failure")
+_PUBLISHABLE = ("event", "command", "control", "failure", "maintenance")
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,7 @@ def _record_envelope(
     run: Run | None,
     job: RunJob | None,
     failure: MessageFailure | None = None,
+    maintenance_task: RetentionTask | None = None,
 ) -> OutboxEnvelope:
     record: dict[str, object] = {
         "schema_version": row.schema_version,
@@ -87,7 +88,7 @@ def _record_envelope(
         "created_at": _utc_iso(row.created_at),
         "subject": row.subject,
     }
-    if row.destination != "failure":
+    if row.destination not in {"failure", "maintenance"}:
         if row.conversation_id is None:
             raise ValueError(
                 "conversation-scoped publication is missing its conversation"
@@ -137,6 +138,20 @@ def _record_envelope(
             )
         record["kind"] = f"failure.{failure.classification}"
         record["failure_id"] = str(failure.id)
+    elif row.destination == "maintenance":
+        if (
+            maintenance_task is None
+            or row.maintenance_task_id != maintenance_task.id
+            or row.type != "retention.execute"
+            or row.conversation_id is not None
+            or row.run_id is not None
+            or row.event_id is not None
+            or row.failure_id is not None
+        ):
+            raise ValueError("maintenance publication is missing its durable task")
+        record["task_id"] = str(maintenance_task.id)
+        record["correlation_id"] = str(maintenance_task.id)
+        record["causation_id"] = str(maintenance_task.id)
     else:
         raise ValueError("outbox destination is not publishable")
 
@@ -156,6 +171,10 @@ def _record_envelope(
         raise ValueError(
             "failure publication subject does not match its classification"
         )
+    if row.destination == "maintenance" and row.subject != (
+        f"{expected_subject_prefix}command.maintenance.retention"
+    ):
+        raise ValueError("maintenance publication subject is not the retention command")
     return OutboxEnvelope(row.id, claim_id, row.message_id, row.subject, body)
 
 
@@ -184,6 +203,7 @@ def claim_outbox_batch(
     conversation_id: uuid.UUID | None = None,
     outbox_id: uuid.UUID | None = None,
     failure_id: uuid.UUID | None = None,
+    maintenance_task_id: uuid.UUID | None = None,
 ) -> list[OutboxEnvelope]:
     """Claim due publications in a short transaction, preserving event order."""
     claim_id = uuid.uuid4()
@@ -227,6 +247,11 @@ def claim_outbox_batch(
             query = query.filter(
                 Outbox.destination == "failure", Outbox.failure_id == failure_id
             )
+        if maintenance_task_id is not None:
+            query = query.filter(
+                Outbox.destination == "maintenance",
+                Outbox.maintenance_task_id == maintenance_task_id,
+            )
         query = (
             query.order_by(
                 Outbox.created_at.asc(), Event.sequence.asc(), Outbox.id.asc()
@@ -241,10 +266,16 @@ def claim_outbox_batch(
         event_ids = {row.event_id for row in rows if row.event_id is not None}
         run_ids = {row.run_id for row in rows if row.run_id is not None}
         failure_ids = {row.failure_id for row in rows if row.failure_id is not None}
+        maintenance_task_ids = {
+            row.maintenance_task_id
+            for row in rows
+            if row.maintenance_task_id is not None
+        }
         events = {}
         runs = {}
         jobs = {}
         failures = {}
+        maintenance_tasks = {}
         if event_ids:
             events = {
                 event.id: event
@@ -265,6 +296,13 @@ def claim_outbox_batch(
                 .filter(MessageFailure.id.in_(failure_ids))
                 .all()
             }
+        if maintenance_task_ids:
+            maintenance_tasks = {
+                task.id: task
+                for task in db.query(RetentionTask)
+                .filter(RetentionTask.id.in_(maintenance_task_ids))
+                .all()
+            }
         for row in rows:
             row.publisher_claim_id = claim_id
             row.publisher_lease_until = claimed_at + timedelta(seconds=lease_duration)
@@ -278,6 +316,7 @@ def claim_outbox_batch(
                     run=runs.get(row.run_id),
                     job=jobs.get(row.run_id),
                     failure=failures.get(row.failure_id),
+                    maintenance_task=maintenance_tasks.get(row.maintenance_task_id),
                 )
             )
         db.commit()

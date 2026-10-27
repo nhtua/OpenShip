@@ -15,7 +15,7 @@ from .models import MessageTransportState
 
 OUTBOX_MAX_PENDING = 10_000
 OUTBOX_MAX_AGE_SECONDS = 300
-_PUBLISHABLE = ("event", "command", "control", "failure")
+_PUBLISHABLE = ("event", "command", "control", "failure", "maintenance")
 
 
 class MessagingBacklogError(HTTPException):

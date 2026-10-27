@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     # processes must budget their combined slots before changing this topology.
     messaging_run_max_ack_pending: int = Field(default=4, ge=1, le=1024)
     messaging_maintenance_max_ack_pending: int = Field(default=1, ge=1, le=1024)
+    messaging_retention_days: int = Field(default=30, ge=1, le=36500)
+    messaging_retention_batch_size: int = Field(default=1000, ge=1, le=10000)
     worker_run_concurrency: int = Field(default=4, ge=1, le=128)
     worker_background_concurrency: int = Field(default=1, ge=1, le=128)
 

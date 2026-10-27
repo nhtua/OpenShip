@@ -1,12 +1,13 @@
 # OpenShip API
 
-Phase 6A proposes replacing PostgreSQL job discovery and live event polling
-with NATS JetStream while retaining the existing API, database authority,
-fences, providers, Connectors and artifacts. See the [migration design](../../docs/superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md),
+Phase 6A targets replacing PostgreSQL job discovery and live event polling
+with NATS JetStream while retaining the existing API, database authority, fences,
+providers, Connectors and artifacts. See the [migration design](../../docs/superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md),
 [implementation plan](../../docs/superpowers/plans/2026-10-25-phase6a-nats-messaging.md)
-and [deployment runbook proposal](../../docs/operations/messaging.md). Those
-new messaging commands are not available yet; the commands below describe the
-current runtime.
+and [deployment runbook](../../docs/operations/messaging.md). The production
+worker entry remains on the current runtime until plan slice 3B2f is qualified;
+the direct retention command below remains available. Queue-backed retention
+commands require the JetStream worker entry and an active transport.
 
 Backend API server for OpenShip, built with FastAPI.
 
@@ -80,6 +81,8 @@ for retained evidence and storage setup.
 | `RECONCILER_INTERVAL` | `60` | Lease reconciliation interval |
 | `EVENT_RETENTION_DAYS` | `30` | Days to retain events for completed runs |
 | `CHECKPOINT_RETENTION_DAYS` | `30` | Days to retain checkpoints for completed runs |
+| `MESSAGING_RETENTION_DAYS` | `30` | Days to retain settled queue ledgers and notices |
+| `MESSAGING_RETENTION_BATCH_SIZE` | `1000` | Maximum rows per category processed by a queued retention task |
 | `LOG_RETENTION_DAYS` | `7` | Days to retain operational logs |
 
 Set the common budgets directly in `apps/api/.env` for local development, or
@@ -136,19 +139,34 @@ OpenShip retains durable workspace data indefinitely by default. To bound histor
 cd apps/api
 uv run python -m src.openship.runs.worker_commands retention --dry-run
 
-# Run retention (default: 30-day event retention, 30-day checkpoint retention)
+# Run retention (defaults: 30 days for events, checkpoints and settled messaging records)
 uv run python -m src.openship.runs.worker_commands retention
 
 # Custom retention periods
-EVENT_RETENTION_DAYS=14 CHECKPOINT_RETENTION_DAYS=14 uv run python -m src.openship.runs.worker_commands retention
+EVENT_RETENTION_DAYS=14 CHECKPOINT_RETENTION_DAYS=14 MESSAGING_RETENTION_DAYS=14 uv run python -m src.openship.runs.worker_commands retention
 ```
 
 **Retention behavior:**
 - Events from completed/failed/cancelled/timed_out runs older than `EVENT_RETENTION_DAYS` are pruned
 - Checkpoints for terminal runs older than `CHECKPOINT_RETENTION_DAYS` are deleted via the checkpointer API
 - Active, queued, and running runs are never pruned
-- Messages and run summaries are preserved until an explicit delete policy is implemented
+- Conversation messages and run summaries are preserved. Settled delivery ledgers and published notices older than `MESSAGING_RETENTION_DAYS` are pruned; unresolved exhaustion, unpublished event/failure notices, and queued work are retained
 - Log retention is handled by the deployment log driver (7 days by default)
+
+After the JetStream worker entry is qualified and active, an operator can
+request auditable, bounded queue-backed maintenance and inspect its durable
+result:
+
+```bash
+uv run python -m src.openship.runs.worker_commands enqueue-retention \
+  --requested-by "operator@example.test" --dry-run
+uv run python -m src.openship.runs.worker_commands retention-status <task-id>
+```
+
+The request and its outbox command commit together. Each task processes at most
+`MESSAGING_RETENTION_BATCH_SIZE` rows per category; repeat with a new request
+while `limit_reached` is true. Direct `retention` remains available for
+operator-run recovery and is not routed through JetStream.
 
 ### Artifact Storage
 

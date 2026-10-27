@@ -29,6 +29,7 @@ from ..messaging.models import (
     MessageFailure,
     MessageFailureConflict,
     MessageTransportState,
+    RetentionTask,
 )
 from ..resources.models import (
     ConnectorBlocker,
@@ -76,6 +77,7 @@ __all__ = [
     "ResourceBinding",
     "ResourceObject",
     "ResourceObservation",
+    "RetentionTask",
     "Run",
     "RunJob",
     "RunTranscriptRecord",

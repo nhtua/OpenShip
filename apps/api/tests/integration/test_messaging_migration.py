@@ -303,3 +303,51 @@ def test_duplicate_legacy_jobs_block_upgrade_without_partial_schema(legacy_schem
             ).mappings()
         }
         assert "messaging_state" not in tables
+
+
+def test_retention_task_history_blocks_phase6a_downgrade(legacy_schema):
+    _schema, engine, alembic = legacy_schema
+    upgraded = alembic("upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    task_id = uuid.uuid4()
+    with engine.begin() as connection:
+        columns = {
+            row["column_name"]
+            for row in connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'retention_tasks'"
+                )
+            ).mappings()
+        }
+        assert {
+            "requested_by",
+            "event_retention_days",
+            "checkpoint_retention_days",
+            "messaging_retention_days",
+            "batch_size",
+            "consumer_acked_at",
+            "consumer_stream_sequence",
+            "consumer_sequence",
+            "ack_pending_at",
+            "result_json",
+        } <= columns
+        connection.execute(
+            text(
+                "INSERT INTO retention_tasks "
+                "(id, requested_by, event_retention_days, checkpoint_retention_days, "
+                "messaging_retention_days, batch_size) "
+                "VALUES (:id, 'migration-test', 30, 30, 30, 1000)"
+            ),
+            {"id": task_id},
+        )
+
+    refused = alembic("downgrade", "phase6a017")
+    assert refused.returncode != 0
+    assert "refusing phase 6a downgrade" in refused.stderr.lower()
+    with engine.connect() as connection:
+        current = connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
+        assert current == "phase6a018"

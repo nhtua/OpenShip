@@ -9,8 +9,10 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -41,6 +43,63 @@ class MessageTransportState(Base):
     )
 
     __table_args__ = (CheckConstraint("id = 1", name="ck_messaging_state_singleton"),)
+
+
+class RetentionTask(Base):
+    """Durable operator request and outcome for bounded retention work."""
+
+    __tablename__ = "retention_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    requested_by = Column(String(255), nullable=False)
+    event_retention_days = Column(Integer, nullable=False)
+    checkpoint_retention_days = Column(Integer, nullable=False)
+    messaging_retention_days = Column(Integer, nullable=False)
+    batch_size = Column(Integer, nullable=False)
+    dry_run = Column(Boolean, nullable=False, server_default="false")
+    state = Column(String(16), nullable=False, server_default="requested")
+    attempts = Column(Integer, nullable=False, server_default="0")
+    requested_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    consumer_acked_at = Column(DateTime(timezone=True), nullable=True)
+    consumer_stream_sequence = Column(BigInteger, nullable=True)
+    consumer_sequence = Column(BigInteger, nullable=True)
+    ack_pending_at = Column(DateTime(timezone=True), nullable=True)
+    error_code = Column(String(80), nullable=True)
+    result_json = Column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("length(trim(requested_by)) BETWEEN 1 AND 255", name="ck_retention_requested_by"),
+        CheckConstraint("event_retention_days BETWEEN 1 AND 36500", name="ck_retention_event_days"),
+        CheckConstraint("checkpoint_retention_days BETWEEN 1 AND 36500", name="ck_retention_checkpoint_days"),
+        CheckConstraint("messaging_retention_days BETWEEN 1 AND 36500", name="ck_retention_messaging_days"),
+        CheckConstraint("batch_size BETWEEN 1 AND 10000", name="ck_retention_batch_size"),
+        CheckConstraint("state IN ('requested', 'running', 'completed', 'failed')", name="ck_retention_task_state"),
+        CheckConstraint("attempts >= 0", name="ck_retention_task_attempts"),
+        CheckConstraint("state = 'failed' OR error_code IS NULL", name="ck_retention_task_error"),
+        CheckConstraint(
+            "(consumer_stream_sequence IS NULL AND consumer_sequence IS NULL "
+            "AND ack_pending_at IS NULL AND consumer_acked_at IS NULL) OR "
+            "(consumer_stream_sequence > 0 AND consumer_sequence > 0 "
+            "AND ack_pending_at IS NOT NULL)",
+            name="ck_retention_task_ack_intent",
+        ),
+        CheckConstraint(
+            "consumer_acked_at IS NULL OR state IN ('completed', 'failed')",
+            name="ck_retention_task_ack_state",
+        ),
+        Index(
+            "ix_retention_task_ack_reconcile",
+            "consumer_acked_at",
+            "consumer_sequence",
+            "consumer_stream_sequence",
+            postgresql_where=text("consumer_acked_at IS NULL"),
+            sqlite_where=text("consumer_acked_at IS NULL"),
+        ),
+    )
 
 
 class MessageDisposition(Base):

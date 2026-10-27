@@ -17,7 +17,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 
 from ..auth.models import Base
-from ..messaging.models import MessageExhaustion, MessageFailure  # noqa: F401
+from ..messaging.models import (
+    MessageExhaustion,  # noqa: F401
+    MessageFailure,  # noqa: F401
+    RetentionTask,  # noqa: F401
+)
 from ..workspace.models import Project  # noqa: F401
 
 
@@ -277,6 +281,11 @@ class Outbox(Base):
         ForeignKey("message_failures.id", ondelete="RESTRICT"),
         nullable=True,
     )
+    maintenance_task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("retention_tasks.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     dispatch_generation = Column(Integer, nullable=True)
     transport_epoch = Column(UUID(as_uuid=True), nullable=True)
     publish_attempts = Column(Integer, nullable=False, server_default="0")
@@ -287,7 +296,7 @@ class Outbox(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "destination IN ('event', 'command', 'control', 'legacy', 'failure')",
+            "destination IN ('event', 'command', 'control', 'legacy', 'failure', 'maintenance')",
             name="ck_outbox_destination",
         ),
         CheckConstraint("schema_version >= 1", name="ck_outbox_schema_version"),
@@ -295,8 +304,12 @@ class Outbox(Base):
         CheckConstraint(
             "(destination = 'failure' AND failure_id IS NOT NULL "
             "AND conversation_id IS NULL AND run_id IS NULL AND event_id IS NULL "
-            "AND dispatch_generation IS NULL) OR "
-            "(destination <> 'failure' AND failure_id IS NULL "
+            "AND dispatch_generation IS NULL AND maintenance_task_id IS NULL) OR "
+            "(destination = 'maintenance' AND maintenance_task_id IS NOT NULL "
+            "AND failure_id IS NULL AND conversation_id IS NULL AND run_id IS NULL "
+            "AND event_id IS NULL AND dispatch_generation IS NULL) OR "
+            "(destination NOT IN ('failure', 'maintenance') AND failure_id IS NULL "
+            "AND maintenance_task_id IS NULL "
             "AND conversation_id IS NOT NULL)",
             name="ck_outbox_failure_scope",
         ),
@@ -307,6 +320,13 @@ class Outbox(Base):
             unique=True,
             postgresql_where=text("destination = 'failure'"),
             sqlite_where=text("destination = 'failure'"),
+        ),
+        Index(
+            "uq_outbox_maintenance_task_id",
+            "maintenance_task_id",
+            unique=True,
+            postgresql_where=text("destination = 'maintenance'"),
+            sqlite_where=text("destination = 'maintenance'"),
         ),
         Index("ix_outbox_conversation_id", "conversation_id"),
         Index("ix_outbox_processed_at", "processed_at"),

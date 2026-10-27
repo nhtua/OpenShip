@@ -42,6 +42,16 @@ def test_capacity_defaults_and_explicit_multi_process_declaration():
     assert configured.messaging_run_max_ack_pending == 16
 
 
+def test_retention_batch_defaults_and_bounds():
+    defaults = Settings(_env_file=None)
+    assert defaults.messaging_retention_days == 30
+    assert defaults.messaging_retention_batch_size == 1000
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, messaging_retention_days=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, messaging_retention_batch_size=10001)
+
+
 def test_capacity_declarations_load_from_environment(monkeypatch):
     for name, value in (
         ("WORKER_RUN_CONCURRENCY", "8"),

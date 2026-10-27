@@ -274,20 +274,42 @@ routes an allowlisted kind to existing execution or explicit retention.
     readiness and topology (15 exhaustion, including the mocked supervisor
     persist/delete/ACK ordering path, 11 failure, 4 consumer lifecycle, and 35
     topology/CLI tests passed on 2026-10-27). The authenticated pinned CI
-    qualifier executed 50 cases per Python version; Python 3.12 reported 48
-    passed and 2 failed, and all three matrix jobs failed. The log identified
-    two regressions: the shared-pause assertion included the advisory durable,
-    and the relay qualification role lacked advisory-durable INFO permission.
-    Both corrections are applied and await CI rerun. Keep this checkbox open
+    qualifier executed 50 cases per Python version; all three matrix jobs
+    reported 49 passed and 1 failed because the test required
+    `OS_ADVISORIES.paused is False`, while NATS reports `None` when it has never
+    been paused. The assertion now accepts any value except `True`. The earlier
+    shared-pause scope and advisory INFO-permission fixes are also present.
+    Keep this checkbox open
     until all 50 cases pass without skips, including runtime denial for
     other-stream GET/DELETE. Production acceptance also requires a tested
     alert at 75% of `OS_ADVISORIES` capacity and a reviewed recovery
     tool/procedure for advisories rejected at full capacity; this slice has no
     command that discovers rejected advisories from retained `OS_RUNS` state.
     Keep production cutover blocked until that recovery gap is closed.
-  - [ ] **3B2e.5 — Explicit retention maintenance:** accept only an explicitly
+  - [x] **3B2e.5 — Explicit retention maintenance:** accept only an explicitly
     enqueued, bounded retention task with operator identity and durable
     requested/running/completed/failed state; preserve direct maintenance CLI.
+    Alembic 018 adds the task ledger and exact maintenance outbox scope. The
+    worker commits `running` before a bounded pass, holds the task row lock
+    through pruning, and commits the result/delivery digest before ACK. It
+    persists exact JetStream sequence intent before ACK, records confirmation
+    after ACK, and reconciles a lost post-ACK PostgreSQL write against the
+    durable consumer ACK floor; retention cannot prune an unacknowledged task.
+    The relay publishes only the task reference. Settled
+    ledgers and notices are pruned; unpublished event/failure notices,
+    requested/running tasks, queued-run dispositions, and unresolved exhaustion
+    observations remain. Direct retention stays available, and enqueue rejects
+    requests unless JetStream and both admission gates are active. Added
+    defaults, README/runbook guidance, and a PostgreSQL migration downgrade
+    guard test. After ACK-floor recovery, focused maintenance passed 16 tests;
+    the combined maintenance/outbox/settings/usage-retention/PostgreSQL-retention
+    suite passed 50 with the known health-endpoint hang case deselected. Ruff
+    lint, selected format checks, and `git diff --check` passed. Disposable
+    SQLite Alembic runs passed upgrade, empty downgrade, re-upgrade and schema
+    checks, and refused downgrade with task history. The PostgreSQL migration
+    downgrade test skipped because `TEST_POSTGRES_URL` is unavailable here;
+    that integration lane remains for CI. Production worker entry wiring
+    remains part of 3B2f; the 3B2e.4 pinned CI rerun remains open.
 
   **Source constraint:** the pinned NATS MaxDeliver advisory identifies the
   failed stream sequence and delivery count. Advisory-only handling is not

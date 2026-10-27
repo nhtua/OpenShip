@@ -182,6 +182,52 @@ NATS while holding an application transaction. The later runtime must read
 `active` and `execution_open` before fetching. Broker restart persistence of
 pause and the complete gate ordering protocol remain later qualification.
 
+## Explicit retention maintenance
+
+The worker maintenance CLI preserves direct retention execution for recovery:
+
+```bash
+cd apps/api
+uv run python -m src.openship.runs.worker_commands retention --dry-run
+uv run python -m src.openship.runs.worker_commands retention
+```
+
+After 3B2f switches and qualifies the production worker entry, queue-backed
+retention requests use the dedicated `OS_MAINTENANCE` stream and
+`maintenance-v1` durable:
+
+```bash
+uv run python -m src.openship.runs.worker_commands enqueue-retention \
+  --requested-by "operator@example.test" --dry-run
+uv run python -m src.openship.runs.worker_commands retention-status <task-id>
+```
+
+Do not enqueue these tasks before the JetStream worker entry is active. The
+command refuses an inactive transport; it does not silently run the task
+directly. The PostgreSQL task row and reference-only outbox command are
+committed atomically. `requested_by`, retention periods, and result data remain
+in PostgreSQL; the broker envelope carries only the task UUID. Tasks persist
+`requested`, `running`, `completed`, or `failed` state. The worker commits
+`running` before pruning and the bounded result or fixed safe failure code
+before ACK. Before sending ACK, it records the exact JetStream stream and
+consumer sequences in PostgreSQL. After JetStream confirms, it records
+`consumer_acked_at`. If that PostgreSQL write fails after the broker accepted
+the ACK, the worker compares the saved sequences with the durable consumer ACK
+floor and records confirmation once that floor has passed them. A task and its
+delivery digest remain until that confirmation has aged past the retention
+window. Redelivery of a terminal task is an ACK-only no-op; an interrupted
+`running` task can safely repeat its idempotent bounded pruning pass under the
+task row lock.
+
+The defaults are 30 days for event, checkpoint and messaging history and 1,000
+rows per table/category per task. Override `MESSAGING_RETENTION_DAYS` and
+`MESSAGING_RETENTION_BATCH_SIZE` only with reviewed values in the protected
+service environment. A result with `limit_reached: true` means additional
+eligible records remain; enqueue another task after reviewing the prior result.
+Conversation messages and run summaries remain untouched. Never remove
+unprocessed event/failure notices, requested/running tasks, active-run
+dispositions, or unresolved exhaustion observations.
+
 ## Developer machine startup
 
 Prerequisites remain Python/uv, supported Node/pnpm and PostgreSQL; add the
