@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).parents[3]
 
 
@@ -37,8 +39,9 @@ def test_artifact_volume_is_shared_and_search_keys_are_runtime_only():
 
 def test_compose_ports_are_loopback_only_and_have_no_sandbox_runtime():
     compose = (REPO_ROOT / "docker-compose.yml").read_text()
-    ports = re.findall(r'(?m)^\s+- "([^"\n]+:[^"\n]+)"\s*$', compose)
-    assert len(ports) == 3
+    services = yaml.safe_load(compose)["services"]
+    ports = [port for service in services.values() for port in service.get("ports", [])]
+    assert len(ports) == 4
     assert all(port.startswith("127.0.0.1:") for port in ports)
 
     lowered = compose.lower()

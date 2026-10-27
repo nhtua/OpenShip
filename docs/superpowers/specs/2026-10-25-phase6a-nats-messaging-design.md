@@ -469,14 +469,26 @@ prompts, secrets or raw envelopes. Apply is bounded, resumable and idempotent:
   closed admission, reconcile and smoke-test synthetic work, then reopen.
   Event and run ledgers prove every eligible generation has one disposition.
 
-Rollback keeps the transport gate closed, stops new consumers and relay, drains
-or reconciles new active work and audits ledger→run/job correspondence. Only
-existing run kinds/graph versions are eligible for the old scheduler; any
-maintenance work is completed or explicitly blocked. Waiting runs keep their
-waits. Retain additive schema; never downgrade away new records. Re-open the
-old release only after a successful dry-run report confirms no unaccounted or
-uncertain executable work. Retire/freeze the old broker epoch before any later
-forward cutover, so stale broker commands cannot become live again.
+Rollback closes admission before execution, drains or reconciles active work,
+then stops the API, worker and relay processes and drains the JetStream
+consumer. Preview blocks old live owners, unresolved command claims or
+exhaustion, active retention, pending command/maintenance publications, and
+identity conflicts. Apply requires explicit operator/process/consumer
+attestations and repeats those checks under the transport-state lock. It marks
+the transport inactive, keeps both gates closed, records a fresh rollback
+epoch, requeues retained event references for a later forward migration, and
+increments each safe queued run's dispatch generation. Old command records
+remain immutable, so they cannot match the new epoch/generation. Waiting runs
+keep their waits. Retain additive schema; never downgrade away new records.
+Only deploy the old release after a successful report confirms no unaccounted
+or uncertain executable work.
+
+A later forward cutover uses a new cutover ID and reuses the persisted rollback
+epoch. The rollback already rotated away from the previous broker epoch, and
+the queued generation increments create new command identities; reusing this
+epoch also keeps the unique event-reference rows aligned with transport state.
+The old cutover ID remains an audit record and cannot be reused for a forward
+apply.
 
 Coordinated restore keeps **all** execution/admission closed, not only managed
 Connector dispatch. Restore a matched PostgreSQL/artifact/broker/config backup

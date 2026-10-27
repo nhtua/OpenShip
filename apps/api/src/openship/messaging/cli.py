@@ -15,6 +15,16 @@ from ..database.session import SessionLocal
 from .capacity import capacity_report, scan_retained_run_sources
 from .capacity_recovery import recovery_gate_errors
 from .connection import connect_nats
+from .cutover import (
+    apply_cutover,
+    apply_rollback,
+    close_admission_gate,
+    close_execution_gate,
+    open_admission_gate,
+    open_execution_gate,
+    plan_rollback,
+    verify_cutover,
+)
 from .exhaustion_supervisor import ExhaustionSupervisor
 from .migration import plan_cutover
 from .models import MessageTransportState
@@ -222,6 +232,70 @@ async def _dispatch_reconcile(
             await client.close()
 
 
+async def _dispatch_gate(
+    command: str, *, action: str | None, cutover_id: UUID | None
+) -> int:
+    if action not in {"open", "close"} or cutover_id is None:
+        print(
+            json.dumps(
+                {"status": "refused", "errors": ["unsupported_gate_action"]},
+                sort_keys=True,
+            )
+        )
+        return 1
+    try:
+        if action == "close":
+            with SessionLocal() as db:
+                if command == "execution":
+                    report = close_execution_gate(db, cutover_id=cutover_id)
+                else:
+                    report = close_admission_gate(db, cutover_id=cutover_id)
+            print(json.dumps(report.as_dict(), sort_keys=True))
+            return 0
+
+        with SessionLocal() as db:
+            state = db.get(MessageTransportState, 1)
+            installation_id = state.installation_id if state else None
+        if installation_id is None:
+            raise RuntimeError("messaging state is missing")
+        topology = await ensure_topology(
+            apply=False,
+            installation_id=installation_id,
+        )
+        if not topology.ready:
+            print(
+                json.dumps(
+                    {
+                        "status": "refused",
+                        "errors": ["topology_not_ready"],
+                        "topology": topology.as_dict(),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 1
+        with SessionLocal() as db:
+            if command == "execution":
+                report = open_execution_gate(db, cutover_id=cutover_id)
+            else:
+                report = open_admission_gate(db, cutover_id=cutover_id)
+        result = report.as_dict()
+        result["topology"] = topology.as_dict()
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except Exception as error:  # noqa: BLE001 - keep DB and broker details private
+        print(
+            json.dumps(
+                {
+                    "status": "unavailable",
+                    "errors": [f"gate_{action}_unavailable:{type(error).__name__}"],
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+
+
 async def _dispatch(
     command: str,
     *,
@@ -231,7 +305,18 @@ async def _dispatch(
     operator: str | None = None,
     action: str | None = None,
     cutover_id: UUID | None = None,
+    batch_size: int = 500,
+    legacy_writers_stopped: bool = False,
+    processes_stopped: bool = False,
+    consumers_drained: bool = False,
 ) -> int:
+    if command in {"execution", "admission"}:
+        gate_action = action
+        return await _dispatch_gate(
+            command,
+            action=gate_action,
+            cutover_id=cutover_id,
+        )
     if command == "reconcile":
         return await _dispatch_reconcile(
             apply=apply,
@@ -240,26 +325,117 @@ async def _dispatch(
             operator=operator,
         )
     if command == "cutover":
-        if action != "preview" or cutover_id is None:
+        if cutover_id is None or action not in {"preview", "apply", "verify"}:
             result = {
                 "status": "refused",
-                "read_only": True,
                 "errors": ["unsupported_cutover_action"],
             }
             print(json.dumps(result, sort_keys=True))
             return 1
         try:
+            if action == "preview":
+                with SessionLocal() as db:
+                    report = plan_cutover(db, cutover_id=cutover_id)
+                print(json.dumps(report.as_dict(), sort_keys=True))
+                return 1 if report.status == "blocked" else 0
+            if action == "apply":
+                with SessionLocal() as db:
+                    state = db.get(MessageTransportState, 1)
+                    installation_id = state.installation_id if state else None
+                if installation_id is None:
+                    result = {
+                        "status": "refused",
+                        "errors": ["messaging_state_missing"],
+                    }
+                    print(json.dumps(result, sort_keys=True))
+                    return 1
+                topology = await ensure_topology(
+                    apply=False,
+                    installation_id=installation_id,
+                )
+                if not topology.ready:
+                    result = {
+                        "status": "refused",
+                        "errors": ["topology_not_ready"],
+                        "topology": topology.as_dict(),
+                    }
+                    print(json.dumps(result, sort_keys=True))
+                    return 1
+                with SessionLocal() as db:
+                    report = apply_cutover(
+                        db,
+                        cutover_id=cutover_id,
+                        operator=operator,
+                        batch_size=batch_size,
+                        legacy_writers_stopped=legacy_writers_stopped,
+                    )
+                result = report.as_dict()
+                result["topology"] = topology.as_dict()
+                print(json.dumps(result, sort_keys=True))
+                return 0 if report.status == "applied" else 1
+
             with SessionLocal() as db:
-                report = plan_cutover(db, cutover_id=cutover_id)
-            print(json.dumps(report.as_dict(), sort_keys=True))
-            return 1 if report.status == "blocked" else 0
+                verification = verify_cutover(db, cutover_id=cutover_id)
+                state = db.get(MessageTransportState, 1)
+                installation_id = state.installation_id if state else None
+            result = verification.as_dict()
+            if installation_id is None:
+                result["errors"].append("messaging_state_missing")
+                result.update(status="not_ready", ready=False)
+            else:
+                topology = await ensure_topology(
+                    apply=False,
+                    installation_id=installation_id,
+                )
+                result["topology"] = topology.as_dict()
+                if not topology.ready:
+                    result["errors"].append("topology_not_ready")
+                    result.update(status="not_ready", ready=False)
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["ready"] else 1
         except Exception as error:  # noqa: BLE001 - keep DB details private
             result = {
                 "status": "unavailable",
-                "read_only": True,
-                "errors": [f"cutover_preview_unavailable:{type(error).__name__}"],
+                "errors": [f"cutover_{action}_unavailable:{type(error).__name__}"],
             }
             print(json.dumps(result, sort_keys=True))
+            return 1
+    if command == "rollback":
+        if cutover_id is None or action not in {"preview", "apply"}:
+            print(
+                json.dumps(
+                    {"status": "refused", "errors": ["unsupported_rollback_action"]},
+                    sort_keys=True,
+                )
+            )
+            return 1
+        try:
+            with SessionLocal() as db:
+                if action == "preview":
+                    report = plan_rollback(db, cutover_id=cutover_id)
+                else:
+                    report = apply_rollback(
+                        db,
+                        cutover_id=cutover_id,
+                        operator=operator,
+                        batch_size=batch_size,
+                        processes_stopped=processes_stopped,
+                        consumers_drained=consumers_drained,
+                    )
+            print(json.dumps(report.as_dict(), sort_keys=True))
+            return 0 if report.ready else 1
+        except Exception as error:  # noqa: BLE001 - keep DB details private
+            print(
+                json.dumps(
+                    {
+                        "status": "unavailable",
+                        "errors": [
+                            f"rollback_{action}_unavailable:{type(error).__name__}"
+                        ],
+                    },
+                    sort_keys=True,
+                )
+            )
             return 1
     if command == "doctor":
         result: dict[str, object] = {
@@ -347,6 +523,65 @@ def _parser() -> argparse.ArgumentParser:
     cutover_actions = cutover.add_subparsers(dest="cutover_action", required=True)
     preview = cutover_actions.add_parser("preview", help="read-only cutover inventory")
     preview.add_argument("--cutover-id", type=UUID, required=True)
+    apply_cutover_command = cutover_actions.add_parser(
+        "apply", help="backfill event and eligible run messages in resumable batches"
+    )
+    apply_cutover_command.add_argument("--cutover-id", type=UUID, required=True)
+    apply_cutover_command.add_argument(
+        "--operator",
+        required=True,
+        help="operator identity recorded in cutover progress",
+    )
+    apply_cutover_command.add_argument("--batch-size", type=int, default=500)
+    apply_cutover_command.add_argument(
+        "--writers-stopped",
+        action="store_true",
+        required=True,
+        help="attest that legacy API and worker processes are stopped",
+    )
+    verify = cutover_actions.add_parser(
+        "verify", help="verify completed backfill, publication catch-up and topology"
+    )
+    verify.add_argument("--cutover-id", type=UUID, required=True)
+    rollback = commands.add_parser(
+        "rollback", help="inspect or apply the drained return to DB polling"
+    )
+    rollback_actions = rollback.add_subparsers(dest="rollback_action", required=True)
+    rollback_preview = rollback_actions.add_parser(
+        "preview", help="read-only rollback readiness inventory"
+    )
+    rollback_preview.add_argument("--cutover-id", type=UUID, required=True)
+    rollback_apply_command = rollback_actions.add_parser(
+        "apply", help="fence the NATS epoch and prepare the old runtime"
+    )
+    rollback_apply_command.add_argument("--cutover-id", type=UUID, required=True)
+    rollback_apply_command.add_argument(
+        "--operator", required=True, help="operator identity recorded in progress"
+    )
+    rollback_apply_command.add_argument("--batch-size", type=int, default=500)
+    rollback_apply_command.add_argument(
+        "--processes-stopped",
+        action="store_true",
+        required=True,
+        help="attest API, workers and relay are stopped",
+    )
+    rollback_apply_command.add_argument(
+        "--consumers-drained",
+        action="store_true",
+        required=True,
+        help="attest JetStream consumer deliveries are drained or reconciled",
+    )
+    for gate_name in ("execution", "admission"):
+        gate = commands.add_parser(gate_name, help=f"control the {gate_name} gate")
+        gate_actions = gate.add_subparsers(dest="gate_action", required=True)
+        close_gate = gate_actions.add_parser(
+            "close", help=f"close {gate_name} without requiring broker availability"
+        )
+        close_gate.add_argument("--cutover-id", type=UUID, required=True)
+        open_gate = gate_actions.add_parser(
+            "open", help=f"open {gate_name} after verification"
+        )
+        open_gate.add_argument("--cutover-id", type=UUID, required=True)
     return parser
 
 
@@ -359,8 +594,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             after_sequence=getattr(args, "after_sequence", 0),
             limit=getattr(args, "limit", 100),
             operator=getattr(args, "operator", None),
-            action=getattr(args, "cutover_action", None),
             cutover_id=getattr(args, "cutover_id", None),
+            batch_size=getattr(args, "batch_size", 500),
+            legacy_writers_stopped=bool(getattr(args, "writers_stopped", False)),
+            processes_stopped=bool(getattr(args, "processes_stopped", False)),
+            consumers_drained=bool(getattr(args, "consumers_drained", False)),
+            action=getattr(args, "gate_action", None)
+            or getattr(args, "cutover_action", None)
+            or getattr(args, "rollback_action", None),
         )
     )
 

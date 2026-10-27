@@ -1,0 +1,33 @@
+name: openship
+# Local development dependency credentials only; production has a separate
+# manifest and requires supplied PostgreSQL values.
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: openship
+      POSTGRES_USER: openship
+      POSTGRES_PASSWORD: openship
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openship"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: docker.io/library/nats:2.15.1@sha256:023a08c46caa5aff878fb86841187bebfdad9a6e3c552ba5c1a1e18938bbf88a
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - "127.0.0.1:${NATS_PORT:-4222}:4222"
+    volumes:
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/local}/server.compose.json:/etc/nats/nats.conf:ro"
+      - natsdata:/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  natsdata:

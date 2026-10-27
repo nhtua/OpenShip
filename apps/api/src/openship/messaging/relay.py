@@ -24,7 +24,12 @@ from ..events.service import Event
 from ..runs.models import Outbox, Run, RunJob
 from .connection import connect_nats
 from .failure import FailureHandoff
-from .models import MessageFailure, MessageTransportState, RetentionTask
+from .models import (
+    MessageFailure,
+    MessageTransportState,
+    MessagingCutover,
+    RetentionTask,
+)
 from .topology import TopologyCompatibilityError, ensure_topology
 
 logger = logging.getLogger("openship.messaging.relay")
@@ -239,6 +244,14 @@ def claim_outbox_batch(
             raise RuntimeError(
                 "messaging state is missing; apply database migrations first"
             )
+        if state.cutover_id is not None:
+            cutover = db.get(MessagingCutover, state.cutover_id)
+            if cutover is not None and cutover.status in {
+                "rolling_back",
+                "rolled_back",
+            }:
+                db.commit()
+                return records
         query = (
             db.query(Outbox)
             .outerjoin(Event, Outbox.event_id == Event.id)

@@ -29,6 +29,7 @@ from ..messaging.models import (
     MessageFailure,
     MessageFailureConflict,
     MessageTransportState,
+    MessagingCutover,
     RetentionTask,
 )
 from ..resources.models import (
@@ -70,6 +71,7 @@ __all__ = [
     "MessageFailure",
     "MessageFailureConflict",
     "MessageTransportState",
+    "MessagingCutover",
     "Outbox",
     "Project",
     "ProjectConnectorDefault",

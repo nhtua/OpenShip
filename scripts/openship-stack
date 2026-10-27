@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+ENVIRONMENT=""
+RELOAD=0
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/openship-stack --environment local|dev|prod [--reload] COMMAND [ARGS]
+
+Commands:
+  init-messaging [--tls-cert FILE --tls-key FILE --tls-ca FILE]
+  up-dependencies [--only nats|postgres]       local only
+  bootstrap --check|--apply
+  doctor
+  start | stop | status
+  cutover preview|apply|verify [options]
+  rollback preview|apply [options]
+  admission close|open [options]
+  execution close|open [options]
+  reconcile --preview|--apply [options]
+
+local starts native API, worker, relay, and Vite processes outside this wrapper.
+dev uses docker-compose.yml; --reload adds docker-compose.dev.yml.
+prod uses only docker-compose.prod.yml and a protected .env.prod.
+USAGE
+}
+
+while (($#)); do
+  case "$1" in
+    --environment|-e)
+      [[ $# -ge 2 ]] || { echo "--environment requires a value" >&2; exit 2; }
+      ENVIRONMENT="$2"
+      shift 2
+      ;;
+    --reload)
+      RELOAD=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[[ -n "$ENVIRONMENT" ]] || { usage >&2; exit 2; }
+case "$ENVIRONMENT" in
+  local|dev|prod) ;;
+  *) echo "environment must be local, dev, or prod" >&2; exit 2 ;;
+esac
+if [[ "$ENVIRONMENT" == prod && -n "${OPENSHIP_SECRETS_DIR:-}" ]]; then
+  echo "OPENSHIP_SECRETS_DIR cannot override the fixed production Compose credential path" >&2
+  exit 2
+fi
+if ((RELOAD)) && [[ "$ENVIRONMENT" != dev ]]; then
+  echo "--reload is supported only for the dev Compose stack" >&2
+  exit 2
+fi
+
+COMMAND="${1:-}"
+shift || true
+[[ -n "$COMMAND" ]] || { usage >&2; exit 2; }
+
+secret_dir() {
+  if [[ -n "${OPENSHIP_SECRETS_DIR:-}" ]]; then
+    case "$OPENSHIP_SECRETS_DIR" in
+      /*) printf '%s\n' "$OPENSHIP_SECRETS_DIR" ;;
+      *) printf '%s\n' "$ROOT/$OPENSHIP_SECRETS_DIR" ;;
+    esac
+  else
+    printf '%s\n' "$ROOT/.openship/messaging/$ENVIRONMENT"
+  fi
+}
+
+compose_secret_dir() {
+  local path
+  path="$(secret_dir)"
+  case "$path" in
+    "$ROOT"/*) printf '%s\n' "${path#"$ROOT"/}" ;;
+    *) printf '%s\n' "$path" ;;
+  esac
+}
+
+compose() {
+  local args=()
+  local compose_version major minor patch
+  command -v docker >/dev/null 2>&1 || { echo "Docker is required for Compose environments" >&2; return 2; }
+  compose_version="$(docker compose version --short 2>/dev/null)" || {
+    echo "Docker Compose v2 is required" >&2
+    return 2
+  }
+  compose_version="${compose_version#v}"
+  compose_version="${compose_version%%[-+]*}"
+  IFS=. read -r major minor patch <<< "$compose_version"
+  if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ || ! "${patch:-0}" =~ ^[0-9]+$ ]] || \
+     ((major < 2 || (major == 2 && minor < 24))); then
+    echo "Docker Compose 2.24.0 or newer is required" >&2
+    return 2
+  fi
+  case "$ENVIRONMENT" in
+    local)
+      args=(-p openship -f docker-compose.dependencies.yml)
+      ;;
+    dev)
+      [[ -f "$ROOT/.env" ]] || { echo "copy .env.example to .env first" >&2; return 2; }
+      args=(-p openship -f docker-compose.yml)
+      if ((RELOAD)); then args+=(-f docker-compose.dev.yml); fi
+      ;;
+    prod)
+      [[ -f "$ROOT/.env.prod" ]] || { echo "copy .env.prod.example to .env.prod first" >&2; return 2; }
+      if [[ "${OPENSHIP_SKIP_PROD_VALIDATION:-0}" != 1 ]]; then
+        "$ROOT/scripts/check_prod_env.py" --file "$ROOT/.env.prod" || return $?
+      fi
+      args=(-p "${COMPOSE_PROJECT_NAME:-openship}" --env-file .env.prod -f docker-compose.prod.yml)
+      ;;
+  esac
+  (cd "$ROOT" && OPENSHIP_MESSAGING_DIR="$(compose_secret_dir)" docker compose "${args[@]}" "$@")
+}
+
+local_cli() {
+  local dir
+  dir="$(secret_dir)"
+  [[ -f "$dir/operator.json" ]] || { echo "run init-messaging first" >&2; return 2; }
+  (
+    cd "$ROOT/apps/api"
+    export NATS_SERVERS="${NATS_SERVERS:-nats://127.0.0.1:${NATS_PORT:-4222}}"
+    export NATS_AUTH_FILE="$dir/operator.json"
+    if [[ -s "$dir/ca.crt" ]]; then
+      export NATS_TLS_CA_FILE="$dir/ca.crt"
+      if [[ "$NATS_SERVERS" == nats://* ]]; then
+        export NATS_SERVERS="tls://${NATS_SERVERS#nats://}"
+      fi
+    fi
+    uv run python -m src.openship.messaging.cli "$@"
+  )
+}
+
+compose_cli() {
+  compose run --rm --no-deps --entrypoint uv messaging-bootstrap \
+    run python -m src.openship.messaging.cli "$@"
+}
+
+ensure_messaging_files() {
+  local dir
+  dir="$(secret_dir)"
+  for file in api.json worker.json relay.json operator.json server.compose.json; do
+    [[ -f "$dir/$file" ]] || { echo "missing protected messaging file: $dir/$file" >&2; return 2; }
+  done
+  if [[ "$ENVIRONMENT" == prod ]]; then
+    for file in ca.crt server.crt server.key; do
+      [[ -s "$dir/$file" ]] || { echo "missing production TLS file: $dir/$file" >&2; return 2; }
+    done
+  fi
+}
+
+case "$COMMAND" in
+  init-messaging)
+    args=(--directory "$(secret_dir)")
+    tls_cert_supplied=0
+    tls_key_supplied=0
+    tls_ca_supplied=0
+    while (($#)); do
+      case "$1" in
+        --tls-cert)
+          [[ $# -ge 2 ]] || { echo "$1 requires a file" >&2; exit 2; }
+          [[ "$tls_cert_supplied" == 0 ]] || { echo "--tls-cert may be provided once" >&2; exit 2; }
+          tls_cert_supplied=1
+          args+=("$1" "$2")
+          shift 2
+          ;;
+        --tls-key)
+          [[ $# -ge 2 ]] || { echo "$1 requires a file" >&2; exit 2; }
+          [[ "$tls_key_supplied" == 0 ]] || { echo "--tls-key may be provided once" >&2; exit 2; }
+          tls_key_supplied=1
+          args+=("$1" "$2")
+          shift 2
+          ;;
+        --tls-ca)
+          [[ $# -ge 2 ]] || { echo "$1 requires a file" >&2; exit 2; }
+          [[ "$tls_ca_supplied" == 0 ]] || { echo "--tls-ca may be provided once" >&2; exit 2; }
+          tls_ca_supplied=1
+          args+=("$1" "$2")
+          shift 2
+          ;;
+        *) echo "unsupported init-messaging option: $1" >&2; exit 2 ;;
+      esac
+    done
+    if [[ "$ENVIRONMENT" != prod ]] &&
+      ((tls_cert_supplied || tls_key_supplied || tls_ca_supplied)); then
+      echo "TLS credential initialization is supported only for the production Compose stack" >&2
+      exit 2
+    fi
+    if [[ "$ENVIRONMENT" == prod ]]; then
+      "$ROOT/scripts/check_prod_env.py" --file "$ROOT/.env.prod"
+      if (( !tls_cert_supplied || !tls_key_supplied || !tls_ca_supplied )); then
+        echo "production init-messaging requires --tls-cert, --tls-key, and --tls-ca" >&2
+        exit 2
+      fi
+    fi
+    exec python3 "$ROOT/scripts/init_messaging.py" "${args[@]}"
+    ;;
+  up-dependencies)
+    [[ "$ENVIRONMENT" == local ]] || { echo "up-dependencies is local-only" >&2; exit 2; }
+    ensure_messaging_files
+    only=""
+    if (($#)); then
+      [[ $# == 2 && "$1" == --only ]] || { echo "usage: up-dependencies [--only nats|postgres]" >&2; exit 2; }
+      only="$2"
+      [[ "$only" == nats || "$only" == postgres ]] || { echo "--only must be nats or postgres" >&2; exit 2; }
+    fi
+    services=(postgres nats)
+    if [[ -n "$only" ]]; then services=("$only"); fi
+    compose up -d "${services[@]}"
+    marker="$(secret_dir)/managed-compose-dependencies"
+    existing=""
+    [[ ! -f "$marker" ]] || existing="$(cat "$marker")"
+    for service in "${services[@]}"; do
+      [[ " $existing " == *" $service "* ]] || existing+=" $service"
+    done
+    umask 077
+    printf '%s\n' "${existing# }" > "$marker"
+    ;;
+  bootstrap)
+    [[ $# == 1 && ( "$1" == --check || "$1" == --apply ) ]] || { echo "usage: bootstrap --check|--apply" >&2; exit 2; }
+    ensure_messaging_files
+    if [[ "$ENVIRONMENT" == local ]]; then
+      local_cli bootstrap "$1"
+    else
+      compose_cli bootstrap "$1"
+    fi
+    ;;
+  doctor)
+    ensure_messaging_files
+    if [[ "$ENVIRONMENT" == local ]]; then
+      command -v uv >/dev/null 2>&1 || { echo "uv is required for native local operations" >&2; exit 2; }
+      local_cli doctor
+    else
+      compose_cli doctor
+    fi
+    ;;
+  start)
+    ensure_messaging_files
+    case "$ENVIRONMENT" in
+      local)
+        printf 'Start native processes in separate terminals; use Compose NATS instead of the first command if selected.\n'
+        printf 'NATS: nats-server -c %q\n' "$(secret_dir)/server.local.json"
+        printf 'Web: cd %q && pnpm run dev --host 0.0.0.0\n' "$ROOT/apps/web"
+        printf 'Worker: cd %q && NATS_AUTH_FILE=%q uv run watchmedo auto-restart --patterns="*.py" --recursive -- python -m src.openship.runs.worker --log-level DEBUG\n' \
+          "$ROOT/apps/api" "$(secret_dir)/worker.json"
+        printf 'Relay: cd %q && NATS_AUTH_FILE=%q uv run watchmedo auto-restart --patterns="*.py" --recursive -- python -m src.openship.messaging.relay\n' \
+          "$ROOT/apps/api" "$(secret_dir)/relay.json"
+        printf 'API: cd %q && NATS_AUTH_FILE=%q uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug\n' \
+          "$ROOT/apps/api" "$(secret_dir)/api.json"
+        ;;
+      dev)
+        compose up -d --build
+        ;;
+      prod)
+        ensure_messaging_files
+        compose config --quiet
+        compose up -d
+        ;;
+    esac
+    ;;
+  stop)
+    if [[ "$ENVIRONMENT" == local ]]; then
+      marker="$(secret_dir)/managed-compose-dependencies"
+      [[ -f "$marker" ]] || { echo "no script-managed local dependencies are recorded"; exit 0; }
+      read -r -a services < "$marker"
+      for service in "${services[@]}"; do
+        [[ "$service" == postgres || "$service" == nats ]] || { echo "invalid managed service record" >&2; exit 2; }
+      done
+      ((${#services[@]})) && compose stop "${services[@]}"
+    else
+      OPENSHIP_SKIP_PROD_VALIDATION=1 compose stop
+    fi
+  ;;
+  status)
+    if [[ "$ENVIRONMENT" == local ]]; then
+      marker="$(secret_dir)/managed-compose-dependencies"
+      [[ -f "$marker" ]] || { echo "no script-managed local dependencies are recorded"; exit 0; }
+      read -r -a services < "$marker"
+      ((${#services[@]})) && compose ps "${services[@]}"
+    else
+      OPENSHIP_SKIP_PROD_VALIDATION=1 compose ps
+    fi
+    ;;
+  cutover|rollback|admission|execution|reconcile)
+    [[ $# -gt 0 ]] || { echo "$COMMAND requires an action" >&2; exit 2; }
+    if [[ "$ENVIRONMENT" == local ]]; then
+      local_cli "$COMMAND" "$@"
+    else
+      compose_cli "$COMMAND" "$@"
+    fi
+    ;;
+  backup|restore|rotate-auth)
+    echo "$COMMAND is not implemented by this Phase 6A wrapper; follow the reviewed runbook and do not assume this operation ran" >&2
+    exit 2
+    ;;
+  *)
+    echo "unknown command: $COMMAND" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

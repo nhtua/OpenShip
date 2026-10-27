@@ -14,7 +14,7 @@ The [ideas collection](docs/ideas.md) preserves proposals and historical context
 
 **Roadmap Phases 1–5 are complete**, as confirmed by the project owner on 2026-10-25: authenticated project chat, durable runs/events, explicit model profiles, trusted tools and persistent artifacts, managed Connectors, and AWS basic-role discovery and bounded reads. Qualification claims remain scoped by the [provider support matrix](docs/provider-support.md) and phase-specific evidence.
 
-**Phase 6A messaging is in progress on [PR #31](https://github.com/nhtua/OpenShip/pull/31).** The durable outbox/relay, JetStream run worker, API event fanout, and read-only cutover preview are implemented. Resumable cutover/rollback, native and Compose deployment packaging, and final recovery/capacity qualification remain open. Do not run a production cutover yet. Read the [source review](docs/reviews/2026-10-25-phase6a-messaging-review.md), [design](docs/superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](docs/superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](docs/operations/messaging.md). Sandbox execution and mutable logical files remain Phase 6B.
+**Phase 6A messaging is in progress on [PR #31](https://github.com/nhtua/OpenShip/pull/31).** The durable outbox/relay, JetStream run worker, API event fanout, read-only run/event cutover preview, resumable DB apply/verify, gate open/close controls, rollback preview/apply, and local/dev/prod deployment definitions are implemented. Native and Compose hot-reload workflows are documented. Full PostgreSQL/JetStream qualification, actual Compose builds and restart checks, and recovery exercises remain open. Do not run a production cutover yet. Read the [source review](docs/reviews/2026-10-25-phase6a-messaging-review.md), [design](docs/superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](docs/superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](docs/operations/messaging.md). Sandbox execution and mutable logical files remain Phase 6B.
 
 ## How It Works
 
@@ -35,13 +35,14 @@ From the repository root:
 cp .env.example .env
 # Set a strong JWT_SECRET and a unique stable ARTIFACT_STORAGE_ID.
 # Configure managed Connectors and tool availability after startup if needed.
+scripts/openship-stack --environment dev init-messaging
 docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance init
 docker compose up --build
 ```
 
-Compose starts PostgreSQL, migrations, the API server, runtime worker, and web client. The API and worker share the persistent `artifactdata` volume; ports bind to loopback by default. Search keys are passed only to the worker. Open [http://localhost:8080](http://localhost:8080). See [provider setup](docs/provider-support.md) before sending a chat message and the [artifact storage runbook](docs/operations/artifact-storage.md) for backup and restore. Docker with Compose is required for this route; the tools below are for running processes directly.
+Compose starts PostgreSQL, migrations, NATS JetStream, a one-shot messaging bootstrap, the API server, runtime worker, outbox relay, and web client. The API and worker share the persistent `artifactdata` volume; ports bind to loopback by default. Search keys are passed only to the worker. Open [http://localhost:8080](http://localhost:8080). See [provider setup](docs/provider-support.md) before sending a chat message and the [artifact storage runbook](docs/operations/artifact-storage.md) for backup and restore. Use `scripts/openship-stack --environment dev --reload start` for the source-mounted hot-reload Compose stack. Docker with Compose is required for this route; the tools below are for running processes directly.
 
-This is the current development stack. Phase 6A proposes a separate production Compose manifest and coordinated migration/backup procedures in the [messaging runbook](docs/operations/messaging.md); the current file is not a production deployment qualification.
+This is the current development stack. The separate production manifest and coordinated migration/recovery procedures are in the [messaging runbook](docs/operations/messaging.md); neither stack is a production cutover qualification.
 
 ## Local Development
 
@@ -50,6 +51,7 @@ This is the current development stack. Phase 6A proposes a separate production C
 - Python 3.11+ with [uv](https://docs.astral.sh/uv/) package manager
 - Node.js 22.12+ with [pnpm](https://pnpm.io/installation)
 - PostgreSQL 15+ running locally
+- The pinned NATS server from `deploy/versions.env`, or Docker Compose for a local NATS dependency
 
 ### Database Setup
 
@@ -67,16 +69,30 @@ uv sync --extra dev
 cp .env.example .env  # Configure DATABASE_URL, model profiles, and credential bindings
 uv run alembic upgrade head
 uv run python -m src.openship.artifacts.maintenance init
-uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
+# From the repository root, generate protected NATS role credentials and start
+# either a local NATS server or the Compose-managed NATS dependency.
+cd ../..
+scripts/openship-stack --environment local init-messaging
+scripts/openship-stack --environment local up-dependencies --only nats
+scripts/openship-stack --environment local bootstrap --apply
+cd apps/api
+NATS_AUTH_FILE=../../.openship/messaging/local/api.json uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 API docs available at [http://localhost:8000/docs](http://localhost:8000/docs).
 
-Run the chat worker in a second terminal from `apps/api`:
+Run the chat worker and outbox relay in separate terminals from `apps/api`,
+setting the role credential file generated by `init-messaging`:
 
 ```bash
-uv run python -m src.openship.runs.worker
+NATS_AUTH_FILE=../../.openship/messaging/local/worker.json uv run python -m src.openship.runs.worker
+NATS_AUTH_FILE=../../.openship/messaging/local/relay.json uv run python -m src.openship.messaging.relay
 ```
+
+The API terminal uses `NATS_AUTH_FILE=../../.openship/messaging/local/api.json`.
+Keep `NATS_SERVERS=nats://127.0.0.1:4222` in the API environment. The complete
+native reload commands, Compose reload stack, and production configuration
+requirements are documented in the [messaging runbook](docs/operations/messaging.md).
 
 Chat uses explicitly declared model profiles and durable run commands. Configure
 `MODEL_PROFILES_JSON` and `MODEL_DEFAULT_PROFILE_ID` in `.env`; credentials are

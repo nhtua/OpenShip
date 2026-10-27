@@ -65,8 +65,9 @@ and [runbook proposal](../../operations/messaging.md).
 
 ## File and responsibility map
 
-API paths below are relative to `apps/api/`; new names are proposed interfaces.
-Choose Alembic revision IDs from the actual head when implementing.
+API paths below are relative to `apps/api/`; the table maps implemented
+responsibilities to their current modules. Migration revisions are additive
+and ordered from the repository's Alembic head.
 
 | Files | Responsibility |
 | --- | --- |
@@ -79,7 +80,7 @@ Choose Alembic revision IDs from the actual head when implementing.
 | `runs/service.py`, `connectors/blockers.py`, `providers/attempts.py`, `execution/{publication,recovery}.py`, artifact/workspace event producers | Preserve domain transactions while adding complete command/event notifications. |
 | `messaging/{cli,migration}.py`, `runs/worker_commands.py`, `events/retention.py` | Bootstrap/doctor, read-only preview and bounded cutover/rollback/recovery commands, explicit maintenance task. |
 | `config.py`, both `.env.example` files, `pyproject.toml`, `uv.lock` | Validated shared configuration, auth paths, chosen client pin and retirement diagnostics. |
-| Root `docker-compose.yml`, new `docker-compose.dev.yml`, `docker-compose.prod.yml`, `deploy/nats/`, `scripts/openship-stack` | Compatible dev entry point, hot reload, standalone production services, broker configuration and environment-aware operations. |
+| Root `docker-compose.yml`, `docker-compose.dependencies.yml`, `docker-compose.dev.yml`, `docker-compose.prod.yml`, `scripts/openship-stack`, `scripts/init_messaging.py` | Compatible dev entry point, local dependencies, hot reload, standalone production services, protected generated broker configuration and environment-aware operations. |
 | API/web Dockerfiles, `.dockerignore` files, `.gitignore`, `deploy/versions.env` | Health probes, supported Node build, reproducible images and exclusion of local secret/env/build material; ignore `.env.prod` and generated backup/credential files explicitly. |
 | Tests and `.github/workflows/{python-ci,frontend-ci}.yml` | Unit, real DB/broker, browser, image/deployment and failure-injection gates. |
 
@@ -428,62 +429,105 @@ is read-only; `apply_cutover(db, *, cutover_id: UUID, batch_size: int) -> Migrat
 is resumable. `plan_rollback(db, *, cutover_id: UUID) -> MigrationReport`
 requires all executable work to have a known safe old-runtime disposition.
 
-- [ ] Add failing fixture tests for queued/terminal/live/expired/dispatched/
+- [x] Add read-only preview fixtures for queued/terminal/live/expired/dispatched/
+  waiting runs, duplicate jobs, missing event notifications, malformed and
+  duplicate notices, pruned references, bounded samples and multi-batch scans.
+- [ ] Add apply/verify fixtures for interruption and restart after each batch,
+  stable cutover IDs, identities, sequences and configuration. Cover
+  queued/terminal/live/expired/dispatched/
   waiting runs, duplicate jobs, mixed legacy outbox rows, missing retained
-  event notifications and pruned event references. Inject interruption after
-  each batch, rerun and assert stable counts, IDs, sequences and config.
-- [ ] Implement `cutover preview|apply|verify`, gate controls and
-  `rollback preview|apply` with exact reports defined in the runbook. Refuse
-  old live owners, wrong installation/epoch or incomplete dispositions.
+  event notifications and pruned event references.
+- [x] Implement read-only `cutover preview` for Phase 5/6A run dispositions,
+  command identity, notification coverage, event identity conflicts and
+  orphan references.
+- [x] Implement resumable event/run `cutover apply` and read-only DB
+  `cutover verify`. Apply requires explicit legacy-writer shutdown attestation,
+  ready broker topology through the CLI, no preview blockers and no active
+  retention tasks. It closes admission/execution, rechecks and locks each
+  bounded batch, and commits progress cursors with deterministic event/command
+  identities.
+- [x] Implement explicit execution and admission gate opening. Execution is
+  reopened only after DB re-verification under the state lock; admission waits
+  for execution-open confirmation. The CLI also checks JetStream topology.
+- [x] Implement `rollback preview|apply` with bounded content-free reports.
+  Refuse old live owners, wrong installation/epoch, incomplete dispositions,
+  active retention, unresolved exhaustion/claims and pending command or
+  maintenance publications. Apply requires operator, stopped-process and
+  drained-consumer attestations; it rotates and persists the rollback epoch,
+  requeues retained event notices, bumps safe queued generations, and resumes
+  from transactional cursors. The rollback epoch is reused by a later forward
+  cutover with a new cutover ID.
 - [ ] Add retention rules for unpublished event references and delivery
   ledgers. Verify no cleanup loses an unpublished command or changes current
   event/message retention policy.
-- [ ] Prove rollback preserves additive schema and stops/fences new delivery;
+- [x] Prove rollback preserves additive schema and stops/fences new delivery;
   reject maintenance/uncertain work until explicitly resolved. Verify a later
-  forward cutover and broker reconstruction mint new dispatch generations and
-  identities, while rerunning the same cutover ID does not. Closed execution
-  gates stop normal pulls; smoke tests use a separate disposable synthetic
-  namespace. Review and commit.
+  forward cutover mints new dispatch generations and command identities, while
+  a retry resumes the same rollback epoch/cursors. Closed execution gates stop
+  normal pulls; smoke tests use a separate disposable synthetic namespace.
+  Rollback has focused SQLite coverage; real PostgreSQL locking and broker
+  pending-delivery qualification remain part of Task 7.
 
-  Initial read-only preview slice: `plan_cutover()` and `cutover preview`
-  inventory Phase 5/6A run statuses, job/event/outbox totals, and a bounded list
-  of duplicate-job conflicts. `status=preview` means only that the inventory
-  ran; it is not a cutover-readiness decision. Four focused SQLite tests cover old-schema
-  preview, duplicate refusal, bounded conflict output, and proof that preview
-  does not modify rows or disclose outbox payloads. The resumable migration,
-  disposition classification, and rollback operations remain open.
+  Read-only preview slices: `plan_cutover()` inventories Phase 5/6A run states,
+  queue/event/outbox totals, duplicate jobs, and bounded blocker IDs. Its
+  exclusive dispositions apply ownership and fence checks before waiting or
+  terminal skips; queued eligibility requires no provider/tool dispatch
+  history and a `(kind, graph_version)` supported by the runtime registry.
+  Unsupported persisted graph versions block replay. Phase 6A commands are
+  reused only when the current installation,
+  epoch, generation, payload and identity match, with only a digest-matching
+  closed-gate hold accepted. `created`/`running` and unknown states block.
+  Event preview separately reports Phase 5 notification backfill needs and
+  verifies exact Phase 6A reference identities, bounded issue IDs, malformed
+  or duplicate notices, and orphan/pruned references. Event identity conflicts
+  and orphans block preview; missing notifications remain backfill work.
+  Focused SQLite tests cover run dispositions, event scan batches, identity,
+  bounded output and no-write/content-free reporting. `status=preview` still
+  does not certify apply readiness. Resumable apply records event/run cursors
+  and stable counters; interruption coverage verifies same-ID resume without
+  duplicate notices or commands. Verification waits for all required DB
+  publications to receive PubAck and checks JetStream topology in the CLI.
+  Resumable apply/verification, explicit gate open/close commands and rollback
+  preview/apply are implemented. Retention semantics and PostgreSQL/broker
+  rollback qualification remain open.
 
 ## Task 6 — Package all three supported deployment modes
 
 **Depends on:** Tasks 0–5. **Files:** deployment/Compose/image/config files in
 the map, READMEs/runbooks and `tests/test_messaging_packaging.py`.
 
-- [ ] First add failing packaging checks: standalone prod does not inherit
+- [x] First add failing packaging checks: standalone prod does not inherit
   dev ports, reload, source mounts, sample DB passwords or build steps;
   dev/local preserve service/volume/storage identities and entry points.
-- [ ] Implement the runbook's `scripts/openship-stack` interface, pinned
-  broker configurations, role auth initialization/rotation, disposable
-  bootstrap job and real JetStream readiness probes. Initialization refuses
-  overwrite; normal start never generates new installation IDs/keys.
-- [ ] Keep root `docker-compose.yml` as dev default; add hot-reload override
-  and standalone production file with locked API/web images, resource/log
-  limits, restart/grace behavior, private broker/DB, TLS and protected auth
-  mounts. Include relay and independent worker readiness.
-- [ ] Repair API health probe without assuming curl; align Node build with
+- [x] Implement local/dev/prod lifecycle, init, bootstrap, doctor and
+  cutover/gate/reconcile/rollback operations in `scripts/openship-stack`;
+  generate protected role credentials and private NATS configs without
+  overwriting existing identities; gate startup on authenticated JetStream
+  account readiness. Backup/restore orchestration and credential rotation are
+  explicitly deferred and the wrapper rejects those command names.
+- [x] Keep root `docker-compose.yml` as dev default; add a separate local
+  dependency file, source-reload override and standalone production file with
+  immutable image requirements, resource/log limits, restart/grace behavior,
+  private broker/DB, TLS and role-specific auth mounts. API readiness checks
+  the event consumer and worker RPC.
+- [x] Repair API health probe without assuming curl; align Node build with
   documented support, freeze dependency installation and exclude secrets,
   `.env`, local artifacts and virtualenvs from image build contexts. Ignore
   `.env.prod` and generated backup/credential files in version control.
-- [ ] Add native localhost instructions, examples for both env files and
+- [x] Add native localhost instructions, examples for both env files and
   production config, startup/dependency order, broker outage/full-disk
-  behavior, non-destructive stop, upgrades, backup, restore and rollback.
-- [ ] Preserve the user's existing native hot-reload workflow: Vite with
+  behavior, non-destructive stop, upgrades and rollback. Backup/restore wrapper
+  automation remains deferred; use the existing storage/database procedures.
+- [x] Preserve the user's existing native hot-reload workflow: Vite with
   `pnpm run dev --host 0.0.0.0`, the API with Uvicorn `--reload`, and the
-  worker (plus relay) with Watchdog `watchmedo auto-restart`; verify the dev
-  Compose override watches mounted source and restarts the matching services.
+  worker and relay with Watchdog `watchmedo auto-restart`. Static command and
+  mount checks pass; actual Compose file-watch/restart behavior remains to be
+  exercised on a Docker host.
 - [ ] Verify `docker compose config --quiet` for dev/default, dev/override
   and standalone prod, then build and cold-start each declared arrangement.
   Test image probes, actual hot reload, worker/relay restart and existing
-  artifact/Connector mounts. Scan examples/images for credentials. Commit.
+  artifact/Connector mounts. Docker/Compose is unavailable in the current
+  environment, so these checks remain a release gate.
 
 ## Task 7 — Qualify compatibility, failures, capacity and operator recovery
 

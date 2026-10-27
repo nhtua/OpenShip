@@ -1,4 +1,7 @@
 version: '3.8'
+name: openship
+# This root stack is loopback-only development packaging. Do not use its seeded
+# database credentials in the standalone production stack.
 services:
   migrate:
     build: ./apps/api
@@ -25,12 +28,31 @@ services:
       timeout: 5s
       retries: 5
 
+  nats:
+    image: docker.io/library/nats:2.15.1@sha256:023a08c46caa5aff878fb86841187bebfdad9a6e3c552ba5c1a1e18938bbf88a
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - "127.0.0.1:${NATS_PORT:-4222}:4222"
+    volumes:
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/server.compose.json:/etc/nats/nats.conf:ro"
+      - natsdata:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}"
+
   api:
     build: ./apps/api
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     environment:
       DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      NATS_SERVERS: nats://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/api.json
+      NATS_TLS_CA_FILE:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the root .env file}
       JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
       EVENT_RETENTION_DAYS: 30
@@ -61,16 +83,25 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/api.json:/run/nats-auth/api.json:ro"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      messaging-bootstrap:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
+    stop_grace_period: 30s
     logging:
       driver: json-file
       options:
@@ -83,6 +114,9 @@ services:
     command: ["uv", "run", "python", "-m", "src.openship.runs.worker", "--log-level", "INFO"]
     environment:
       DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      NATS_SERVERS: nats://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/worker.json
+      NATS_TLS_CA_FILE:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the root .env file}
       JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
       EVENT_RETENTION_DAYS: 30
@@ -114,17 +148,70 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/worker.json:/run/nats-auth/worker.json:ro"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      messaging-bootstrap:
+        condition: service_completed_successfully
+    stop_grace_period: 3900s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
         tag: "{{.Name}}"
+
+  relay:
+    build: ./apps/api
+    command: ["uv", "run", "python", "-m", "src.openship.messaging.relay"]
+    environment:
+      DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      NATS_SERVERS: nats://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/relay.json
+      NATS_TLS_CA_FILE:
+    volumes:
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/relay.json:/run/nats-auth/relay.json:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      messaging-bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}"
+
+  messaging-bootstrap:
+    build: ./apps/api
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        uv run python -m src.openship.messaging.wait_for_broker
+        && exec uv run python -m src.openship.messaging.cli bootstrap --apply
+    environment:
+      DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      NATS_SERVERS: nats://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/operator.json
+      NATS_TLS_CA_FILE:
+    volumes:
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/operator.json:/run/nats-auth/operator.json:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_started
+    restart: "no"
 
   web:
     build: ./apps/web
@@ -137,3 +224,4 @@ services:
 volumes:
   pgdata:
   artifactdata:
+  natsdata:

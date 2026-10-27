@@ -45,6 +45,86 @@ class MessageTransportState(Base):
     __table_args__ = (CheckConstraint("id = 1", name="ck_messaging_state_singleton"),)
 
 
+class MessagingCutover(Base):
+    """Durable cursor and counters for one resumable Phase 6A cutover."""
+
+    __tablename__ = "messaging_cutovers"
+
+    cutover_id = Column(UUID(as_uuid=True), primary_key=True)
+    installation_id = Column(UUID(as_uuid=True), nullable=False)
+    transport_epoch = Column(UUID(as_uuid=True), nullable=False)
+    requested_by = Column(String(255), nullable=False)
+    last_operator = Column(String(255), nullable=False)
+    status = Column(String(16), nullable=False, server_default="applying")
+    phase = Column(String(16), nullable=False, server_default="events")
+    rollback_epoch = Column(UUID(as_uuid=True), nullable=True)
+    last_event_id = Column(UUID(as_uuid=True), nullable=True)
+    last_run_id = Column(UUID(as_uuid=True), nullable=True)
+    rollback_last_event_id = Column(UUID(as_uuid=True), nullable=True)
+    rollback_last_run_id = Column(UUID(as_uuid=True), nullable=True)
+    events_scanned = Column(Integer, nullable=False, server_default="0")
+    events_backfilled = Column(Integer, nullable=False, server_default="0")
+    runs_scanned = Column(Integer, nullable=False, server_default="0")
+    commands_created = Column(Integer, nullable=False, server_default="0")
+    commands_reused = Column(Integer, nullable=False, server_default="0")
+    rollback_events_scanned = Column(Integer, nullable=False, server_default="0")
+    rollback_events_requeued = Column(Integer, nullable=False, server_default="0")
+    rollback_runs_scanned = Column(Integer, nullable=False, server_default="0")
+    rollback_generations_bumped = Column(Integer, nullable=False, server_default="0")
+    execution_opened_at = Column(DateTime(timezone=True), nullable=True)
+    admission_opened_at = Column(DateTime(timezone=True), nullable=True)
+    execution_closed_at = Column(DateTime(timezone=True), nullable=True)
+    admission_closed_at = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    rolled_back_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('applying', 'complete', 'rolling_back', 'rolled_back')",
+            name="ck_messaging_cutover_status",
+        ),
+        CheckConstraint(
+            "phase IN ('events', 'runs', 'complete', 'rollback_events', "
+            "'rollback_runs', 'rolled_back')",
+            name="ck_messaging_cutover_phase",
+        ),
+        CheckConstraint(
+            "length(trim(requested_by)) BETWEEN 1 AND 255 AND "
+            "length(trim(last_operator)) BETWEEN 1 AND 255",
+            name="ck_messaging_cutover_operator",
+        ),
+        CheckConstraint(
+            "events_scanned >= 0 AND events_backfilled >= 0 AND runs_scanned >= 0 "
+            "AND commands_created >= 0 AND commands_reused >= 0 "
+            "AND rollback_events_scanned >= 0 AND rollback_events_requeued >= 0 "
+            "AND rollback_runs_scanned >= 0 "
+            "AND rollback_generations_bumped >= 0",
+            name="ck_messaging_cutover_counts",
+        ),
+        CheckConstraint(
+            "(status = 'complete' AND phase = 'complete' AND completed_at IS NOT NULL "
+            "AND rolled_back_at IS NULL) OR "
+            "(status = 'applying' AND completed_at IS NULL AND rolled_back_at IS NULL) OR "
+            "(status = 'rolling_back' AND phase IN ('rollback_events', 'rollback_runs') "
+            "AND completed_at IS NOT NULL AND rollback_epoch IS NOT NULL "
+            "AND rolled_back_at IS NULL) OR "
+            "(status = 'rolled_back' AND phase = 'rolled_back' "
+            "AND completed_at IS NOT NULL AND rollback_epoch IS NOT NULL "
+            "AND rolled_back_at IS NOT NULL)",
+            name="ck_messaging_cutover_completion",
+        ),
+    )
+
+
 class RetentionTask(Base):
     """Durable operator request and outcome for bounded retention work."""
 

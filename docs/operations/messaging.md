@@ -1,22 +1,28 @@
 ---
 type: runbook
-summary: Proposed Phase 6A scripts and procedures for local, development Compose and production Compose messaging deployment, cutover and recovery.
-status: proposed
+summary: Phase 6A deployment, cutover, and recovery procedures for native local development and development or production Docker Compose stacks.
+status: implementation-in-progress
 date: 2026-10-25
 ---
 
 # Messaging deployment and migration
 
-**Proposal, partially implemented.** This runbook records the Phase 6A target
-and qualification requirements. The Python `cutover preview` command is now a
-read-only Phase 5/6A queue inventory; it reports run states, queue row totals
-and duplicate run-job conflicts without printing outbox payloads. The
-preview exit status indicates only that inventory completed without a known
-duplicate-job conflict; it does not certify cutover readiness. The
-resumable apply/verify flow, distributed admission/execution gates,
-`scripts/openship-stack`, and new Compose files remain unfinished. Treat all
-other wrapper commands below as the required future operator interface and do
-not use them against an installation yet.
+**Phase 6A implementation in progress; deployment files are available for
+review and qualification.** The Python `cutover preview` command is a
+read-only Phase 5/6A queue inventory; it reports run-state dispositions,
+event-notification coverage, queue row totals and bounded issue IDs without
+printing outbox payloads. `status=preview` means the classifier found no known
+run, duplicate-job or event-reference blockers. It does not certify cutover
+readiness because retention policy, live process state, distributed gate
+coordination and apply-time rechecks are not certified by preview. The
+resumable DB apply/verify, explicit execution/admission gate actions, and
+resumable rollback preview/apply are implemented in the Python CLI. Closing
+gates and applying rollback do not require broker access. The deployment
+wrapper, local dependency manifest, development hot-reload override, and
+standalone production manifest are implemented. Do not use them for a
+production queue cutover until Task 7 qualification and the rehearsed recovery
+gates are complete. Docker is not installed in the implementation environment,
+so Compose config/build/cold-start and actual file-watch checks remain pending.
 
 Use the [design](../superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md)
 and [implementation plan](../superpowers/plans/2026-10-25-phase6a-nats-messaging.md)
@@ -28,34 +34,39 @@ ECS and broker clustering are outside this delivery.
 ## Distribution and script contract
 
 `scripts/openship-stack` runs from any directory, resolves the repository root,
-validates configuration without printing secrets, and uses an explicit
-environment. It never shells `source` on a dotenv file. Commands:
+uses an explicit environment, and never shells `source` on a dotenv file.
+Messaging credentials and generated NATS configs live under the ignored,
+owner-only `.openship/messaging/ENV` directory, separately from the existing
+Connector `./secrets` mount. `init-messaging` refuses any existing target. For
+production it requires a TLS certificate, key, and trust CA. Commands:
 
 | Interface | Required behavior |
 | --- | --- |
-| `--environment ENV doctor` | ENV is `local`, `dev` or `prod`. Check tools, versions, config, identities/mounts, DB/broker resources, auth/ACL and readiness; nonzero exit and safe actionable codes on failure. |
-| `... init-messaging` | Explicit first-time creation of private broker auth/config files, mode 0600 under mode 0700 directory. Refuse overwrite; never generate new existing Connector/storage/installation identities. |
-| `... up-dependencies` | For local mode, start selected Compose PostgreSQL/NATS dependencies; allow `--only nats` when PostgreSQL is already managed locally. Never replace an existing local DB. |
+| `--environment ENV doctor` | ENV is `local`, `dev` or `prod`. The wrapper requires `uv` for local operations or Compose 2.24+ for stacks; the CLI checks PostgreSQL, JetStream resources, auth and advisory capacity without printing secrets. |
+| `... init-messaging [--tls-cert FILE --tls-key FILE --tls-ca FILE]` | First-time creation of role credentials and NATS server configs. TLS options are required for production and rejected for local/dev. JSON/config/TLS files are mode 0600 under a mode 0700 directory. Refuse overwrite; never generate Connector, artifact or database installation identities. |
+| `... up-dependencies [--only nats|postgres]` | Local mode only. Starts selected Compose dependencies under the stable `openship` project, records which services this wrapper started, and never deletes volumes. `--only nats` works with an existing local PostgreSQL. |
 | `... bootstrap --check` / `--apply` | Run a one-shot privileged messaging bootstrap, then remove that process. Check is read-only; apply creates missing compatible resources, refuses destructive drift. |
 | `... start` / `stop` / `status` | Compose service lifecycle for dev/prod. Local start prints the separate native commands below; local stop/status operate only explicitly recorded managed dependencies, never kill arbitrary native processes. Stop preserves every volume. |
 | `... cutover ACTION --cutover-id UUID` | ACTION is `preview`, `apply` or `verify`: read-only report, resumable bounded apply, then invariant checks. Apply requires admission closed and no old live owners. |
-| `... admission close` / `open` | Gate new user submissions; active work may drain. Opening refuses unresolved migration/recovery. Old binaries do not honor this gate and must be stopped separately. |
-| `... execution close` / `open` | Gate normal consumer pulls/new dispatch while already-owned work may drain with leases renewed. Opening refuses unresolved recovery. |
-| `... rollback ACTION --cutover-id UUID` | ACTION is `preview` or `apply`. Validate and freeze the new epoch, account for in-flight work, retain additive DB schema; never deploy an old release automatically. |
-| `... backup --output PATH` | Require stopped writers/consumers and a consistent cutover/recovery point; capture DB, artifacts, JetStream and non-secret version/identity manifest. Separate protected secret backup remains required. |
-| `... restore --input PATH --verify-only` / `--apply` | Verify-only inspects without mutation. Apply requires stopped writers/consumers and restores to an explicitly empty recovery target; refuse overwrite of a running/nonempty target. Keep execution closed after restore. |
+| `... admission close` / `open` | Gate new user submissions; active work may drain. Closing needs PostgreSQL only. Opening refuses unresolved migration/recovery. Old binaries do not honor this gate and must be stopped separately. |
+| `... execution close` / `open` | Gate new execution claims while already-owned work may drain with leases renewed. Close admission first; closing needs PostgreSQL only. Opening refuses unresolved recovery and requires healthy JetStream topology. |
+| `... rollback ACTION --cutover-id UUID` | ACTION is `preview` or `apply`. Apply requires operator identity, stopped API/worker/relay processes, drained or reconciled consumers, closed gates and caught-up command/maintenance publications. It freezes a new epoch, bumps queued generations in bounded resumable batches and retains additive DB schema; it never deploys an old release automatically. |
 | `... reconcile --preview` / `--apply` | Preview retained `OS_RUNS` sources by exact installation subject; apply only with closed DB gates, paused/drained execution durables, and an operator identity. |
-| `... rotate-auth --role ROLE` | Stage a new role credential, reload compatible broker config, roll that role's processes, verify reconnect, then explicitly retire the old credential; do not touch Connector keys. |
 
 The wrapper delegates DB/broker operations to
 `uv run python -m src.openship.messaging.cli` using the same subcommands
 (`bootstrap`, `doctor`, `cutover`, `admission`, `execution`, `rollback`, `reconcile`).
-`init-messaging`, dependency/lifecycle management, backup/restore and auth
-rotation are wrapper orchestration. CLI reports contain counts, IDs, version
+`init-messaging` and dependency/lifecycle management are wrapper orchestration.
+CLI reports contain counts, IDs, version
 and safe dispositions only. Preview/check/verify-only/dry-run never write to
 DB, broker or filesystem. Apply records progress so an interrupted rerun with
 the same cutover ID resumes without duplicate commands. Nonzero exit stops the
 script; it does not continue to opening admission after a failed step.
+
+The wrapper does not implement backup/restore or credential rotation yet. Use
+the repository's artifact/database backup procedures and the NATS operator
+recovery process until a dedicated, reviewed implementation is added. Do not
+interpret a command error as a partial or successful operation.
 
 ## Environment matrix
 
@@ -65,24 +76,32 @@ script; it does not continue to opening admission after a failed step.
 | Environment | Existing `apps/api/.env`; optional root `.env` only for Compose dependencies. | Existing root `.env`. | Explicit protected `.env.prod`; require supplied production values. |
 | Broker URL | Loopback, default port 4222. | Service DNS `nats:4222`. | Private service DNS with TLS validation; no published broker port. |
 | Broker state | Explicit stable host directory, or existing Compose project `natsdata`. | New `natsdata` named volume in the existing Compose project. | Explicit stable production `natsdata`; existing production DB/artifact volumes are mapped deliberately. |
-| Access | API/Vite/DB/broker bind loopback; dev credentials still required. | Existing loopback web/API/DB ports; broker/monitor loopback only if explicitly enabled. | Web ingress only, with documented HTTPS reverse proxy; DB, API, broker and monitoring private by default. |
+| Access | API/Vite/DB/broker bind loopback; dev credentials still required. | Existing loopback web/API/DB and NATS ports; monitoring is not published. | Web ingress only, bound to host loopback for a host reverse proxy; DB, API, broker and monitoring private by default. |
 | Artifacts/Connectors | Existing local paths and keyrings shared by API/worker. | Existing `artifactdata` and read-only `./secrets` mounts. | Same identities, protected volume and role-specific secret mounts; preserve all existing keys. |
-| Build/reload | Existing `uv`/`pnpm` commands. | Build source; reload override mounts source and uses dev dependencies, not host virtualenv/node_modules. | Immutable qualified API/web/broker/tool image digests; no source mounts, build-on-start or reload. |
-| Lifecycle | Supervise each native process; relay is one extra terminal/process. | Dependency health + migrate + messaging bootstrap before API/worker/relay ready. | Explicit one-shot migration/bootstrap, restart policies, bounded logs/resources and graceful stops. |
+| Build/reload | Existing `uv`/`pnpm` commands. | Build source; reload override mounts source and uses dev dependencies, not host virtualenv/node_modules. | Immutable API/web/PostgreSQL/NATS image digests; no source mounts, build-on-start or reload. |
+| Lifecycle | Start NATS/DB, apply migrations/bootstrap, then supervise API, worker, relay and web as separate processes. | PostgreSQL health + migration + authenticated JetStream bootstrap before API/worker/relay; API readiness checks worker health. | PostgreSQL health + one-shot migration and bootstrap, restart policies, bounded logs/resources and graceful stops. |
 
-Do not change a Compose project name during an upgrade without mapping the
-existing volumes explicitly. A newly named `pgdata` or `artifactdata` is an
-empty installation, not a migration. Preserve `ARTIFACT_STORAGE_ID`, marker,
-`CONNECTOR_INSTALLATION_ID`, keyrings and defaults. `NATS_NAMESPACE` must match
-the installation manifest and must not be generated afresh at every start.
+The supported Compose project name is `openship`. Production explicitly maps
+the legacy `openship_pgdata` and `openship_artifactdata` volume names and adds
+`openship_natsdata`. Verify actual volume names before an upgrade. A newly
+named volume is an empty installation, not a migration. Preserve
+`ARTIFACT_STORAGE_ID`, marker, `CONNECTOR_INSTALLATION_ID`, keyrings and
+defaults. Runtime NATS subjects use the database installation identity; do not
+generate another namespace at every start.
 
 New non-secret settings and concurrency/backlog defaults are specified in the
 design. `NATS_AUTH_FILE` selects each process's role-specific auth file; it
 does not put a password in `NATS_SERVERS`. API, worker, relay and bootstrap
-need different permissions. Bootstrap/admin credentials are not mounted into
-long-running application services. Only API/worker receive existing Connector
-keyrings; the relay and broker do not need them. Never log effective Compose
-config or credential file contents into public CI artifacts.
+need different permissions. The full NATS server config contains every user
+password and is mounted only into NATS. API, worker and relay receive only
+their own credential file. The operator credential is mounted only into the
+one-shot bootstrap/doctor container. The operator user is unrestricted, so
+keep that file owner-only and never mount it into application containers. API
+and worker receive existing Connector keyrings through their separate
+`./secrets` mount; relay and broker do not. ACL subjects currently use a
+single-installation wildcard, so dedicate one broker to one OpenShip
+installation. Never log effective Compose config or credential file contents
+into public CI artifacts.
 
 For worker health checks, the API role may publish only to
 `openship.I.v1.rpc.worker.health` and subscribe to its installation's reply
@@ -116,7 +135,8 @@ handling remain required; see the [NATS JetStream contract](https://docs.nats.io
 ## Shared execution resources and broker primitives
 
 The Python messaging CLI implements `bootstrap --check`, `bootstrap --apply`,
-`doctor`, and the bounded exhaustion `reconcile --preview` / `--apply` flow.
+`doctor`, resumable cutover and rollback, explicit gate controls, and the
+bounded exhaustion `reconcile --preview` / `--apply` flow.
 Bootstrap checks are read-only. Bootstrap apply creates missing resources and
 reports existing drift without rewriting streams or consumers. Readiness includes
 `run-v1` on `OS_RUNS`, `maintenance-v1` on `OS_MAINTENANCE`, and `exhaustion-v1`
@@ -270,18 +290,26 @@ dispositions, or unresolved exhaustion observations.
 
 Prerequisites remain Python/uv, supported Node/pnpm and PostgreSQL; add the
 qualified NATS server or Docker Compose for the broker dependency. Pin versions
-from `deploy/versions.env`, not an unqualified `latest` download. Native NATS
-runs with `nats-server -c deploy/nats/local.conf`; the config refers to protected
-auth files and a stable writable store directory. Choose native or Compose
-broker, not both on the same port.
+from `deploy/versions.env`, not an unqualified `latest` download. The
+initialization script generates `server.local.json` with a loopback listener
+and a stable store path. Choose native or Compose NATS, not both on the same
+port.
 
 ```bash
 # From the repository root; first-time messaging setup only.
 scripts/openship-stack --environment local init-messaging
-# Optional: use only the broker container with an existing local PostgreSQL.
+# Optional: use a pinned broker container with existing local PostgreSQL.
 scripts/openship-stack --environment local up-dependencies --only nats
 scripts/openship-stack --environment local bootstrap --apply
 ```
+
+For native NATS, run `nats-server -c
+.openship/messaging/local/server.local.json` in a separate terminal before
+bootstrap. For Compose dependencies, the wrapper records which services it
+started; `stop` only stops those services and leaves volumes in place. The
+existing `apps/api/.env` supplies `DATABASE_URL` and model settings.
+`NATS_AUTH_FILE` is selected per process below; `NATS_SERVERS` defaults to
+loopback.
 
 For source development, keep the current native hot-reload workflow. Run each
 process from its existing package directory; the API terminals use the API's
@@ -292,19 +320,24 @@ installed development dependencies, including `watchmedo`:
 pnpm run dev --host 0.0.0.0
 
 # apps/api — worker
-uv run watchmedo auto-restart --patterns="*.py" --recursive -- \\
+NATS_AUTH_FILE=../../.openship/messaging/local/worker.json \
+uv run watchmedo auto-restart --patterns="*.py" --recursive -- \
   python -m src.openship.runs.worker --log-level DEBUG
 
+# apps/api — outbox relay
+NATS_AUTH_FILE=../../.openship/messaging/local/relay.json \
+uv run watchmedo auto-restart --patterns="*.py" --recursive -- \
+  python -m src.openship.messaging.relay
+
 # apps/api — API
-uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 \\
+NATS_AUTH_FILE=../../.openship/messaging/local/api.json \
+uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 \
   --port 8000 --log-level debug
 ```
 
-The messaging migration adds one fourth native process, the outbox relay.
-The dev setup must watch and restart it on Python source changes too. These
-commands are for source development; use the ordinary process commands below
-when reload is not needed. Bind the broker and PostgreSQL to loopback when
-they run natively.
+The relay uses its own publish-only NATS role and is watched like the worker.
+These commands preserve the native Vite, Uvicorn, worker, and relay reload
+workflow. Bind the broker and PostgreSQL to loopback when they run natively.
 
 Continue to use the existing API dotenv file, database migrations and artifact
 initialization for a fresh installation. For an existing installation use the
@@ -312,9 +345,9 @@ cutover procedure instead of initializing storage. Start separate terminals
 from `apps/api`, selecting each role's protected auth path in the environment:
 
 ```bash
-uv run uvicorn src.openship.main:app --reload --host 127.0.0.1 --port 8000
-uv run python -m src.openship.runs.worker
-uv run python -m src.openship.messaging.relay
+NATS_AUTH_FILE=../../.openship/messaging/local/api.json uv run uvicorn src.openship.main:app --host 127.0.0.1 --port 8000
+NATS_AUTH_FILE=../../.openship/messaging/local/worker.json uv run python -m src.openship.runs.worker
+NATS_AUTH_FILE=../../.openship/messaging/local/relay.json uv run python -m src.openship.messaging.relay
 ```
 
 Start the web client using its existing `pnpm dev` command. Keep model profiles,
@@ -330,44 +363,53 @@ relay services; bootstrap is idempotent. Optional hot reload:
 
 ```bash
 scripts/openship-stack --environment dev init-messaging
-docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+scripts/openship-stack --environment dev --reload start
 scripts/openship-stack --environment dev doctor
 ```
 
-The wrapper's default `dev start` selects the root file; `--reload` selects the
-additional override. The override must mount source read-only, keep dependency
-and virtualenv paths in container volumes, run the API with Uvicorn reload,
-and run worker and relay through `watchmedo auto-restart` patterns that include
-Python source. The web service runs Vite with `--host 0.0.0.0`. API and worker
-share the same model configuration and
-artifact identity as today; NATS/relay must not introduce a second copy of
-provider or Connector configuration. Existing storage initialization remains
-explicit and runs only for a genuinely new empty artifact store.
+The default `scripts/openship-stack --environment dev start` builds the root
+quick-start stack without source mounts. Add `--reload` before `start` to use
+the development override. It mounts Python/web source read-only, keeps
+container-installed dependencies in the image or a named node_modules volume,
+runs Uvicorn reload, watches worker and relay Python files, and runs Vite on
+port 5173 with `/api` proxied to `api:8000`. Dependency/lockfile changes need a
+rebuild. API and worker preserve the existing model configuration, artifact
+volume and Connector secret mounts. Messaging credentials are mounted one
+role at a time from `.openship`, not through Connector `./secrets`. Existing
+artifact storage initialization stays explicit and is only for a genuinely
+new empty artifact store.
 
-## Production Compose startup (proposed)
+## Production Compose startup (not yet qualified)
 
-Provide a production example file with required values rather than usable
-sample passwords. Set explicit image digests, stable project/volume mappings,
-strong DB/JWT credentials, broker TLS certificate/CA paths and role auth paths.
-Use file-based secret inputs where supported by the application; do not
-invent unsupported `*_FILE` environment settings for existing services.
-Keep existing `MODEL_*`, provider bindings and Connector keyring provisioning.
-The production wrapper rejects missing/sample secrets before starting.
+Copy `.env.prod.example` to mode `0600` `.env.prod`, replace every example,
+and publish immutable API/web/PostgreSQL images. The NATS server reference is
+pinned in `deploy/versions.env`. Preserve the current Compose project and volume
+mapping (`openship_pgdata`, `openship_artifactdata`) and provide existing
+artifact and Connector identities/keys. Use a production NATS certificate
+whose SAN covers the Compose service DNS name `nats`, and provide the issuing
+CA. The wrapper validates secrets/image digests without printing their values.
+`init-messaging` copies the TLS files into the ignored protected directory and
+generates TLS-enabled server configuration with `sync_interval: always`.
 
 ```bash
-scripts/openship-stack --environment prod init-messaging
-docker compose --env-file .env.prod -f docker-compose.prod.yml config --quiet
+cp .env.prod.example .env.prod
+chmod 600 .env.prod
+# Edit .env.prod and set qualified immutable API, web, and PostgreSQL images.
+scripts/openship-stack --environment prod init-messaging \
+  --tls-cert /path/to/server.crt --tls-key /path/to/server.key \
+  --tls-ca /path/to/ca.crt
 scripts/openship-stack --environment prod start
 scripts/openship-stack --environment prod doctor
 ```
 
-Fresh `prod start` orders: PostgreSQL/NATS health → Alembic migration →
-messaging bootstrap → relay/runtime/API readiness → web. Existing installation
-upgrades remain gated by the cutover procedure. Wait for actual JetStream
-stream/consumer/auth readiness, not just TCP or NATS `/healthz` liveness.
-Use an image-available Python HTTP probe for the API and a pinned broker probe
-tool; do not assume `curl` or shell tools exist in minimal images.
+Fresh `prod start` orders PostgreSQL health and NATS process start → Alembic
+migration → authenticated JetStream account readiness → messaging bootstrap →
+API/worker/relay → web. API readiness uses Python's standard HTTP client and
+checks event subscription plus worker RPC. The one-shot bootstrap checks the
+real JetStream topology; TCP reachability alone is not readiness. Existing
+installation upgrades still require the drained cutover procedure. Production
+binds web only to host loopback for a host HTTPS reverse proxy; it publishes no
+API, database, NATS, or monitoring port.
 
 Set production restart policies, CPU/memory limits and bounded logs for each
 long-running service. Worker shutdown stops new pulls, drains active runs
@@ -377,8 +419,7 @@ when runs may last 1,800–3,600 seconds). Forced termination reconciles safely
 and never claims completion. Stop relay after producers drain, NATS last.
 
 Initial broker profile: one file-backed replica, 2 GiB file-store limit,
-stream budgets from the spec, production disk sync `always` after release
-qualification. Reserve host disk beyond broker limits for PostgreSQL,
+stream budgets from the spec, and disk sync `always`. Reserve host disk beyond broker limits for PostgreSQL,
 artifacts, logs and snapshots. This profile tolerates process restarts; host or
 disk loss requires recovery. It does not provide high availability. Disk-sync
 configuration needs verification on the pinned server; see
@@ -409,7 +450,12 @@ a real upgrade. Keep an immutable copy of the old release and configuration.
    the same cutover ID; reruns must resume. Normalize legacy event notices,
    backfill missing retained event notifications and generate commands only
    for eligible queued undispatched runs. Terminal/waiting/uncertain work
-   retains the spec's distinct disposition.
+   retains the spec's distinct disposition. The current apply requires the
+   expanded schema including migration `phase6a020`, no preview blockers, no
+   active retention task, ready JetStream topology, and an explicit
+   `--writers-stopped` attestation. It activates the Phase 6A transport with
+   both DB gates closed and commits each event/run batch with its progress
+   cursor. A failed process resumes with the same cutover ID.
 6. Start relay/API under closed user admission. Catch up publications and
    verify eligible generations, identities and retained cursors. Run the
    synthetic smoke run/maintenance dry-run in a separate disposable namespace
@@ -423,28 +469,141 @@ Required command grammar, shown with a documentation placeholder:
 
 ```text
 scripts/openship-stack --environment ENV cutover preview --cutover-id UUID
-scripts/openship-stack --environment ENV cutover apply --cutover-id UUID
+scripts/openship-stack --environment ENV cutover apply --cutover-id UUID --operator IDENTIFIER --writers-stopped
 scripts/openship-stack --environment ENV cutover verify --cutover-id UUID
-scripts/openship-stack --environment ENV execution open
-scripts/openship-stack --environment ENV admission open
+scripts/openship-stack --environment ENV admission close --cutover-id UUID
+scripts/openship-stack --environment ENV execution close --cutover-id UUID
+scripts/openship-stack --environment ENV execution open --cutover-id UUID
+scripts/openship-stack --environment ENV admission open --cutover-id UUID
 ```
 
-The report includes scanned/eligible/converted/skipped/conflicting counts,
-queued/waiting/terminal/uncertain run counts, event coverage and high-water
-sequences, publication/disposition counts and unresolved IDs. Verification
-fails on a queued eligible generation without a command, duplicate identity,
-lost event reference, live old owner or unresolved unsafe dispatch.
+The current apply reports its phase, event/run scan totals, backfilled event
+count, created/reused command counts, recorded operator identity and that gates
+remain closed. Verification
+requires a completed apply, exact event/run identities, no missing retained
+event notifications, no eligible queued run without a command, no pending
+event/command PubAck, and ready JetStream resources. Opening execution reruns
+DB verification while holding the messaging state lock, then records the
+opening time. Admission can open only after execution has been explicitly
+opened. To stop traffic for rollback or maintenance, close admission first,
+allow active work to drain, then close execution. Closing these DB gates does
+not require a reachable broker. The wrapper delegates these operations to the
+Python CLI. Direct invocation from `apps/api` remains available for recovery:
 
-## Rollback and broker outage (proposed)
+```sh
+uv run python -m src.openship.messaging.cli admission close --cutover-id UUID
+uv run python -m src.openship.messaging.cli execution close --cutover-id UUID
+uv run python -m src.openship.messaging.cli execution open --cutover-id UUID
+uv run python -m src.openship.messaging.cli admission open --cutover-id UUID
+```
+
+### Read-only run classification
+
+The current `cutover preview` emits `run_disposition_counts`,
+`blocked_run_groups`, and at most 100 `blocked_run_ids`. The category counts and
+the total blocker count cover every run; the ID list is only a bounded sample.
+Classification uses this precedence so a terminal or waiting status cannot
+hide unsafe queue state:
+
+1. A missing job or duplicate jobs is a blocker.
+2. Any non-null owner or lease is a blocker, including an expired lease. Stop
+   or reconcile the owner under the existing worker recovery rules.
+3. The run and single job fences must match.
+4. A queued run is eligible only when `provider_started_at` is null and there
+   are no provider-attempt, tool-operation, or tool-attempt rows, and its exact
+   `(kind, graph_version)` exists in the runtime graph registry. Any dispatch
+   history blocks replay, including interrupted or otherwise terminalized
+   records. Unsupported graph versions block replay so migration cannot turn
+   accepted queued work into a worker-side `unsupported_graph_version` failure.
+5. On Phase 6A, a queued run may have no command row yet, or exactly one
+   current-generation row with the installation, epoch, message ID, subject,
+   run, generation and canonical payload all matching. A current delivery
+   disposition is accepted only for a digest-matching `deferred` hold caused
+   by `transport_inactive` or `execution_closed`; orphaned dispositions, all
+   other dispositions and identity mismatches block the run. Apply must reuse
+   a matching command identity rather than minting a second one.
+6. Waiting-Connector and terminal runs are preserved only after the job and
+   fence checks above and when no operation is still admitted, dispatching or
+   running and no attempt remains `started`.
+7. `created` and `running` runs require recovery even when no owner is visible.
+   Any unrecognized status is unsupported and blocks the cutover.
+
+Phase 5 queued work starts at dispatch generation 1. The expanded-schema
+migration persists the installation ID and transport epoch once; preview does
+not mint them, and a future apply must use those persisted values. Before an
+apply exists, a `status=preview` report is informational only. Apply must close
+admission and execution, stop legacy workers, then repeat these checks under
+the run/job locks in the same transaction that records each bounded batch.
+That recheck prevents a stale preview from authorizing a command after queue
+state changes.
+
+### Read-only event coverage
+
+The preview also reports `event_notification_rows`,
+`missing_event_notification_rows`, `event_identity_conflicts`,
+`orphan_event_references`, and bounded `missing_event_ids` and
+`event_issue_ids` samples. Sample lists contain at most 100 IDs and include a
+truncation flag; the preview never prints event or outbox payloads.
+
+On Phase 5, every retained event is counted as missing a JetStream notification
+because legacy outbox records are not accepted as current reference-only
+notices. Missing notices are backfill work and do not alone block preview. On
+Phase 6A, each retained event must have either no notice or exactly one notice
+whose event/conversation/type, schema version, installation-derived message
+ID, subject, canonical `{"event_id": ...}` payload, and transport epoch match
+the persisted event and messaging state. A malformed or duplicate notice is
+an identity conflict. A notice with a null or pruned event reference is an
+orphan; both conflicts and orphans block preview and require reconciliation.
+This remains an inventory only: apply repeats event checks while holding the
+appropriate locks, backfills missing notices idempotently, and records
+progress under the cutover ID. Resumable apply/verification, explicit gate
+open/close commands and rollback preview/apply are implemented. Real
+PostgreSQL/broker rollback qualification remains open.
+
+## Rollback and broker outage
 
 Before opening the new release, rollback can resume the old runtime using
 unchanged application rows and additive schema after verification. After new
-execution starts, first close admission, stop fetching and drain/reconcile
-active work. Stop new API/worker/relay processes and freeze the broker epoch.
-`rollback preview` must account for every outstanding command; run/task kinds
-the old release cannot understand must be finished or explicitly blocked.
-Do not downgrade the database or delete broker state to force a green report.
-Run `rollback apply`, deploy the old release and reopen ingress only when safe.
+execution starts, close admission, close execution to stop new claims, and
+drain or reconcile active work. Stop the API and worker processes, keep the
+relay running until command and maintenance publications receive confirmation,
+then stop the relay. Drain or reconcile the JetStream consumer and wait for
+publisher leases to expire. The read-only
+`rollback preview` blocks live owners, uncertain command dispositions,
+unresolved exhaustion records, active retention tasks, unconfirmed command or
+maintenance publications, identity conflicts and unsupported run states.
+Missing event notices are backfilled; dispatch-generation exhaustion blocks
+before the epoch changes. `rollback apply` requires explicit
+operator, process-stop and consumer-drain attestations; it rechecks blockers
+under the messaging state lock, rotates to a persisted rollback epoch, sets the
+transport inactive with both gates closed, and processes event/run rows in
+batches of at most 500. It requeues retained event notices for a future
+forward cutover, increments each safe queued run's dispatch generation, keeps
+old command records immutable, and preserves the additive schema. A retry with
+the same cutover ID resumes the same epoch and cursors. Do not downgrade the
+database or delete broker state to force a green report.
+
+After a `status=rolled_back` report, keep the NATS relay and workers stopped,
+deploy the old PostgreSQL-polling release, then reopen web ingress. The old
+release does not honor the Phase 6A DB gates. A later forward cutover must use
+a **new cutover ID**; it reuses the persisted rollback epoch and the bumped
+generation to create fresh queued-command identities. The original cutover ID
+remains an audit record and cannot be reused for forward apply.
+
+For rollback, the direct CLI remains available from `apps/api` after the
+normal drained rollback procedure:
+
+```sh
+uv run python -m src.openship.messaging.cli admission close --cutover-id UUID
+uv run python -m src.openship.messaging.cli execution close --cutover-id UUID
+uv run python -m src.openship.messaging.cli rollback preview --cutover-id UUID
+uv run python -m src.openship.messaging.cli rollback apply --cutover-id UUID \
+  --operator IDENTIFIER --processes-stopped --consumers-drained
+```
+
+Closing gates and rollback apply use PostgreSQL only; they remain available if
+the broker is offline. Do not start the old runtime until apply reports
+`rolled_back`.
 
 A broker outage does not cancel accepted runs. Running work may finish under
 DB ownership; pending publications remain durable. Submission stays bounded

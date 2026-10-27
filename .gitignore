@@ -2,7 +2,13 @@
 .env
 .env.local
 .env.*.local
+.env.prod
+.env.prod.local
 /secrets/
+/.openship/
+*.backup
+*.backup.*
+*.credentials
 
 # Node.js / Vue3
 node_modules/

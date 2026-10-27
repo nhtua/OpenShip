@@ -1,6 +1,9 @@
-node_modules/
-tests/
-dist/
-*.log
 .env
-.pnpm-store/
+.env.*
+secrets
+node_modules
+dist
+build
+test-results
+playwright-report
+coverage

@@ -45,6 +45,7 @@ SHARED_SERVICES = ("api", "worker")
 #: Search runs execute in the worker, so these bindings intentionally do not
 #: need to be present in the API container.
 WORKER_ONLY_CREDENTIALS = {"BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY"}
+PROCESS_SPECIFIC_SETTINGS = {"NATS_AUTH_FILE"}
 OPTIONAL_RUNTIME_SETTINGS = {"TOOL_ENABLED_IDS"}
 
 #: Provider credentials are optional bindings, never values embedded in the
@@ -97,14 +98,20 @@ def test_the_two_services_are_configured_with_the_same_thing():
     """
     services = _services()
     api, worker = (services[name]["environment"] for name in SHARED_SERVICES)
-    api_shared = {key: value for key, value in api.items() if key not in WORKER_ONLY_CREDENTIALS}
-    worker_shared = {key: value for key, value in worker.items() if key not in WORKER_ONLY_CREDENTIALS}
+    process_specific = WORKER_ONLY_CREDENTIALS | PROCESS_SPECIFIC_SETTINGS
+    api_shared = {
+        key: value for key, value in api.items() if key not in process_specific
+    }
+    worker_shared = {
+        key: value for key, value in worker.items() if key not in process_specific
+    }
     assert api_shared == worker_shared, (
         "the API and the worker are configured differently: a run one queues "
         "is not executed under the profile the other offered"
     )
     assert WORKER_ONLY_CREDENTIALS <= worker.keys()
     assert WORKER_ONLY_CREDENTIALS.isdisjoint(api)
+    assert api["NATS_AUTH_FILE"] != worker["NATS_AUTH_FILE"]
 
 
 def test_provider_credentials_are_named_never_carried():
