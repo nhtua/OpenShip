@@ -31,7 +31,11 @@ from src.openship.messaging.cutover import (
     verify_cutover,
 )
 from src.openship.messaging.migration import plan_cutover
-from src.openship.messaging.models import MessageTransportState, MessagingCutover
+from src.openship.messaging.models import (
+    MessageTransportState,
+    MessagingCutover,
+    RetentionTask,
+)
 from src.openship.messaging.relay import _record_envelope, claim_outbox_batch
 from src.openship.runs.models import Event, Outbox, Run, RunJob
 
@@ -1308,6 +1312,54 @@ def test_rollback_preview_blocks_unpublished_command_messages():
     engine.dispose()
 
 
+def test_rollback_rechecks_retention_blockers_after_initial_preview(monkeypatch):
+    engine, cutover_id, _run_id, _event_ids, _command_id, original_epoch = (
+        _completed_cutover_for_rollback()
+    )
+    original_plan = cutover.plan_rollback
+    calls = 0
+
+    def insert_retention_after_preview(db, *, cutover_id):
+        nonlocal calls
+        calls += 1
+        report = original_plan(db, cutover_id=cutover_id)
+        if calls == 1:
+            db.add(
+                RetentionTask(
+                    id=uuid.uuid4(),
+                    requested_by="concurrent-operator",
+                    event_retention_days=30,
+                    checkpoint_retention_days=30,
+                    messaging_retention_days=30,
+                    batch_size=100,
+                )
+            )
+        return report
+
+    monkeypatch.setattr(cutover, "plan_rollback", insert_retention_after_preview)
+    with (
+        Session(engine) as db,
+        pytest.raises(RuntimeError, match="changed after preview"),
+    ):
+        apply_rollback(
+            db,
+            cutover_id=cutover_id,
+            operator="rollback-operator",
+            batch_size=1,
+            processes_stopped=True,
+            consumers_drained=True,
+        )
+
+    with Session(engine) as db:
+        state = db.get(MessageTransportState, 1)
+        progress = db.get(MessagingCutover, cutover_id)
+        assert state.transport_epoch == original_epoch
+        assert state.active is True
+        assert progress.status == "complete"
+        assert db.query(RetentionTask).filter_by(state="requested").count() == 1
+    engine.dispose()
+
+
 def test_rollback_preview_blocks_dispatch_generation_exhaustion_before_mutation():
     engine, cutover_id, run_id, _event_ids, _command_id, original_epoch = (
         _completed_cutover_for_rollback()
@@ -1334,6 +1386,81 @@ def test_rollback_preview_blocks_dispatch_generation_exhaustion_before_mutation(
             cutover_id=cutover_id,
             operator="rollback-operator",
             batch_size=1,
+            processes_stopped=True,
+            consumers_drained=True,
+        )
+
+    with Session(engine) as db:
+        state = db.get(MessageTransportState, 1)
+        progress = db.get(MessagingCutover, cutover_id)
+        assert state.transport_epoch == original_epoch
+        assert state.active is True
+        assert progress.status == "complete"
+        assert progress.rollback_epoch is None
+    engine.dispose()
+
+
+def test_rollback_resumes_when_a_safe_generation_bump_reaches_int_max():
+    engine, cutover_id, run_id, _event_ids, _command_id, original_epoch = (
+        _completed_cutover_for_rollback()
+    )
+    with Session(engine) as db:
+        db.query(RunJob).filter(RunJob.run_id == run_id).update(
+            {RunJob.dispatch_generation: 2_147_483_646}
+        )
+        db.commit()
+
+    with Session(engine) as db:
+        result = apply_rollback(
+            db,
+            cutover_id=cutover_id,
+            operator="rollback-operator",
+            batch_size=1,
+            processes_stopped=True,
+            consumers_drained=True,
+        )
+
+    assert result.status == "rolled_back"
+    assert result.ready is True
+    assert result.read_only is False
+    assert result.rollback_epoch != original_epoch
+
+    with Session(engine) as db:
+        state = db.get(MessageTransportState, 1)
+        progress = db.get(MessagingCutover, cutover_id)
+        job = db.query(RunJob).filter(RunJob.run_id == run_id).one()
+        assert state.transport_epoch == result.rollback_epoch
+        assert progress.status == "rolled_back"
+        assert job.dispatch_generation == 2_147_483_647
+
+        repeated = apply_rollback(
+            db,
+            cutover_id=cutover_id,
+            operator="rollback-operator",
+            batch_size=1,
+            processes_stopped=True,
+            consumers_drained=True,
+        )
+        assert repeated.status == "rolled_back"
+        assert repeated.read_only is False
+        assert repeated.rollback_epoch == result.rollback_epoch
+    engine.dispose()
+
+
+def test_rollback_apply_enforces_batch_limit_before_epoch_rotation():
+    engine, cutover_id, _run_id, _event_ids, _command_id, original_epoch = (
+        _completed_cutover_for_rollback()
+    )
+
+    with (
+        Session(engine) as db,
+        pytest.raises(ValueError, match="batch_size must be between 1 and 500"),
+    ):
+        apply_rollback(
+            db,
+            cutover_id=cutover_id,
+            operator="rollback-operator",
+            batch_size=501,
             processes_stopped=True,
             consumers_drained=True,
         )

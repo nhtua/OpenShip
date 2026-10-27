@@ -578,9 +578,12 @@ operator, process-stop and consumer-drain attestations; it rechecks blockers
 under the messaging state lock, rotates to a persisted rollback epoch, sets the
 transport inactive with both gates closed, and processes event/run rows in
 batches of at most 500. It requeues retained event notices for a future
-forward cutover, increments each safe queued run's dispatch generation, keeps
-old command records immutable, and preserves the additive schema. A retry with
-the same cutover ID resumes the same epoch and cursors. Do not downgrade the
+forward cutover at the rollback epoch, increments each safe queued run's
+dispatch generation, keeps old command records immutable in their original
+epoch, and preserves the additive schema. A retry with the same cutover ID
+resumes the same epoch and cursors; rows at or before the run cursor have
+already had their generation bump committed. A queued run whose next generation
+cannot be represented blocks before epoch rotation. Do not downgrade the
 database or delete broker state to force a green report.
 
 After a `status=rolled_back` report, keep the NATS relay and workers stopped,

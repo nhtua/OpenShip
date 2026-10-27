@@ -29,6 +29,8 @@ from .models import (
 )
 from .outbox import enqueue_event, enqueue_run
 
+_MAX_DISPATCH_GENERATION = 2_147_483_647
+
 
 @dataclass(frozen=True)
 class CutoverApplyReport:
@@ -603,16 +605,28 @@ def plan_rollback(db: Session, *, cutover_id: uuid.UUID) -> CutoverRollbackRepor
         )
         .count()
     )
-    generation_exhausted_runs = int(
-        db.query(RunJob.run_id)
-        .join(Run, Run.id == RunJob.run_id)
-        .filter(
-            Run.status == "queued",
-            RunJob.dispatch_generation >= 2_147_483_647,
+    if progress.status == "rolled_back":
+        generation_exhausted_runs = 0
+    else:
+        # A rollback cursor and each generation bump commit together. On resume,
+        # only rows after that cursor still need a bump; earlier rows may now be
+        # at INT_MAX because their required bump already completed.
+        generation_query = (
+            db.query(RunJob.run_id)
+            .join(Run, Run.id == RunJob.run_id)
+            .filter(
+                Run.status == "queued",
+                RunJob.dispatch_generation >= _MAX_DISPATCH_GENERATION,
+            )
         )
-        .distinct()
-        .count()
-    )
+        if (
+            progress.status == "rolling_back"
+            and progress.rollback_last_run_id is not None
+        ):
+            generation_query = generation_query.filter(
+                Run.id > progress.rollback_last_run_id
+            )
+        generation_exhausted_runs = int(generation_query.distinct().count())
     if pending_commands:
         errors.append("command_publications_pending")
     if pending_maintenance:
@@ -864,6 +878,8 @@ def apply_rollback(
                         RunJob.run_id.in_(run_ids)
                     ).with_for_update().all()
                     per_run: dict[uuid.UUID, str] = {}
+                    # Run command rows remain immutable in their forward epoch;
+                    # event notices alone are re-epoched during rollback.
                     run_identity_state = SimpleNamespace(
                         installation_id=progress.installation_id,
                         transport_epoch=progress.transport_epoch,
@@ -904,7 +920,7 @@ def apply_rollback(
                             .with_for_update()
                             .one()
                         )
-                        if job.dispatch_generation >= 2_147_483_647:
+                        if job.dispatch_generation >= _MAX_DISPATCH_GENERATION:
                             raise RuntimeError(
                                 "queued run dispatch generation is exhausted"
                             )
