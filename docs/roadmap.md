@@ -282,7 +282,7 @@ historical data migrations remain part of the application.
 
 ##### 6A — NATS Foundation and Concurrent Chat
 
-**Status:** Design review. The [source review](./reviews/2026-10-25-phase6a-messaging-review.md), [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [draft implementation plan](./superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook proposal](./operations/messaging.md) cover the current PostgreSQL runtime, a drained cutover and native/development Compose/production Compose environments. The user confirmed this numbering and the drained cutover on 2026-10-25. Runtime implementation has not started. Kubernetes and ECS are outside this migration.
+**Status:** Implementation in progress on [PR #31](https://github.com/nhtua/OpenShip/pull/31). The transactional outbox/relay, JetStream run consumer, API event fanout, and read-only cutover preview are implemented and covered by the configured Python 3.11–3.13 CI lanes. Resumable cutover/rollback, native and Compose deployment packaging, and final recovery/capacity qualification remain. The user confirmed 6A numbering and a drained maintenance cutover on 2026-10-25; production cutover is not authorized. Kubernetes and ECS are outside this migration. See the [source review](./reviews/2026-10-25-phase6a-messaging-review.md), [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](./superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](./operations/messaging.md).
 
 **Build**
 

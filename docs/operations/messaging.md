@@ -7,13 +7,16 @@ date: 2026-10-25
 
 # Messaging deployment and migration
 
-**Proposal, not shipped tooling.** This runbook specifies what Phase 6A must
-implement and qualify. At this revision the application still uses PostgreSQL
-dispatch and SSE polling. `scripts/openship-stack`, new Compose files and the
-complete gate/cutover tooling below do **not** yet exist. The bounded Python
-bootstrap/doctor and broker primitives described below are available for
-qualification. Wrapper command blocks are the required future operator interface;
-do not run them against a current installation.
+**Proposal, partially implemented.** This runbook records the Phase 6A target
+and qualification requirements. The Python `cutover preview` command is now a
+read-only Phase 5/6A queue inventory; it reports run states, queue row totals
+and duplicate run-job conflicts without printing outbox payloads. The
+preview exit status indicates only that inventory completed without a known
+duplicate-job conflict; it does not certify cutover readiness. The
+resumable apply/verify flow, distributed admission/execution gates,
+`scripts/openship-stack`, and new Compose files remain unfinished. Treat all
+other wrapper commands below as the required future operator interface and do
+not use them against an installation yet.
 
 Use the [design](../superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md)
 and [implementation plan](../superpowers/plans/2026-10-25-phase6a-nats-messaging.md)

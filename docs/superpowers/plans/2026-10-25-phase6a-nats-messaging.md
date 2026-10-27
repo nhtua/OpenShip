@@ -445,6 +445,14 @@ requires all executable work to have a known safe old-runtime disposition.
   gates stop normal pulls; smoke tests use a separate disposable synthetic
   namespace. Review and commit.
 
+  Initial read-only preview slice: `plan_cutover()` and `cutover preview`
+  inventory Phase 5/6A run statuses, job/event/outbox totals, and a bounded list
+  of duplicate-job conflicts. `status=preview` means only that the inventory
+  ran; it is not a cutover-readiness decision. Four focused SQLite tests cover old-schema
+  preview, duplicate refusal, bounded conflict output, and proof that preview
+  does not modify rows or disclose outbox payloads. The resumable migration,
+  disposition classification, and rollback operations remain open.
+
 ## Task 6 — Package all three supported deployment modes
 
 **Depends on:** Tasks 0–5. **Files:** deployment/Compose/image/config files in

@@ -16,6 +16,7 @@ from .capacity import capacity_report, scan_retained_run_sources
 from .capacity_recovery import recovery_gate_errors
 from .connection import connect_nats
 from .exhaustion_supervisor import ExhaustionSupervisor
+from .migration import plan_cutover
 from .models import MessageTransportState
 from .topology import TopologyReport, ensure_topology
 
@@ -228,6 +229,8 @@ async def _dispatch(
     after_sequence: int = 0,
     limit: int = 100,
     operator: str | None = None,
+    action: str | None = None,
+    cutover_id: UUID | None = None,
 ) -> int:
     if command == "reconcile":
         return await _dispatch_reconcile(
@@ -236,6 +239,28 @@ async def _dispatch(
             limit=limit,
             operator=operator,
         )
+    if command == "cutover":
+        if action != "preview" or cutover_id is None:
+            result = {
+                "status": "refused",
+                "read_only": True,
+                "errors": ["unsupported_cutover_action"],
+            }
+            print(json.dumps(result, sort_keys=True))
+            return 1
+        try:
+            with SessionLocal() as db:
+                report = plan_cutover(db, cutover_id=cutover_id)
+            print(json.dumps(report.as_dict(), sort_keys=True))
+            return 1 if report.status == "blocked" else 0
+        except Exception as error:  # noqa: BLE001 - keep DB details private
+            result = {
+                "status": "unavailable",
+                "read_only": True,
+                "errors": [f"cutover_preview_unavailable:{type(error).__name__}"],
+            }
+            print(json.dumps(result, sort_keys=True))
+            return 1
     if command == "doctor":
         result: dict[str, object] = {
             "database": None,
@@ -291,7 +316,7 @@ async def _dispatch(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="openship-messaging",
-        description="Check or initialize OpenShip's JetStream streams and consumers.",
+        description="Operate OpenShip messaging and inspect the durable queue migration.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     bootstrap = commands.add_parser(
@@ -316,6 +341,12 @@ def _parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--after-sequence", type=int, default=0)
     reconcile.add_argument("--limit", type=int, default=100)
     reconcile.add_argument("--operator", help="operator identity required with --apply")
+    cutover = commands.add_parser(
+        "cutover", help="inspect the existing run queue before migration"
+    )
+    cutover_actions = cutover.add_subparsers(dest="cutover_action", required=True)
+    preview = cutover_actions.add_parser("preview", help="read-only cutover inventory")
+    preview.add_argument("--cutover-id", type=UUID, required=True)
     return parser
 
 
@@ -328,6 +359,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             after_sequence=getattr(args, "after_sequence", 0),
             limit=getattr(args, "limit", 100),
             operator=getattr(args, "operator", None),
+            action=getattr(args, "cutover_action", None),
+            cutover_id=getattr(args, "cutover_id", None),
         )
     )
 
