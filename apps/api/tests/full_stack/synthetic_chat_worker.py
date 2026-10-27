@@ -118,7 +118,7 @@ def main() -> None:
     # graph, gateway, database, artifact store and transcript remain real.
     search_http.PinnedHttpTransport = _synthetic_transport
     provider_runner.build_adapter = _synthetic_adapter
-    from src.openship.runs.worker import main as worker_main
+    from tests.full_stack.legacy_worker_harness import main as worker_main
 
     worker_main()
 

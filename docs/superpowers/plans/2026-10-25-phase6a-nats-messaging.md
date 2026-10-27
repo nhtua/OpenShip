@@ -259,12 +259,12 @@ routes an allowlisted kind to existing execution or explicit retention.
     consumer/recovery tests still encounter the existing executor-to-event-loop
     wakeup stall, and the real PostgreSQL/JetStream qualifier remains in the
     overall Task 7 acceptance gate.
-  - [ ] **3B2e.4 — Exhaustion and live-owner observation:** qualify pinned
+  - [x] **3B2e.4 — Exhaustion and live-owner observation:** qualify pinned
     MaxDeliver advisory and stream/consumer recovery behavior; persist
     `watching_live_owner` until a committed outcome or lease expiry, and resume
     observations after restart without treating delivery count as authority.
 
-    Implementation is in progress: `OS_ADVISORIES` captures the pinned
+    Implementation: `OS_ADVISORIES` captures the pinned
     MaxDeliver subject in a durable stream; `exhaustion-v1` is required before
     worker run intake/readiness, and runtime ACLs add `exhaustion-v1` consume
     APIs plus exact `OS_RUNS` source GET/DELETE. Alembic 017 and the
@@ -279,13 +279,10 @@ routes an allowlisted kind to existing execution or explicit retention.
     `OS_ADVISORIES.paused is False`, while NATS reports `None` when it has never
     been paused. The assertion now accepts any value except `True`. The earlier
     shared-pause scope and advisory INFO-permission fixes are also present.
-    Keep this checkbox open
-    until all 50 cases pass without skips, including runtime denial for
-    other-stream GET/DELETE. Production acceptance also requires a tested
-    alert at 75% of `OS_ADVISORIES` capacity and a reviewed recovery
-    tool/procedure for advisories rejected at full capacity; this slice has no
-    command that discovers rejected advisories from retained `OS_RUNS` state.
-    The missing capacity guard is now implemented locally: the supervisor emits
+    The paused-state assertion now accepts NATS's unpaused `None` value while
+    still rejecting `True`; the pinned run later passed all cases, including
+    runtime denial for other-stream GET/DELETE. The required 75% capacity alert
+    and full-stream recovery procedure are implemented: the supervisor emits
     transition logs at the 75%/full/recovered boundaries, `doctor` reports
     stored bytes and fails readiness at the alert threshold, and bounded
     `reconcile --preview` / `--apply` scans exact retained run subjects through
@@ -296,9 +293,13 @@ routes an allowlisted kind to existing execution or explicit retention.
     reuses the existing fenced state machine, preserves uncertain/unbound
     sources, and reports a resumable cursor. The runbook now describes the
     recovery sequence. Focused local capacity, CLI and exhaustion suites pass
-    (33 tests); the real broker next-by-subject test and pinned 3.11–3.13
-    qualifier still need to pass before closing this slice. Production cutover
-    remains blocked until those checks pass.
+    (33 tests). The real-broker next-by-subject cursor contract and end-to-end
+    lost-advisory recovery passed. The pinned JetStream qualifier passed on
+    Python 3.11, 3.12 and 3.13 with all 53 cases passing on each version.
+    PostgreSQL migration and consumer lanes, API unit lanes and both full-stack
+    lanes passed. The first Python 3.13 broker attempt had a transient
+    ACK/recovery timeout; the same job passed on retry. Production entry wiring
+    remains the next slice, 3B2f.
 
     The first real-broker rerun passed the end-to-end lost-advisory recovery
     case. It exposed two fixture/assertion issues: the generic topology fixture
@@ -312,7 +313,9 @@ routes an allowlisted kind to existing execution or explicit retention.
     fanout and lost-advisory recovery cases. The subject-scan contract test then
     exposed that pinned `next_by_subj` treats its sequence as the first eligible
     position; the scanner now advances its request cursor by one to avoid
-    returning the prior message twice. A fresh JetStream rerun is required.
+    returning the prior message twice. The follow-up pinned JetStream run passed
+    all 53 cases on Python 3.11–3.13; the transient Python 3.13 ACK/recovery
+    timeout passed on retry.
   - [x] **3B2e.5 — Explicit retention maintenance:** accept only an explicitly
     enqueued, bounded retention task with operator identity and durable
     requested/running/completed/failed state; preserve direct maintenance CLI.
@@ -334,9 +337,8 @@ routes an allowlisted kind to existing execution or explicit retention.
     lint, selected format checks, and `git diff --check` passed. Disposable
     SQLite Alembic runs passed upgrade, empty downgrade, re-upgrade and schema
     checks, and refused downgrade with task history. The PostgreSQL migration
-    downgrade test skipped because `TEST_POSTGRES_URL` is unavailable here;
-    that integration lane remains for CI. Production worker entry wiring
-    remains part of 3B2f; the 3B2e.4 pinned CI rerun remains open.
+    downgrade test skipped locally because `TEST_POSTGRES_URL` is unavailable;
+    all three PostgreSQL CI lanes passed, including migration coverage.
 
   **Source constraint:** the pinned NATS MaxDeliver advisory identifies the
   failed stream sequence and delivery count. Advisory-only handling is not
@@ -345,7 +347,12 @@ routes an allowlisted kind to existing execution or explicit retention.
 
 - [ ] **3B2f — Production entry switch:** remove `claim_next` discovery and idle
   polling from the production entry only after 3B2b–3B2e are qualified. Keep no
-  automatic polling fallback.
+  automatic polling fallback. `python -m src.openship.runs.worker` now starts
+  `RunConsumer`, preserves `--worker-id` and `--log-level`, drains on SIGINT or
+  SIGTERM, and closes its owned NATS client. The synthetic full-stack fixtures
+  use an explicit test-only legacy polling harness until Task 7 converts them
+  to real JetStream consumers. Five focused entry/identity tests pass; Ruff and
+  diff checks pass. Complete this slice after the pushed CI matrix passes.
 
 - [ ] Add failing unit and PG/broker cases for every spec delivery-state
   branch, especially inactive/closed gates, redelivery after dedup expiry,

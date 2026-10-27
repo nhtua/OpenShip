@@ -124,7 +124,7 @@ def main() -> None:
     # process substitutes only the network transport with deterministic local
     # JSON responses and records request identities without recording headers.
     search_http.PinnedHttpTransport = _synthetic_transport
-    from src.openship.runs.worker import main as worker_main
+    from tests.full_stack.legacy_worker_harness import main as worker_main
 
     worker_main()
 

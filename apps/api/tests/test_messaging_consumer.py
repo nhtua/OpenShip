@@ -13,6 +13,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from sqlalchemy.exc import OperationalError
 
 from src.openship.database.session import SessionLocal
+from src.openship.messaging import consumer as messaging_consumer
 from src.openship.messaging.models import (
     MessageDisposition,
     MessageFailure,
@@ -22,6 +23,42 @@ from src.openship.messaging.outbox import enqueue_run
 from src.openship.runs.models import Outbox, Run, RunJob
 from src.openship.runs.queue import finalize
 from tests.test_messaging_command_claim import _body, _command
+
+
+def test_run_consumer_passes_explicit_identity_to_execution_workers(monkeypatch):
+    class Pool:
+        def __init__(self, _size, resource_factory):
+            self.resource_factory = resource_factory
+
+    class Database:
+        def close(self):
+            return None
+
+    class Worker:
+        def __init__(self, *, worker_id, **_kwargs):
+            self.worker_id = worker_id
+            self.checkpointer = object()
+
+        def Session(self):
+            return Database()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(messaging_consumer, "ExecutionPool", Pool)
+    monkeypatch.setattr(messaging_consumer, "Worker", Worker)
+    client = SimpleNamespace(jetstream=lambda **_kwargs: object())
+    instance = messaging_consumer.RunConsumer(
+        client,
+        concurrency=1,
+        worker_id="operator-worker",
+    )
+
+    resource = instance._pool.resource_factory()
+    try:
+        assert resource.worker.worker_id == "operator-worker"
+    finally:
+        resource.close()
 
 
 def _prepare(db, body, subject):

@@ -164,6 +164,7 @@ class RunConsumer:
         self,
         client,
         *,
+        worker_id: str | None = None,
         concurrency: int | None = None,
         session_factory=SessionLocal,
         worker_factory=None,
@@ -191,7 +192,9 @@ class RunConsumer:
                 raise ValueError("consumer timing must be positive and finite")
         self._client = client
         self._js = client.jetstream(timeout=ack_timeout)
-        self._worker_id = f"worker-{uuid.uuid4().hex}"
+        self._worker_id = (
+            f"worker-{uuid.uuid4().hex}" if worker_id is None else worker_id
+        )
         self._lease_seconds = lease_seconds
         self._progress_interval, self._fetch_timeout = progress_interval, fetch_timeout
         self._retry_interval, self._ack_timeout = retry_interval, ack_timeout

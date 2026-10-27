@@ -5,9 +5,10 @@ with NATS JetStream while retaining the existing API, database authority, fences
 providers, Connectors and artifacts. See the [migration design](../../docs/superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md),
 [implementation plan](../../docs/superpowers/plans/2026-10-25-phase6a-nats-messaging.md)
 and [deployment runbook](../../docs/operations/messaging.md). The production
-worker entry remains on the current runtime until plan slice 3B2f is qualified;
-the direct retention command below remains available. Queue-backed retention
-commands require the JetStream worker entry and an active transport.
+worker entry uses the durable JetStream run consumer and requires the initialized
+transport and worker credentials described in the runbook. The direct retention
+command below remains available; queue-backed retention commands require an
+active transport and the JetStream worker.
 
 Backend API server for OpenShip, built with FastAPI.
 

@@ -9,11 +9,9 @@ through the configuration the run pinned, and finalizes the run with fence-
 based optimistic concurrency control.
 """
 
-import argparse
 import json
 import logging
 import re
-import signal
 import threading
 import time
 import uuid
@@ -1325,29 +1323,10 @@ class Worker:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OpenShip chat turn worker")
-    parser.add_argument("--worker-id", type=str, default=None, help="Unique worker ID")
-    parser.add_argument("--log-level", type=str, default="INFO", help="Log level")
-    args = parser.parse_args()
+    """Run the production JetStream entry while keeping this module path stable."""
+    from ..messaging.worker import main as messaging_worker_main
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper()),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
-
-    worker = Worker(worker_id=args.worker_id)
-
-    def shutdown(signum, frame):
-        logger.info("Received shutdown signal")
-        worker.running = False
-
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
-
-    try:
-        worker.run()
-    finally:
-        worker.close()
+    messaging_worker_main()
 
 
 if __name__ == "__main__":
