@@ -146,6 +146,67 @@ def test_closed_transport_holds_delivery_until_reopen(active, execution_open, co
         assert prepared.decision.claim.fence == 1
 
 
+@pytest.mark.parametrize("prior_duplicate", [False, True])
+@pytest.mark.parametrize(
+    "gate,code",
+    [("active", "transport_inactive"), ("execution_open", "execution_closed")],
+)
+def test_gate_held_duplicate_preserves_original_owners_settlement(
+    gate, code, prior_duplicate
+):
+    with SessionLocal() as db:
+        run_id, job_id, row_id = _command(db)
+        body, subject = _body(db, row_id)
+        original = _prepare(db, body, subject)
+        assert original.decision.kind == "claimed"
+        if prior_duplicate:
+            assert _prepare(db, body, subject).disposition.action == "defer"
+        with SessionLocal() as operator:
+            operator.get(
+                MessageDisposition, original.command.message_id
+            ).handler_version = 2
+            setattr(operator.get(MessageTransportState, 1), gate, False)
+            operator.commit()
+
+        held = _prepare(db, body, subject)
+        assert (held.disposition.action, held.disposition.code) == ("hold", code)
+        assert held.decision.claim is None
+        job = db.get(RunJob, job_id)
+        assert (job.owner_id, job.fence) == ("delivery-worker", 1)
+        with SessionLocal() as execution:
+            assert finalize(
+                execution, run_id, original.decision.claim.fence, {"status": "success"}
+            )
+
+        result = _settle(db, original)
+        assert (result.action, result.code) == ("ack", "run_terminal")
+        row = db.get(MessageDisposition, original.command.message_id)
+        assert row.payload_digest == original.command.body_digest
+        assert row.handler_version == 2
+
+
+@pytest.mark.parametrize("gate", ["active", "execution_open"])
+def test_unadmitted_gate_hold_cannot_authorize_settlement(gate):
+    from src.openship.messaging.delivery import settle_run_delivery
+    from src.openship.runs.queue import Claim
+
+    with SessionLocal() as db:
+        run_id, _, row_id = _command(db)
+        body, subject = _body(db, row_id)
+        setattr(db.get(MessageTransportState, 1), gate, False)
+        db.commit()
+        held = _prepare(db, body, subject)
+        assert held.disposition.action == "hold"
+        # Even an independently terminal run and an unproven claim cannot
+        # turn a never-admitted delivery into permission to ACK.
+        with SessionLocal() as execution:
+            execution.get(Run, run_id).status = "completed"
+            execution.commit()
+        unproven = Claim(run_id, 0, datetime.now(UTC), "delivery-worker")
+        result = settle_run_delivery(db, held.command, unproven)
+        assert (result.action, result.code) == ("reconcile", "admission_unproven")
+
+
 @pytest.mark.parametrize("mutation", ["malformed", "identity", "digest"])
 def test_invalid_delivery_is_content_free_quarantine_and_preserves_digest(mutation):
     with SessionLocal() as db:

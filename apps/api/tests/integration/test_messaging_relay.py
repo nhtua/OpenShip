@@ -38,7 +38,7 @@ from src.openship.chat.models import Conversation
 from src.openship.events.service import append_event
 from src.openship.messaging import relay
 from src.openship.messaging.command import claim_command
-from src.openship.messaging.delivery import prepare_run_delivery
+from src.openship.messaging.delivery import prepare_run_delivery, settle_run_delivery
 from src.openship.messaging.models import MessageDisposition, MessageTransportState
 from src.openship.messaging.outbox import enqueue_run
 from src.openship.messaging.relay import (
@@ -53,7 +53,7 @@ from src.openship.messaging.topology import (
     stream_configs,
 )
 from src.openship.runs.models import Outbox, Run, RunJob
-from src.openship.runs.queue import claim_run
+from src.openship.runs.queue import claim_run, finalize
 from src.openship.workspace.models import Project
 
 pytestmark = [pytest.mark.postgres, pytest.mark.jetstream]
@@ -224,6 +224,48 @@ def test_pg_closed_transport_refuses_exact_acquisition(
             )
         else:
             assert disposition is None
+
+
+@pytest.mark.parametrize("prior_duplicate", [False, True])
+@pytest.mark.parametrize(
+    "gate,code",
+    [("active", "transport_inactive"), ("execution_open", "execution_closed")],
+)
+def test_pg_gate_held_duplicate_preserves_original_owners_settlement(
+    relay_postgres, gate, code, prior_duplicate
+):
+    _url, sessions, _installation_id = relay_postgres
+    run_id, job_id, body, subject = _pg_command(sessions)
+    with sessions() as db:
+        original = prepare_run_delivery(
+            db, body, subject=subject, worker_id="pg-worker", lease_seconds=30
+        )
+        assert original.decision.kind == "claimed"
+        if prior_duplicate:
+            duplicate = prepare_run_delivery(
+                db, body, subject=subject, worker_id="pg-duplicate", lease_seconds=30
+            )
+            assert duplicate.disposition.action == "defer"
+
+    with sessions() as operator:
+        state = operator.query(MessageTransportState).with_for_update().one()
+        setattr(state, gate, False)
+        operator.commit()
+    with sessions() as db:
+        held = prepare_run_delivery(
+            db, body, subject=subject, worker_id="pg-duplicate", lease_seconds=30
+        )
+        assert (held.disposition.action, held.disposition.code) == ("hold", code)
+        assert held.decision.claim is None
+        job = db.get(RunJob, job_id)
+        assert (job.owner_id, job.fence) == ("pg-worker", 1)
+    with sessions() as execution:
+        assert finalize(
+            execution, run_id, original.decision.claim.fence, {"status": "success"}
+        )
+    with sessions() as db:
+        result = settle_run_delivery(db, original.command, original.decision.claim)
+        assert (result.action, result.code) == ("ack", "run_terminal")
 
 
 @pytest.mark.parametrize(

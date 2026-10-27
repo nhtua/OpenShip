@@ -210,7 +210,9 @@ def claim_command(
                     error_code=decision.code,
                 )
             )
-        else:
+        elif decision.code not in {"transport_inactive", "execution_closed"}:
+            # A held duplicate cannot replace the original owner's admission
+            # evidence, which settlement needs to acknowledge its result.
             previous.disposition = disposition
             previous.error_code = decision.code
     db.commit()
