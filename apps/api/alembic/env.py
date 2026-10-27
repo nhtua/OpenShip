@@ -8,10 +8,16 @@ from alembic import context
 
 # Ensure the src directory is on the Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from openship.config import settings
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+# Keep migrations on the same database configuration as the application.
+# The ini value is only a fallback; container environments supply
+# DATABASE_URL, while native development may load it from the API .env file.
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
