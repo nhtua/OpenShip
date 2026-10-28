@@ -48,8 +48,8 @@ Use `-e ENV` as shorthand for `--environment ENV`; for example,
 | Interface | Required behavior |
 | --- | --- |
 | `--environment ENV doctor` | ENV is `local`, `dev` or `prod`. The wrapper requires `uv` for local operations, Docker Compose 2.24+ for Docker stacks, or Podman with a configured Compose provider; the CLI checks PostgreSQL, JetStream resources, auth and advisory capacity without printing secrets. |
-| `... init-messaging [--tls-cert FILE --tls-key FILE --tls-ca FILE]` | First-time creation of role credentials and NATS server configs. TLS options are required for production and rejected for local/dev. JSON/config/TLS files are mode 0600 under a mode 0700 directory. Refuse overwrite; never generate Connector, artifact or database installation identities. |
-| `... init-artifacts` | Explicitly initializes or verifies the configured artifact root. Local uses `uv` from `apps/api`; dev/prod use a one-shot `worker` container with the selected engine. The marker is created only in an empty root; an existing marker must match `ARTIFACT_STORAGE_ID`. Use for a new store only after confirming its volume mapping. |
+| `... init-messaging [--tls-cert FILE --tls-key FILE --tls-ca FILE]` | Creates role credentials and NATS server configs. Dev `start` creates them automatically when the required credential files are all absent; a partial setup is refused to avoid credential rotation. Local/prod use this command explicitly. TLS options are required for production and rejected for local/dev. Files are mode 0600 under a mode 0700 directory; the command never overwrites credentials or generates Connector, artifact or database installation identities. |
+| `... init-artifacts` | Explicitly initializes or verifies the configured artifact root. Dev `start` does this automatically before app services; local/prod use the explicit command. Dev/prod use a one-shot `worker` container with the selected engine. The marker is created only in an empty root; an existing marker must match `ARTIFACT_STORAGE_ID`. |
 | `... up-dependencies [--only SERVICE[,SERVICE...]]` | Local mode only. With no selector, starts PostgreSQL, NATS and NATS NUI under the stable `openship` project and records which services this wrapper started. Accepts comma-separated `postgres`, `nats` and `nats-nui`; `--only nats,nats-nui` starts NATS and NUI, and selecting `nats-nui` alone also starts its NATS dependency. NUI imports a protected local connection profile at startup; click Connect once in the UI. The command never deletes volumes. |
 | `... bootstrap --check` / `--apply` | Run a one-shot privileged messaging bootstrap, then remove that process. Check is read-only; apply creates missing compatible resources, refuses destructive drift. |
 | `... startup preview` / `startup apply --cutover-id UUID --dev-confirmed --writers-stopped` | Read-only startup-state classification and a gated dev cutover apply. The stable ID binds apply to the preview; the extra flag identifies disposable dev automation. Production operators use a separately created ID with `cutover preview` and `cutover apply`. |
@@ -418,27 +418,32 @@ resources without making a live provider/search/AWS request.
 
 ## Development Compose startup
 
-From the repository root, prepare `.env` and run the wrapper commands. Set
+From the repository root, prepare `.env` and run the wrapper. Set
 `CONTAINER_ENGINE=podman` in `.env` to use Podman; the default is Docker. You
 can override the file setting for one command with
-`CONTAINER_ENGINE=podman scripts/openship-stack ...`. `init-messaging` creates
-the protected NATS credentials. `init-artifacts` initializes a new empty
-`artifactdata` volume or verifies that its marker matches the stable ID.
+`CONTAINER_ENGINE=podman scripts/openship-stack ...`. Dev `start` creates
+missing protected NATS credentials and initializes or verifies the artifact
+volume before starting application services. Set a stable
+`ARTIFACT_STORAGE_ID` in `.env`; startup never generates or changes it.
 
 ```bash
 cp .env.example .env
 # Set a strong JWT_SECRET and a stable ARTIFACT_STORAGE_ID in .env.
 # Optionally set CONTAINER_ENGINE=podman in .env.
-scripts/openship-stack --environment dev init-messaging
-scripts/openship-stack --environment dev init-artifacts
 scripts/openship-stack --environment dev start
 scripts/openship-stack --environment dev doctor
 ```
 
 The root file adds persistent PostgreSQL, NATS, NATS NUI, messaging bootstrap
-and relay services. `start` generates the protected dev NUI context, brings up
-PostgreSQL/NATS, runs migration and bootstrap as one-shot commands, then checks
-the persisted messaging state. On an inactive installation, the first plain
+and relay services. `start` first creates missing protected dev NATS
+credentials and initializes or verifies the mounted artifact volume. It then
+generates the protected dev NUI context, brings up PostgreSQL/NATS, runs
+migration and bootstrap as one-shot commands, then checks the persisted
+messaging state. It reuses complete existing NATS credentials and refuses to
+repair a partial credential set automatically. The artifact marker must match
+the configured `ARTIFACT_STORAGE_ID`; a non-empty volume without its marker or
+with another ID stops startup without replacing data. On an inactive
+installation, the first plain
 `start` prints a read-only cutover preview and stable ID, then exits without
 starting API, worker, relay or web. If the preview is unblocked, copy that ID
 into `start --cutover <ID>` exactly as printed; the wrapper rejects a different
@@ -473,9 +478,10 @@ port 5173 with `/api` proxied to `api:8000`. Dependency/lockfile changes need a
 rebuild. API and worker preserve the existing model configuration, artifact
 volume and Connector secret mounts. Messaging credentials are mounted one
 role at a time from `.openship`, not through Connector `./secrets`. Existing
-artifact storage initialization remains explicit: `init-artifacts` refuses a
-non-empty root without its marker or a marker whose value differs from
-`ARTIFACT_STORAGE_ID`. For an existing store, keep its current ID and volume.
+the automatic artifact initialization refuses a non-empty root without its
+marker or a marker whose value differs from `ARTIFACT_STORAGE_ID`. For an
+existing store, keep its current ID and volume. The explicit `init-artifacts`
+command remains available for operator use.
 
 The web client proxies `/api` to the API using the internal `api:8000` service
 name, in both Vite reload mode and the built Nginx image. PostgreSQL and NATS

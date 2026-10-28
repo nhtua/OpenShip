@@ -567,6 +567,10 @@ accidentally choosing the deterministic startup apply path.
   also stop native writers pointed at the same database), re-preview, apply
   with the same ID, and exit nonzero after successful apply. On a blocked
   preview, show the manual runbook link and preserve all data/volumes.
+- [x] Make dev `start` create protected NATS credentials only when the required
+  config files are all absent, refuse partial configuration, and initialize or
+  verify the worker's mounted artifact volume before starting application
+  services. Preserve existing credentials and `ARTIFACT_STORAGE_ID`.
 - [x] Make `scripts/openship-stack -e dev stop` run Compose `down` using both
   `docker-compose.yml` and `docker-compose.dev.yml` even when the stack was
   started without reload. Preserve named volumes; leave local/prod stop

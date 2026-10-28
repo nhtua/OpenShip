@@ -40,19 +40,21 @@ policy, while an explicitly empty value restricts the installation to no
 tools. Legacy `BRAVE_SEARCH_API_KEY` / `TAVILY_API_KEY` worker bindings remain
 for persisted old runs; they are not the normal managed-Connector setup path.
 
-Initialize the named volume once, before the first artifact operation. The
-stack wrapper selects Docker by default and reads `CONTAINER_ENGINE=docker` or
-`CONTAINER_ENGINE=podman` from the root `.env`:
+For the dev Compose stack, `start` initializes the named volume or verifies its
+existing marker before starting application services. It also creates missing
+dev NATS credentials. Keep `ARTIFACT_STORAGE_ID` stable; startup refuses to
+replace a marker or to initialize a non-empty volume whose marker is missing.
+The stack wrapper selects Docker by default and reads
+`CONTAINER_ENGINE=docker` or `CONTAINER_ENGINE=podman` from the root `.env`:
 
 ```bash
-scripts/openship-stack --environment dev init-messaging
-scripts/openship-stack --environment dev init-artifacts
 scripts/openship-stack --environment dev start
 ```
 
-For Compose, `init-messaging` must run first because the one-shot worker
-container also mounts its role-specific NATS credential file. `init-artifacts`
-checks that these files exist before invoking the worker container.
+The explicit `init-artifacts` command remains available for local or production
+provisioning. In production, initialize messaging credentials first because the
+worker container mounts its protected NATS credentials. `init-messaging`
+refuses to overwrite existing credential files.
 
 The initializer writes `.storage-id` only in an empty root. If it finds a
 non-empty root without that marker or a marker with another UUID, it refuses to

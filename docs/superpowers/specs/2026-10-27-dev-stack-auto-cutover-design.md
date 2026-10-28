@@ -45,6 +45,9 @@ same ID before applying it. Production remains an operator-led migration.
   the operator opens execution/admission and ingress explicitly.
 - Preserve PostgreSQL, JetStream, artifact, and Connector volumes and all
   existing setup. `--cutover` is not a volume reset or stream purge.
+- Make dev `start` provision first-run setup itself: create NATS credentials
+  only when the required config files are all absent, and initialize or verify
+  the mounted artifact volume using the configured stable storage ID.
 - Make `scripts/openship-stack -e dev stop` equivalent to Compose `down` with
   both `docker-compose.yml` and `docker-compose.dev.yml`, regardless of which
   manifest set was used for the preceding start. Remove containers/network but
@@ -57,6 +60,8 @@ same ID before applying it. Production remains an operator-led migration.
 - Changing production cutover policy, public API behavior, NATS topology, or
   worker delivery semantics.
 - Resetting dev PostgreSQL data or JetStream state to force a clean start.
+- Generating or changing `ARTIFACT_STORAGE_ID`, rotating existing NATS
+  credentials, or repairing a partial credential directory automatically.
 
 ## Approaches
 
@@ -80,6 +85,14 @@ those require the manual reconciliation procedure.
   `prod` is a usage error. The low-level startup CLI apply also requires an
   explicit `--dev-confirmed` acknowledgement so production's manual UUID,
   preview and apply process remains distinct.
+- Before starting dev dependencies, `start` creates protected NATS credentials
+  if none of the required files exist. A complete existing set is reused; a
+  partial set or pre-existing unconfigured directory fails closed rather than
+  creating credentials that may not match persisted NATS state.
+- Before starting dev application services, `start` runs the artifact
+  initializer against the worker's mounted `artifactdata` volume. This creates
+  the marker only for an empty root and verifies the existing marker otherwise;
+  a missing/mismatched identity blocks startup without changing the volume.
 - The cutover ID must be stable across preview, confirmation, interruption,
   and resume. Prefer the persisted in-progress ID when one exists; otherwise
   derive/store one per installation so the second invocation reuses the exact
@@ -128,6 +141,9 @@ those require the manual reconciliation procedure.
   catch-up, opens execution before admission, then starts the stack.
 - A previously active dev installation starts normally without another
   cutover. A rolled-back installation is never silently forwarded.
+- A fresh dev `start` creates missing NATS credentials and initializes the
+  artifact volume; later starts reuse credentials and verify the same storage
+  marker. Partial credentials and identity mismatches block startup safely.
 - `prod start` does not apply a cutover and refuses to start app services while
   transport is inactive. The production runbook describes manual preview,
   apply, verify, gate-opening, and ingress steps.

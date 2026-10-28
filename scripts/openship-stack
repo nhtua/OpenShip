@@ -206,6 +206,43 @@ ensure_messaging_files() {
   fi
 }
 
+initialize_dev_messaging_if_missing() {
+  local dir file any_present=0 any_missing=0
+  local required=(api.json worker.json relay.json operator.json server.compose.json)
+  dir="$(secret_dir)"
+
+  for file in "${required[@]}"; do
+    if [[ -e "$dir/$file" || -L "$dir/$file" ]]; then
+      any_present=1
+      if [[ ! -f "$dir/$file" || -L "$dir/$file" ]]; then
+        echo "Dev messaging file is not a regular file: $dir/$file" >&2
+        return 2
+      fi
+    else
+      any_missing=1
+    fi
+  done
+
+  if ((any_present && any_missing)); then
+    echo "Dev messaging setup is incomplete at $dir; refusing to generate replacement credentials. Restore the missing files, then retry." >&2
+    return 2
+  fi
+  if (( !any_present )); then
+    if [[ -e "$dir" || -L "$dir" ]]; then
+      echo "Dev messaging directory already exists without its required files; refusing to replace it: $dir" >&2
+      return 2
+    fi
+    python3 "$ROOT/scripts/init_messaging.py" --directory "$dir" || return $?
+  fi
+
+  ensure_messaging_files
+}
+
+initialize_dev_artifacts() {
+  compose run --build --rm --no-deps --entrypoint uv worker \
+    run python -m src.openship.artifacts.maintenance init
+}
+
 prepare_nui_context() {
   local profile="$1"
   python3 "$ROOT/scripts/init_nats_nui_context.py" \
@@ -451,6 +488,9 @@ start_dev_stack() {
     esac
   done
 
+  [[ -f "$ROOT/.env" ]] || { echo "copy .env.example to .env first" >&2; return 2; }
+  initialize_dev_messaging_if_missing
+  initialize_dev_artifacts
   prepare_nui_context dev
   compose up -d postgres nats
   compose run --build --rm migrate
@@ -602,8 +642,7 @@ case "$COMMAND" in
         ;;
       dev)
         ensure_messaging_files
-        compose run --build --rm --no-deps --entrypoint uv worker \
-          run python -m src.openship.artifacts.maintenance init
+        initialize_dev_artifacts
         ;;
       prod)
         ensure_messaging_files
@@ -672,9 +711,9 @@ case "$COMMAND" in
     fi
     ;;
   start)
-    ensure_messaging_files
     case "$ENVIRONMENT" in
       local)
+        ensure_messaging_files
         (($# == 0)) || { echo "local start does not accept options" >&2; exit 2; }
         printf 'Start native processes in separate terminals; use Compose NATS instead of the first command if selected.\n'
         printf 'NATS: nats-server -c %q\n' "$(secret_dir)/server.local.json"
@@ -690,8 +729,8 @@ case "$COMMAND" in
         start_dev_stack "$@"
         ;;
       prod)
-        (($# == 0)) || { echo "prod start does not accept options" >&2; exit 2; }
         ensure_messaging_files
+        (($# == 0)) || { echo "prod start does not accept options" >&2; exit 2; }
         compose config --quiet
         compose up -d postgres nats
         compose run --rm migrate
