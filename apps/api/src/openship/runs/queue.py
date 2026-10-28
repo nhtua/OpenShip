@@ -16,11 +16,12 @@ from sqlalchemy.orm import Session
 
 from ..chat.models import Conversation
 from ..config import settings
-from .models import Run, RunJob
+from .models import Outbox, Run, RunJob
 
 
 class ReleaseReason(Enum):
     """Reasons for releasing a lease."""
+
     EXPIRED_NOT_STARTED = "expired_not_started"
     EXPIRED_DURING_PROVIDER = "expired_during_provider"
 
@@ -28,6 +29,7 @@ class ReleaseReason(Enum):
 @dataclass
 class Claim:
     """A claim on a queued job."""
+
     run_id: uuid.UUID
     fence: int
     lease_until: datetime
@@ -38,6 +40,205 @@ class Claim:
     def checkpoint_ns(self) -> str:
         """LangGraph checkpoint namespace for this claim."""
         return f"attempt-{self.fence}"
+
+
+@dataclass(frozen=True)
+class ClaimDecision:
+    """One exact command's durable acquisition decision."""
+
+    kind: str
+    claim: Claim | None = None
+    delay: float | None = None
+    code: str | None = None
+
+
+def claim_run(
+    db: Session,
+    *,
+    run_id: uuid.UUID,
+    generation: int,
+    epoch: uuid.UUID,
+    worker_id: str,
+    lease_seconds: int,
+) -> ClaimDecision:
+    """Acquire only the specified run's current command generation."""
+    from ..messaging.models import MessageTransportState
+
+    state = db.get(MessageTransportState, 1)
+    if state is None:
+        return ClaimDecision("disposed", code="transport_missing")
+    message_id = uuid.uuid5(
+        state.installation_id, f"run.execute:{run_id}:{generation}:{epoch}"
+    )
+    decision = _claim_run_exact(
+        db,
+        run_id=run_id,
+        generation=generation,
+        epoch=epoch,
+        message_id=message_id,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+    )
+    db.commit()
+    return decision
+
+
+def _claim_run_exact(
+    db: Session,
+    *,
+    run_id: uuid.UUID,
+    generation: int,
+    epoch: uuid.UUID,
+    message_id: uuid.UUID,
+    worker_id: str,
+    lease_seconds: int,
+    conversation_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
+    payload_digest: str | None = None,
+) -> ClaimDecision:
+    """Validate persisted identity and acquire under one transaction."""
+    from ..messaging.models import MessageTransportState
+
+    if (
+        not isinstance(generation, int)
+        or generation < 1
+        or lease_seconds < 1
+        or not worker_id
+        or len(worker_id) > 50
+    ):
+        return ClaimDecision("disposed", code="invalid_command")
+    observed_state = db.get(MessageTransportState, 1)
+    if observed_state is None or observed_state.transport_epoch != epoch:
+        return ClaimDecision("disposed", code="obsolete_epoch")
+    installation_id = observed_state.installation_id
+    expected_subject = f"openship.{installation_id.hex}.v1.command.run.execute"
+    expected_message_id = uuid.uuid5(
+        installation_id, f"run.execute:{run_id}:{generation}:{epoch}"
+    )
+    row = (
+        db.query(Outbox)
+        .filter(Outbox.run_id == run_id, Outbox.dispatch_generation == generation)
+        .one_or_none()
+    )
+    if (
+        row is None
+        or row.destination != "command"
+        or row.type != "run.execute"
+        or row.schema_version != 1
+        or row.message_id != message_id
+        or row.message_id != expected_message_id
+        or row.subject != expected_subject
+        or row.transport_epoch != epoch
+    ):
+        return ClaimDecision("disposed", code="identity_mismatch")
+
+    identity = db.query(Run.conversation_id).filter(Run.id == run_id).first()
+    if identity is None:
+        return ClaimDecision("disposed", code="run_missing")
+    conversation = (
+        db.query(Conversation)
+        .filter(Conversation.id == identity.conversation_id)
+        .with_for_update()
+        .first()
+    )
+    run = (
+        db.query(Run)
+        .filter(Run.id == run_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    job = (
+        db.query(RunJob)
+        .filter(RunJob.run_id == run_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    if (
+        conversation is None
+        or run is None
+        or job is None
+        or row.conversation_id != conversation.id
+    ):
+        return ClaimDecision("disposed", code="reference_mismatch")
+    if (conversation_id is not None and run.conversation_id != conversation_id) or (
+        project_id is not None and run.project_id != project_id
+    ):
+        return ClaimDecision("disposed", code="reference_mismatch")
+    # Admission and worker acquisition both lock the conversation before the
+    # installation-wide messaging state. Preserve that order to avoid a
+    # submission holding the conversation while a claim holds this gate.
+    state = (
+        db.query(MessageTransportState)
+        .filter_by(id=1)
+        .with_for_update(read=True)
+        .populate_existing()
+        .one_or_none()
+    )
+    if (
+        state is None
+        or state.installation_id != installation_id
+        or state.transport_epoch != epoch
+    ):
+        return ClaimDecision("disposed", code="obsolete_epoch")
+    if payload_digest is not None:
+        from ..messaging.models import MessageDisposition
+
+        previous = (
+            db.query(MessageDisposition)
+            .filter(MessageDisposition.message_id == message_id)
+            .one_or_none()
+        )
+        if previous is not None and previous.payload_digest != payload_digest:
+            return ClaimDecision("disposed", code="digest_mismatch")
+    if job.dispatch_generation != generation:
+        return ClaimDecision("disposed", code="obsolete_generation")
+    if run.status in {
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "stale",
+        "waiting_connector",
+    }:
+        return ClaimDecision("disposed", code="run_not_executable")
+    if not state.active:
+        return ClaimDecision("defer", code="transport_inactive")
+    if not state.execution_open:
+        return ClaimDecision("defer", code="execution_closed")
+    now = _py_now()
+    lease_until = _as_utc(job.lease_until) if job.lease_until is not None else None
+    if job.owner_id is not None:
+        if lease_until is None or lease_until <= now:
+            return ClaimDecision("reconcile_required")
+        return ClaimDecision(
+            "defer", delay=max(1.0, (lease_until - now).total_seconds())
+        )
+    if lease_until is not None:
+        if lease_until <= now:
+            return ClaimDecision("reconcile_required")
+        return ClaimDecision(
+            "defer", delay=max(1.0, (lease_until - now).total_seconds())
+        )
+    if run.status != "queued":
+        return ClaimDecision("reconcile_required")
+    available_at = _as_utc(job.available_at)
+    if available_at > now:
+        return ClaimDecision(
+            "defer", delay=max(1.0, (available_at - now).total_seconds())
+        )
+    fence = max(run.fence, job.fence) + 1
+    job.fence = fence
+    job.owner_id = worker_id
+    job.lease_until = now + timedelta(seconds=lease_seconds)
+    run.fence = fence
+    run.status = "running"
+    db.flush()
+    return ClaimDecision(
+        "claimed",
+        claim=Claim(run_id, fence, job.lease_until, worker_id, conversation.user_id),
+    )
 
 
 def _db_now():
@@ -296,6 +497,17 @@ def reconcile_expired(db: Session) -> int:
             run.fence = job.fence
             job.owner_id = None
             job.lease_until = None
+            job.dispatch_generation += 1
+            from ..messaging.models import MessageTransportState
+            from ..messaging.outbox import enqueue_run
+
+            transport = db.query(MessageTransportState).filter_by(id=1).one()
+            enqueue_run(
+                db,
+                run.id,
+                job.dispatch_generation,
+                epoch=transport.transport_epoch,
+            )
             reclaimed += 1
             continue
 

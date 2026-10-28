@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).parents[3]
 
 
@@ -35,11 +37,18 @@ def test_artifact_volume_is_shared_and_search_keys_are_runtime_only():
     assert "TOOL_ENABLED_IDS" in worker
 
 
-def test_compose_ports_are_loopback_only_and_have_no_sandbox_runtime():
+def test_compose_ports_and_no_sandbox_runtime():
     compose = (REPO_ROOT / "docker-compose.yml").read_text()
-    ports = re.findall(r'(?m)^\s+- "([^"\n]+:[^"\n]+)"\s*$', compose)
-    assert len(ports) == 3
-    assert all(port.startswith("127.0.0.1:") for port in ports)
+    services = yaml.safe_load(compose)["services"]
+    assert "ports" not in services["postgres"]
+    assert "ports" not in services["nats"]
+    assert services["nats-nui"]["ports"] == ["127.0.0.1:${DEV_NATS_NUI_PORT:-31311}:31311"]
+    assert services["api"]["ports"] == ["${DEV_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"]
+    assert services["web"]["ports"] == ["${DEV_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-8080}:80"]
+    dev_ports = yaml.safe_load((REPO_ROOT / "docker-compose.dev-ports.yml").read_text())
+    assert dev_ports["services"]["web"]["ports"] == [
+        "${DEV_BIND_ADDRESS:-0.0.0.0}:${DEV_WEB_PORT:-5173}:5173"
+    ]
 
     lowered = compose.lower()
     for forbidden in (

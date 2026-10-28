@@ -29,8 +29,8 @@ from src.openship.capabilities.definitions import (
 )
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
-from src.openship.events.service import Event
-from src.openship.runs.models import Outbox
+from src.openship.events.service import append_event
+from src.openship.runs.models import Event
 from src.openship.runs.queue import Claim
 from src.openship.tools.search.contracts import (
     SearchArguments,
@@ -128,34 +128,13 @@ def _event(
     event_type: str,
     payload: dict,
 ) -> Event:
-    event_id = uuid.uuid4()
-    sequence = conversation.next_event_sequence
-    conversation.next_event_sequence = sequence + 1
-    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    event = Event(
-        id=event_id,
-        project_id=conversation.project_id,
-        conversation_id=conversation.id,
-        run_id=run_id,
-        sequence=sequence,
-        type=event_type,
-        payload=payload_json,
-        actor_id=None,
+    return append_event(
+        db,
+        conversation.id,
+        run_id,
+        event_type,
+        payload,
     )
-    db.add(event)
-    db.add(
-        Outbox(
-            conversation_id=conversation.id,
-            event_id=event_id,
-            type=event_type,
-            payload=json.dumps(
-                {"event_id": str(event_id), "type": event_type},
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
-    )
-    return event
 
 
 def _lock_conversation(db: Session, conversation_id: uuid.UUID) -> Conversation:

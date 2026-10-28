@@ -795,8 +795,8 @@ describe('ChatView', () => {
     )
   })
 
-  it('disables selection and creation while streaming', async () => {
-    const { wrapper } = await mountWithRouter(ChatView, '/')
+  it('keeps conversation navigation available while streaming and after archiving', async () => {
+    const { wrapper, router } = await mountWithRouter(ChatView, '/')
     const chat = useChatStore()
     chat.isStreaming = true
 
@@ -808,9 +808,28 @@ describe('ChatView', () => {
     )
 
     const newButton = findByText(wrapper, 'New Conversation')!
-    expect((newButton.element as HTMLButtonElement).disabled).toBe(true)
+    expect((newButton.element as HTMLButtonElement).disabled).toBe(false)
     const row = findByText(wrapper, 'Deploy pipeline')!
-    expect((row.element as HTMLButtonElement).disabled).toBe(true)
+    expect((row.element as HTMLButtonElement).disabled).toBe(false)
+    expect((wrapper.get('#message').element as HTMLTextAreaElement).disabled).toBe(true)
+
+    await row.trigger('click')
+    await vi.waitFor(
+      () => expect(router.currentRoute.value.path).toBe('/conversation/c1'),
+      { timeout: wait },
+    )
+    await vi.waitFor(() => expect(chat.currentConversation?.id).toBe('c1'), { timeout: wait })
+
+    chat.currentConversation!.archived_at = '2026-01-01T00:00:00Z'
+    await nextTick()
+    expect(chat.currentConversationReadOnly).toBe(true)
+    const otherConversation = findByText(wrapper, 'Scale up web')!
+    expect((otherConversation.element as HTMLButtonElement).disabled).toBe(false)
+    await otherConversation.trigger('click')
+    await vi.waitFor(
+      () => expect(router.currentRoute.value.path).toBe('/conversation/c2'),
+      { timeout: wait },
+    )
   })
 
   it('offers cancel only for a run that can still be stopped', async () => {

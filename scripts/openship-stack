@@ -1,0 +1,816 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+ENVIRONMENT=""
+RELOAD=0
+
+load_container_engine() {
+  local dotenv_file line value=""
+  if [[ -z "${CONTAINER_ENGINE:-}" ]]; then
+    if [[ "$ENVIRONMENT" == prod ]]; then
+      dotenv_file="$ROOT/.env.prod"
+    else
+      dotenv_file="$ROOT/.env"
+    fi
+    if [[ -f "$dotenv_file" ]]; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?CONTAINER_ENGINE[[:space:]]*=(.*)$ ]]; then
+          value="${BASH_REMATCH[2]}"
+        fi
+      done < "$dotenv_file"
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      if [[ "$value" =~ ^\"(docker|podman)\"([[:space:]]*(#.*)?)$ ]] || \
+         [[ "$value" =~ ^\'(docker|podman)\'([[:space:]]*(#.*)?)$ ]] || \
+         [[ "$value" =~ ^(docker|podman)([[:space:]]*(#.*)?)$ ]]; then
+        CONTAINER_ENGINE="${BASH_REMATCH[1]}"
+      elif [[ -n "$value" ]]; then
+        echo "CONTAINER_ENGINE in $dotenv_file must be docker or podman" >&2
+        return 2
+      fi
+    fi
+  fi
+  CONTAINER_ENGINE="${CONTAINER_ENGINE:-docker}"
+  case "$CONTAINER_ENGINE" in
+    docker|podman) ;;
+    *) echo "CONTAINER_ENGINE must be docker or podman" >&2; return 2 ;;
+  esac
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/openship-stack (-e|--environment) local|dev|prod [--reload] COMMAND [ARGS]
+Example: scripts/openship-stack -e dev start
+
+Commands:
+  init-messaging [--tls-cert FILE --tls-key FILE --tls-ca FILE]
+  init-artifacts
+  up-dependencies [--only SERVICE[,SERVICE...]]  local only
+    SERVICES: postgres, nats, nats-nui
+  bootstrap --check|--apply
+  doctor
+  start [--cutover UUID] | stop | status
+  startup preview|apply [--cutover-id UUID --dev-confirmed --writers-stopped]
+  cutover preview|apply|verify [options]
+  rollback preview|apply [options]
+  admission close|open [options]
+  execution close|open [options]
+  reconcile --preview|--apply [options]
+
+local starts native API, worker, relay, and Vite processes outside this wrapper.
+dev always uses docker or podman compose with docker-compose.yml and
+docker-compose.dev.yml plus docker-compose.dev-ports.yml for Vite/Uvicorn
+reload; --reload is a compatibility alias. prod uses the protected .env.prod
+and production manifest.
+USAGE
+}
+
+while (($#)); do
+  case "$1" in
+    --environment|-e)
+      [[ $# -ge 2 ]] || { echo "--environment requires a value" >&2; exit 2; }
+      ENVIRONMENT="$2"
+      shift 2
+      ;;
+    --reload)
+      RELOAD=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[[ -n "$ENVIRONMENT" ]] || { usage >&2; exit 2; }
+case "$ENVIRONMENT" in
+  local|dev|prod) ;;
+  *) echo "environment must be local, dev, or prod" >&2; exit 2 ;;
+esac
+if [[ "$ENVIRONMENT" == prod && -n "${OPENSHIP_SECRETS_DIR:-}" ]]; then
+  echo "OPENSHIP_SECRETS_DIR cannot override the fixed production Compose credential path" >&2
+  exit 2
+fi
+if ((RELOAD)) && [[ "$ENVIRONMENT" != dev ]]; then
+  echo "--reload is supported only for the dev Compose stack" >&2
+  exit 2
+fi
+
+COMMAND="${1:-}"
+shift || true
+[[ -n "$COMMAND" ]] || { usage >&2; exit 2; }
+load_container_engine
+
+secret_dir() {
+  if [[ -n "${OPENSHIP_SECRETS_DIR:-}" ]]; then
+    case "$OPENSHIP_SECRETS_DIR" in
+      /*) printf '%s\n' "$OPENSHIP_SECRETS_DIR" ;;
+      *) printf '%s\n' "$ROOT/$OPENSHIP_SECRETS_DIR" ;;
+    esac
+  else
+    printf '%s\n' "$ROOT/.openship/messaging/$ENVIRONMENT"
+  fi
+}
+
+compose_secret_dir() {
+  local path
+  path="$(secret_dir)"
+  case "$path" in
+    "$ROOT"/*) printf '%s\n' "${path#"$ROOT"/}" ;;
+    *) printf '%s\n' "$path" ;;
+  esac
+}
+
+compose() {
+  local args=()
+  local compose_version major minor patch
+  command -v "$CONTAINER_ENGINE" >/dev/null 2>&1 || {
+    echo "$CONTAINER_ENGINE is required for Compose environments" >&2
+    return 2
+  }
+  if [[ "$CONTAINER_ENGINE" == docker ]]; then
+    compose_version="$(docker compose version --short 2>/dev/null)" || {
+      echo "Docker Compose v2 is required" >&2
+      return 2
+    }
+    compose_version="${compose_version#v}"
+    compose_version="${compose_version%%[-+]*}"
+    IFS=. read -r major minor patch <<< "$compose_version"
+    if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ || ! "${patch:-0}" =~ ^[0-9]+$ ]] || \
+       ((major < 2 || (major == 2 && minor < 24))); then
+      echo "Docker Compose 2.24.0 or newer is required" >&2
+      return 2
+    fi
+  elif ! "$CONTAINER_ENGINE" compose version >/dev/null 2>&1; then
+    echo "Podman Compose requires Podman and a configured Compose provider" >&2
+    return 2
+  fi
+  case "$ENVIRONMENT" in
+    local)
+      args=(-p openship -f docker-compose.dependencies.yml)
+      ;;
+    dev)
+      [[ -f "$ROOT/.env" ]] || { echo "copy .env.example to .env first" >&2; return 2; }
+      args=(
+        -p openship-dev
+        -f docker-compose.yml
+        -f docker-compose.dev.yml
+        -f docker-compose.dev-ports.yml
+      )
+      ;;
+    prod)
+      [[ -f "$ROOT/.env.prod" ]] || { echo "copy .env.prod.example to .env.prod first" >&2; return 2; }
+      if [[ "${OPENSHIP_SKIP_PROD_VALIDATION:-0}" != 1 ]]; then
+        "$ROOT/scripts/check_prod_env.py" --file "$ROOT/.env.prod" || return $?
+      fi
+      args=(-p "${COMPOSE_PROJECT_NAME:-openship}" --env-file .env.prod -f docker-compose.prod.yml)
+      ;;
+  esac
+  (cd "$ROOT" && OPENSHIP_MESSAGING_DIR="$(compose_secret_dir)" "$CONTAINER_ENGINE" compose "${args[@]}" "$@")
+}
+
+local_cli() {
+  local dir
+  dir="$(secret_dir)"
+  [[ -f "$dir/operator.json" ]] || { echo "run init-messaging first" >&2; return 2; }
+  (
+    cd "$ROOT/apps/api"
+    export NATS_SERVERS="${NATS_SERVERS:-nats://127.0.0.1:${NATS_PORT:-4222}}"
+    export NATS_AUTH_FILE="$dir/operator.json"
+    if [[ -s "$dir/ca.crt" ]]; then
+      export NATS_TLS_CA_FILE="$dir/ca.crt"
+      if [[ "$NATS_SERVERS" == nats://* ]]; then
+        export NATS_SERVERS="tls://${NATS_SERVERS#nats://}"
+      fi
+    fi
+    uv run python -m src.openship.messaging.cli "$@"
+  )
+}
+
+compose_cli() {
+  compose run --rm --no-deps --entrypoint uv messaging-bootstrap \
+    run python -m src.openship.messaging.cli "$@"
+}
+
+ensure_messaging_files() {
+  local dir
+  dir="$(secret_dir)"
+  for file in api.json worker.json relay.json operator.json server.compose.json; do
+    [[ -f "$dir/$file" ]] || { echo "missing protected messaging file: $dir/$file" >&2; return 2; }
+  done
+  if [[ "$ENVIRONMENT" == prod ]]; then
+    for file in ca.crt server.crt server.key; do
+      [[ -s "$dir/$file" ]] || { echo "missing production TLS file: $dir/$file" >&2; return 2; }
+    done
+  fi
+}
+
+initialize_dev_messaging_if_missing() {
+  local dir file any_present=0 any_missing=0
+  local required=(api.json worker.json relay.json operator.json server.compose.json)
+  dir="$(secret_dir)"
+
+  for file in "${required[@]}"; do
+    if [[ -e "$dir/$file" || -L "$dir/$file" ]]; then
+      any_present=1
+      if [[ ! -f "$dir/$file" || -L "$dir/$file" ]]; then
+        echo "Dev messaging file is not a regular file: $dir/$file" >&2
+        return 2
+      fi
+    else
+      any_missing=1
+    fi
+  done
+
+  if ((any_present && any_missing)); then
+    echo "Dev messaging setup is incomplete at $dir; refusing to generate replacement credentials. Restore the missing files, then retry." >&2
+    return 2
+  fi
+  if (( !any_present )); then
+    if [[ -e "$dir" || -L "$dir" ]]; then
+      echo "Dev messaging directory already exists without its required files; refusing to replace it: $dir" >&2
+      return 2
+    fi
+    python3 "$ROOT/scripts/init_messaging.py" --directory "$dir" || return $?
+  fi
+
+  ensure_messaging_files
+}
+
+initialize_dev_artifacts() {
+  compose run --build --rm --no-deps --entrypoint uv worker \
+    run python -m src.openship.artifacts.maintenance init
+}
+
+prepare_nui_context() {
+  local profile="$1"
+  python3 "$ROOT/scripts/init_nats_nui_context.py" \
+    --credentials "$(secret_dir)/operator.json" \
+    --context-dir "$(secret_dir)/nui-contexts" \
+    --server-url nats://nats:4222 \
+    --profile "$profile"
+}
+
+run_messaging_cli() {
+  local output result
+  if [[ "$ENVIRONMENT" == local ]]; then
+    set +e
+    output="$(local_cli "$@" 2>&1)"
+    result=$?
+    set -e
+  else
+    set +e
+    output="$(compose_cli "$@" 2>&1)"
+    result=$?
+    set -e
+  fi
+  if [[ "${CLI_QUIET:-0}" != 1 && -n "$output" ]]; then
+    printf '%s\n' "$output"
+  fi
+  CLI_JSON="$(python3 -c '
+import json
+import sys
+
+for line in reversed(sys.stdin.read().splitlines()):
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(value, dict) and "status" in value:
+        print(json.dumps(value, sort_keys=True))
+        break
+' <<< "$output")"
+  return "$result"
+}
+
+json_field() {
+  local json="$1" field="$2"
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2], ""))' \
+    "$json" "$field"
+}
+
+manual_cutover_steps() {
+  local cutover_id="$1"
+  cat >&2 <<MANUAL_CUTOVER
+Automatic startup cutover cannot continue. Review docs/operations/messaging.md
+and follow its manual drained-cutover procedure for this installation.
+Cutover ID: $cutover_id
+MANUAL_CUTOVER
+}
+
+prod_manual_cutover_steps() {
+  cat >&2 <<'PROD_CUTOVER'
+Production messaging is inactive or still behind closed cutover gates. Do not
+use the generated development startup ID. Follow the production cutover
+procedure in docs/operations/messaging.md: create and record a unique ID,
+block ingress, stop old writers, preview, resolve blockers, apply manually,
+start the new stack with gates closed, verify, open execution then admission,
+and restore ingress.
+PROD_CUTOVER
+}
+
+stop_dev_app_services() {
+  local services=("$@")
+  ((${#services[@]})) || return 0
+  compose stop "${services[@]}"
+}
+
+restore_dev_app_services() {
+  local services=("$@")
+  ((${#services[@]})) || return 0
+  compose up -d "${services[@]}"
+}
+
+running_dev_app_services() {
+  local service container container_names
+  RUNNING_APP_SERVICES=()
+  container_names="$("$CONTAINER_ENGINE" ps --format '{{.Names}}')" || return $?
+  while IFS= read -r container; do
+    for service in api worker relay web; do
+      if [[ "$container" == "openship-dev_${service}_"* || \
+            "$container" == "openship-dev-${service}-"* ]]; then
+        RUNNING_APP_SERVICES+=("$service")
+      fi
+    done
+  done <<< "$container_names"
+}
+
+manual_restore_dev_app_services() {
+  local restore_on_block="$1"
+  shift
+  if [[ "$restore_on_block" == 1 ]]; then
+    restore_dev_app_services "$@"
+  fi
+}
+
+dev_startup_apply() {
+  local expected_id="$1" restore_on_block="$2" status cutover_id progress_status
+  local restore_services=("${RUNNING_APP_SERVICES[@]}")
+  if ! stop_dev_app_services "${restore_services[@]}"; then
+    if [[ "$restore_on_block" == 1 ]]; then
+      if restore_dev_app_services "${restore_services[@]}"; then
+        echo "Could not stop every running Compose app service; no cutover was attempted and prior services were restored." >&2
+      else
+        echo "Could not stop or restore every Compose app service; no cutover was attempted. Inspect the stack before retrying." >&2
+      fi
+    else
+      echo "Could not stop every Compose app service while cutover progress exists; no apply was attempted. Inspect and stop any remaining writers before manual recovery." >&2
+    fi
+    return 1
+  fi
+
+  if ! run_messaging_cli startup preview; then
+    manual_restore_dev_app_services "$restore_on_block" "${restore_services[@]}"
+    manual_cutover_steps "$expected_id"
+    return 1
+  fi
+  status="$(json_field "$CLI_JSON" status)"
+  cutover_id="$(json_field "$CLI_JSON" cutover_id)"
+  progress_status="$(json_field "$CLI_JSON" progress_status)"
+  if [[ "$cutover_id" != "$expected_id" ]]; then
+    echo "startup cutover ID changed while stopping app services" >&2
+    manual_cutover_steps "$cutover_id"
+    if [[ -z "$progress_status" ]]; then
+      manual_restore_dev_app_services "$restore_on_block" "${restore_services[@]}"
+    else
+      echo "Another cutover has persisted progress; app services remain stopped for manual recovery." >&2
+    fi
+    return 1
+  fi
+  if [[ "$status" == blocked ]]; then
+    if [[ -z "$(json_field "$CLI_JSON" progress_status)" ]]; then
+      manual_restore_dev_app_services "$restore_on_block" "${restore_services[@]}"
+    else
+      echo "Cutover progress already exists; app services remain stopped for manual recovery." >&2
+    fi
+    manual_cutover_steps "$cutover_id"
+    return 1
+  fi
+  if [[ "$status" != confirmation_required && "$status" != resume_apply ]]; then
+    echo "startup cutover is not applicable from state: $status" >&2
+    manual_cutover_steps "$cutover_id"
+    manual_restore_dev_app_services "$restore_on_block" "${restore_services[@]}"
+    return 1
+  fi
+
+  if ! run_messaging_cli startup apply --cutover-id "$expected_id" --dev-confirmed --writers-stopped; then
+    if [[ "$(json_field "$CLI_JSON" status)" == blocked && \
+          -z "$(json_field "$CLI_JSON" progress_status)" ]]; then
+      manual_restore_dev_app_services "$restore_on_block" "${restore_services[@]}"
+      echo "Final preview is blocked; no cutover was applied and previously running services were restored." >&2
+    elif [[ "$(json_field "$CLI_JSON" status)" == blocked ]]; then
+      echo "Cutover progress already exists; app services remain stopped for manual recovery." >&2
+    else
+      echo "Startup cutover did not complete; app services remain stopped." >&2
+    fi
+    manual_cutover_steps "$cutover_id"
+    return 1
+  fi
+  echo "Startup cutover applied with both messaging gates closed." >&2
+  return 0
+}
+
+verify_dev_cutover() {
+  local cutover_id="$1" attempt
+  CLI_QUIET=1
+  for ((attempt = 1; attempt <= 30; attempt++)); do
+    if run_messaging_cli cutover verify --cutover-id "$cutover_id"; then
+      if [[ "$(json_field "$CLI_JSON" ready)" == True ]]; then
+        CLI_QUIET=0
+        printf '%s\n' "$CLI_JSON"
+        return 0
+      fi
+    fi
+    if ((attempt < 30)); then
+      sleep 2
+    fi
+  done
+  CLI_QUIET=0
+  printf '%s\n' "$CLI_JSON"
+  echo "Cutover verification stayed not-ready for 30 checks; gates remain closed." >&2
+  manual_cutover_steps "$cutover_id"
+  return 1
+}
+
+close_dev_cutover_gates() {
+  local cutover_id="$1" close_failed=0
+  run_messaging_cli admission close --cutover-id "$cutover_id" || close_failed=1
+  run_messaging_cli execution close --cutover-id "$cutover_id" || close_failed=1
+  if ((close_failed)); then
+    echo "Could not confirm both messaging gates are closed." >&2
+    return 1
+  fi
+  return 0
+}
+
+finish_dev_cutover() {
+  local cutover_id="$1"
+  run_messaging_cli execution close --cutover-id "$cutover_id" || {
+    manual_cutover_steps "$cutover_id"
+    return 1
+  }
+  if ! compose up -d relay; then
+    echo "Relay could not start; messaging gates remain closed." >&2
+    manual_cutover_steps "$cutover_id"
+    return 1
+  fi
+  if ! verify_dev_cutover "$cutover_id"; then
+    return 1
+  fi
+  if ! run_messaging_cli execution open --cutover-id "$cutover_id"; then
+    close_dev_cutover_gates "$cutover_id" || echo "Messaging gate state is uncertain; inspect it before restarting app services." >&2
+    manual_cutover_steps "$cutover_id"
+    return 1
+  fi
+  if ! run_messaging_cli admission open --cutover-id "$cutover_id"; then
+    close_dev_cutover_gates "$cutover_id" || echo "Messaging gate state is uncertain; inspect it before restarting app services." >&2
+    manual_cutover_steps "$cutover_id"
+    return 1
+  fi
+}
+
+start_dev_stack() {
+  local confirm_cutover_id="" status cutover_id close_failed
+  while (($#)); do
+    case "$1" in
+      --cutover)
+        [[ -z "$confirm_cutover_id" ]] || { echo "--cutover may be provided once" >&2; return 2; }
+        (($# >= 2)) || { echo "--cutover requires the Cutover ID printed by the first dev start" >&2; return 2; }
+        [[ "$2" =~ ^[[:xdigit:]]{8}(-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}$ ]] || {
+          echo "--cutover requires a UUID printed by the startup preview" >&2
+          return 2
+        }
+        confirm_cutover_id="$2"
+        shift 2
+        ;;
+      *) echo "unsupported dev start option: $1" >&2; return 2 ;;
+    esac
+  done
+
+  [[ -f "$ROOT/.env" ]] || { echo "copy .env.example to .env first" >&2; return 2; }
+  initialize_dev_messaging_if_missing
+  initialize_dev_artifacts
+  prepare_nui_context dev
+  compose up -d postgres nats
+  compose run --build --rm migrate
+  compose run --build --rm messaging-bootstrap
+
+  if ! run_messaging_cli startup preview; then
+    echo "Unable to inspect dev messaging startup state." >&2
+    return 1
+  fi
+  status="$(json_field "$CLI_JSON" status)"
+  cutover_id="$(json_field "$CLI_JSON" cutover_id)"
+
+  if [[ -n "$confirm_cutover_id" && "${confirm_cutover_id,,}" != "${cutover_id,,}" ]]; then
+    echo "The supplied --cutover ID does not match the current startup preview." >&2
+    echo "Current Cutover ID: $cutover_id" >&2
+    return 2
+  fi
+
+  case "$status" in
+    confirmation_required)
+      if [[ -z "$confirm_cutover_id" ]]; then
+        echo "Dev messaging is inactive. Review the read-only preview and stop all API/worker/relay processes outside this Compose project that use the same database." >&2
+        echo "Cutover ID: $cutover_id" >&2
+        echo "Confirm this preview with: scripts/openship-stack -e dev start --cutover $cutover_id" >&2
+        return 1
+      fi
+      running_dev_app_services
+      if ! dev_startup_apply "$cutover_id" 1; then return 1; fi
+      echo "Run scripts/openship-stack -e dev start again to verify catch-up and open dev gates." >&2
+      return 1
+      ;;
+    blocked|manual_required)
+      if [[ "$status" == manual_required || \
+            -n "$(json_field "$CLI_JSON" progress_status)" ]]; then
+        if running_dev_app_services && \
+           stop_dev_app_services "${RUNNING_APP_SERVICES[@]}"; then
+          echo "Cutover progress needs manual recovery; Compose app services remain stopped." >&2
+        else
+          echo "Cutover progress needs manual recovery, and not all Compose app services could be stopped." >&2
+        fi
+      fi
+      manual_cutover_steps "$cutover_id"
+      return 1
+      ;;
+    resume_apply)
+      running_dev_app_services
+      if ! dev_startup_apply "$cutover_id" 0; then return 1; fi
+      if [[ -n "$confirm_cutover_id" ]]; then
+        echo "Startup cutover resumed. Run scripts/openship-stack -e dev start again to verify catch-up and open dev gates." >&2
+        return 1
+      fi
+      if ! finish_dev_cutover "$cutover_id"; then return 1; fi
+      ;;
+    finish_apply)
+      if [[ -n "$confirm_cutover_id" ]]; then
+        echo "This cutover is already applied; rerun dev start without --cutover to finish startup." >&2
+        return 2
+      fi
+      if [[ "$(json_field "$CLI_JSON" admission_open)" == True || \
+            "$(json_field "$CLI_JSON" execution_open)" == True ]]; then
+        close_failed=0
+        run_messaging_cli admission close --cutover-id "$cutover_id" || close_failed=1
+        run_messaging_cli execution close --cutover-id "$cutover_id" || close_failed=1
+        if ((close_failed)); then
+          manual_cutover_steps "$cutover_id"
+          return 1
+        fi
+      fi
+      if ! finish_dev_cutover "$cutover_id"; then return 1; fi
+      ;;
+    active_ready)
+      if [[ -n "$confirm_cutover_id" ]]; then
+        echo "No startup cutover is required; remove --cutover and retry." >&2
+        return 2
+      fi
+      ;;
+    *)
+      echo "Unsupported startup state: $status" >&2
+      manual_cutover_steps "$cutover_id"
+      return 1
+      ;;
+  esac
+
+  if ! compose up -d --build nats-nui api worker relay web; then
+    if [[ "$status" == finish_apply || "$status" == resume_apply ]]; then
+      if close_dev_cutover_gates "$cutover_id"; then
+        echo "The dev cutover was verified, but the full stack failed to start; both gates are closed again." >&2
+      else
+        echo "The dev cutover was verified, but the full stack failed to start and gate state is uncertain." >&2
+      fi
+      manual_cutover_steps "$cutover_id"
+    fi
+    return 1
+  fi
+}
+
+case "$COMMAND" in
+  init-messaging)
+    args=(--directory "$(secret_dir)")
+    tls_cert_supplied=0
+    tls_key_supplied=0
+    tls_ca_supplied=0
+    while (($#)); do
+      case "$1" in
+        --tls-cert)
+          [[ $# -ge 2 ]] || { echo "$1 requires a file" >&2; exit 2; }
+          [[ "$tls_cert_supplied" == 0 ]] || { echo "--tls-cert may be provided once" >&2; exit 2; }
+          tls_cert_supplied=1
+          args+=("$1" "$2")
+          shift 2
+          ;;
+        --tls-key)
+          [[ $# -ge 2 ]] || { echo "$1 requires a file" >&2; exit 2; }
+          [[ "$tls_key_supplied" == 0 ]] || { echo "--tls-key may be provided once" >&2; exit 2; }
+          tls_key_supplied=1
+          args+=("$1" "$2")
+          shift 2
+          ;;
+        --tls-ca)
+          [[ $# -ge 2 ]] || { echo "$1 requires a file" >&2; exit 2; }
+          [[ "$tls_ca_supplied" == 0 ]] || { echo "--tls-ca may be provided once" >&2; exit 2; }
+          tls_ca_supplied=1
+          args+=("$1" "$2")
+          shift 2
+          ;;
+        *) echo "unsupported init-messaging option: $1" >&2; exit 2 ;;
+      esac
+    done
+    if [[ "$ENVIRONMENT" != prod ]] &&
+      ((tls_cert_supplied || tls_key_supplied || tls_ca_supplied)); then
+      echo "TLS credential initialization is supported only for the production Compose stack" >&2
+      exit 2
+    fi
+    if [[ "$ENVIRONMENT" == prod ]]; then
+      "$ROOT/scripts/check_prod_env.py" --file "$ROOT/.env.prod"
+      if (( !tls_cert_supplied || !tls_key_supplied || !tls_ca_supplied )); then
+        echo "production init-messaging requires --tls-cert, --tls-key, and --tls-ca" >&2
+        exit 2
+      fi
+    fi
+    exec python3 "$ROOT/scripts/init_messaging.py" "${args[@]}"
+    ;;
+  init-artifacts)
+    (($# == 0)) || { echo "usage: init-artifacts" >&2; exit 2; }
+    case "$ENVIRONMENT" in
+      local)
+        command -v uv >/dev/null 2>&1 || { echo "uv is required for local artifact initialization" >&2; exit 2; }
+        (cd "$ROOT/apps/api" && uv run python -m src.openship.artifacts.maintenance init)
+        ;;
+      dev)
+        ensure_messaging_files
+        initialize_dev_artifacts
+        ;;
+      prod)
+        ensure_messaging_files
+        compose run --rm --no-deps --entrypoint uv worker \
+          run python -m src.openship.artifacts.maintenance init
+        ;;
+    esac
+    ;;
+  up-dependencies)
+    [[ "$ENVIRONMENT" == local ]] || { echo "up-dependencies is local-only" >&2; exit 2; }
+    ensure_messaging_files
+    services=(postgres nats nats-nui)
+    needs_nui_context=1
+    if (($#)); then
+      [[ $# == 2 && "$1" == --only ]] || { echo "usage: up-dependencies [--only SERVICE[,SERVICE...]]" >&2; exit 2; }
+      IFS=',' read -r -a requested_services <<< "$2"
+      ((${#requested_services[@]})) || { echo "--only requires at least one service" >&2; exit 2; }
+      selected_postgres=0
+      selected_nats=0
+      selected_nats_nui=0
+      for service in "${requested_services[@]}"; do
+        service="${service#"${service%%[![:space:]]*}"}"
+        service="${service%"${service##*[![:space:]]}"}"
+        case "$service" in
+          postgres) selected_postgres=1 ;;
+          nats) selected_nats=1 ;;
+          nats-nui) selected_nats_nui=1 ;;
+          *) echo "--only accepts comma-separated services: postgres, nats, nats-nui" >&2; exit 2 ;;
+        esac
+      done
+      services=()
+      ((selected_postgres)) && services+=(postgres)
+      if ((selected_nats || selected_nats_nui)); then services+=(nats); fi
+      ((selected_nats_nui)) && services+=(nats-nui)
+      needs_nui_context="$selected_nats_nui"
+    fi
+    if ((needs_nui_context)); then
+      prepare_nui_context local
+    fi
+    compose up -d "${services[@]}"
+    marker="$(secret_dir)/managed-compose-dependencies"
+    existing=""
+    [[ ! -f "$marker" ]] || existing="$(cat "$marker")"
+    for service in "${services[@]}"; do
+      [[ " $existing " == *" $service "* ]] || existing+=" $service"
+    done
+    umask 077
+    printf '%s\n' "${existing# }" > "$marker"
+    ;;
+  bootstrap)
+    [[ $# == 1 && ( "$1" == --check || "$1" == --apply ) ]] || { echo "usage: bootstrap --check|--apply" >&2; exit 2; }
+    ensure_messaging_files
+    if [[ "$ENVIRONMENT" == local ]]; then
+      local_cli bootstrap "$1"
+    else
+      compose_cli bootstrap "$1"
+    fi
+    ;;
+  doctor)
+    ensure_messaging_files
+    if [[ "$ENVIRONMENT" == local ]]; then
+      command -v uv >/dev/null 2>&1 || { echo "uv is required for native local operations" >&2; exit 2; }
+      local_cli doctor
+    else
+      compose_cli doctor
+    fi
+    ;;
+  start)
+    case "$ENVIRONMENT" in
+      local)
+        ensure_messaging_files
+        (($# == 0)) || { echo "local start does not accept options" >&2; exit 2; }
+        printf 'Start native processes in separate terminals; use Compose NATS instead of the first command if selected.\n'
+        printf 'NATS: nats-server -c %q\n' "$(secret_dir)/server.local.json"
+        printf 'Web: cd %q && pnpm run dev --host 0.0.0.0\n' "$ROOT/apps/web"
+        printf 'Worker: cd %q && NATS_AUTH_FILE=%q uv run watchmedo auto-restart --patterns="*.py" --recursive -- python -m src.openship.runs.worker --log-level DEBUG\n' \
+          "$ROOT/apps/api" "$(secret_dir)/worker.json"
+        printf 'Relay: cd %q && NATS_AUTH_FILE=%q uv run watchmedo auto-restart --patterns="*.py" --recursive -- python -m src.openship.messaging.relay\n' \
+          "$ROOT/apps/api" "$(secret_dir)/relay.json"
+        printf 'API: cd %q && NATS_AUTH_FILE=%q uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug\n' \
+          "$ROOT/apps/api" "$(secret_dir)/api.json"
+        ;;
+      dev)
+        start_dev_stack "$@"
+        ;;
+      prod)
+        ensure_messaging_files
+        (($# == 0)) || { echo "prod start does not accept options" >&2; exit 2; }
+        compose config --quiet
+        compose up -d postgres nats
+        compose run --rm migrate
+        compose run --rm messaging-bootstrap
+        if ! run_messaging_cli startup preview; then
+          echo "Unable to inspect production messaging startup state." >&2
+          exit 1
+        fi
+        status="$(json_field "$CLI_JSON" status)"
+        case "$status" in
+          active_ready)
+            compose up -d api worker relay web
+            ;;
+          finish_apply)
+            if [[ "$(json_field "$CLI_JSON" admission_open)" != False || \
+                  "$(json_field "$CLI_JSON" execution_open)" != False ]]; then
+              echo "Production cutover gates must both remain closed before startup verification." >&2
+              prod_manual_cutover_steps
+              exit 1
+            fi
+            compose up -d api worker relay web
+            echo "Production services started with messaging gates closed. Verify and open gates manually using docs/operations/messaging.md; restore ingress only after verification." >&2
+            ;;
+          *)
+            prod_manual_cutover_steps
+            exit 1
+            ;;
+        esac
+        ;;
+    esac
+    ;;
+  stop)
+    if [[ "$ENVIRONMENT" == local ]]; then
+      marker="$(secret_dir)/managed-compose-dependencies"
+      [[ -f "$marker" ]] || { echo "no script-managed local dependencies are recorded"; exit 0; }
+      read -r -a services < "$marker"
+      for service in "${services[@]}"; do
+        [[ "$service" == postgres || "$service" == nats || "$service" == nats-nui ]] || { echo "invalid managed service record" >&2; exit 2; }
+      done
+      ((${#services[@]})) && compose stop "${services[@]}"
+    elif [[ "$ENVIRONMENT" == dev ]]; then
+      compose down
+    else
+      OPENSHIP_SKIP_PROD_VALIDATION=1 compose stop
+    fi
+  ;;
+  status)
+    if [[ "$ENVIRONMENT" == local ]]; then
+      marker="$(secret_dir)/managed-compose-dependencies"
+      [[ -f "$marker" ]] || { echo "no script-managed local dependencies are recorded"; exit 0; }
+      read -r -a services < "$marker"
+      ((${#services[@]})) && compose ps "${services[@]}"
+    else
+      OPENSHIP_SKIP_PROD_VALIDATION=1 compose ps
+    fi
+    ;;
+  startup|cutover|rollback|admission|execution|reconcile)
+    [[ $# -gt 0 ]] || { echo "$COMMAND requires an action" >&2; exit 2; }
+    if [[ "$COMMAND" == startup && "$1" == apply && "$ENVIRONMENT" != dev ]]; then
+      echo "startup apply is reserved for the confirmed dev startup path" >&2
+      exit 2
+    fi
+    if [[ "$ENVIRONMENT" == local ]]; then
+      local_cli "$COMMAND" "$@"
+    else
+      compose_cli "$COMMAND" "$@"
+    fi
+    ;;
+  backup|restore|rotate-auth)
+    echo "$COMMAND is not implemented by this Phase 6A wrapper; follow the reviewed runbook and do not assume this operation ran" >&2
+    exit 2
+    ;;
+  *)
+    echo "unknown command: $COMMAND" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

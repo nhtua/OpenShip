@@ -74,12 +74,12 @@ def test_environment_settings_override_defaults_and_change_registry_cache(monkey
 
 def test_empty_optional_connector_environment_values_remain_unconfigured(monkeypatch):
     monkeypatch.setenv("CONNECTOR_INSTALLATION_ID", "")
-    monkeypatch.setenv("CONNECTOR_OPERATOR_USER_ID", "")
+    monkeypatch.setenv("CONNECTOR_OPERATOR_USERNAME", "")
 
     installed = Settings(_env_file=None)
 
     assert installed.connector_installation_id is None
-    assert installed.connector_operator_user_id is None
+    assert installed.connector_operator_username is None
 
 
 def test_explicit_profile_limits_remain_stricter_than_installation():

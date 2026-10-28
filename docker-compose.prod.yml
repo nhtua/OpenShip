@@ -1,0 +1,231 @@
+name: ${COMPOSE_PROJECT_NAME:-openship}
+
+x-runtime-environment: &runtime-environment
+  DATABASE_URL: ${DATABASE_URL:?Set a URL-encoded production DATABASE_URL in .env.prod}
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.prod}
+  JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
+  EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-30}
+  CHECKPOINT_RETENTION_DAYS: ${CHECKPOINT_RETENTION_DAYS:-30}
+  LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-7}
+  MESSAGING_RETENTION_DAYS: ${MESSAGING_RETENTION_DAYS:-30}
+  MESSAGING_RETENTION_BATCH_SIZE: ${MESSAGING_RETENTION_BATCH_SIZE:-1000}
+  CONNECTOR_INSTALLATION_ID: ${CONNECTOR_INSTALLATION_ID:-}
+  CONNECTOR_OPERATOR_USERNAME: ${CONNECTOR_OPERATOR_USERNAME:-}
+  CONNECTOR_ENCRYPTION_KEY_FILE: ${CONNECTOR_ENCRYPTION_KEY_FILE:-/run/secrets/openship-connector-encryption-keys.json}
+  CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE: ${CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE:-/run/secrets/openship-connector-idempotency-hmac-keys.json}
+  CONNECTOR_DISPATCH_LOCK_FILE: ${CONNECTOR_DISPATCH_LOCK_FILE:-/run/secrets/openship-managed-dispatch.lock}
+  CONNECTOR_BROWSER_ORIGINS: ${CONNECTOR_BROWSER_ORIGINS:?Set the browser origins in .env.prod}
+  ARTIFACT_ROOT: /var/lib/openship/artifacts
+  ARTIFACT_STORAGE_ID: ${ARTIFACT_STORAGE_ID:?Preserve the stable ARTIFACT_STORAGE_ID}
+  ARTIFACT_CONVERSATION_QUOTA_BYTES: ${ARTIFACT_CONVERSATION_QUOTA_BYTES:-134217728}
+  ARTIFACT_CONVERSATION_QUOTA_COUNT: ${ARTIFACT_CONVERSATION_QUOTA_COUNT:-100}
+  ARTIFACT_PROJECT_QUOTA_BYTES: ${ARTIFACT_PROJECT_QUOTA_BYTES:-1073741824}
+  ARTIFACT_PROJECT_QUOTA_COUNT: ${ARTIFACT_PROJECT_QUOTA_COUNT:-1000}
+  TOOL_ENABLED_IDS: ${TOOL_ENABLED_IDS:-}
+  MODEL_PROFILES_JSON: ${MODEL_PROFILES_JSON:-}
+  MODEL_DEFAULT_PROFILE_ID: ${MODEL_DEFAULT_PROFILE_ID:-}
+  MODEL_MAX_TOKENS: ${MODEL_MAX_TOKENS:-4000}
+  WORKFLOW_RUN_TIMEOUT_SECONDS: ${WORKFLOW_RUN_TIMEOUT_SECONDS:-1800}
+  MODEL_CONTEXT_TOKENS: ${MODEL_CONTEXT_TOKENS:-128000}
+  MODEL_MAX_CONTEXT_BYTES: ${MODEL_MAX_CONTEXT_BYTES:-2097152}
+  NATS_SERVERS: tls://nats:4222
+  NATS_TLS_CA_FILE: /run/nats-tls/ca.crt
+
+x-api-image: &api-image
+  image: ${OPENSHIP_API_IMAGE:?Set an immutable API image digest in .env.prod}
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set an immutable PostgreSQL image digest in .env.prod}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-openship}
+      POSTGRES_USER: ${POSTGRES_USER:-openship}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.prod}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+    logging: &bounded-logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  nats:
+    image: ${NATS_SERVER_IMAGE:?Set the pinned NATS image digest in .env.prod}
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ./.openship/messaging/prod/server.compose.json:/etc/nats/nats.conf:ro
+      - ./.openship/messaging/prod/server.crt:/run/nats-tls/server.crt:ro
+      - ./.openship/messaging/prod/server.key:/run/nats-tls/server.key:ro
+      - natsdata:/data
+    restart: unless-stopped
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    logging: *bounded-logging
+
+  migrate:
+    <<: *api-image
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.prod}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    logging: *bounded-logging
+
+  messaging-bootstrap:
+    <<: *api-image
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        uv run python -m src.openship.messaging.wait_for_broker
+        && exec uv run python -m src.openship.messaging.cli bootstrap --apply
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.prod}
+      NATS_SERVERS: tls://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/operator.json
+      NATS_TLS_CA_FILE: /run/nats-tls/ca.crt
+    volumes:
+      - ./.openship/messaging/prod/operator.json:/run/nats-auth/operator.json:ro
+      - ./.openship/messaging/prod/ca.crt:/run/nats-tls/ca.crt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: "no"
+    logging: *bounded-logging
+
+  api:
+    <<: *api-image
+    command: ["uv", "run", "uvicorn", "src.openship.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *runtime-environment
+      NATS_AUTH_FILE: /run/nats-auth/api.json
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      - artifactdata:/var/lib/openship/artifacts
+      - ./secrets:/run/secrets:ro
+      - ./.openship/messaging/prod/api.json:/run/nats-auth/api.json:ro
+      - ./.openship/messaging/prod/ca.crt:/run/nats-tls/ca.crt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+    logging: *bounded-logging
+
+  worker:
+    <<: *api-image
+    command: ["uv", "run", "python", "-m", "src.openship.runs.worker", "--log-level", "INFO"]
+    environment:
+      <<: *runtime-environment
+      NATS_AUTH_FILE: /run/nats-auth/worker.json
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+    volumes:
+      - artifactdata:/var/lib/openship/artifacts
+      - ./secrets:/run/secrets:ro
+      - ./.openship/messaging/prod/worker.json:/run/nats-auth/worker.json:ro
+      - ./.openship/messaging/prod/ca.crt:/run/nats-tls/ca.crt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: unless-stopped
+    stop_grace_period: 3900s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8G
+    logging: *bounded-logging
+
+  relay:
+    <<: *api-image
+    command: ["uv", "run", "python", "-m", "src.openship.messaging.relay"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.prod}
+      NATS_SERVERS: tls://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/relay.json
+      NATS_TLS_CA_FILE: /run/nats-tls/ca.crt
+    volumes:
+      - ./.openship/messaging/prod/relay.json:/run/nats-auth/relay.json:ro
+      - ./.openship/messaging/prod/ca.crt:/run/nats-tls/ca.crt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    logging: *bounded-logging
+
+  web:
+    image: ${OPENSHIP_WEB_IMAGE:?Set an immutable web image digest in .env.prod}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging: *bounded-logging
+
+volumes:
+  pgdata:
+    name: openship_pgdata
+  artifactdata:
+    name: openship_artifactdata
+  natsdata:
+    name: openship_natsdata

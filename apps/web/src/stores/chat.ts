@@ -757,127 +757,169 @@ export const useChatStore = defineStore('chat', () => {
     onEvent: (event: DurableEvent) => void,
   ): Promise<void> {
     const token = localStorage.getItem('access_token')
-    const url = `/api/conversations/${conversationId}/events/stream?after_sequence=${afterSequence}`
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'text/event-stream',
-      },
-    })
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Failed to subscribe to events`)
-    }
-
-    if (!response.body) {
-      throw new Error('No response body received')
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
     let lastSeenSequence = afterSequence
-    let sawTerminalEvent = false
+    let shouldStop = false
+    let reconnectDelayMs = 250
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) {
-        // Stream closed without terminal event — refetch snapshot to recover
-        if (!sawTerminalEvent) {
-          console.warn(
-            `SSE stream for ${conversationId} closed without terminal event at sequence ${lastSeenSequence}. Refetching snapshot.`,
-          )
-          try {
-            const snapRes = await runsApi.getSnapshot(conversationId)
-            const snapshot = snapRes.data as unknown as Snapshot
-            // Process new events from snapshot that we missed
-            for (const event of snapshot.events) {
-              if (event.sequence > lastSeenSequence) {
-                onEvent(event)
-                lastSeenSequence = event.sequence
-                if (
-                  event.type === 'run.succeeded' ||
-                  event.type === 'run.failed' ||
-                  event.type === 'run_cancelled'
-                ) {
-                  sawTerminalEvent = true
-                }
-              }
-            }
-            cursors.value.set(conversationId, snapshot.sequence)
-          } catch (err) {
-            console.warn('Failed to refetch snapshot after stream close', err)
-          }
-        }
-        break
+    while (!shouldStop) {
+      let response: Response
+      try {
+        response = await fetch(
+          `/api/conversations/${conversationId}/events/stream?after_sequence=${lastSeenSequence}`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'text/event-stream',
+            },
+          },
+        )
+      } catch (err) {
+        console.warn('Event stream connection failed; retrying', err)
+        await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs))
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5_000)
+        continue
       }
 
-      buffer += decoder.decode(value, { stream: true })
-
-      // Process complete SSE frames
-      const frames = buffer.split('\n\n')
-      buffer = frames.pop() ?? ''
-
-      for (const frame of frames) {
-        if (!frame.trim()) continue
-
-        // Parse SSE fields
-        let eventId = ''
-        let eventType = ''
-        let dataStr = ''
-
-        for (const line of frame.split('\n')) {
-          if (line.startsWith('id: ')) {
-            eventId = line.slice(4)
-          } else if (line.startsWith('event: ')) {
-            eventType = line.slice(7)
-          } else if (line.startsWith('data: ')) {
-            dataStr = line.slice(6)
-          }
+      if (!response.ok) {
+        if (response.status >= 500 || response.status === 429) {
+          console.warn(`Event stream returned HTTP ${response.status}; retrying`)
+          await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs))
+          reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5_000)
+          continue
         }
+        throw new Error(`HTTP ${response.status}: Failed to subscribe to events`)
+      }
 
-        if (!dataStr) continue
+      if (!response.body) {
+        throw new Error('No response body received')
+      }
 
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let recoveryRequested = false
+      while (!shouldStop && !recoveryRequested) {
+        let chunk: ReadableStreamReadResult<Uint8Array>
         try {
-          const data = JSON.parse(dataStr)
-          const sequence = data.sequence || 0
+          chunk = await reader.read()
+        } catch (err) {
+          console.warn('Event stream ended with a read error; recovering', err)
+          break
+        }
+        const { done, value } = chunk
+        if (done) break
 
-          // Emit the parsed event
-          onEvent({
-            id: eventId || data.id || '',
-            conversation_id: conversationId,
-            run_id: data.run_id || null,
-            sequence,
-            type: eventType || data.type || '',
-            payload: data.payload || data,
-            // The durable event's timestamp comes from the server clock and
-            // must stay aligned with persisted messages. Using the browser
-            // clock can temporarily sort a new turn before older history.
-            created_at:
-              typeof data.created_at === 'string' && data.created_at
-                ? data.created_at
-                : new Date().toISOString(),
-          })
+        buffer += decoder.decode(value, { stream: true })
 
-          if (sequence > lastSeenSequence) {
-            lastSeenSequence = sequence
+        // Process complete SSE frames
+        const frames = buffer.split('\n\n')
+        buffer = frames.pop() ?? ''
+
+        for (const frame of frames) {
+          if (!frame.trim()) continue
+
+          // Parse SSE fields
+          let eventId = ''
+          let eventType = ''
+          let dataStr = ''
+
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('id: ')) {
+              eventId = line.slice(4)
+            } else if (line.startsWith('event: ')) {
+              eventType = line.slice(7)
+            } else if (line.startsWith('data: ')) {
+              dataStr = line.slice(6)
+            }
           }
-          if (
-            eventType === 'run.succeeded' ||
-            eventType === 'run.failed' ||
-            eventType === 'run_cancelled'
-          ) {
-            sawTerminalEvent = true
+
+          if (!dataStr) continue
+          if (eventType === 'snapshot.required') {
+            recoveryRequested = true
+            break
           }
-        } catch {
-          // Skip malformed events
+
+          try {
+            const data = JSON.parse(dataStr)
+            const sequence = data.sequence || 0
+            const type = eventType || data.type || ''
+
+            // Emit the parsed event
+            onEvent({
+              id: eventId || data.id || '',
+              conversation_id: conversationId,
+              run_id: data.run_id || null,
+              sequence,
+              type,
+              payload: data.payload || data,
+              // The durable event's timestamp comes from the server clock and
+              // must stay aligned with persisted messages. Using the browser
+              // clock can temporarily sort a new turn before older history.
+              created_at:
+                typeof data.created_at === 'string' && data.created_at
+                  ? data.created_at
+                  : new Date().toISOString(),
+            })
+
+            if (sequence > lastSeenSequence) {
+              lastSeenSequence = sequence
+            }
+            if (
+              type === 'run.succeeded' ||
+              type === 'run.failed' ||
+              type === 'run_cancelled'
+            ) {
+              shouldStop = true
+            }
+          } catch {
+            // Skip malformed events
+          }
         }
       }
-      // Break out of the outer loop after processing terminal event
-      if (sawTerminalEvent) {
-        reader.releaseLock()
-        break
+
+      if (shouldStop || recoveryRequested) {
+        await reader.cancel().catch(() => undefined)
+      }
+      reader.releaseLock()
+      if (shouldStop) break
+
+      // Rebuild the authoritative cursor after a broker disconnect, pruning
+      // response, or normally closed nonterminal stream before reconnecting.
+      try {
+        console.warn(
+          `SSE stream for ${conversationId} closed without terminal event at sequence ${lastSeenSequence}. Refetching snapshot.`,
+        )
+        const snapRes = await runsApi.getSnapshot(conversationId)
+        const snapshot = snapRes.data as unknown as Snapshot
+        for (const event of snapshot.events) {
+          if (event.sequence <= lastSeenSequence) continue
+          onEvent(event)
+          lastSeenSequence = event.sequence
+          if (
+            event.type === 'run.succeeded' ||
+            event.type === 'run.failed' ||
+            event.type === 'run_cancelled'
+          ) {
+            shouldStop = true
+          }
+        }
+        lastSeenSequence = Math.max(lastSeenSequence, snapshot.sequence)
+        cursors.value.set(conversationId, lastSeenSequence)
+        const activeRunStatuses = ['created', 'queued', 'running', 'waiting_connector']
+        const hasActiveRun = snapshot.runs?.some((run) =>
+          activeRunStatuses.includes(run.status),
+        ) ?? false
+        if (!hasActiveRun && !shouldStop) {
+          shouldStop = true
+        }
+      } catch (err) {
+        console.warn('Failed to refetch snapshot after stream close', err)
+      }
+
+      if (!shouldStop) {
+        await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs))
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5_000)
       }
     }
   }

@@ -4,6 +4,9 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+from src.openship.database.session import SessionLocal
+from src.openship.runs.models import Outbox, RunJob
+
 
 def test_submit_turn_creates_run_and_message(client: TestClient, authorized_client: dict):
     """Submitting a turn creates a conversation, run, message, job, event, and outbox entry."""
@@ -24,6 +27,15 @@ def test_submit_turn_creates_run_and_message(client: TestClient, authorized_clie
     body = response.json()
     assert "id" in body
     assert body["status"] == "queued"
+    with SessionLocal() as db:
+        run_id = uuid.UUID(body["id"])
+        job = db.query(RunJob).filter(RunJob.run_id == run_id).one()
+        command = db.query(Outbox).filter(
+            Outbox.run_id == run_id,
+            Outbox.destination == "command",
+        ).one()
+        assert command.dispatch_generation == job.dispatch_generation == 1
+        assert "content" not in command.payload
 
 
 def test_submit_turn_idempotent(client: TestClient, authorized_client: dict):
@@ -54,6 +66,13 @@ def test_submit_turn_idempotent(client: TestClient, authorized_client: dict):
     run_id_2 = resp2.json()["id"]
 
     assert run_id_1 == run_id_2
+    with SessionLocal() as db:
+        assert (
+            db.query(Outbox)
+            .filter(Outbox.run_id == uuid.UUID(run_id_1), Outbox.destination == "command")
+            .count()
+            == 1
+        )
 
 
 def test_submit_turn_same_key_different_content_conflict(client: TestClient, authorized_client: dict):

@@ -86,7 +86,7 @@ test('submits a manual search, renders its retained result, and downloads the sn
   })
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
 
   await page.getByRole('button', { name: 'Add tool' }).click()
   await page.getByTestId('tool-choice').filter({ hasText: 'Tavily Search' }).click()

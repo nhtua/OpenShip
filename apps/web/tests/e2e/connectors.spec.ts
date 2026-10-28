@@ -46,7 +46,7 @@ test('an uncertain connector write clears the key, checks status, and never rese
   })
 
   await page.goto('/connectors')
-  await expect(page.getByRole('heading', { name: 'Search connectors', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Connectors', exact: true }).last()).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Global search connectors' })).toBeVisible()
   const card = page.getByRole('button', { name: 'Configure Brave Search' })
   await card.click()
@@ -183,7 +183,7 @@ test('direct search submits a selected legacy Project connector under its origin
   })
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
   await page.getByRole('button', { name: 'Add tool' }).click()
   await page.getByTestId('tool-choice').filter({ hasText: 'Brave Search' }).click()
   await page.getByTestId('connector-selection').selectOption('project-brave')

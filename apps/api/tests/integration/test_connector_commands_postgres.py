@@ -80,7 +80,7 @@ def _request(method: str, path: str, request_id: uuid.UUID, payload: dict) -> Re
     return Request(scope, receive)
 
 
-def _install_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_id: uuid.UUID) -> None:
+def _install_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, username: str) -> None:
     encryption_path = tmp_path / "connector-encryption.json"
     hmac_path = tmp_path / "connector-idempotency.json"
     for path, key in ((encryption_path, b"e" * 32), (hmac_path, b"h" * 32)):
@@ -97,7 +97,7 @@ def _install_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_id: uuid
     monkeypatch.setattr(settings, "connector_installation_id", uuid.uuid4())
     monkeypatch.setattr(settings, "connector_encryption_key_file", encryption_path)
     monkeypatch.setattr(settings, "connector_idempotency_hmac_key_file", hmac_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", user_id)
+    monkeypatch.setattr(settings, "connector_operator_username", username)
     monkeypatch.setattr(settings, "connector_browser_origins", ORIGIN)
     monkeypatch.setattr(settings, "connector_write_rate_limit_per_minute", 100)
 
@@ -199,7 +199,7 @@ def test_connector_commands_commit_scoped_revisions_and_idempotency(monkeypatch,
             email=f"{second_username}@example.test",
             password_hash="unused",
         )
-        _install_keys(monkeypatch, tmp_path, user_id)
+        _install_keys(monkeypatch, tmp_path, username)
 
         create_path = f"/api/projects/{project_id}/connectors"
         create_payload = {

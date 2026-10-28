@@ -7,29 +7,46 @@ status: current
 
 # Managed Connector operations
 
+The [messaging runbook](messaging.md) documents the broker/relay deployment and
+coordinated restore gates for development and production Compose installations.
+During restore, the global execution gate and the managed dispatch lock both
+matter; the Connector lock alone does not stop plain model calls.
+
 Managed Connector encryption and idempotency keys are independent of the
 database and artifact volume. Keep both key files in a protected directory,
 outside source control and outside ordinary database backups. The Compose API
 and worker mount `./secrets` read-only at `/run/secrets`; the browser and
 migration container receive no key mount. A missing key file disables managed
-Connector setup and dispatch while leaving plain chat available.
+Connector setup and dispatch while leaving plain chat available. `dev start`
+does not create or rotate these keyrings. Initialize them once on the host with
+the CLI below, then preserve and back them up with the installation.
 
 Provisioning uses a stable, deployment-specific `CONNECTOR_INSTALLATION_ID`.
-Set `CONNECTOR_OPERATOR_USER_ID` to the account that manages installation-wide
-search connectors. The API and worker must receive the same values. Keep the
-operator account under the deployment's normal account recovery controls.
+Set `CONNECTOR_OPERATOR_USERNAME` to the exact username allowed to manage
+installation-wide Connectors and global tool availability. This setting does
+not grant general application administrator access. The username comparison
+is exact. The API and worker must receive the same values. Keep the operator
+account under the deployment's normal account recovery controls.
 The browser can call the authenticated `/api/connectors/setup-context` endpoint
 to see whether it is that operator and whether setup keys are ready. It returns
 only fixed readiness codes; it never returns key IDs, paths or key material.
 
-For local development, copy `apps/api/.env.example` to the ignored
-`apps/api/.env`, set a stable installation UUID and operator account UUID, and
-point the encryption and idempotency HMAC file settings at the same protected
-keyrings used by the API and worker. The browser origin must exactly match one
-of `CONNECTOR_BROWSER_ORIGINS`. Vite uses `http://localhost:5173` by default
-and now exits if that port is occupied instead of silently choosing another
-origin. If you intentionally use a different host or port, add that exact
-origin to the API and worker configuration and restart both processes.
+For native local development, copy `apps/api/.env.example` to the ignored
+`apps/api/.env`. Its connector key paths resolve from `apps/api` into the host
+`secrets/` directory. For development and production Compose, set connector
+values in the repository-root `.env` or `.env.prod`; the default container
+paths under `/run/secrets` map to the same host `./secrets` directory. Set the
+same installation ID, operator username, and keyring paths for the API and
+worker. The browser origin must exactly match one of
+`CONNECTOR_BROWSER_ORIGINS`. Vite uses `http://localhost:5173` by default and
+exits if that port is occupied instead of silently choosing another origin.
+If you intentionally use a different host or port, add that exact origin to the
+API and worker configuration and restart both processes.
+
+When upgrading an existing installation, replace
+`CONNECTOR_OPERATOR_USER_ID` with `CONNECTOR_OPERATOR_USERNAME` in its
+environment file. There is no database migration; until the new variable is
+set, global Connector and tool-policy management remains unavailable.
 
 If setup context reports `installation_id_missing`, `encryption_key_unavailable`
 or `idempotency_key_unavailable`, correct the corresponding shared

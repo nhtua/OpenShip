@@ -2,9 +2,10 @@
 
 import json
 import uuid
+from dataclasses import dataclass
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, update
+from sqlalchemy import and_, func, or_, update
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -30,6 +31,105 @@ from .schemas import (
     SnapshotResponse,
     StreamResponse,
 )
+
+
+@dataclass(frozen=True)
+class AuthorizedScope:
+    """Conversation scope established by an ownership check."""
+
+    user_id: uuid.UUID
+    conversation_id: uuid.UUID
+
+
+@dataclass(frozen=True)
+class CursorDecision:
+    """Resolved application cursor and whether the client must snapshot."""
+
+    sequence: int
+    snapshot_required: bool = False
+
+
+def resolve_event_cursor(
+    db: Session,
+    scope: AuthorizedScope,
+    *,
+    header: str | None,
+    query: int,
+) -> CursorDecision:
+    """Resolve legacy numeric or current UUID SSE cursors in an owned scope.
+
+    An unknown UUID cannot safely identify a sequence, so it requests the
+    authoritative snapshot. Malformed headers retain the legacy query fallback.
+    """
+    conversation = (
+        db.query(Conversation)
+        .filter(
+            Conversation.id == scope.conversation_id,
+            Conversation.user_id == scope.user_id,
+        )
+        .one_or_none()
+    )
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": "Conversation not found",
+                }
+            },
+        )
+
+    latest_sequence = conversation.next_event_sequence
+    first_retained_sequence = (
+        db.query(func.min(Event.sequence))
+        .filter(Event.conversation_id == scope.conversation_id)
+        .scalar()
+    )
+
+    def decision(sequence: int) -> CursorDecision:
+        if sequence >= latest_sequence:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": {
+                        "code": "future_cursor",
+                        "message": "Cursor is past the latest event",
+                    }
+                },
+            )
+        if first_retained_sequence is None:
+            pruned = latest_sequence > 0 and sequence < latest_sequence - 1
+        else:
+            pruned = sequence < first_retained_sequence - 1
+        return CursorDecision(sequence=sequence, snapshot_required=pruned)
+
+    if header is not None:
+        try:
+            numeric_header = int(header)
+        except (TypeError, ValueError):
+            numeric_header = None
+        if numeric_header is not None and numeric_header >= -1:
+            return decision(numeric_header)
+
+        try:
+            event_id = uuid.UUID(header)
+        except (TypeError, ValueError, AttributeError):
+            pass
+        else:
+            event = (
+                db.query(Event)
+                .filter(
+                    Event.id == event_id,
+                    Event.conversation_id == scope.conversation_id,
+                )
+                .one_or_none()
+            )
+            if event is None:
+                return CursorDecision(sequence=query, snapshot_required=True)
+            return decision(event.sequence)
+
+    return decision(query)
 
 
 def _event_to_read(ev: Event) -> EventRead:
@@ -162,6 +262,9 @@ def append_event(
     # Make the sequence increment visible to another append_event call in the
     # same transaction, even when that session has a cached Conversation row.
     db.flush()
+    from ..messaging.outbox import enqueue_event
+
+    enqueue_event(db, event)
     return event
 
 
@@ -194,6 +297,12 @@ def read_snapshot(
             status_code=422,
             detail={"error": {"code": "invalid_conversation_id", "message": "Invalid conversation ID format"}},
         )
+
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql" and not db.in_transaction():
+        # Keep the sequence, event, message, run and artifact reads on one
+        # PostgreSQL snapshot. The route supplies a fresh short-lived session.
+        db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
 
     try:
         conv, project = get_owned_conversation_scope(

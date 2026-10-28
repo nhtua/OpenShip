@@ -88,7 +88,7 @@ PostgreSQL and no vendor credentials — that is what lets an ordinary PR be
 reviewed at all:
 
 ```bash
-cd apps/api && uv run pytest tests/ -q -m "not provider_live and not postgres"
+cd apps/api && uv run pytest tests/ -q -m "not provider_live and not postgres and not jetstream"
 ```
 
 One lane is not of the code but of the packaging: `tests/test_packaging.py`

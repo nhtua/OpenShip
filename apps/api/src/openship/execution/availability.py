@@ -62,9 +62,9 @@ def observe_tool_availability(
                 available, reason = True, None
         else:
             try:
-                binding = getattr(manifest, "credential_binding_ref", None) or legacy_credential_binding(
-                    manifest.id
-                )
+                binding = getattr(
+                    manifest, "credential_binding_ref", None
+                ) or legacy_credential_binding(manifest.id)
                 available = bool(credential_check(binding))
                 reason = None if available else "missing_credentials"
             except Exception:  # noqa: BLE001 - never expose resolver details in readiness.
@@ -155,6 +155,16 @@ def publish_tool_availability(
     db.flush()
 
 
+def refresh_tool_availability(db: Session, worker_id: str) -> None:
+    """Observe the effective policy and commit this runtime's safe readiness."""
+    from src.openship.capabilities.policy import read_effective_tool_policy
+
+    policy = read_effective_tool_policy(db)
+    observations = observe_tool_availability(enabled_ids=policy.effective_ids)
+    publish_tool_availability(db, worker_id, observations)
+    db.commit()
+
+
 def read_tool_availability(
     db: Session,
     *,
@@ -186,9 +196,12 @@ def read_tool_availability(
             continue
         if rows:
             latest = max(rows, key=lambda item: _utc(item.observed_at))
-            reason = latest.reason if latest.reason in (
-                "missing_credentials", "disabled", "runtime_unavailable"
-            ) else "runtime_unavailable"
+            reason = (
+                latest.reason
+                if latest.reason
+                in ("missing_credentials", "disabled", "runtime_unavailable")
+                else "runtime_unavailable"
+            )
             projection[capability_id] = (False, reason)
         else:
             projection[capability_id] = (False, "runtime_unavailable")

@@ -1,0 +1,89 @@
+services:
+  api:
+    build:
+      context: ./apps/api
+      target: development
+    command:
+      - uv
+      - run
+      - uvicorn
+      - src.openship.main:app
+      - --reload
+      - --reload-dir
+      - /app/src
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --log-level
+      - debug
+    volumes:
+      - ./apps/api/src:/app/src:ro
+      - ./apps/api/alembic:/app/alembic:ro
+      - ./apps/api/alembic.ini:/app/alembic.ini:ro
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+      WATCHFILES_POLL_DELAY_MS: "500"
+
+  worker:
+    build:
+      context: ./apps/api
+      target: development
+    command:
+      - uv
+      - run
+      - watchmedo
+      - auto-restart
+      - --directory=/app/src
+      - --patterns=*.py
+      - --recursive
+      - --debug-force-polling
+      - --interval=0.5
+      - --
+      - python
+      - -m
+      - src.openship.runs.worker
+      - --log-level
+      - DEBUG
+    volumes:
+      - ./apps/api/src:/app/src:ro
+
+  relay:
+    build:
+      context: ./apps/api
+      target: development
+    command:
+      - uv
+      - run
+      - watchmedo
+      - auto-restart
+      - --directory=/app/src
+      - --patterns=*.py
+      - --recursive
+      - --debug-force-polling
+      - --interval=0.5
+      - --
+      - python
+      - -m
+      - src.openship.messaging.relay
+    volumes:
+      - ./apps/api/src:/app/src:ro
+
+  web:
+    build:
+      context: ./apps/web
+      target: development
+    command: ["pnpm", "run", "dev", "--host", "0.0.0.0"]
+    environment:
+      VITE_API_PROXY_TARGET: http://api:8000
+      # Force polling where the host bind mount does not relay filesystem events.
+      OPENSHIP_VITE_WATCH_POLLING: "1"
+    # Clear the base Nginx mapping. The Vite port mapping lives in
+    # docker-compose.dev-ports.yml so Compose can interpolate its .env values.
+    ports: !reset []
+    volumes:
+      - ./apps/web:/app:ro
+      - web_node_modules:/app/node_modules
+
+volumes:
+  web_node_modules:

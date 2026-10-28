@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -20,7 +19,7 @@ from ..connectors.credentials.broker import (
 from ..events.service import append_event
 from ..execution.models import ToolOperation
 from ..resources.models import ConnectorBlocker, ResourceBinding
-from ..runs.models import Outbox, ProviderAttempt, Run, RunJob
+from ..runs.models import ProviderAttempt, Run, RunJob
 from .readiness import ConnectorReadinessFailure, preflight_connector_references
 
 _WAIT_LIMIT = timedelta(hours=24)
@@ -360,6 +359,12 @@ def resume_connector_wait(
     job.lease_until = None
     job.available_at = now
     job.fence = run.fence
+    job.dispatch_generation += 1
+    from ..messaging.models import MessageTransportState
+    from ..messaging.outbox import enqueue_run
+
+    transport = db.query(MessageTransportState).filter_by(id=1).one()
+    enqueue_run(db, run.id, job.dispatch_generation, epoch=transport.transport_epoch)
     _append_event(
         db,
         conversation,
@@ -652,25 +657,13 @@ def _close_run(db, run, status, error_code, now):
 
 
 def _append_event(db, conversation, run, event_type, payload, actor_id=None):
-    event = append_event(
+    append_event(
         db,
         conversation.id,
         run.id,
         event_type,
         payload,
         actor_id=actor_id,
-    )
-    db.add(
-        Outbox(
-            conversation_id=conversation.id,
-            event_id=event.id,
-            type=event.type,
-            payload=json.dumps(
-                {"event_id": str(event.id), "type": event.type},
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
     )
 
 

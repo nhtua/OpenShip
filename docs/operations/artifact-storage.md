@@ -2,7 +2,7 @@
 type: operations
 summary: Configure, initialize, verify, back up, restore, and recover Phase 4A filesystem artifacts.
 status: active
-date: 2026-10-20
+date: 2026-10-27
 ---
 
 # Artifact Storage Operations
@@ -12,6 +12,11 @@ identity, digest, ownership, and lifecycle in PostgreSQL. The API and runtime
 worker must see the same directory and the same `ARTIFACT_STORAGE_ID`. A
 missing or mismatched storage marker makes artifact access fail closed; requests
 do not create a replacement root or silently accept another volume.
+
+Phase 6A proposes adding JetStream to coordinated backup/restore without
+changing artifact storage. Its [messaging runbook proposal](messaging.md)
+covers the future native/dev/prod environments and execution gates. Those
+commands are not shipped yet; the procedures here apply to the current stack.
 
 ## Configure a Compose installation
 
@@ -28,20 +33,28 @@ Set the generated values for `JWT_SECRET` and `ARTIFACT_STORAGE_ID` in the root
 the artifact volume for this installation and must remain unchanged across
 restarts, upgrades, and restores.
 
-Search is optional. To enable one or both manual tools, set
-`TOOL_ENABLED_IDS=brave_web_search`, `TOOL_ENABLED_IDS=tavily_web_search`, or
-`TOOL_ENABLED_IDS=brave_web_search,tavily_web_search`, then configure the
-matching `BRAVE_SEARCH_API_KEY` and/or `TAVILY_API_KEY` in the root `.env`.
-Leave the unrelated key empty. Compose passes these search credentials
-to the runtime worker only; the browser never accepts or stores them. With
-`TOOL_ENABLED_IDS` empty, the installation remains chat-only.
+Search is optional. Current installations enable maintained tools in Global
+Settings and configure managed Connectors using the [Connector runbook](managed-connectors.md).
+`TOOL_ENABLED_IDS` is an optional deployment ceiling: unset allows managed
+policy, while an explicitly empty value restricts the installation to no
+tools. Legacy `BRAVE_SEARCH_API_KEY` / `TAVILY_API_KEY` worker bindings remain
+for persisted old runs; they are not the normal managed-Connector setup path.
 
-Initialize the named volume once, before the first artifact operation:
+For the dev Compose stack, `start` initializes the named volume or verifies its
+existing marker before starting application services. It also creates missing
+dev NATS credentials. Keep `ARTIFACT_STORAGE_ID` stable; startup refuses to
+replace a marker or to initialize a non-empty volume whose marker is missing.
+The stack wrapper selects Docker by default and reads
+`CONTAINER_ENGINE=docker` or `CONTAINER_ENGINE=podman` from the root `.env`:
 
 ```bash
-docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance init
-docker compose up --build
+scripts/openship-stack --environment dev start
 ```
+
+The explicit `init-artifacts` command remains available for local or production
+provisioning. In production, initialize messaging credentials first because the
+worker container mounts its protected NATS credentials. `init-messaging`
+refuses to overwrite existing credential files.
 
 The initializer writes `.storage-id` only in an empty root. If it finds a
 non-empty root without that marker or a marker with another UUID, it refuses to
@@ -136,13 +149,14 @@ Preserve the `.storage-id` marker in the archive. For an isolated recovery,
 restore both the database and the named volume as a pair before starting
 OpenShip, then run `verify-restored` before enabling work.
 
-## Later credential management
+## Credential management and later execution
 
-Phase 4A reads Brave and Tavily keys from operator environment bindings and
-keeps them in the runtime process. Phase 5 Connector work may add a managed
-credential lifecycle. It must preserve the same provider-specific tool IDs and
-runtime-only secret handling; Phase 4A does not store search keys in PostgreSQL
-or browser settings.
+Phase 5 provides managed Connector credentials encrypted in PostgreSQL, with
+encryption/HMAC keyrings protected separately. Preserve those keyrings and
+the managed-dispatch lock across upgrades and restores; see the
+[Connector runbook](managed-connectors.md). Legacy Phase 4 environment bindings
+retain their historical compatibility behavior. Phase 6A messaging carries
+references and does not move credential values into broker envelopes.
 
 Phase 4 files are immutable artifact snapshots, each identified by its artifact
 ID and digest. Phase 6 owns logical file identities/current heads, expected-base

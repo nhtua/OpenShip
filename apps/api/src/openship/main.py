@@ -3,6 +3,7 @@
 # is to report whether the service can serve is a worse answer when it raises
 # than when it says it cannot.
 import json
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -12,6 +13,7 @@ from .auth.routes import router as auth_router
 from .capabilities.routes import router as capabilities_router
 from .chat.routes import router as chat_router
 from .connectors.routes import router as connectors_router
+from .events.fanout import EventFanout
 from .events.routes import router as events_router
 from .providers.routes import router as providers_router
 from .resources.routes import router as resources_router
@@ -19,7 +21,22 @@ from .runs.routes import router as runs_router
 from .workspace.project_routes import router as project_router
 from .workspace.routes import router as workspace_router
 
-app = FastAPI(title="OpenShip API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Own one independent event consumer for this API process."""
+    fanout = EventFanout()
+    app.state.event_fanout = fanout
+    await fanout.start()
+    try:
+        yield
+    finally:
+        await fanout.close()
+
+
+# FastAPI lifespan owns process-shared resources and closes them after requests.
+# Source: https://fastapi.tiangolo.com/advanced/events/
+app = FastAPI(title="OpenShip API", lifespan=lifespan)
 
 
 @app.exception_handler(HTTPException)
@@ -91,6 +108,8 @@ async def readiness_check():
     from sqlalchemy import func, text
 
     from .database.session import SessionLocal
+    from .messaging.health import check_worker_health
+    from .messaging.models import MessageTransportState
     from .runs.models import Run, RunJob
 
     # Check database
@@ -104,6 +123,8 @@ async def readiness_check():
         pass
 
     if not db_ok:
+        if db is not None:
+            db.close()
         return FastAPIResponse(
             status_code=503,
             content=json.dumps({"status": "not_ready", "database": False})
@@ -137,12 +158,48 @@ async def readiness_check():
     except Exception:
         pass
 
-    ready = stuck_jobs < 5
-    body = json.dumps({
-        "status": "ok" if ready else "not_ready",
-        "database": db_ok,
-        "stuck_jobs": stuck_jobs,
-        "queued": queued,
-    })
+    messaging_active = False
+    installation_id = None
+    try:
+        state = db.get(MessageTransportState, 1)
+        messaging_active = bool(state and state.active)
+        installation_id = state.installation_id if state else None
+    except Exception:
+        pass
+
+    fanout = getattr(app.state, "event_fanout", None)
+    event_consumer_ready = bool(fanout and fanout.ready)
+    db.close()
+
+    worker_ready = not messaging_active
+    if messaging_active and event_consumer_ready and installation_id and fanout.client:
+        worker_ready = (
+            await check_worker_health(
+                fanout.client,
+                installation_id=installation_id,
+            )
+        ).ready
+    ready = stuck_jobs < 5 and (
+        not messaging_active or (event_consumer_ready and worker_ready)
+    )
+    if not messaging_active:
+        worker_health_status = "not_required"
+    elif worker_ready:
+        worker_health_status = "ready"
+    else:
+        worker_health_status = "unavailable"
+    body = json.dumps(
+        {
+            "status": "ok" if ready else "not_ready",
+            "database": db_ok,
+            "stuck_jobs": stuck_jobs,
+            "queued": queued,
+            "messaging": {
+                "active": messaging_active,
+                "event_consumer": event_consumer_ready,
+                "worker_health": worker_health_status,
+            },
+        }
+    )
     status = 200 if ready else 503
     return FastAPIResponse(status_code=status, content=body)

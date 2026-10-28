@@ -135,7 +135,7 @@ def test_global_search_credential_is_reused_for_each_authorized_project(
         operator, operator_project = _identity(db, "operator")
         _consumer_a, project_a = _identity(db, "a")
         _consumer_b, project_b = _identity(db, "b")
-        monkeypatch.setattr(settings, "connector_operator_user_id", operator.id)
+        monkeypatch.setattr(settings, "connector_operator_username", operator.username)
         reference = _create_connector(
             db, operator, operator_project, visibility="global"
         )

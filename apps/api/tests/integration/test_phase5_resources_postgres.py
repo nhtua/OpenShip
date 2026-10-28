@@ -161,6 +161,10 @@ def test_resource_migration_enforces_scope_immutability_and_retention(database_u
     engine = _engine(database_url)
     upgraded = _run_alembic(ini, "upgrade", "head")
     assert upgraded.returncode == 0, upgraded.stderr
+    with engine.connect() as connection:
+        head_revision = connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
 
     resource_tables = {
         "environments",
@@ -502,7 +506,9 @@ def test_resource_migration_enforces_scope_immutability_and_retention(database_u
         current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         # PostgreSQL rolls back the refused downgrade to the head. SQLite keeps
         # the last successfully applied revision before the refusal.
-        expected_head = "phase5b014" if database_url.startswith("postgresql") else "phase5a010"
+        expected_head = (
+            head_revision if database_url.startswith("postgresql") else "phase5a010"
+        )
         assert current == expected_head
     engine.dispose()
 
@@ -512,6 +518,10 @@ def test_purged_connector_credential_prevents_irreversible_downgrade(database_ur
     engine = _engine(database_url)
     upgraded = _run_alembic(ini, "upgrade", "head")
     assert upgraded.returncode == 0, upgraded.stderr
+    with engine.connect() as connection:
+        head_revision = connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
 
     user_id, project_id, connector_id, credential_id = (uuid.uuid4() for _ in range(4))
     with engine.begin() as connection:
@@ -566,6 +576,8 @@ def test_purged_connector_credential_prevents_irreversible_downgrade(database_ur
         current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         # PostgreSQL rolls back to the head; SQLite retains the last successful
         # revision before the secret-purge downgrade refusal.
-        expected_head = "phase5b014" if database_url.startswith("postgresql") else "phase5a012"
+        expected_head = (
+            head_revision if database_url.startswith("postgresql") else "phase5a012"
+        )
         assert current == expected_head
     engine.dispose()

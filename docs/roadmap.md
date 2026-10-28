@@ -234,6 +234,8 @@ historical data migrations remain part of the application.
 
 #### Phase 5 — First Read-Only Cloud Connector
 
+**Status:** Complete, as confirmed by the user on 2026-10-25. Earlier qualification records and the implementation-era descriptions below retain their original evidence scope; this confirmation does not broaden provider/cloud qualification claims.
+
 **Milestone:** "OpenShip can discover and inspect AWS resources through my configured basic role and show evidence—for example, an S3 bucket stats report."
 
 **Build on:** Phase 4's gateway, tool loop, operation records, and artifacts. Add project-scoped connectors and managed credentials through the gateway's existing capability contract; do not create a parallel provider-adapter or permission path for external services.
@@ -279,6 +281,8 @@ historical data migrations remain part of the application.
 **Acceptance units:** Qualify and accept **6A** before extending the runtime in **6B**. Each is a usable increment with its own evidence and user decision.
 
 ##### 6A — NATS Foundation and Concurrent Chat
+
+**Status:** Implementation in progress on [PR #31](https://github.com/nhtua/OpenShip/pull/31). The transactional outbox/relay, JetStream run consumer, API event fanout, read-only run/event cutover preview, resumable DB apply/verify, gate open/close controls, resumable rollback preview/apply, and local/dev/prod deployment definitions are implemented. Full PostgreSQL/JetStream qualification, Compose builds/cold starts and reload checks, and recovery/capacity exercises remain. The user confirmed 6A numbering and a drained maintenance cutover on 2026-10-25; production cutover is not authorized. Kubernetes and ECS are outside this migration. See the [source review](./reviews/2026-10-25-phase6a-messaging-review.md), [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](./superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](./operations/messaging.md).
 
 **Build**
 
@@ -885,4 +889,4 @@ These distinctions should remain explicit throughout implementation:
 
 NATS with JetStream is the selected internal messaging foundation from Phase 6A. Stronger isolation providers, additional external broker adapters, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
 
-**Next commitment:** Review the Phase 6A implementation design for NATS routing, correlated responses, concurrent execution, outbox publication, migration, and operations, then prepare its implementation plan for approval. The user has selected NATS and authorized this architecture documentation change; product implementation remains a separate step. Preserve completed Phases 1–5, the sandbox/mutable-file scope in 6B, and the Phase 10B maintenance-authority boundary.
+**Next commitment:** Finish Phase 6A broker/PostgreSQL and deployment qualification, rehearse migration and recovery, then present the evidence for user acceptance. Preserve completed Phases 1–5, sandbox/mutable-file scope in 6B, and the Phase 10B maintenance-authority boundary.

@@ -22,7 +22,7 @@ test('register with confirmation enters the workspace', async ({ page }) => {
   await page.getByRole('button', { name: 'Create Account' }).click()
 
   await page.waitForURL((url) => url.pathname === '/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
   expect(await page.getByText('testuser').count()).toBeGreaterThan(0)
 })
 
@@ -68,7 +68,7 @@ test('valid login enters the workspace and persists the token', async ({
   expect(await page.evaluate(() => localStorage.getItem('access_token'))).toBe(
     E2E_TOKEN,
   )
-  await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
 })
 
 test('loading guard disables the submit button and blocks double submit', async ({
@@ -106,7 +106,7 @@ test('logout leaves the workspace, clears the token, and lands on login', async 
   await page.getByLabel('Password').fill('password123')
   await page.getByRole('button', { name: 'Sign In' }).click()
   await page.waitForURL((url) => url.pathname === '/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
 
   // Expand the sidebar if collapsed (user menu is only visible in expanded mode)
   const expandBtn = page.getByRole('button', { name: 'Expand sidebar' })
@@ -131,7 +131,7 @@ test('create a conversation, select another, send with Enter, and render the moc
 }) => {
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
 
   // Create a conversation through the sidebar button (immediate creation).
   await page.getByRole('button', { name: 'New Conversation', exact: true }).click()
@@ -142,7 +142,7 @@ test('create a conversation, select another, send with Enter, and render the moc
   await expect(newRow).toHaveAttribute('data-active', 'true')
 
   // Select an existing conversation; its history renders in the stream.
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
   await page.getByText('Staging deployed successfully.').waitFor()
 
   // Send with Enter; durable terminal events load the persisted response.
@@ -167,7 +167,7 @@ test('composer is disabled while streaming and re-enabled after completion', asy
   await mockApi(page, { streamDelay: 800 })
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
   await page.getByText('Staging deployed successfully.').waitFor()
 
   const composer = page.getByLabel('Message')
@@ -213,7 +213,7 @@ test('mocked chat failure shows an actionable alert with Dismiss', async ({
   await mockApi(page, { turnsStatus: 500 })
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
 
   const composer = page.getByLabel('Message')
   await composer.fill('Trigger failure')
@@ -221,7 +221,7 @@ test('mocked chat failure shows an actionable alert with Dismiss', async ({
 
   const alert = page.getByRole('alert')
   await expect(alert).toBeVisible()
-  await expect(alert).toContainText('Failed to submit message')
+  await expect(alert).toContainText('Turn could not be submitted')
 
   await page.getByRole('button', { name: 'Dismiss' }).click()
   await expect(alert).toBeHidden()
@@ -232,7 +232,7 @@ test('no fake workspaces, sessions, export, or stop controls', async ({
 }) => {
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).waitFor()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).waitFor()
 
   const text = await page.locator('body').innerText()
   for (const forbidden of [
@@ -307,7 +307,7 @@ test('reconnect after page reload shows eventual run completion', async ({ page 
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
   await page.getByLabel('Message').fill('Hello')
   await page.getByLabel('Message').press('Enter')
   await expect(page.getByText('Running', { exact: true })).toBeVisible()

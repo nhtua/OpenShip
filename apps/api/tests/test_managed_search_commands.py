@@ -70,7 +70,7 @@ def _identity(db, label: str):
 
 
 def _connector(db, user, monkeypatch, *, kind="brave"):
-    monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
+    monkeypatch.setattr(settings, "connector_operator_username", user.username)
     result = create_connector(
         db,
         actor=user,

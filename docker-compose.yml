@@ -1,4 +1,9 @@
 version: '3.8'
+name: openship-dev
+# PostgreSQL and NATS stay on the project network. The dev API and web ports
+# publish on DEV_BIND_ADDRESS for workstation/LAN access. Do not use the seeded
+# database credentials in the standalone production stack.
+# Use openship-stack to run the one-shot migrations/bootstrap before app services.
 services:
   migrate:
     build: ./apps/api
@@ -17,27 +22,66 @@ services:
       POSTGRES_PASSWORD: openship
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U openship"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  nats:
+    image: docker.io/library/nats:2.15.1@sha256:023a08c46caa5aff878fb86841187bebfdad9a6e3c552ba5c1a1e18938bbf88a
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/server.compose.json:/etc/nats/nats.conf:ro"
+      - natsdata:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nats-nui:
+    image: ghcr.io/nats-nui/nui:0.10.0
+    entrypoint: ["/bin/sh", "/openship-nui-entrypoint.sh"]
+    command:
+      - --nats-cli-contexts
+      - /db/nui-contexts
+      - --proto-schemas-path=/db/protoschemas/default
+      - --cddl-schemas-path=/db/cddlschemas/default
+    environment:
+      OPENSHIP_NUI_PROFILE: dev
+    depends_on:
+      nats:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${DEV_NATS_NUI_PORT:-31311}:31311"
+    volumes:
+      - ./scripts/nats_nui_entrypoint.sh:/openship-nui-entrypoint.sh:ro,Z
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/nui-contexts:/nats-cli-contexts:ro,Z"
+      - natsnui_data:/db
+    restart: unless-stopped
+
   api:
     build: ./apps/api
     ports:
-      - "127.0.0.1:${API_PORT:-8000}:8000"
+      - "${DEV_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"
     environment:
       DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      NATS_SERVERS: nats://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/api.json
+      NATS_TLS_CA_FILE:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the root .env file}
       JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
       EVENT_RETENTION_DAYS: 30
       CHECKPOINT_RETENTION_DAYS: 30
       LOG_RETENTION_DAYS: 7
-      CONNECTOR_INSTALLATION_ID:
-      CONNECTOR_OPERATOR_USER_ID:
+      CONNECTOR_INSTALLATION_ID: ${CONNECTOR_INSTALLATION_ID:-}
+      CONNECTOR_OPERATOR_USERNAME: ${CONNECTOR_OPERATOR_USERNAME:-}
+      CONNECTOR_ENCRYPTION_KEY_FILE: ${CONNECTOR_ENCRYPTION_KEY_FILE:-/run/secrets/openship-connector-encryption-keys.json}
+      CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE: ${CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE:-/run/secrets/openship-connector-idempotency-hmac-keys.json}
+      CONNECTOR_DISPATCH_LOCK_FILE: ${CONNECTOR_DISPATCH_LOCK_FILE:-/run/secrets/openship-managed-dispatch.lock}
+      CONNECTOR_BROWSER_ORIGINS: "${CONNECTOR_BROWSER_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}"
       ARTIFACT_ROOT: /var/lib/openship/artifacts
       ARTIFACT_STORAGE_ID: ${ARTIFACT_STORAGE_ID:?Set a stable ARTIFACT_STORAGE_ID in the root .env file}
       ARTIFACT_CONVERSATION_QUOTA_BYTES: ${ARTIFACT_CONVERSATION_QUOTA_BYTES:-134217728}
@@ -61,35 +105,48 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/api.json:/run/nats-auth/api.json:ro"
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
+      nats:
+        condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
+    stop_grace_period: 30s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-        tag: "{{.Name}}"
 
   worker:
     build: ./apps/api
     command: ["uv", "run", "python", "-m", "src.openship.runs.worker", "--log-level", "INFO"]
     environment:
       DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      NATS_SERVERS: nats://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/worker.json
+      NATS_TLS_CA_FILE:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the root .env file}
       JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
       EVENT_RETENTION_DAYS: 30
       CHECKPOINT_RETENTION_DAYS: 30
       LOG_RETENTION_DAYS: 7
-      CONNECTOR_INSTALLATION_ID:
-      CONNECTOR_OPERATOR_USER_ID:
+      CONNECTOR_INSTALLATION_ID: ${CONNECTOR_INSTALLATION_ID:-}
+      CONNECTOR_OPERATOR_USERNAME: ${CONNECTOR_OPERATOR_USERNAME:-}
+      CONNECTOR_ENCRYPTION_KEY_FILE: ${CONNECTOR_ENCRYPTION_KEY_FILE:-/run/secrets/openship-connector-encryption-keys.json}
+      CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE: ${CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE:-/run/secrets/openship-connector-idempotency-hmac-keys.json}
+      CONNECTOR_DISPATCH_LOCK_FILE: ${CONNECTOR_DISPATCH_LOCK_FILE:-/run/secrets/openship-managed-dispatch.lock}
+      CONNECTOR_BROWSER_ORIGINS: "${CONNECTOR_BROWSER_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}"
       ARTIFACT_ROOT: /var/lib/openship/artifacts
       ARTIFACT_STORAGE_ID: ${ARTIFACT_STORAGE_ID:?Set a stable ARTIFACT_STORAGE_ID in the root .env file}
       ARTIFACT_CONVERSATION_QUOTA_BYTES: ${ARTIFACT_CONVERSATION_QUOTA_BYTES:-134217728}
@@ -114,22 +171,67 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/worker.json:/run/nats-auth/worker.json:ro"
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
+      nats:
+        condition: service_started
+    stop_grace_period: 3900s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-        tag: "{{.Name}}"
+
+  relay:
+    build: ./apps/api
+    command: ["uv", "run", "python", "-m", "src.openship.messaging.relay"]
+    environment:
+      DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      NATS_SERVERS: nats://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/relay.json
+      NATS_TLS_CA_FILE:
+    volumes:
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/relay.json:/run/nats-auth/relay.json:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  messaging-bootstrap:
+    build: ./apps/api
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        uv run python -m src.openship.messaging.wait_for_broker
+        && exec uv run python -m src.openship.messaging.cli bootstrap --apply
+    environment:
+      DATABASE_URL: postgresql://openship:openship@postgres:5432/openship
+      NATS_SERVERS: nats://nats:4222
+      NATS_AUTH_FILE: /run/nats-auth/operator.json
+      NATS_TLS_CA_FILE:
+    volumes:
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/operator.json:/run/nats-auth/operator.json:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: "no"
 
   web:
     build: ./apps/web
     ports:
-      - "127.0.0.1:${WEB_PORT:-8080}:80"
+      - "${DEV_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-8080}:80"
     depends_on:
       api:
         condition: service_healthy
@@ -137,3 +239,5 @@ services:
 volumes:
   pgdata:
   artifactdata:
+  natsdata:
+  natsnui_data:

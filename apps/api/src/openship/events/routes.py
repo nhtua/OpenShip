@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -12,10 +11,17 @@ from sqlalchemy.orm import Session
 from ..auth.models import User
 from ..auth.routes import require_jwt
 from ..chat.models import Conversation
-from ..database.session import get_db
+from ..database.session import SessionLocal, get_db
 from ..runs.models import Event
+from .fanout import HEARTBEAT_SECONDS, BrokerUnavailable, EventFanout, SnapshotRequired
 from .schemas import SnapshotResponse, StreamResponse
-from .service import _event_to_read, read_snapshot, stream_events
+from .service import (
+    AuthorizedScope,
+    _event_to_read,
+    read_snapshot,
+    resolve_event_cursor,
+    stream_events,
+)
 
 router = APIRouter(prefix="/api/conversations", tags=["events"])
 
@@ -36,23 +42,117 @@ def _sse_heartbeat() -> str:
     return ": heartbeat\n\n"
 
 
+def _sse_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+
+
+def _snapshot_required_response(conversation_id: uuid.UUID) -> StreamingResponse:
+    async def generator():
+        yield _sse_format(
+            "pruned",
+            "snapshot.required",
+            {"conversation_id": str(conversation_id)},
+        )
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers=_sse_headers(),
+    )
+
+
+def _resolve_authorized_sse_cursor(
+    user_id: uuid.UUID,
+    conversation_id: str,
+    header: str | None,
+    query: int,
+):
+    try:
+        conv_id = uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "invalid_conversation_id",
+                    "message": "Invalid conversation ID format",
+                }
+            },
+        )
+
+    db = SessionLocal()
+    try:
+        conversation = (
+            db.query(Conversation)
+            .filter(
+                Conversation.id == conv_id,
+                Conversation.user_id == user_id,
+            )
+            .one_or_none()
+        )
+        if conversation is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": {
+                        "code": "conversation_not_found",
+                        "message": "Conversation not found",
+                    }
+                },
+            )
+        scope = AuthorizedScope(user_id=user_id, conversation_id=conv_id)
+        cursor = resolve_event_cursor(
+            db,
+            scope,
+            header=header,
+            query=query,
+        )
+        return scope, cursor
+    finally:
+        db.close()
+
+
+def _read_authorized_snapshot(
+    user_id: uuid.UUID,
+    conversation_id: str,
+    artifact_limit: int,
+    artifact_cursor: str | None,
+    operation_limit: int,
+):
+    db = SessionLocal()
+    try:
+        return read_snapshot(
+            db,
+            user_id,
+            conversation_id,
+            artifact_limit=artifact_limit,
+            artifact_cursor=artifact_cursor,
+            operation_limit=operation_limit,
+        )
+    finally:
+        db.close()
+
+
 @router.get("/{conversation_id}/snapshot", response_model=SnapshotResponse)
 async def get_snapshot(
     conversation_id: str,
     artifact_limit: int = Query(default=50, ge=1, le=100),
     artifact_cursor: str | None = None,
     operation_limit: int = Query(default=50, ge=1, le=100),
-    db: Session = Depends(get_db),
     user: User = Depends(require_jwt),
 ):
     """Get the current authoritative state snapshot for a conversation."""
-    return read_snapshot(
-        db,
+    return await asyncio.to_thread(
+        _read_authorized_snapshot,
         user.id,
         conversation_id,
-        artifact_limit=artifact_limit,
-        artifact_cursor=artifact_cursor,
-        operation_limit=operation_limit,
+        artifact_limit,
+        artifact_cursor,
+        operation_limit,
     )
 
 
@@ -70,114 +170,62 @@ async def get_events_after(
 @router.get("/{conversation_id}/events/stream")
 async def stream_event_stream(
     conversation_id: str,
-    after_sequence: int = Query(-1, ge=-1, description="Cursor: last received event sequence"),
-    request: Request = None,
-    db: Session = Depends(get_db),
+    request: Request,
+    after_sequence: int = Query(
+        -1, ge=-1, description="Cursor: last received event sequence"
+    ),
     user: User = Depends(require_jwt),
 ):
-    """SSE stream of events after a cursor.
-
-    Uses database polling as Phase 2 fallback. Emits events as they are
-    committed and sends periodic heartbeats. For a pruned cursor, emits
-    'snapshot.required' then closes.
-
-    Supports the Last-Event-ID header as an alternative cursor: if provided,
-    it takes precedence over the after_sequence query parameter.
-    """
-    # Check for Last-Event-ID header as alternative cursor
+    """SSE stream using JetStream notices and database-authoritative replay."""
     last_event_id = request.headers.get("last-event-id") if request else None
-    if last_event_id is not None:
-        try:
-            # Last-Event-ID should be the sequence number
-            after_sequence = int(last_event_id)
-        except (ValueError, TypeError):
-            pass  # Fall back to query parameter
-    try:
-        conv_id = uuid.UUID(conversation_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": {"code": "invalid_conversation_id", "message": "Invalid conversation ID format"}},
-        )
+    scope, cursor = await asyncio.to_thread(
+        _resolve_authorized_sse_cursor,
+        user.id,
+        conversation_id,
+        last_event_id,
+        after_sequence,
+    )
+    if cursor.snapshot_required:
+        return _snapshot_required_response(scope.conversation_id)
 
-    conv = db.query(Conversation).filter(
-        Conversation.id == conv_id,
-        Conversation.user_id == user.id,
-    ).first()
-    if not conv:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": {"code": "conversation_not_found", "message": "Conversation not found"}},
-        )
-
-    # Validate cursor is not in the future
-    if after_sequence >= conv.next_event_sequence:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": {"code": "future_cursor", "message": "Cursor is past the latest event"}},
-        )
-
-    # Check if cursor is pruned (no events before cutoff)
-    min_sequence = conv.next_event_sequence - 100  # Retention: keep last 100
-    if after_sequence < min_sequence - 1:
-        # Cursor is too old — tell client to snapshot
-        async def pruned_generator():
-            yield _sse_format("pruned", "snapshot.required", {"conversation_id": str(conv_id)})
-
-        return StreamingResponse(
-            pruned_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+    fanout: EventFanout | None = getattr(request.app.state, "event_fanout", None)
+    if fanout is None or not fanout.ready:
+        return _snapshot_required_response(scope.conversation_id)
 
     async def event_generator():
-        """Generate SSE events by polling the database."""
-        last_sequence = after_sequence
-        last_poll = time.time()
-        heartbeat_interval = 15  # seconds
-        poll_interval = 1  # seconds
-
+        stream = fanout.subscribe_conversation(scope, cursor.sequence)
+        next_event = asyncio.create_task(anext(stream))
         try:
             while True:
-                # Check for heartbeat
-                now = time.time()
-                if now - last_poll >= heartbeat_interval:
-                    yield _sse_heartbeat()
-                    last_poll = now
-
-                # Poll for new events (no upper bound to catch events committed after subscription)
-                events = (
-                    db.query(Event)
-                    .filter(
-                        Event.conversation_id == conv_id,
-                        Event.sequence > last_sequence,
-                    )
-                    .order_by(Event.sequence.asc())
-                    .all()
+                done, _pending = await asyncio.wait(
+                    (next_event,),
+                    timeout=HEARTBEAT_SECONDS,
                 )
-
-                if events:
-                    for ev in events:
-                        envelope = _sse_envelope(ev)
-                        yield _sse_format(str(ev.id), ev.type, envelope)
-                        last_sequence = ev.sequence
-
-                # Sleep and retry (async)
-                await asyncio.sleep(poll_interval)
-
-        except asyncio.CancelledError:
-            pass
+                if not done:
+                    if await request.is_disconnected():
+                        return
+                    yield _sse_heartbeat()
+                    continue
+                try:
+                    event = next_event.result()
+                except StopAsyncIteration:
+                    return
+                yield _sse_format(event.id, event.type, event.model_dump(mode="json"))
+                next_event = asyncio.create_task(anext(stream))
+        except (SnapshotRequired, BrokerUnavailable):
+            yield _sse_format(
+                "pruned",
+                "snapshot.required",
+                {"conversation_id": str(scope.conversation_id)},
+            )
+        finally:
+            if not next_event.done():
+                next_event.cancel()
+                await asyncio.gather(next_event, return_exceptions=True)
+            await stream.aclose()
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=_sse_headers(),
     )

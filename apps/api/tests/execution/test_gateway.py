@@ -529,7 +529,7 @@ async def test_connector_revoked_after_dispatch_cannot_publish_result(
     )
     db.add(conversation)
     db.flush()
-    monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
+    monkeypatch.setattr(settings, "connector_operator_username", user.username)
     connector = create_connector(
         db,
         actor=user,

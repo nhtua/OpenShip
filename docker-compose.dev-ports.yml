@@ -1,0 +1,4 @@
+services:
+  web:
+    ports:
+      - "${DEV_BIND_ADDRESS:-0.0.0.0}:${DEV_WEB_PORT:-5173}:5173"

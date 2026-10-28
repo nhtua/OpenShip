@@ -135,7 +135,7 @@ def test_reencryption_resumes_by_key_id_preserves_version_and_verifies_all_rows(
         project = Project(owner_user_id=owner.id, name="Rotation project")
         db.add(project)
         db.flush()
-        monkeypatch.setattr(settings, "connector_operator_user_id", owner.id)
+        monkeypatch.setattr(settings, "connector_operator_username", owner.username)
         create_result = import_legacy_search_connectors(
             db,
             actor=owner,
@@ -385,7 +385,7 @@ def test_global_legacy_import_requires_configured_operator(
     monkeypatch, tmp_path
 ):
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", uuid.uuid4())
+    monkeypatch.setattr(settings, "connector_operator_username", "not-the-operator")
     db = SessionLocal()
     try:
         actor = User(
@@ -471,7 +471,7 @@ def test_cli_checks_global_authority_before_loading_legacy_environment_file(
     db.commit()
     actor_id = actor.id
     db.close()
-    monkeypatch.setattr(settings, "connector_operator_user_id", uuid.uuid4())
+    monkeypatch.setattr(settings, "connector_operator_username", "not-the-operator")
     absent_env_file = tmp_path / "must-not-be-read.env"
 
     result = main(
@@ -509,7 +509,7 @@ def test_global_legacy_import_encrypts_selected_key_for_project_default(
         project = Project(owner_user_id=user.id, name="Migration project")
         db.add(project)
         db.flush()
-        monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
+        monkeypatch.setattr(settings, "connector_operator_username", user.username)
 
         result = import_legacy_search_connectors(
             db,

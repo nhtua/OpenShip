@@ -335,10 +335,22 @@ def test_cancel_fences_run_and_tool_operation_with_one_outbox_transaction(
             .filter(
                 Outbox.conversation_id == conversation.id,
                 Outbox.event_id.in_((run_event.id, tool_event.id)),
+                Outbox.destination == "event",
             )
             .count()
             == 2
         )
+        control = (
+            db.query(Outbox)
+            .filter(
+                Outbox.conversation_id == conversation.id,
+                Outbox.event_id == run_event.id,
+                Outbox.destination == "control",
+            )
+            .one()
+        )
+        assert control.type == "run.cancel"
+        assert control.run_id == run.id
         assert db.query(Message).filter(Message.run_id == run.id).count() == 0
     finally:
         db.close()
@@ -489,7 +501,7 @@ def test_worker_runs_manual_search_without_model_and_preserves_first_chat_title(
             synchronize_session=False
         )
         db.commit()
-        chat_claim = claim_next(db, worker_id="first-chat-worker", lease_seconds=30)
+        chat_claim = claim_next(db, worker_id="manual-tool-worker", lease_seconds=30)
         assert chat_claim is not None and chat_claim.run_id == chat_run.id
         prompt_was_first = []
         system_prompts = []
@@ -634,6 +646,173 @@ def test_worker_cancellation_stops_active_tool_io_within_two_seconds(
             thread.join(timeout=2)
         worker.engine.dispose()
         db.close()
+
+
+def test_supervision_wakeup_is_separate_from_stop_and_lease_loss():
+    from src.openship.runs.worker import Supervision
+
+    supervision = Supervision()
+
+    assert not supervision.wait_for_wakeup(0)
+    supervision.wake()
+    assert supervision.wait_for_wakeup(0)
+    assert not supervision.stop()
+    assert not supervision.lease_lost()
+
+
+def test_worker_supervisor_checks_owner_immediately_after_control_wakeup(monkeypatch):
+    from src.openship.runs.worker import Supervision, Worker
+
+    monkeypatch.setattr(settings, "worker_cancellation_poll_seconds", 0.5)
+    monkeypatch.setattr(settings, "worker_heartbeat_interval", 10)
+    db = SessionLocal()
+    _user, _project, _conversation, run, job, *_ = _tool_run(db, expired=False)
+    worker = Worker(
+        worker_id=job.owner_id,
+        session_factory=SessionLocal,
+        checkpointer=None,
+    )
+    supervision = Supervision()
+    checked = [threading.Event(), threading.Event()]
+    count = 0
+    original = worker._ownership_lost
+
+    def observe_owner(db_session, run_id, fence):
+        nonlocal count
+        result = original(db_session, run_id, fence)
+        if count < len(checked):
+            checked[count].set()
+        count += 1
+        return result
+
+    monkeypatch.setattr(worker, "_ownership_lost", observe_owner)
+    thread = threading.Thread(
+        target=worker._supervise_in_thread,
+        args=(supervision, run.id, run.fence),
+    )
+    thread.start()
+    try:
+        assert checked[0].wait(2)
+        wake_started = time.monotonic()
+        supervision.wake()
+        assert checked[1].wait(0.3)
+        assert time.monotonic() - wake_started < 0.3
+        assert not supervision.stop() and not supervision.lease_lost()
+    finally:
+        supervision.interrupt()
+        thread.join(timeout=2)
+        worker.close()
+        db.close()
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("lost_field", ["owner", "lease"])
+def test_worker_ownership_check_rejects_same_fence_with_moved_owner_or_expired_lease(
+    lost_field,
+):
+    from src.openship.runs.worker import Worker
+
+    db = SessionLocal()
+    _user, _project, _conversation, run, job, *_ = _tool_run(db, expired=False)
+    worker = Worker(
+        worker_id=job.owner_id,
+        session_factory=SessionLocal,
+        checkpointer=None,
+    )
+    try:
+        if lost_field == "owner":
+            job.owner_id = "replacement-owner"
+        else:
+            job.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+
+        assert worker._ownership_lost(db, run.id, run.fence)
+    finally:
+        worker.close()
+        db.close()
+
+
+@pytest.mark.parametrize("status", ["queued", "completed"])
+def test_worker_ownership_check_requires_running_status(status):
+    from src.openship.runs.worker import Worker
+
+    db = SessionLocal()
+    _user, _project, _conversation, run, job, *_ = _tool_run(db, expired=False)
+    worker = Worker(
+        worker_id=job.owner_id,
+        session_factory=SessionLocal,
+        checkpointer=None,
+    )
+    try:
+        run.status = status
+        db.commit()
+
+        assert worker._ownership_lost(db, run.id, run.fence)
+    finally:
+        worker.close()
+        db.close()
+
+
+@pytest.mark.parametrize("refresh_availability", [True, False])
+def test_worker_lease_renewal_uses_monotonic_ten_second_deadlines(
+    monkeypatch, refresh_availability
+):
+    from types import SimpleNamespace
+
+    import src.openship.runs.worker as worker_module
+    from src.openship.runs.worker import Worker
+
+    class Clock:
+        value = 100.0
+
+        def monotonic(self):
+            return self.value
+
+    class AutoClockSupervision:
+        def __init__(self):
+            self.stopped = False
+
+        def stop(self):
+            return self.stopped
+
+        def wait_for_wakeup(self, timeout):
+            clock.value += timeout
+            return False
+
+        def deny_lease(self):
+            self.stopped = True
+
+    clock = Clock()
+    worker = Worker.__new__(Worker)
+    worker.worker_id = "monotonic-worker"
+    worker.refresh_availability_during_run = refresh_availability
+    monkeypatch.setattr(
+        worker_module, "time", SimpleNamespace(monotonic=clock.monotonic)
+    )
+    monkeypatch.setattr(settings, "worker_cancellation_poll_seconds", 0.5)
+    monkeypatch.setattr(settings, "worker_heartbeat_interval", 10)
+    monkeypatch.setattr(worker, "_ownership_lost", lambda *_args: False)
+    availability_refreshes = []
+    monkeypatch.setattr(
+        worker,
+        "_refresh_tool_availability",
+        lambda _db: availability_refreshes.append(clock.value),
+    )
+    renewals = []
+
+    def renew(_db, _run_id, _fence):
+        renewals.append(clock.value)
+        return len(renewals) < 3
+
+    monkeypatch.setattr(worker_module, "renew", renew)
+    supervision = AutoClockSupervision()
+    worker._supervise(supervision, object(), uuid.uuid4(), 7)
+
+    assert renewals == [110.0, 120.0, 130.0]
+    assert availability_refreshes == (
+        [110.0, 120.0, 130.0] if refresh_availability else []
+    )
+    assert supervision.stopped
 
 
 def test_pre_dispatch_worker_restart_reuses_deadline_and_executes_once(

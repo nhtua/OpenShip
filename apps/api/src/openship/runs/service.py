@@ -43,12 +43,18 @@ from ..connectors.models import (
     ProjectConnectorDefault,
 )
 from ..connectors.selection import ConnectorSelectionError, resolve_connector
+from ..events.service import append_event
 from ..execution.errors import CapabilityError
+from ..messaging.outbox import (
+    check_submission_capacity,
+    enqueue_control,
+    enqueue_run,
+)
 from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
 from ..resources.models import ConnectorBlocker
-from ..runs.models import Event, Outbox, Run, RunJob
+from ..runs.models import Run, RunJob
 from ..workspace.lifecycle import (
     ArchiveStateError,
     archive_http_error,
@@ -830,6 +836,8 @@ def submit_turn(
             },
         )
 
+    check_submission_capacity(db)
+
     # Resolve and validate the selection before anything is queued
     config = _resolve_selection(provider_profile_id, fallback_profile_ids)
     artifact_refs = _owned_artifact_refs(db, conv, artifact_ids)
@@ -918,34 +926,19 @@ def submit_turn(
         fence=0,
     )
     db.add(job)
+    db.flush()
+    from ..messaging.models import MessageTransportState
+    transport = db.query(MessageTransportState).filter_by(id=1).one()
+    enqueue_run(db, run.id, job.dispatch_generation, epoch=transport.transport_epoch)
 
     # Create initial event (turn_submitted)
-    seq = conv.next_event_sequence
-    event_id = uuid.uuid4()
-    event = Event(
-        id=event_id,
-        project_id=conv.project_id,
+    append_event(
+        db,
         conversation_id=conv.id,
         run_id=run.id,
-        sequence=seq,
-        type="turn_submitted",
-        payload=json.dumps(
-            {"content": content, "client_request_id": client_request_id}
-        ),
+        event_type="turn_submitted",
+        payload={"content": content, "client_request_id": client_request_id},
     )
-    db.add(event)
-    conv.next_event_sequence = seq + 1
-
-    # Create outbox row for SSE notification
-    outbox = Outbox(
-        conversation_id=conv.id,
-        event_id=event.id,
-        type="turn_submitted",
-        payload=json.dumps(
-            {"run_id": str(run.id), "client_request_id": client_request_id}
-        ),
-    )
-    db.add(outbox)
 
     db.commit()
     db.refresh(run)
@@ -1069,6 +1062,8 @@ def submit_tool_run(
             "run_already_active",
             "Another run is already active on this conversation",
         )
+
+    check_submission_capacity(db)
 
     policy = read_effective_tool_policy(db, lock=True)
     if not policy.state_available:
@@ -1273,8 +1268,6 @@ def submit_tool_run(
     db.add(run)
     db.flush()
 
-    db.add(RunJob(run_id=run.id, fence=0))
-    sequence = conversation.next_event_sequence
     payload = json.dumps(
         {
             "schema_version": 1,
@@ -1285,30 +1278,20 @@ def submit_tool_run(
         sort_keys=True,
         separators=(",", ":"),
     )
-    event_id = uuid.uuid4()
-    event = Event(
-        id=event_id,
-        project_id=conversation.project_id,
+    job = RunJob(run_id=run.id, fence=0)
+    db.add(job)
+    db.flush()
+    from ..messaging.models import MessageTransportState
+
+    transport = db.query(MessageTransportState).filter_by(id=1).one()
+    enqueue_run(db, run.id, job.dispatch_generation, epoch=transport.transport_epoch)
+    append_event(
+        db,
         conversation_id=conversation.id,
         run_id=run.id,
-        sequence=sequence,
-        type="tool.submitted",
-        payload=payload,
+        event_type="tool.submitted",
+        payload=json.loads(payload),
         actor_id=user_id,
-    )
-    db.add(event)
-    conversation.next_event_sequence = sequence + 1
-    db.add(
-        Outbox(
-            conversation_id=conversation.id,
-            event_id=event_id,
-            type="tool.submitted",
-            payload=json.dumps(
-                {"run_id": str(run.id), "client_request_id": request_id},
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
     )
     db.flush()
     return run
@@ -1485,7 +1468,6 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
         job.owner_id = None
         job.lease_until = None
 
-    from ..events.service import append_event
     from ..execution.recovery import cancel_tool_operations
 
     cancel_tool_operations(
@@ -1502,19 +1484,7 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
         payload={"status": "cancelled"},
         actor_id=user_id,
     )
-    db.flush()
-    db.add(
-        Outbox(
-            conversation_id=conv.id,
-            event_id=event.id,
-            type=event.type,
-            payload=json.dumps(
-                {"event_id": str(event.id), "type": event.type},
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
-    )
+    enqueue_control(db, run, event_id=event.id)
 
     db.commit()
     db.refresh(run)

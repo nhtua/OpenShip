@@ -128,7 +128,7 @@ def test_postgres_pins_and_decrypts_a_shared_global_search_connector(
     with pg_sessions() as db:
         owner, project = _identity(db, "owner")
         _other_owner, other_project = _identity(db, "other")
-        monkeypatch.setattr(settings, "connector_operator_user_id", owner.id)
+        monkeypatch.setattr(settings, "connector_operator_username", owner.username)
         conversation = Conversation(
             user_id=owner.id,
             project_id=project.id,

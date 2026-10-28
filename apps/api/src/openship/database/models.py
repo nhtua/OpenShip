@@ -23,6 +23,15 @@ from ..execution.models import (
     ToolAvailability,
     ToolOperation,
 )
+from ..messaging.models import (
+    MessageDisposition,
+    MessageExhaustion,
+    MessageFailure,
+    MessageFailureConflict,
+    MessageTransportState,
+    MessagingCutover,
+    RetentionTask,
+)
 from ..resources.models import (
     ConnectorBlocker,
     Environment,
@@ -57,6 +66,12 @@ __all__ = [
     "Event",
     "ExecutionSlot",
     "Message",
+    "MessageDisposition",
+    "MessageExhaustion",
+    "MessageFailure",
+    "MessageFailureConflict",
+    "MessageTransportState",
+    "MessagingCutover",
     "Outbox",
     "Project",
     "ProjectConnectorDefault",
@@ -64,6 +79,7 @@ __all__ = [
     "ResourceBinding",
     "ResourceObject",
     "ResourceObservation",
+    "RetentionTask",
     "Run",
     "RunJob",
     "RunTranscriptRecord",

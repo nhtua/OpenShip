@@ -97,7 +97,7 @@ test('captures the revised composer and compact tool timeline for visual review'
   await setAuthToken(page)
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
   await expect(page.getByText('I can search the web and compare useful sources.')).toBeVisible()
   await page.emulateMedia({ reducedMotion: 'reduce' })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)

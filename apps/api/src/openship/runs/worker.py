@@ -9,11 +9,9 @@ through the configuration the run pinned, and finalizes the run with fence-
 based optimistic concurrency control.
 """
 
-import argparse
 import json
 import logging
 import re
-import signal
 import threading
 import time
 import uuid
@@ -31,14 +29,12 @@ from ..capabilities.contracts import (
     ToolInvocationContext,
     decode_execution_config,
 )
-from ..capabilities.policy import read_effective_tool_policy
 from ..chat.models import Conversation, Message
 from ..config import settings
 from ..connectors.blockers import park_connector_wait
 from ..connectors.readiness import preflight_connector_references
 from ..execution.availability import (
-    observe_tool_availability,
-    publish_tool_availability,
+    refresh_tool_availability,
 )
 from ..execution.gateway import ToolGateway
 from ..providers.attempts import DatabaseAttemptRecorder
@@ -50,7 +46,7 @@ from ..runs.schemas import _model_projection
 from ..runs.service import bind_run_model_config
 from .dispatch import UnsupportedGraphVersion, resolve_graph
 from .graph import ModelResult
-from .models import Outbox, ProviderAttempt, Run, RunJob
+from .models import ProviderAttempt, Run, RunJob
 from .queue import (
     begin_execution_window,
     claim_next,
@@ -151,6 +147,8 @@ class Supervision:
     def __init__(self):
         self._stop = threading.Event()
         self._lease_lost = threading.Event()
+        self._wakeup = threading.Condition()
+        self._wake_pending = False
 
     def stop(self) -> bool:
         return self._stop.is_set()
@@ -158,13 +156,30 @@ class Supervision:
     def lease_lost(self) -> bool:
         return self._lease_lost.is_set()
 
+    def wake(self) -> None:
+        """Request an immediate authoritative ownership check."""
+        with self._wakeup:
+            self._wake_pending = True
+            self._wakeup.notify_all()
+
+    def wait_for_wakeup(self, timeout: float) -> bool:
+        """Wait for a control hint without losing a concurrent wake signal."""
+        with self._wakeup:
+            if not self._wake_pending and not self.stop():
+                self._wakeup.wait(timeout)
+            signaled = self._wake_pending
+            self._wake_pending = False
+            return signaled
+
     def interrupt(self) -> None:
         self._stop.set()
+        self.wake()
 
     def deny_lease(self) -> None:
         """A denied heartbeat or failed ownership check stops the turn."""
         self._stop.set()
         self._lease_lost.set()
+        self.wake()
 
 
 class Worker:
@@ -175,11 +190,14 @@ class Worker:
         worker_id: str | None = None,
         session_factory=None,
         checkpointer=_INSTALLATION,
+        refresh_availability_during_run: bool = True,
     ):
         if worker_id is None:
             worker_id = f"worker-{uuid.uuid4().hex[:8]}"
         self.worker_id = worker_id
         self.running = True
+        self._closed = False
+        self.refresh_availability_during_run = refresh_availability_during_run
 
         # Set up database connection
         self.engine = create_engine(settings.database_url)
@@ -210,17 +228,75 @@ class Worker:
                     )
                     connection_fields.update(self.engine.url.query)
                     checkpoint_url = make_conninfo(**connection_fields)
-                self._checkpointer_ctx = PostgresSaver.from_conn_string(checkpoint_url)
-                self.checkpointer = self._checkpointer_ctx.__enter__()
+                context = PostgresSaver.from_conn_string(checkpoint_url)
+                self.checkpointer = context.__enter__()
+                self._checkpointer_ctx = context
                 # The saver's tables are what make a thread resumable; without
                 # this the graph silently has nowhere to write a checkpoint.
-                self.checkpointer.setup()
+                if self.engine.dialect.name == "postgresql":
+                    import psycopg
+
+                    # Saver setup runs DDL outside our SQLAlchemy transaction.
+                    # Serialize independent slots/processes on a separate
+                    # autocommit connection; closing it also releases the lock
+                    # if setup raises. Each saver keeps its own connection.
+                    with psycopg.connect(
+                        checkpoint_url,
+                        autocommit=True,
+                        connect_timeout=5,
+                        application_name="openship-checkpointer-setup",
+                    ) as setup_guard:
+                        # A blocking lock statement would leave a transaction
+                        # open while waiting. Saver's concurrent-index DDL can
+                        # itself wait for that transaction, deadlocking startup.
+                        # Try in short autocommit statements on this slot thread.
+                        deadline = time.monotonic() + 30
+                        while not setup_guard.execute(
+                            "SELECT pg_try_advisory_lock(5716001871110882128)"
+                        ).fetchone()[0]:
+                            if time.monotonic() >= deadline:
+                                raise RuntimeError("checkpointer setup lock timed out")
+                            time.sleep(0.05)
+                        self.checkpointer.setup()
+                else:
+                    self.checkpointer.setup()
                 logger.info("Checkpointer initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize checkpointer: {e}")
+                context, self._checkpointer_ctx = self._checkpointer_ctx, None
+                if context is not None:
+                    try:
+                        context.__exit__(None, None, None)
+                    except Exception:
+                        logger.warning(
+                            "Failed to close checkpointer after setup failure"
+                        )
                 self.checkpointer = None
 
         logger.info(f"Worker {self.worker_id} initialized")
+
+    def close(self):
+        """Release this resource's checkpointer and engine exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        self.running = False
+        context, self._checkpointer_ctx = self._checkpointer_ctx, None
+        try:
+            if context is not None:
+                context.__exit__(None, None, None)
+        finally:
+            self.checkpointer = None
+            self.engine.dispose()
+
+    def _supervise_in_thread(self, supervision, run_id, fence):
+        # Session creation, use and closure all belong to this thread.
+        try:
+            with self.Session() as db:
+                self._supervise(supervision, db, run_id, fence)
+        except Exception:
+            supervision.deny_lease()
+            logger.warning("Worker supervisor session failed")
 
     def _supervise(self, supervision, db, run_id, fence):
         """Watch the run while its turn runs, and keep its lease alive.
@@ -233,22 +309,19 @@ class Worker:
         renewing the lease so a long turn is not reclaimed by another worker.
         A write on the short interval would race the worker's own open
         transaction, which is exactly what a short turn on SQLite does, so the
-        two intervals are kept apart.
+        two intervals are kept apart. The legacy polling worker also refreshes
+        readiness here during long turns. The NATS consumer disables that refresh
+        because its independent RecoverySupervisor owns the schedule.
         """
         poll = getattr(settings, "worker_cancellation_poll_seconds", 0.5)
         renew_every = getattr(settings, "worker_heartbeat_interval", 10)
 
-        waited = 0.0
-        availability_waited = 0.0
+        now = time.monotonic()
+        next_renewal = now + renew_every
+        next_availability_refresh = (
+            now + 10 if self.refresh_availability_during_run else None
+        )
         while not supervision.stop():
-            # A poll on an interval: the first check happens while the turn is
-            # still running, so a lease that moved interrupts a blocked read
-            # rather than deciding the turn before it began.
-            time.sleep(poll)
-            waited += poll
-            availability_waited += poll
-            if supervision.stop():
-                return
             try:
                 if self._ownership_lost(db, run_id, fence):
                     logger.warning(
@@ -263,35 +336,45 @@ class Worker:
                 supervision.deny_lease()
                 return
 
-            if waited < renew_every:
-                if availability_waited >= 10:
-                    availability_waited = 0.0
-                    try:
-                        self._refresh_tool_availability(db)
-                    except Exception:
-                        db.rollback()
-                        logger.warning("Runtime tool availability refresh failed")
-                continue
-            waited = 0.0
-            if availability_waited >= 10:
-                availability_waited = 0.0
+            now = time.monotonic()
+            if (
+                next_availability_refresh is not None
+                and now >= next_availability_refresh
+            ):
                 try:
                     self._refresh_tool_availability(db)
                 except Exception:
                     db.rollback()
                     logger.warning("Runtime tool availability refresh failed")
-            try:
-                if not renew(db, run_id, fence):
-                    logger.warning(
-                        f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})"
-                    )
+                next_availability_refresh = time.monotonic() + 10
+
+            if now >= next_renewal:
+                try:
+                    if not renew(db, run_id, fence):
+                        logger.warning(
+                            f"[{self.worker_id}] Heartbeat failed for run {run_id} (fence={fence})"
+                        )
+                        supervision.deny_lease()
+                        return
+                except Exception:
+                    db.rollback()
+                    logger.warning("Worker heartbeat failed")
                     supervision.deny_lease()
                     return
-            except Exception:
-                db.rollback()
-                logger.warning("Worker heartbeat failed")
-                supervision.deny_lease()
-                return
+                next_renewal = time.monotonic() + renew_every
+
+            if not supervision.stop():
+                now = time.monotonic()
+                timeout = min(
+                    poll,
+                    max(0.0, next_renewal - now),
+                )
+                if next_availability_refresh is not None:
+                    timeout = min(
+                        timeout,
+                        max(0.0, next_availability_refresh - now),
+                    )
+                supervision.wait_for_wakeup(timeout)
 
     def _ownership_lost(self, db, run_id, fence) -> bool:
         """Whether this worker is still the owner of the run it is working on.
@@ -304,18 +387,27 @@ class Worker:
         run = db.query(Run).filter(Run.id == run_id).populate_existing().first()
         if run is None or run.fence != fence:
             return True
-        if run.status not in ("queued", "running", "paused"):
+        if run.status != "running":
             return True
         job = (
             db.query(RunJob).filter(RunJob.run_id == run_id).populate_existing().first()
         )
-        return job is None or job.fence != fence
+        if (
+            job is None
+            or job.fence != fence
+            or job.owner_id != self.worker_id
+            or job.lease_until is None
+        ):
+            return True
+        lease_until = (
+            job.lease_until.replace(tzinfo=UTC)
+            if job.lease_until.tzinfo is None
+            else job.lease_until.astimezone(UTC)
+        )
+        return lease_until <= datetime.now(UTC)
 
     def _refresh_tool_availability(self, db) -> None:
-        policy = read_effective_tool_policy(db)
-        observations = observe_tool_availability(enabled_ids=policy.effective_ids)
-        publish_tool_availability(db, self.worker_id, observations)
-        db.commit()
+        refresh_tool_availability(db, self.worker_id)
 
     def _tool_context(self, claim, run, conversation, execution):
         try:
@@ -393,7 +485,7 @@ class Worker:
                 ),
                 "model": None,
             }
-        event = append_event(
+        append_event(
             db,
             conversation_id=conversation.id,
             run_id=run.id,
@@ -401,18 +493,6 @@ class Worker:
             payload=payload,
         )
         db.flush()
-        db.add(
-            Outbox(
-                conversation_id=conversation.id,
-                event_id=event.id,
-                type=event.type,
-                payload=json.dumps(
-                    {"event_id": str(event.id), "type": event.type},
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-            )
-        )
         db.commit()
         return True
 
@@ -420,7 +500,6 @@ class Worker:
         self,
         claim,
         job,
-        supervisor_db,
         supervision,
         run,
         conversation,
@@ -514,8 +593,8 @@ class Worker:
             "execution_configuration": run.execution_configuration or "",
         }
         supervisor_thread = threading.Thread(
-            target=self._supervise,
-            args=(supervision, supervisor_db, run.id, claim.fence),
+            target=self._supervise_in_thread,
+            args=(supervision, run.id, claim.fence),
             daemon=True,
         )
         supervisor_thread.start()
@@ -543,7 +622,7 @@ class Worker:
         finally:
             supervision.interrupt()
             if supervisor_thread.is_alive():
-                supervisor_thread.join(timeout=5)
+                supervisor_thread.join()
 
         if supervision.lease_lost():
             return False
@@ -628,7 +707,7 @@ class Worker:
         cleaned = re.sub(r"(?m)^## Title:[^\r\n]*(?:\r?\n|$)", "", response)
         return cleaned.strip() if cleaned != response else response
 
-    def process_job(self, claim):
+    def process_job(self, claim, *, supervision: Supervision | None = None):
         """Process a single claimed job: supervise one model turn, then publish it."""
         run_id = claim.run_id
         fence = claim.fence
@@ -636,12 +715,12 @@ class Worker:
 
         # One session per thread: the worker's own work stays in one transaction,
         # and the supervisor thread gets a session of its own.
-        job = self.Session()
-        supervisor_db = self.Session()
-        supervision = Supervision()
+        job = None
+        supervision = supervision if supervision is not None else Supervision()
         supervisor_thread = None
 
         try:
+            job = self.Session()
             from ..events.service import append_event
 
             run = job.query(Run).filter(Run.id == run_id).first()
@@ -695,7 +774,6 @@ class Worker:
                 return self._process_tool_job(
                     claim,
                     job,
-                    supervisor_db,
                     supervision,
                     run,
                     conv,
@@ -941,8 +1019,8 @@ class Worker:
 
             # Start the supervisor: it watches the run while its turn runs.
             supervisor_thread = threading.Thread(
-                target=self._supervise,
-                args=(supervision, supervisor_db, run_id, fence),
+                target=self._supervise_in_thread,
+                args=(supervision, run_id, fence),
                 daemon=True,
             )
             supervisor_thread.start()
@@ -968,7 +1046,7 @@ class Worker:
             # Stop the heartbeat before reading anything it may have changed.
             supervision.interrupt()
             if supervisor_thread.is_alive():
-                supervisor_thread.join(timeout=5)
+                supervisor_thread.join()
 
             # A lease this worker no longer holds publishes nothing: another
             # worker owns the run, and the reconciler will finish it.
@@ -1111,7 +1189,8 @@ class Worker:
             # attempts, or event in this session. Discard all of it before a
             # fresh fenced transaction publishes the failure atomically.
             try:
-                job.rollback()
+                if job is not None:
+                    job.rollback()
                 failure_db = self.Session()
                 finalized = finalize(
                     db=failure_db,
@@ -1156,13 +1235,21 @@ class Worker:
                     pass
             return False
         finally:
+            supervision.interrupt()
             if supervisor_thread and supervisor_thread.is_alive():
-                supervisor_thread.join(timeout=5)
-            job.close()
-            supervisor_db.close()
+                supervisor_thread.join()
+            if job is not None:
+                job.close()
 
     def run(self):
-        """Main worker loop with automatic reconciliation."""
+        """Main worker loop with automatic reconciliation and resource cleanup."""
+        try:
+            self._run_loop()
+        finally:
+            self.close()
+        logger.info(f"[{self.worker_id}] Shutdown complete")
+
+    def _run_loop(self):
         logger.info(f"[{self.worker_id}] Starting worker loop")
         last_reconcile = time.time()
         reconcile_interval = settings.reconciler_interval
@@ -1234,32 +1321,12 @@ class Worker:
                 if db is not None:
                     db.close()
 
-        # Cleanup
-        self.engine.dispose()
-        logger.info(f"[{self.worker_id}] Shutdown complete")
-
 
 def main():
-    parser = argparse.ArgumentParser(description="OpenShip chat turn worker")
-    parser.add_argument("--worker-id", type=str, default=None, help="Unique worker ID")
-    parser.add_argument("--log-level", type=str, default="INFO", help="Log level")
-    args = parser.parse_args()
+    """Run the production JetStream entry while keeping this module path stable."""
+    from ..messaging.worker import main as messaging_worker_main
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper()),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
-
-    worker = Worker(worker_id=args.worker_id)
-
-    def shutdown(signum, frame):
-        logger.info("Received shutdown signal")
-        worker.running = False
-
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
-
-    worker.run()
+    messaging_worker_main()
 
 
 if __name__ == "__main__":

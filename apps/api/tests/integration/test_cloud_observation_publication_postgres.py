@@ -61,6 +61,7 @@ from src.openship.events.service import Event
 from src.openship.execution.aws_transport import AwsRequestBudget
 from src.openship.execution.gateway import ToolGateway
 from src.openship.execution.models import ToolAttempt, ToolOperation
+from src.openship.messaging.models import MessageTransportState
 from src.openship.providers.control import InvocationControl
 from src.openship.resources.models import (
     Environment,
@@ -161,7 +162,17 @@ def database_sessions(request, tmp_path):
         sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         if engine.dialect.name == "sqlite":
             with sessions() as db:
-                db.add(ToolPolicyState(id=1, revision=1))
+                db.add_all(
+                    [
+                        ToolPolicyState(id=1, revision=1),
+                        MessageTransportState(
+                            id=1,
+                            installation_id=uuid.uuid4(),
+                            transport_epoch=uuid.uuid4(),
+                            active=False,
+                        ),
+                    ]
+                )
                 db.commit()
         yield sessions
     finally:
@@ -554,7 +565,17 @@ def sqlite_worker_sessions(tmp_path):
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with sessions() as db:
-        db.add(ToolPolicyState(id=1, revision=1))
+        db.add_all(
+            [
+                ToolPolicyState(id=1, revision=1),
+                MessageTransportState(
+                    id=1,
+                    installation_id=uuid.uuid4(),
+                    transport_epoch=uuid.uuid4(),
+                    active=False,
+                ),
+            ]
+        )
         db.commit()
     try:
         yield sessions
@@ -1215,7 +1236,7 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
                         from src.openship.capabilities.policy import set_tool_policy
 
                         monkeypatch.setattr(
-                            settings, "connector_operator_user_id", user.id
+                            settings, "connector_operator_username", user.username
                         )
                         set_tool_policy(
                             mutation_db,
@@ -1250,7 +1271,7 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
     if publication_change == "policy_disabled_before_dispatch":
         from src.openship.capabilities.policy import set_tool_policy
 
-        monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
+        monkeypatch.setattr(settings, "connector_operator_username", user.username)
         gateway = ToolGateway(operation_session)
         _operation_id, admission_status = gateway._admit(
             claim,

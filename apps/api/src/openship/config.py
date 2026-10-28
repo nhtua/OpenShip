@@ -1,7 +1,7 @@
 from pathlib import Path
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     connector_dispatch_lock_file: Path = Path(
         "/run/secrets/openship-managed-dispatch.lock"
     )
-    connector_operator_user_id: UUID | None = None
+    connector_operator_username: str | None = None
     connector_browser_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     connector_setup_max_body_bytes: int = Field(default=32 * 1024, ge=1024, le=128 * 1024)
     connector_write_rate_limit_per_minute: int = Field(default=20, ge=1, le=120)
@@ -97,6 +97,35 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+psycopg2://postgres:change_me@localhost:5432/openship"
+
+    # JetStream transport. Role credentials live in a protected JSON file with
+    # top-level `user` and `password` keys; they never belong in the server URL.
+    nats_servers: str = "nats://127.0.0.1:4222"
+    nats_auth_file: Path | None = None
+    nats_tls_ca_file: Path | None = None
+    messaging_publish_batch_size: int = Field(default=32, ge=1, le=256)
+    messaging_publish_lease_seconds: int = Field(default=30, ge=5, le=300)
+    # Aggregate broker capacity is an explicit installation declaration. Multiple
+    # processes must budget their combined slots before changing this topology.
+    messaging_run_max_ack_pending: int = Field(default=4, ge=1, le=1024)
+    messaging_maintenance_max_ack_pending: int = Field(default=1, ge=1, le=1024)
+    messaging_retention_days: int = Field(default=30, ge=1, le=36500)
+    messaging_retention_batch_size: int = Field(default=1000, ge=1, le=10000)
+    worker_run_concurrency: int = Field(default=4, ge=1, le=128)
+    worker_background_concurrency: int = Field(default=1, ge=1, le=128)
+
+    @model_validator(mode="after")
+    def validate_messaging_capacity(self):
+        if self.worker_run_concurrency > self.messaging_run_max_ack_pending:
+            raise ValueError("worker run concurrency exceeds aggregate run capacity")
+        if (
+            self.worker_background_concurrency
+            > self.messaging_maintenance_max_ack_pending
+        ):
+            raise ValueError(
+                "worker background concurrency exceeds aggregate maintenance capacity"
+            )
+        return self
 
     # JWT
     jwt_secret: str = "dev-secret-change-in-production-123"

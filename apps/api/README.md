@@ -1,5 +1,15 @@
 # OpenShip API
 
+Phase 6A targets replacing PostgreSQL job discovery and live event polling
+with NATS JetStream while retaining the existing API, database authority, fences,
+providers, Connectors and artifacts. See the [migration design](../../docs/superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md),
+[implementation plan](../../docs/superpowers/plans/2026-10-25-phase6a-nats-messaging.md)
+and [deployment runbook](../../docs/operations/messaging.md). The production
+worker entry uses the durable JetStream run consumer and requires the initialized
+transport and worker credentials described in the runbook. The direct retention
+command below remains available; queue-backed retention commands require an
+active transport and the JetStream worker.
+
 Backend API server for OpenShip, built with FastAPI.
 
 ## Quick Start
@@ -33,11 +43,13 @@ capabilities, and local provider examples.
 Chat uses durable run submission and the worker for every provider. There is no
 implicit OpenAI profile or Phase 1 chat endpoint.
 
-Search is optional and remains two independent tools. Set `TOOL_ENABLED_IDS` to
-`brave_web_search`, `tavily_web_search`, or both, and configure only the matching
-worker credentials. A missing Brave key does not disable Tavily, and neither key
-is entered or stored by the browser. Docker Compose passes search keys only to
-the runtime worker. See the [artifact storage runbook](../../docs/operations/artifact-storage.md).
+Search is optional and remains two independent tools. Enable installed tools
+in Global Settings and configure their managed Connectors using the
+[Connector runbook](../../docs/operations/managed-connectors.md). Leave
+`TOOL_ENABLED_IDS` unset for managed policy, or set it as an optional deployment
+ceiling. Legacy worker environment keys remain for persisted old runs.
+See the [artifact storage runbook](../../docs/operations/artifact-storage.md)
+for retained evidence and storage setup.
 
 ## Configuration Options
 
@@ -46,9 +58,9 @@ the runtime worker. See the [artifact storage runbook](../../docs/operations/art
 | `MODEL_PROFILES_JSON` | (required) | Explicit model profiles, endpoints, capabilities, and credential references |
 | `MODEL_DEFAULT_PROFILE_ID` | (required) | ID of a declared profile to use by default |
 | `OPENAI_API_KEY` | (unset) | Credential binding used by the example OpenAI profile |
-| `TOOL_ENABLED_IDS` | (empty) | Exact maintained tool IDs enabled for the runtime worker |
-| `BRAVE_SEARCH_API_KEY` | (unset) | Operator credential for `brave_web_search` |
-| `TAVILY_API_KEY` | (unset) | Operator credential for `tavily_web_search` |
+| `TOOL_ENABLED_IDS` | (unset) | Optional deployment ceiling; explicitly empty permits no tools |
+| `BRAVE_SEARCH_API_KEY` | (unset) | Legacy worker binding for persisted Brave runs |
+| `TAVILY_API_KEY` | (unset) | Legacy worker binding for persisted Tavily runs |
 | `ARTIFACT_ROOT` | `var/artifacts` | Shared persistent POSIX directory for immutable artifact bytes |
 | `ARTIFACT_STORAGE_ID` | (required for artifacts) | Stable UUID identifying the mounted artifact store |
 | `ARTIFACT_CONVERSATION_QUOTA_BYTES` | `134217728` | Maximum artifact bytes per conversation |
@@ -70,6 +82,8 @@ the runtime worker. See the [artifact storage runbook](../../docs/operations/art
 | `RECONCILER_INTERVAL` | `60` | Lease reconciliation interval |
 | `EVENT_RETENTION_DAYS` | `30` | Days to retain events for completed runs |
 | `CHECKPOINT_RETENTION_DAYS` | `30` | Days to retain checkpoints for completed runs |
+| `MESSAGING_RETENTION_DAYS` | `30` | Days to retain settled queue ledgers and notices |
+| `MESSAGING_RETENTION_BATCH_SIZE` | `1000` | Maximum rows per category processed by a queued retention task |
 | `LOG_RETENTION_DAYS` | `7` | Days to retain operational logs |
 
 Set the common budgets directly in `apps/api/.env` for local development, or
@@ -126,19 +140,34 @@ OpenShip retains durable workspace data indefinitely by default. To bound histor
 cd apps/api
 uv run python -m src.openship.runs.worker_commands retention --dry-run
 
-# Run retention (default: 30-day event retention, 30-day checkpoint retention)
+# Run retention (defaults: 30 days for events, checkpoints and settled messaging records)
 uv run python -m src.openship.runs.worker_commands retention
 
 # Custom retention periods
-EVENT_RETENTION_DAYS=14 CHECKPOINT_RETENTION_DAYS=14 uv run python -m src.openship.runs.worker_commands retention
+EVENT_RETENTION_DAYS=14 CHECKPOINT_RETENTION_DAYS=14 MESSAGING_RETENTION_DAYS=14 uv run python -m src.openship.runs.worker_commands retention
 ```
 
 **Retention behavior:**
 - Events from completed/failed/cancelled/timed_out runs older than `EVENT_RETENTION_DAYS` are pruned
 - Checkpoints for terminal runs older than `CHECKPOINT_RETENTION_DAYS` are deleted via the checkpointer API
 - Active, queued, and running runs are never pruned
-- Messages and run summaries are preserved until an explicit delete policy is implemented
+- Conversation messages and run summaries are preserved. Settled delivery ledgers and published notices older than `MESSAGING_RETENTION_DAYS` are pruned; unresolved exhaustion, unpublished event/failure notices, and queued work are retained
 - Log retention is handled by the deployment log driver (7 days by default)
+
+After the JetStream worker entry is qualified and active, an operator can
+request auditable, bounded queue-backed maintenance and inspect its durable
+result:
+
+```bash
+uv run python -m src.openship.runs.worker_commands enqueue-retention \
+  --requested-by "operator@example.test" --dry-run
+uv run python -m src.openship.runs.worker_commands retention-status <task-id>
+```
+
+The request and its outbox command commit together. Each task processes at most
+`MESSAGING_RETENTION_BATCH_SIZE` rows per category; repeat with a new request
+while `limit_reached` is true. Direct `retention` remains available for
+operator-run recovery and is not routed through JetStream.
 
 ### Artifact Storage
 

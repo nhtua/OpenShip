@@ -23,7 +23,6 @@ from src.openship.artifacts.service import (
 )
 from src.openship.config import settings
 from src.openship.events.service import append_event
-from src.openship.runs.models import Outbox
 from src.openship.workspace.maintenance import (
     plan_workspace_purge,
     purge_workspace,
@@ -73,7 +72,7 @@ def verify_artifacts(db: Session, store: LocalArtifactStore) -> ArtifactMaintena
 
 
 def _append_recovered_delete_event(db: Session, artifact: Artifact) -> None:
-    event = append_event(
+    append_event(
         db=db,
         conversation_id=artifact.conversation_id,
         run_id=None,
@@ -84,15 +83,6 @@ def _append_recovered_delete_event(db: Session, artifact: Artifact) -> None:
             "sha256": artifact.sha256,
             "status": "deleted",
         },
-    )
-    db.flush()
-    db.add(
-        Outbox(
-            conversation_id=artifact.conversation_id,
-            event_id=event.id,
-            type="artifact.deleted",
-            payload=event.payload,
-        )
     )
 
 

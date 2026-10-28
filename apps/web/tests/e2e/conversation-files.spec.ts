@@ -99,7 +99,7 @@ test('lists, reads, downloads and handles pinned deletion for exact conversation
   page.on('dialog', (dialog) => dialog.accept())
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
 
   await page.getByTestId('conversation-files-trigger').click()
   await expect(page.locator('[data-testid="conversation-file"]')).toHaveCount(1)
@@ -160,7 +160,7 @@ test('keeps preview pagination controls visible in a narrow drawer with a long f
   })
   await setAuthToken(page)
   await page.goto('/')
-  await page.getByRole('button', { name: /Deploy pipeline/ }).click()
+  await page.getByRole('button', { name: 'Open conversation Deploy pipeline' }).click()
   await page.setViewportSize({ width: 375, height: 667 })
   await page.getByTestId('conversation-files-trigger').click()
   const firstFileRow = page.locator('[data-artifact-id="small-screen-1"]')

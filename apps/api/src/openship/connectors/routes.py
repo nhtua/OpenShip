@@ -290,8 +290,8 @@ def connector_setup_context(user: User = Depends(require_jwt)):
 
     return {
         "can_manage_global": (
-            settings.connector_operator_user_id is not None
-            and user.id == settings.connector_operator_user_id
+            settings.connector_operator_username is not None
+            and user.username == settings.connector_operator_username
         ),
         "credential_store_ready": reason is None,
         "unavailable_reason": reason,
