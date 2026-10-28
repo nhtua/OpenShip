@@ -60,9 +60,9 @@ Commands:
   reconcile --preview|--apply [options]
 
 local starts native API, worker, relay, and Vite processes outside this wrapper.
-dev uses docker or podman compose with docker-compose.yml; --reload adds the
-development override. prod uses docker or podman compose with the protected
-.env.prod and production manifest.
+dev always uses docker or podman compose with docker-compose.yml and
+docker-compose.dev.yml for Vite/Uvicorn reload; --reload is a compatibility
+alias. prod uses the protected .env.prod and production manifest.
 USAGE
 }
 
@@ -156,8 +156,7 @@ compose() {
       ;;
     dev)
       [[ -f "$ROOT/.env" ]] || { echo "copy .env.example to .env first" >&2; return 2; }
-      args=(-p openship-dev -f docker-compose.yml)
-      if ((RELOAD)); then args+=(-f docker-compose.dev.yml); fi
+      args=(-p openship-dev -f docker-compose.yml -f docker-compose.dev.yml)
       ;;
     prod)
       [[ -f "$ROOT/.env.prod" ]] || { echo "copy .env.prod.example to .env.prod first" >&2; return 2; }
@@ -772,7 +771,6 @@ case "$COMMAND" in
       done
       ((${#services[@]})) && compose stop "${services[@]}"
     elif [[ "$ENVIRONMENT" == dev ]]; then
-      RELOAD=1
       compose down
     else
       OPENSHIP_SKIP_PROD_VALIDATION=1 compose stop

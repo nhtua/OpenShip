@@ -89,13 +89,13 @@ interpret a command error as a partial or successful operation.
 
 | Concern | Developer machine (`local`) | Development stack (`dev`) | Production stack (`prod`) |
 | --- | --- | --- | --- |
-| Processes | Native API, worker, relay and Vite; native or Compose DB/NATS. | Root `docker-compose.yml` through the selected engine; optional `docker-compose.dev.yml` hot-reload override. | Standalone `docker-compose.prod.yml` through the selected engine; never combined with the dev file. |
+| Processes | Native API, worker, relay and Vite; native or Compose DB/NATS. | Root and dev Compose files through the selected engine; Vite, Uvicorn, worker and relay all reload source changes. | Standalone `docker-compose.prod.yml` through the selected engine; never combined with the dev file. |
 | Environment | Existing `apps/api/.env`; optional root `.env` selects a Compose engine for managed dependencies. | Root `.env` supplies settings and selects `CONTAINER_ENGINE` (`docker` by default). | Explicit protected `.env.prod`; may select `CONTAINER_ENGINE`; require supplied production values. |
 | Broker URL | Loopback, default port 4222. | Service DNS `nats:4222`. | Private service DNS with TLS validation; no published broker port. |
 | Broker state | Explicit stable host directory, or existing Compose project `natsdata`. | Separate `openship-dev_natsdata` volume. | Explicit stable production `natsdata`; existing production DB/artifact volumes are mapped deliberately. |
 | Access | API/Vite/DB/broker and optional NATS NUI bind loopback; dev credentials still required. | API/web publish on `DEV_BIND_ADDRESS` (default `0.0.0.0`); NUI binds loopback on port 31312; PostgreSQL and NATS stay private on Compose DNS. | Web ingress only, bound to host loopback for a host reverse proxy; DB, API, broker and monitoring private by default. |
 | Artifacts/Connectors | Existing local paths and keyrings shared by API/worker. | Separate `openship-dev_artifactdata` volume and read-only `./secrets` mounts. | Same identities, protected volume and role-specific secret mounts; preserve all existing keys. |
-| Build/reload | Existing `uv`/`pnpm` commands. | Build source; reload override mounts source and uses dev dependencies, not host virtualenv/node_modules. | Immutable API/web/PostgreSQL/NATS image digests; no source mounts, build-on-start or reload. |
+| Build/reload | Existing `uv`/`pnpm` commands. | Source-mounted dev targets with container dependencies; watchers poll host mounts. `--reload` is an optional compatibility alias. | Immutable API/web/PostgreSQL/NATS image digests; no source mounts, build-on-start or reload. |
 | Lifecycle | Start NATS/DB, apply migrations/bootstrap, then supervise API, worker, relay and web as separate processes. | PostgreSQL health + migration + authenticated JetStream bootstrap before API/worker/relay; API readiness checks worker health. | PostgreSQL health + one-shot migration and bootstrap, restart policies, bounded logs/resources and graceful stops. |
 
 The local dependency project is `openship`; the dev stack uses the separate
@@ -456,43 +456,47 @@ cutover verification, opens execution then admission, and starts the full
 stack. A blocked preview is never force-applied; follow the manual recovery
 procedure below. Keep any such native processes stopped until this sequence
 finishes. These steps stay ordered with Podman Compose as well as Docker
-Compose. Use the source-mounted hot-reload stack when working on Python or web
-source:
+Compose. The dev stack uses source mounts and hot reload by default:
 
 ```bash
-scripts/openship-stack --environment dev --reload start
+scripts/openship-stack --environment dev start
 scripts/openship-stack --environment dev doctor
 ```
 
-The same cutover gate applies with or without `--reload`. Stop the development
-stack with `scripts/openship-stack -e dev stop`; this uses both Compose files
-even if the preceding start omitted `--reload`, removes containers and network,
-and preserves named volumes.
+The same cutover gate applies to every dev start. Stop the development stack
+with `scripts/openship-stack -e dev stop`; this uses both Compose files, removes
+containers and network, and preserves named volumes.
 
-The default `start` builds the root quick-start stack without source mounts.
-Add `--reload` before `start` to use the development override. It mounts
-Python/web source read-only, keeps
-container-installed dependencies in the image or a named node_modules volume,
-runs Uvicorn reload, watches worker and relay Python files, and runs Vite on
-port 5173 with `/api` proxied to `api:8000`. Vite polls the mounted web source
-because Docker/Podman bind mounts may not forward host file notifications;
-polling can use more CPU on large source trees. Dependency/lockfile changes
-need a rebuild. API and worker preserve the existing model configuration,
-artifact volume and Connector secret mounts. Messaging credentials are mounted
-one role at a time from `.openship`, not through Connector `./secrets`. Existing
-the automatic artifact initialization refuses a non-empty root without its
-marker or a marker whose value differs from `ARTIFACT_STORAGE_ID`. For an
-existing store, keep its current ID and volume. The explicit `init-artifacts`
-command remains available for operator use.
+Dev `start` builds the development targets, mounts Python/web source read-only,
+keeps container dependencies in the image or a named `node_modules` volume,
+runs Uvicorn reload, watches worker/relay Python files, and serves the web
+client with Vite on port 5173. The API and Vite watchers poll their mounted
+source; worker and relay use watchdog polling because Docker/Podman may not
+forward host file notifications. Polling can use more CPU on large source
+trees. Dependency/lockfile changes need a rebuild. API and worker preserve the
+existing model configuration, artifact volume and Connector secret mounts.
+Messaging credentials are mounted one role at a time from `.openship`, not
+through Connector `./secrets`. Automatic artifact initialization refuses a
+non-empty root without its marker or a marker whose value differs from
+`ARTIFACT_STORAGE_ID`. For an existing store, keep its current ID and volume.
+The explicit `init-artifacts` command remains available for operator use.
 
-The web client proxies `/api` to the API using the internal `api:8000` service
-name, in both Vite reload mode and the built Nginx image. PostgreSQL and NATS
-are likewise private to the Compose network. The API and web host bindings use
+When upgrading an existing dev stack to this default reload setup, recreate
+its containers once with the wrapper. This preserves named volumes; later
+source edits reload automatically without rerunning `start`:
+
+```bash
+scripts/openship-stack -e dev stop
+scripts/openship-stack -e dev start
+```
+
+The dev Vite client proxies `/api` to the API using the internal `api:8000`
+service name; production uses the built Nginx image. PostgreSQL and NATS are
+private to the Compose network. The API and web host bindings use
 `DEV_BIND_ADDRESS` (default `0.0.0.0`) for LAN access; set it to `127.0.0.1` in
-`.env` to restrict them to the developer machine. Open the web app at
-`http://localhost:5173` with `--reload`, or `http://localhost:8080` with the
-default stack. NATS NUI is at `http://localhost:31312`; its preloaded `OpenShip
-Dev` profile needs one click on Connect. The API docs are at
+`.env` to restrict them to the developer machine. Open the dev web app at
+`http://localhost:5173`. NATS NUI is at `http://localhost:31312`; its preloaded
+`OpenShip Dev` profile needs one click on Connect. The API docs are at
 `http://localhost:8000/docs`. Use the same
 ports with the developer machine's LAN address to access the stack from
 another LAN device. Use the wrapper's `status` and `stop` commands to inspect

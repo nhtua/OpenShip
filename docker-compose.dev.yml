@@ -21,6 +21,9 @@ services:
       - ./apps/api/src:/app/src:ro
       - ./apps/api/alembic:/app/alembic:ro
       - ./apps/api/alembic.ini:/app/alembic.ini:ro
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+      WATCHFILES_POLL_DELAY_MS: "500"
 
   worker:
     build:
@@ -34,6 +37,8 @@ services:
       - --directory=/app/src
       - --patterns=*.py
       - --recursive
+      - --debug-force-polling
+      - --interval=0.5
       - --
       - python
       - -m
@@ -55,6 +60,8 @@ services:
       - --directory=/app/src
       - --patterns=*.py
       - --recursive
+      - --debug-force-polling
+      - --interval=0.5
       - --
       - python
       - -m
