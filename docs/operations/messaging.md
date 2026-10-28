@@ -474,10 +474,12 @@ Add `--reload` before `start` to use the development override. It mounts
 Python/web source read-only, keeps
 container-installed dependencies in the image or a named node_modules volume,
 runs Uvicorn reload, watches worker and relay Python files, and runs Vite on
-port 5173 with `/api` proxied to `api:8000`. Dependency/lockfile changes need a
-rebuild. API and worker preserve the existing model configuration, artifact
-volume and Connector secret mounts. Messaging credentials are mounted one
-role at a time from `.openship`, not through Connector `./secrets`. Existing
+port 5173 with `/api` proxied to `api:8000`. Vite polls the mounted web source
+because Docker/Podman bind mounts may not forward host file notifications;
+polling can use more CPU on large source trees. Dependency/lockfile changes
+need a rebuild. API and worker preserve the existing model configuration,
+artifact volume and Connector secret mounts. Messaging credentials are mounted
+one role at a time from `.openship`, not through Connector `./secrets`. Existing
 the automatic artifact initialization refuses a non-empty root without its
 marker or a marker whose value differs from `ARTIFACT_STORAGE_ID`. For an
 existing store, keep its current ID and volume. The explicit `init-artifacts`

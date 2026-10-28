@@ -69,6 +69,8 @@ services:
     command: ["pnpm", "run", "dev", "--host", "0.0.0.0"]
     environment:
       VITE_API_PROXY_TARGET: http://api:8000
+      # Force polling where the host bind mount does not relay filesystem events.
+      OPENSHIP_VITE_WATCH_POLLING: "1"
     ports: !override
       - "${DEV_BIND_ADDRESS:-0.0.0.0}:${DEV_WEB_PORT:-5173}:5173"
     volumes:
