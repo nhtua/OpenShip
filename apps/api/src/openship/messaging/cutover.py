@@ -408,9 +408,13 @@ def apply_cutover(
                     progress.status = "complete"
                     progress.completed_at = datetime.now(UTC)
                 else:
-                    db.query(RunJob.id).filter(
-                        RunJob.run_id.in_(run_ids)
-                    ).with_for_update().all()
+                    locked_jobs = (
+                        db.query(RunJob)
+                        .filter(RunJob.run_id.in_(run_ids))
+                        .with_for_update()
+                        .all()
+                    )
+                    jobs_by_run = {job.run_id: job for job in locked_jobs}
                     per_run_dispositions: dict[uuid.UUID, str] = {}
                     dispositions, blocked_count, _blocked_ids, _truncated = (
                         _classify_runs(
@@ -432,6 +436,7 @@ def apply_cutover(
                                 "queued_existing_command",
                                 "waiting_preserved",
                                 "terminal_preserved",
+                                "terminal_owned_preserved",
                             }
                             for category in per_run_dispositions.values()
                         )
@@ -442,13 +447,17 @@ def apply_cutover(
                     commands_created = 0
                     commands_reused = dispositions.get("queued_existing_command", 0)
                     for run_id in run_ids:
-                        if per_run_dispositions[run_id] == "queued_eligible":
-                            job = (
-                                db.query(RunJob)
-                                .filter(RunJob.run_id == run_id)
-                                .with_for_update()
-                                .one()
-                            )
+                        disposition = per_run_dispositions[run_id]
+                        if disposition == "terminal_owned_preserved":
+                            # A terminal run cannot execute again. With writers
+                            # stopped and the run/job fence plus active tool
+                            # state rechecked under lock, its old lease metadata
+                            # is stale queue state and can be normalized safely.
+                            job = jobs_by_run[run_id]
+                            job.owner_id = None
+                            job.lease_until = None
+                        elif disposition == "queued_eligible":
+                            job = jobs_by_run[run_id]
                             enqueue_run(
                                 db,
                                 run_id,
@@ -564,6 +573,7 @@ def plan_rollback(db: Session, *, cutover_id: uuid.UUID) -> CutoverRollbackRepor
         "queued_existing_command",
         "waiting_preserved",
         "terminal_preserved",
+        "terminal_owned_preserved",
     }
     if blocked_count or any(
         disposition not in safe_run_dispositions for disposition in run_counts
@@ -874,9 +884,13 @@ def apply_rollback(
                     progress.status = "rolled_back"
                     progress.rolled_back_at = datetime.now(UTC)
                 else:
-                    db.query(RunJob.id).filter(
-                        RunJob.run_id.in_(run_ids)
-                    ).with_for_update().all()
+                    locked_jobs = (
+                        db.query(RunJob)
+                        .filter(RunJob.run_id.in_(run_ids))
+                        .with_for_update()
+                        .all()
+                    )
+                    jobs_by_run = {job.run_id: job for job in locked_jobs}
                     per_run: dict[uuid.UUID, str] = {}
                     # Run command rows remain immutable in their forward epoch;
                     # event notices alone are re-epoched during rollback.
@@ -902,6 +916,7 @@ def apply_rollback(
                                 "queued_existing_command",
                                 "waiting_preserved",
                                 "terminal_preserved",
+                                "terminal_owned_preserved",
                             }
                             for category in per_run.values()
                         )
@@ -909,17 +924,17 @@ def apply_rollback(
                         raise RuntimeError("run batch changed or became unsafe")
                     generations_bumped = 0
                     for run_id in run_ids:
+                        if per_run[run_id] == "terminal_owned_preserved":
+                            job = jobs_by_run[run_id]
+                            job.owner_id = None
+                            job.lease_until = None
+                            continue
                         if per_run[run_id] not in {
                             "queued_eligible",
                             "queued_existing_command",
                         }:
                             continue
-                        job = (
-                            db.query(RunJob)
-                            .filter(RunJob.run_id == run_id)
-                            .with_for_update()
-                            .one()
-                        )
+                        job = jobs_by_run[run_id]
                         if job.dispatch_generation >= _MAX_DISPATCH_GENERATION:
                             raise RuntimeError(
                                 "queued run dispatch generation is exhausted"

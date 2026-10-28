@@ -2,7 +2,7 @@
 type: operations
 summary: Configure, initialize, verify, back up, restore, and recover Phase 4A filesystem artifacts.
 status: active
-date: 2026-10-25
+date: 2026-10-27
 ---
 
 # Artifact Storage Operations
@@ -40,12 +40,19 @@ policy, while an explicitly empty value restricts the installation to no
 tools. Legacy `BRAVE_SEARCH_API_KEY` / `TAVILY_API_KEY` worker bindings remain
 for persisted old runs; they are not the normal managed-Connector setup path.
 
-Initialize the named volume once, before the first artifact operation:
+Initialize the named volume once, before the first artifact operation. The
+stack wrapper selects Docker by default and reads `CONTAINER_ENGINE=docker` or
+`CONTAINER_ENGINE=podman` from the root `.env`:
 
 ```bash
-docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance init
-docker compose up --build
+scripts/openship-stack --environment dev init-messaging
+scripts/openship-stack --environment dev init-artifacts
+scripts/openship-stack --environment dev start
 ```
+
+For Compose, `init-messaging` must run first because the one-shot worker
+container also mounts its role-specific NATS credential file. `init-artifacts`
+checks that these files exist before invoking the worker container.
 
 The initializer writes `.storage-id` only in an empty root. If it finds a
 non-empty root without that marker or a marker with another UUID, it refuses to

@@ -75,14 +75,17 @@ const canResumeConnector = computed(() => {
   )
 })
 
-const busy = computed(
+// Sidebar availability tracks route changes; chat work only disables the
+// current conversation's composer and tool submission controls.
+const navigationBusy = computed(
   () =>
     !routeReady.value ||
-    chat.isStreaming ||
     isCreatingConversation.value ||
     isLoadingConversation.value ||
-    (route.name === 'conversation' && !chat.conversationMetadataReady) ||
-    chat.currentConversationReadOnly,
+    (route.name === 'conversation' && !chat.conversationMetadataReady),
+)
+const conversationBusy = computed(
+  () => navigationBusy.value || chat.isStreaming || chat.currentConversationReadOnly,
 )
 
 const title = computed(
@@ -223,12 +226,12 @@ async function createAndOpenConversation(newTitle: string): Promise<string | nul
 }
 
 async function handleCreateConversation(newTitle: string) {
-  if (busy.value) return
+  if (navigationBusy.value) return
   await createAndOpenConversation(newTitle)
 }
 
 async function handleSelectConversation(id: string) {
-  if (busy.value || id === chat.currentConversation?.id) return
+  if (navigationBusy.value || id === chat.currentConversation?.id) return
   const generation = routeLoadGeneration
   // Lazy route resolution can finish after another composer interaction.
   isLoadingConversation.value = true
@@ -243,7 +246,7 @@ async function handleSend(content: string, options?: {
   enableTools: boolean
   connectorSelections?: ConnectorSelections
 }) {
-  if (busy.value) return
+  if (conversationBusy.value) return
   chat.error = null
 
   const conversationId = chat.currentConversation?.id
@@ -266,8 +269,8 @@ const activeRunId = computed(() => {
 })
 
 async function handleCancelRun() {
-  // Deliberately not guarded by `busy`: stopping a run is the thing a person
-  // does while one is streaming. The store owns what a cancellation leaves
+  // Deliberately not guarded by `conversationBusy`. Stopping a run is what a
+  // person does while one is streaming. The store owns what a cancellation leaves
   // behind - the fence, the card, and the reason a turn has no answer.
   const runId = activeRunId.value
   if (!runId) return
@@ -356,7 +359,7 @@ async function handleRetrySubmission() {
 }
 
 async function handleSearch(command: { capability: { id: string; version: string; manifest_digest: string }; arguments: Record<string, unknown>; connector_selections?: ConnectorSelections }) {
-  if (busy.value || hasActiveRun.value) return
+  if (conversationBusy.value || hasActiveRun.value) return
   isToolSubmitting.value = true
   try {
     const conversationId = chat.currentConversation?.id
@@ -549,7 +552,7 @@ onBeforeUnmount(() => {
     :show-conversation-files="Boolean(chat.currentConversation)"
     :conversation-files-open="conversationFilesOpen"
     :conversation-file-count="conversationFileCount"
-    :busy="busy"
+    :busy="navigationBusy"
     :projects="projects.projects"
     :current-project-id="projects.currentProjectId"
     :create-project-error="projectCreationError"
@@ -667,7 +670,7 @@ onBeforeUnmount(() => {
         @cancel="handleCancelOperation"
       />
       <ChatInput
-        :disabled="busy"
+        :disabled="conversationBusy"
         :selection-disabled="chat.isSubmitting"
         :profiles="chat.modelProfiles?.profiles ?? []"
         :default-profile-id="chat.modelProfiles?.default_profile_id ?? null"

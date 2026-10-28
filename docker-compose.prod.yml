@@ -58,7 +58,6 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
-        tag: "{{.Name}}"
 
   nats:
     image: ${NATS_SERVER_IMAGE:?Set the pinned NATS image digest in .env.prod}
@@ -106,8 +105,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
       nats:
         condition: service_started
     restart: "no"
@@ -130,10 +127,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      messaging-bootstrap:
-        condition: service_completed_successfully
+      nats:
+        condition: service_started
     healthcheck:
       test:
         - CMD
@@ -172,10 +167,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      messaging-bootstrap:
-        condition: service_completed_successfully
+      nats:
+        condition: service_started
     restart: unless-stopped
     stop_grace_period: 3900s
     deploy:
@@ -199,10 +192,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      messaging-bootstrap:
-        condition: service_completed_successfully
+      nats:
+        condition: service_started
     restart: unless-stopped
     stop_grace_period: 30s
     deploy:

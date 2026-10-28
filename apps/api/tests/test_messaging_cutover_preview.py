@@ -688,8 +688,9 @@ def test_preview_classifies_run_dispositions_with_safety_checks_before_status():
         "queued_eligible": 1,
         "waiting_preserved": 1,
         "terminal_preserved": 1,
+        "terminal_owned_preserved": 1,
         "requires_recovery": 2,
-        "blocked_owned": 2,
+        "blocked_owned": 1,
         "blocked_fence_mismatch": 1,
         "blocked_dispatch_history": 3,
         "blocked_duplicate_job": 1,
@@ -697,10 +698,103 @@ def test_preview_classifies_run_dispositions_with_safety_checks_before_status():
         "unsupported_status": 1,
     }
     assert report.status == "blocked"
-    assert report.blocked_run_groups == 11
+    assert report.blocked_run_groups == 10
     assert {eligible_id, waiting_id, terminal_id}.isdisjoint(
         uuid.UUID(run_id) for run_id in report.blocked_run_ids
     )
+    engine.dispose()
+
+
+def test_preview_blocks_terminal_owned_run_with_active_tool_attempt():
+    engine, runs, jobs, _events, _outbox = _phase5_engine()
+    run_id, operation_id = uuid.uuid4(), uuid.uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            runs.insert(),
+            {"id": run_id, "status": "completed", "fence": 2},
+        )
+        connection.execute(
+            jobs.insert(),
+            {
+                "id": uuid.uuid4(),
+                "run_id": run_id,
+                "fence": 2,
+                "owner_id": "old-worker",
+                "lease_until": datetime.now(UTC) + timedelta(days=1),
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO tool_operations (id, run_id, status) "
+                "VALUES (:id, :run_id, 'running')"
+            ),
+            {"id": operation_id.hex, "run_id": run_id.hex},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO tool_attempts (id, operation_id, outcome) "
+                "VALUES (:id, :operation_id, 'started')"
+            ),
+            {"id": uuid.uuid4().hex, "operation_id": operation_id.hex},
+        )
+
+    with Session(engine) as db:
+        report = plan_cutover(db, cutover_id=uuid.uuid4())
+
+    assert report.run_disposition_counts == {"blocked_active_execution": 1}
+    assert report.blocked_run_groups == 1
+    assert report.status == "blocked"
+    engine.dispose()
+
+
+def test_apply_clears_stale_ownership_from_safe_terminal_runs():
+    engine = _full_phase6a_engine()
+    cutover_id, run_id = uuid.uuid4(), uuid.uuid4()
+    conversation_id, project_id = uuid.uuid4(), uuid.uuid4()
+    lease_until = datetime.now(UTC) + timedelta(days=1)
+    with Session(engine) as db:
+        db.add(
+            Run(
+                id=run_id,
+                conversation_id=conversation_id,
+                project_id=project_id,
+                status="completed",
+                fence=3,
+            )
+        )
+        db.add(
+            RunJob(
+                run_id=run_id,
+                fence=3,
+                owner_id="legacy-worker",
+                lease_until=lease_until,
+            )
+        )
+        db.commit()
+
+    with Session(engine) as db:
+        preview = plan_cutover(db, cutover_id=cutover_id)
+        assert preview.run_disposition_counts == {"terminal_owned_preserved": 1}
+        assert preview.status == "preview"
+
+    with Session(engine) as db:
+        report = apply_cutover(
+            db,
+            cutover_id=cutover_id,
+            operator="test-operator",
+            legacy_writers_stopped=True,
+        )
+        assert report.status == "applied"
+
+    with Session(engine) as db:
+        run = db.get(Run, run_id)
+        job = db.query(RunJob).filter_by(run_id=run_id).one()
+        assert run.status == "completed"
+        assert run.fence == 3
+        assert job.fence == 3
+        assert job.owner_id is None
+        assert job.lease_until is None
+
     engine.dispose()
 
 
@@ -1397,6 +1491,45 @@ def test_rollback_preview_blocks_dispatch_generation_exhaustion_before_mutation(
         assert state.active is True
         assert progress.status == "complete"
         assert progress.rollback_epoch is None
+    engine.dispose()
+
+
+def test_rollback_clears_stale_ownership_from_safe_terminal_runs():
+    engine, cutover_id, run_id, _event_ids, _command_id, _original_epoch = (
+        _completed_cutover_for_rollback()
+    )
+    with Session(engine) as db:
+        run = db.get(Run, run_id)
+        job = db.query(RunJob).filter_by(run_id=run_id).one()
+        run.status = "completed"
+        job.owner_id = "jetstream-worker"
+        job.lease_until = datetime.now(UTC) + timedelta(days=1)
+        db.commit()
+
+    with Session(engine) as db:
+        preview = plan_rollback(db, cutover_id=cutover_id)
+        assert preview.ready is True
+        assert preview.run_disposition_counts == {"terminal_owned_preserved": 1}
+
+    with Session(engine) as db:
+        report = apply_rollback(
+            db,
+            cutover_id=cutover_id,
+            operator="rollback-operator",
+            batch_size=1,
+            processes_stopped=True,
+            consumers_drained=True,
+        )
+        assert report.status == "rolled_back"
+
+    with Session(engine) as db:
+        run = db.get(Run, run_id)
+        job = db.query(RunJob).filter_by(run_id=run_id).one()
+        assert run.status == "completed"
+        assert job.fence == run.fence
+        assert job.owner_id is None
+        assert job.lease_until is None
+
     engine.dispose()
 
 

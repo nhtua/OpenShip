@@ -27,22 +27,26 @@ The target architecture extends these same contracts for workflow revisions, cap
 
 OpenShip follows the **co-pilot** principle: engineers delegate scoped authority and retain control at critical decisions. Self-hosting keeps application state in your infrastructure; configured model providers and external integrations receive the context sent to them.
 
-## Quick Start with Docker Compose
+## Quick Start with Docker Compose or Podman
 
 From the repository root:
 
 ```bash
 cp .env.example .env
 # Set a strong JWT_SECRET and a unique stable ARTIFACT_STORAGE_ID.
+# Optional: set CONTAINER_ENGINE=podman in .env to use Podman Compose.
 # Configure managed Connectors and tool availability after startup if needed.
 scripts/openship-stack --environment dev init-messaging
-docker compose run --rm --no-deps --entrypoint uv worker run python -m src.openship.artifacts.maintenance init
-docker compose up --build
+scripts/openship-stack --environment dev init-artifacts
+scripts/openship-stack --environment dev start
 ```
 
-Compose starts PostgreSQL, migrations, NATS JetStream, a one-shot messaging bootstrap, the API server, runtime worker, outbox relay, and web client. The API and worker share the persistent `artifactdata` volume; ports bind to loopback by default. Search keys are passed only to the worker. Open [http://localhost:8080](http://localhost:8080). See [provider setup](docs/provider-support.md) before sending a chat message and the [artifact storage runbook](docs/operations/artifact-storage.md) for backup and restore. Use `scripts/openship-stack --environment dev --reload start` for the source-mounted hot-reload Compose stack. Docker with Compose is required for this route; the tools below are for running processes directly.
+The stack starts PostgreSQL, migrations, NATS JetStream, NATS NUI, a one-shot messaging bootstrap, the API server, runtime worker, outbox relay, and web client in the separate `openship-dev` Compose project. On an inactive messaging installation, the first `scripts/openship-stack -e dev start` prints a read-only cutover preview and exits; confirm an unblocked preview with `scripts/openship-stack -e dev start --cutover`, then run plain `start` again to verify relay catch-up and open dev gates. Containers reach PostgreSQL and NATS over the private Compose network using the `postgres` and `nats` service names. The API and web client publish on `DEV_BIND_ADDRESS` (default `0.0.0.0`) so developers can open the stack from another device on their LAN; set it to `127.0.0.1` for workstation-only access. NATS NUI is available at [http://localhost:31312](http://localhost:31312), bound to loopback, with a preloaded dev connection profile. The API and worker share the persistent `artifactdata` volume; search keys are passed only to the worker. Open [http://localhost:8080](http://localhost:8080). See [provider setup](docs/provider-support.md) before sending a chat message and the [artifact storage runbook](docs/operations/artifact-storage.md) for backup and restore. Use `scripts/openship-stack --environment dev --reload start` for the source-mounted hot-reload stack. The wrapper uses Docker by default and reads `CONTAINER_ENGINE=docker|podman` from `.env`; a non-empty shell environment value takes precedence. Podman requires a configured Compose provider. The tools below are for running processes directly.
 
-This is the current development stack. The separate production manifest and coordinated migration/recovery procedures are in the [messaging runbook](docs/operations/messaging.md); neither stack is a production cutover qualification.
+For the full [messaging deployment runbook](docs/operations/messaging.md), see
+the native startup, Docker/Podman selection, hot-reload, and queue cutover
+steps. The separate production manifest is not a production cutover
+qualification.
 
 ## Local Development
 
@@ -51,7 +55,7 @@ This is the current development stack. The separate production manifest and coor
 - Python 3.11+ with [uv](https://docs.astral.sh/uv/) package manager
 - Node.js 22.12+ with [pnpm](https://pnpm.io/installation)
 - PostgreSQL 15+ running locally
-- The pinned NATS server from `deploy/versions.env`, or Docker Compose for a local NATS dependency
+- The pinned NATS server from `deploy/versions.env`, or Docker/Podman Compose for a local NATS dependency
 
 ### Database Setup
 
@@ -66,20 +70,26 @@ createdb -U postgres openship
 ```bash
 cd apps/api
 uv sync --extra dev
-cp .env.example .env  # Configure DATABASE_URL, model profiles, and credential bindings
+cp .env.example .env  # Configure DATABASE_URL, ARTIFACT_STORAGE_ID, model profiles, and credential bindings
 uv run alembic upgrade head
-uv run python -m src.openship.artifacts.maintenance init
 # From the repository root, generate protected NATS role credentials and start
 # either a local NATS server or the Compose-managed NATS dependency.
 cd ../..
 scripts/openship-stack --environment local init-messaging
-scripts/openship-stack --environment local up-dependencies --only nats
+scripts/openship-stack --environment local init-artifacts
+scripts/openship-stack --environment local up-dependencies --only nats,nats-nui
 scripts/openship-stack --environment local bootstrap --apply
 cd apps/api
 NATS_AUTH_FILE=../../.openship/messaging/local/api.json uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 API docs available at [http://localhost:8000/docs](http://localhost:8000/docs).
+The local dependency command starts NATS NUI at
+[`http://localhost:31311`](http://localhost:31311) for JetStream inspection.
+It imports a local connection profile for `nats://nats:4222`; click Connect
+once in NUI. Startup stages the protected host profile into the NUI data volume
+so the unprivileged NUI process can read it. The profile uses unrestricted
+local operator credentials and is stored in that volume.
 
 Run the chat worker and outbox relay in separate terminals from `apps/api`,
 setting the role credential file generated by `init-messaging`:

@@ -28,6 +28,11 @@ from .cutover import (
 from .exhaustion_supervisor import ExhaustionSupervisor
 from .migration import plan_cutover
 from .models import MessageTransportState
+from .startup import (
+    StartupCutoverBlocked,
+    apply_startup_cutover,
+    startup_report,
+)
 from .topology import TopologyReport, ensure_topology
 
 
@@ -307,6 +312,7 @@ async def _dispatch(
     cutover_id: UUID | None = None,
     batch_size: int = 500,
     legacy_writers_stopped: bool = False,
+    development_confirmed: bool = False,
     processes_stopped: bool = False,
     consumers_drained: bool = False,
 ) -> int:
@@ -324,6 +330,83 @@ async def _dispatch(
             limit=limit,
             operator=operator,
         )
+    if command == "startup":
+        if action == "preview":
+            try:
+                with SessionLocal() as db:
+                    report = startup_report(db)
+                print(json.dumps(report.as_dict(), sort_keys=True))
+                return 0
+            except Exception as error:  # noqa: BLE001 - keep DB details private
+                print(
+                    json.dumps(
+                        {
+                            "status": "unavailable",
+                            "errors": [
+                                f"startup_preview_unavailable:{type(error).__name__}"
+                            ],
+                        },
+                        sort_keys=True,
+                    )
+                )
+                return 1
+        if action == "apply" and legacy_writers_stopped and development_confirmed:
+            try:
+                with SessionLocal() as db:
+                    state = db.get(MessageTransportState, 1)
+                    installation_id = state.installation_id if state else None
+                if installation_id is None:
+                    raise RuntimeError("messaging state is missing")
+                topology = await ensure_topology(
+                    apply=False,
+                    installation_id=installation_id,
+                )
+                if not topology.ready:
+                    print(
+                        json.dumps(
+                            {
+                                "status": "refused",
+                                "errors": ["topology_not_ready"],
+                                "topology": topology.as_dict(),
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                    return 1
+                with SessionLocal() as db:
+                    report = apply_startup_cutover(
+                        db,
+                        cutover_id=cutover_id,
+                        writers_stopped=True,
+                        development_confirmed=True,
+                    )
+                result = report.as_dict()
+                result["topology"] = topology.as_dict()
+                print(json.dumps(result, sort_keys=True))
+                return 0
+            except StartupCutoverBlocked as error:
+                print(json.dumps(error.report.as_dict(), sort_keys=True))
+                return 1
+            except Exception as error:  # noqa: BLE001 - keep DB details private
+                print(
+                    json.dumps(
+                        {
+                            "status": "unavailable",
+                            "errors": [
+                                f"startup_apply_unavailable:{type(error).__name__}"
+                            ],
+                        },
+                        sort_keys=True,
+                    )
+                )
+                return 1
+        print(
+            json.dumps(
+                {"status": "refused", "errors": ["unsupported_startup_action"]},
+                sort_keys=True,
+            )
+        )
+        return 1
     if command == "cutover":
         if cutover_id is None or action not in {"preview", "apply", "verify"}:
             result = {
@@ -543,6 +626,32 @@ def _parser() -> argparse.ArgumentParser:
         "verify", help="verify completed backfill, publication catch-up and topology"
     )
     verify.add_argument("--cutover-id", type=UUID, required=True)
+    startup = commands.add_parser(
+        "startup", help="inspect or activate the first JetStream-backed startup"
+    )
+    startup_actions = startup.add_subparsers(dest="startup_action", required=True)
+    startup_actions.add_parser("preview", help="read-only startup and cutover report")
+    startup_apply = startup_actions.add_parser(
+        "apply", help="apply an explicitly confirmed, unblocked dev cutover"
+    )
+    startup_apply.add_argument(
+        "--cutover-id",
+        type=UUID,
+        required=True,
+        help="the stable cutover ID shown by startup preview",
+    )
+    startup_apply.add_argument(
+        "--writers-stopped",
+        action="store_true",
+        required=True,
+        help="attest that legacy and Compose app writers are stopped",
+    )
+    startup_apply.add_argument(
+        "--dev-confirmed",
+        action="store_true",
+        required=True,
+        help="confirm this automated cutover is for disposable dev data",
+    )
     rollback = commands.add_parser(
         "rollback", help="inspect or apply the drained return to DB polling"
     )
@@ -597,10 +706,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             cutover_id=getattr(args, "cutover_id", None),
             batch_size=getattr(args, "batch_size", 500),
             legacy_writers_stopped=bool(getattr(args, "writers_stopped", False)),
+            development_confirmed=bool(getattr(args, "dev_confirmed", False)),
             processes_stopped=bool(getattr(args, "processes_stopped", False)),
             consumers_drained=bool(getattr(args, "consumers_drained", False)),
             action=getattr(args, "gate_action", None)
             or getattr(args, "cutover_action", None)
+            or getattr(args, "startup_action", None)
             or getattr(args, "rollback_action", None),
         )
     )

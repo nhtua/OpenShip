@@ -58,9 +58,9 @@ and [runbook proposal](../../operations/messaging.md).
    harmless delayed delivery of the old command.
 3. A client subscribes while completion commits: Task 4 proves replay/live
    overlap, multiple API replicas and slow-client recovery.
-4. New containers point at fresh volumes or wrong secrets: Task 6/7 reject
+4. New containers point at fresh volumes or wrong secrets: Tasks 6/8 reject
    mismatched project/storage/installation identities before admission.
-5. Restored DB state predates a dispatched effect: Task 7 keeps all execution
+5. Restored DB state predates a dispatched effect: Task 8 keeps all execution
    closed and requires reconciliation; it never auto-replays restored work.
 
 ## File and responsibility map
@@ -259,7 +259,7 @@ routes an allowlisted kind to existing execution or explicit retention.
     publisher seam was tightened to require the committed marker. Full SQLite
     consumer/recovery tests still encounter the existing executor-to-event-loop
     wakeup stall, and the real PostgreSQL/JetStream qualifier remains in the
-    overall Task 7 acceptance gate.
+    overall Task 8 acceptance gate.
   - [x] **3B2e.4 — Exhaustion and live-owner observation:** qualify pinned
     MaxDeliver advisory and stream/consumer recovery behavior; persist
     `watching_live_owner` until a committed outcome or lease expiry, and resume
@@ -351,7 +351,7 @@ routes an allowlisted kind to existing execution or explicit retention.
   automatic polling fallback. `python -m src.openship.runs.worker` now starts
   `RunConsumer`, preserves `--worker-id` and `--log-level`, drains on SIGINT or
   SIGTERM, and closes its owned NATS client. The synthetic full-stack fixtures
-  use an explicit test-only legacy polling harness until Task 7 converts them
+  use an explicit test-only legacy polling harness until Task 8 converts them
   to real JetStream consumers. Five focused entry/identity tests and all commit
   hooks pass. CI run `40491206490` passed API unit, PostgreSQL, JetStream and
   full-stack lanes; frontend checks and lint passed as well.
@@ -378,7 +378,7 @@ routes an allowlisted kind to existing execution or explicit retention.
 - [x] Verify consumer, recovery, tool safety and provider worker suites plus
   real-broker ACK-loss and transport-loss cases. Resource close behavior is
   covered by executor and broker tests; CI run `40491206490` passed all unit,
-  PostgreSQL, JetStream and full-stack lanes. Task 7 retains the broader
+  PostgreSQL, JetStream and full-stack lanes. Task 8 retains the broader
   process-kill and restore rehearsal.
 
 ## Task 4 — Bridge replay and live SSE through independent API consumers
@@ -466,7 +466,7 @@ requires all executable work to have a known safe old-runtime disposition.
   a retry resumes the same rollback epoch/cursors. Closed execution gates stop
   normal pulls; smoke tests use a separate disposable synthetic namespace.
   Rollback has focused SQLite coverage; real PostgreSQL locking and broker
-  pending-delivery qualification remain part of Task 7.
+  pending-delivery qualification remain part of Task 8.
 
   Read-only preview slices: `plan_cutover()` inventories Phase 5/6A run states,
   queue/event/outbox totals, duplicate jobs, and bounded blocker IDs. Its
@@ -529,9 +529,62 @@ the map, READMEs/runbooks and `tests/test_messaging_packaging.py`.
   artifact/Connector mounts. Docker/Compose is unavailable in the current
   environment, so these checks remain a release gate.
 
-## Task 7 — Qualify compatibility, failures, capacity and operator recovery
+## Task 7 — Gate first dev startup on explicit cutover confirmation
 
-**Depends on:** Task 6. **Files:** integration/full-stack fixtures and tests,
+**Depends on:** Task 6. **Files:**
+- Create `apps/api/src/openship/messaging/startup.py`.
+- Modify `apps/api/src/openship/messaging/cli.py`.
+- Modify `scripts/openship-stack` and `docs/operations/messaging.md`.
+- Modify this plan without changing other unchecked Phase 6A work.
+
+**Spec:** [Dev stack first-start cutover](../specs/2026-10-27-dev-stack-auto-cutover-design.md).
+
+**Interfaces:**
+`startup_cutover_id(db: Session) -> UUID` resolves an in-progress persisted
+ID first, otherwise a stable UUIDv5 derived from the installation identity.
+`startup_report(db: Session) -> StartupReport` reports `active_ready`,
+`confirmation_required`, `blocked`, `resume_apply`, `finish_apply`, or
+`manual_required` with the cutover ID and read-only cutover report.
+`apply_startup_cutover(db: Session, *, cutover_id: UUID, writers_stopped: bool,
+development_confirmed: bool) -> CutoverApplyReport` rechecks the expected ID
+and readiness before delegating to existing resumable `apply_cutover`. The CLI
+exposes `startup preview` and `startup apply --cutover-id UUID --dev-confirmed
+--writers-stopped`; the explicit ID binds apply to the preview the user
+confirmed, and the dev-only flag prevents production operators from
+accidentally choosing the deterministic startup apply path.
+
+- [x] Add a DB-backed startup report that includes transport activity, gates,
+  cutover progress and a stable per-installation cutover ID. Reuse a persisted
+  in-progress ID; refuse automatic forwarding after rollback.
+- [x] Add `startup preview` and `startup apply --cutover-id UUID --dev-confirmed --writers-stopped`
+  CLI operations. Preview is read-only. Apply recomputes the preview and calls
+  the existing bounded `apply_cutover` only when unblocked; it never bypasses
+  run/event classification blockers.
+- [x] Update `scripts/openship-stack` to accept `dev start --cutover`. Without
+  the flag, inactive transport prints preview/ID and exits nonzero asking for
+  confirmation. With it, stop Compose API/worker/relay/web (the operator must
+  also stop native writers pointed at the same database), re-preview, apply
+  with the same ID, and exit nonzero after successful apply. On a blocked
+  preview, show the manual runbook link and preserve all data/volumes.
+- [x] Make `scripts/openship-stack -e dev stop` run Compose `down` using both
+  `docker-compose.yml` and `docker-compose.dev.yml` even when the stack was
+  started without reload. Preserve named volumes; leave local/prod stop
+  behavior unchanged.
+- [x] On the next ordinary dev start, resume an already-confirmed incomplete
+  apply or start relay under closed gates, wait for cutover verification, open
+  execution then admission, and start the full stack. Keep active installations
+  on the normal startup path.
+- [x] Make `prod start` refuse to start application services while transport
+  is inactive; never auto-apply there. Expand `docs/operations/messaging.md`
+  with production ID creation, preview/blocker resolution, stopped-writer apply,
+  verification, gate opening and ingress restoration steps.
+- [x] Verify shell syntax, Python compilation, Compose configuration rendering
+  when an engine is available, and `git diff --check`. Preserve all existing
+  unchecked Phase 6A qualification work.
+
+## Task 8 — Qualify compatibility, failures, capacity and operator recovery
+
+**Depends on:** Tasks 6 and 7. **Files:** integration/full-stack fixtures and tests,
 CI workflows, `docs/testing/phase6a-messaging-qualification.md` (create),
 READMEs and this plan's completion status.
 
@@ -562,10 +615,10 @@ READMEs and this plan's completion status.
 
 ## Execution order and review gates
 
-Tasks 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 are the main dependency chain. Packaging
-drafts can be prepared alongside runtime work after Task 0, but cannot pass
-without real scripts and built images. Producers can be migrated in small
-reviewed groups within Task 1; no group may silently omit its events.
+Tasks 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 are the main dependency chain.
+Packaging drafts can be prepared alongside runtime work after Task 0, but
+cannot pass without real scripts and built images. Producers can be migrated
+in small reviewed groups within Task 1; no group may silently omit its events.
 
 Each implementation slice includes tests for observable behavior, a focused
 review and a working commit. Use the repository `git-workflow` skill for

@@ -67,7 +67,20 @@ def role_permissions(role: str) -> dict | None:
         }
     if role == "relay":
         return {
-            "publish": {"allow": ["openship.*.v1.>"]},
+            "publish": {
+                "allow": [
+                    "openship.*.v1.>",
+                    "$JS.API.STREAM.INFO.OS_RUNS",
+                    "$JS.API.STREAM.INFO.OS_MAINTENANCE",
+                    "$JS.API.STREAM.INFO.OS_EVENTS",
+                    "$JS.API.STREAM.INFO.OS_CONTROLS",
+                    "$JS.API.STREAM.INFO.OS_FAILURES",
+                    "$JS.API.STREAM.INFO.OS_ADVISORIES",
+                    "$JS.API.CONSUMER.INFO.OS_RUNS.run-v1",
+                    "$JS.API.CONSUMER.INFO.OS_MAINTENANCE.maintenance-v1",
+                    "$JS.API.CONSUMER.INFO.OS_ADVISORIES.exhaustion-v1",
+                ]
+            },
             "subscribe": {"allow": ["_INBOX.>"]},
         }
     return None

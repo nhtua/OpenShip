@@ -28,6 +28,29 @@ services:
       - natsdata:/data
     restart: unless-stopped
 
+  nats-nui:
+    image: ghcr.io/nats-nui/nui:0.10.0
+    # NUI runs as UID 1001 and its image defaults schema paths under /. Keep
+    # them beneath /db, which its entrypoint makes writable and is persisted.
+    entrypoint: ["/bin/sh", "/openship-nui-entrypoint.sh"]
+    command:
+      - --nats-cli-contexts
+      - /db/nui-contexts
+      - --proto-schemas-path=/db/protoschemas/default
+      - --cddl-schemas-path=/db/cddlschemas/default
+    environment:
+      OPENSHIP_NUI_PROFILE: local
+    depends_on:
+      - nats
+    ports:
+      - "127.0.0.1:${NATS_NUI_PORT:-31311}:31311"
+    volumes:
+      - ./scripts/nats_nui_entrypoint.sh:/openship-nui-entrypoint.sh:ro,Z
+      - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/local}/nui-contexts:/nats-cli-contexts:ro,Z"
+      - natsnui_data:/db
+    restart: unless-stopped
+
 volumes:
   pgdata:
   natsdata:
+  natsnui_data:

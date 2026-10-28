@@ -337,10 +337,20 @@ def _classify_runs(
                 blocker = "blocked_duplicate_job"
             else:
                 job = jobs[0]
-                if job.owner_id is not None or job.lease_until is not None:
-                    blocker = "blocked_owned"
-                elif job.fence != run.fence:
+                if job.fence != run.fence:
                     blocker = "blocked_fence_mismatch"
+                elif run.status in _TERMINAL_RUN_STATUSES:
+                    if (
+                        run.id in active_operation_runs
+                        or run.id in started_attempt_runs
+                    ):
+                        blocker = "blocked_active_execution"
+                    elif job.owner_id is not None or job.lease_until is not None:
+                        blocker = "terminal_owned_preserved"
+                    else:
+                        blocker = "terminal_preserved"
+                elif job.owner_id is not None or job.lease_until is not None:
+                    blocker = "blocked_owned"
                 elif run.status == "queued":
                     if not _supports_run_graph(run):
                         blocker = "blocked_unsupported_graph"
@@ -365,18 +375,14 @@ def _classify_runs(
                             if current_commands[run.id]
                             else "queued_eligible"
                         )
-                elif run.status in {"waiting_connector", *_TERMINAL_RUN_STATUSES}:
+                elif run.status == "waiting_connector":
                     if (
                         run.id in active_operation_runs
                         or run.id in started_attempt_runs
                     ):
                         blocker = "blocked_active_execution"
                     else:
-                        blocker = (
-                            "waiting_preserved"
-                            if run.status == "waiting_connector"
-                            else "terminal_preserved"
-                        )
+                        blocker = "waiting_preserved"
                 elif run.status in {"created", "running"}:
                     blocker = "requires_recovery"
                 else:

@@ -1,8 +1,8 @@
 ---
 type: runbook
-summary: Phase 6A deployment, cutover, and recovery procedures for native local development and development or production Docker Compose stacks.
+summary: Phase 6A deployment, cutover, and recovery procedures for native local development and Docker or Podman Compose stacks.
 status: implementation-in-progress
-date: 2026-10-25
+date: 2026-10-27
 ---
 
 # Messaging deployment and migration
@@ -20,42 +20,59 @@ resumable rollback preview/apply are implemented in the Python CLI. Closing
 gates and applying rollback do not require broker access. The deployment
 wrapper, local dependency manifest, development hot-reload override, and
 standalone production manifest are implemented. Do not use them for a
-production queue cutover until Task 7 qualification and the rehearsed recovery
-gates are complete. Docker is not installed in the implementation environment,
-so Compose config/build/cold-start and actual file-watch checks remain pending.
+production queue cutover until Task 8 qualification and the rehearsed recovery
+gates are complete. Actual Docker build/cold-start/reload checks and Podman
+provider compatibility checks remain pending.
 
 Use the [design](../superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md)
 and [implementation plan](../superpowers/plans/2026-10-25-phase6a-nats-messaging.md)
 for semantics and acceptance. The user selected a drained maintenance window.
-The supported target is a developer workstation or single-host Docker Compose
-stack, with separate development and production configurations. Kubernetes,
-ECS and broker clustering are outside this delivery.
+The supported target is a developer workstation or single-host Docker/Podman
+Compose stack, with separate development and production configurations.
+Kubernetes, ECS and broker clustering are outside this delivery.
 
 ## Distribution and script contract
 
 `scripts/openship-stack` runs from any directory, resolves the repository root,
-uses an explicit environment, and never shells `source` on a dotenv file.
+uses an explicit environment, and never executes or sources a dotenv file. It
+reads only the `CONTAINER_ENGINE` assignment for Compose selection from the
+environment-specific dotenv file. A non-empty shell value takes precedence;
+the default is `docker`, and accepted values are `docker` and `podman`.
 Messaging credentials and generated NATS configs live under the ignored,
 owner-only `.openship/messaging/ENV` directory, separately from the existing
 Connector `./secrets` mount. `init-messaging` refuses any existing target. For
 production it requires a TLS certificate, key, and trust CA. Commands:
+Use `-e ENV` as shorthand for `--environment ENV`; for example,
+`scripts/openship-stack -e dev start`.
 
 | Interface | Required behavior |
 | --- | --- |
-| `--environment ENV doctor` | ENV is `local`, `dev` or `prod`. The wrapper requires `uv` for local operations or Compose 2.24+ for stacks; the CLI checks PostgreSQL, JetStream resources, auth and advisory capacity without printing secrets. |
+| `--environment ENV doctor` | ENV is `local`, `dev` or `prod`. The wrapper requires `uv` for local operations, Docker Compose 2.24+ for Docker stacks, or Podman with a configured Compose provider; the CLI checks PostgreSQL, JetStream resources, auth and advisory capacity without printing secrets. |
 | `... init-messaging [--tls-cert FILE --tls-key FILE --tls-ca FILE]` | First-time creation of role credentials and NATS server configs. TLS options are required for production and rejected for local/dev. JSON/config/TLS files are mode 0600 under a mode 0700 directory. Refuse overwrite; never generate Connector, artifact or database installation identities. |
-| `... up-dependencies [--only nats|postgres]` | Local mode only. Starts selected Compose dependencies under the stable `openship` project, records which services this wrapper started, and never deletes volumes. `--only nats` works with an existing local PostgreSQL. |
+| `... init-artifacts` | Explicitly initializes or verifies the configured artifact root. Local uses `uv` from `apps/api`; dev/prod use a one-shot `worker` container with the selected engine. The marker is created only in an empty root; an existing marker must match `ARTIFACT_STORAGE_ID`. Use for a new store only after confirming its volume mapping. |
+| `... up-dependencies [--only SERVICE[,SERVICE...]]` | Local mode only. With no selector, starts PostgreSQL, NATS and NATS NUI under the stable `openship` project and records which services this wrapper started. Accepts comma-separated `postgres`, `nats` and `nats-nui`; `--only nats,nats-nui` starts NATS and NUI, and selecting `nats-nui` alone also starts its NATS dependency. NUI imports a protected local connection profile at startup; click Connect once in the UI. The command never deletes volumes. |
 | `... bootstrap --check` / `--apply` | Run a one-shot privileged messaging bootstrap, then remove that process. Check is read-only; apply creates missing compatible resources, refuses destructive drift. |
-| `... start` / `stop` / `status` | Compose service lifecycle for dev/prod. Local start prints the separate native commands below; local stop/status operate only explicitly recorded managed dependencies, never kill arbitrary native processes. Stop preserves every volume. |
+| `... startup preview` / `startup apply --cutover-id UUID --dev-confirmed --writers-stopped` | Read-only startup-state classification and a gated dev cutover apply. The stable ID binds apply to the preview; the extra flag identifies disposable dev automation. Production operators use a separately created ID with `cutover preview` and `cutover apply`. |
+| `... start [--cutover]` / `stop` / `status` | Compose lifecycle for dev/prod. Dev checks startup state after migration/bootstrap: inactive transport requires a read-only preview and explicit `start --cutover`; blocked previews are never bypassed. The confirmed command applies and exits; the next plain start catches up, verifies and opens gates before starting the full stack. Production never auto-applies; inactive transport refuses app startup, while a manually applied cutover may start with both gates closed for operator verification. Dev stop runs Compose `down` with both dev manifests, removing containers/network while preserving volumes; production stop keeps its existing stop behavior. Local start prints native commands; local stop/status operate only explicitly recorded managed dependencies. |
 | `... cutover ACTION --cutover-id UUID` | ACTION is `preview`, `apply` or `verify`: read-only report, resumable bounded apply, then invariant checks. Apply requires admission closed and no old live owners. |
 | `... admission close` / `open` | Gate new user submissions; active work may drain. Closing needs PostgreSQL only. Opening refuses unresolved migration/recovery. Old binaries do not honor this gate and must be stopped separately. |
 | `... execution close` / `open` | Gate new execution claims while already-owned work may drain with leases renewed. Close admission first; closing needs PostgreSQL only. Opening refuses unresolved recovery and requires healthy JetStream topology. |
 | `... rollback ACTION --cutover-id UUID` | ACTION is `preview` or `apply`. Apply requires operator identity, stopped API/worker/relay processes, drained or reconciled consumers, closed gates and caught-up command/maintenance publications. It freezes a new epoch, bumps queued generations in bounded resumable batches and retains additive DB schema; it never deploys an old release automatically. |
 | `... reconcile --preview` / `--apply` | Preview retained `OS_RUNS` sources by exact installation subject; apply only with closed DB gates, paused/drained execution durables, and an operator identity. |
 
+Compose commands use `docker compose` by default or `podman compose` when
+`CONTAINER_ENGINE=podman` is set in the process environment or selected dotenv
+file (`.env` for local/dev, `.env.prod` for prod). Docker requires Compose
+2.24.0 or newer. Podman requires an installed Compose provider; the wrapper
+checks `podman compose version` before invoking it. Podman documents
+`podman compose` as a wrapper around an external provider such as
+`docker-compose` or `podman-compose`, so install a provider that supports the
+Compose features used by these manifests. The manifests and reload behavior
+still need a full Podman qualification run.
+
 The wrapper delegates DB/broker operations to
 `uv run python -m src.openship.messaging.cli` using the same subcommands
-(`bootstrap`, `doctor`, `cutover`, `admission`, `execution`, `rollback`, `reconcile`).
+(`bootstrap`, `doctor`, `startup`, `cutover`, `admission`, `execution`, `rollback`, `reconcile`).
 `init-messaging` and dependency/lifecycle management are wrapper orchestration.
 CLI reports contain counts, IDs, version
 and safe dispositions only. Preview/check/verify-only/dry-run never write to
@@ -72,19 +89,25 @@ interpret a command error as a partial or successful operation.
 
 | Concern | Developer machine (`local`) | Development stack (`dev`) | Production stack (`prod`) |
 | --- | --- | --- | --- |
-| Processes | Native API, worker, relay and Vite; native or Compose DB/NATS. | Root `docker-compose.yml`; optional `docker-compose.dev.yml` hot-reload override. | Standalone `docker-compose.prod.yml`, explicitly selected; never combined with the dev file. |
-| Environment | Existing `apps/api/.env`; optional root `.env` only for Compose dependencies. | Existing root `.env`. | Explicit protected `.env.prod`; require supplied production values. |
+| Processes | Native API, worker, relay and Vite; native or Compose DB/NATS. | Root `docker-compose.yml` through the selected engine; optional `docker-compose.dev.yml` hot-reload override. | Standalone `docker-compose.prod.yml` through the selected engine; never combined with the dev file. |
+| Environment | Existing `apps/api/.env`; optional root `.env` selects a Compose engine for managed dependencies. | Root `.env` supplies settings and selects `CONTAINER_ENGINE` (`docker` by default). | Explicit protected `.env.prod`; may select `CONTAINER_ENGINE`; require supplied production values. |
 | Broker URL | Loopback, default port 4222. | Service DNS `nats:4222`. | Private service DNS with TLS validation; no published broker port. |
-| Broker state | Explicit stable host directory, or existing Compose project `natsdata`. | New `natsdata` named volume in the existing Compose project. | Explicit stable production `natsdata`; existing production DB/artifact volumes are mapped deliberately. |
-| Access | API/Vite/DB/broker bind loopback; dev credentials still required. | Existing loopback web/API/DB and NATS ports; monitoring is not published. | Web ingress only, bound to host loopback for a host reverse proxy; DB, API, broker and monitoring private by default. |
-| Artifacts/Connectors | Existing local paths and keyrings shared by API/worker. | Existing `artifactdata` and read-only `./secrets` mounts. | Same identities, protected volume and role-specific secret mounts; preserve all existing keys. |
+| Broker state | Explicit stable host directory, or existing Compose project `natsdata`. | Separate `openship-dev_natsdata` volume. | Explicit stable production `natsdata`; existing production DB/artifact volumes are mapped deliberately. |
+| Access | API/Vite/DB/broker and optional NATS NUI bind loopback; dev credentials still required. | API/web publish on `DEV_BIND_ADDRESS` (default `0.0.0.0`); NUI binds loopback on port 31312; PostgreSQL and NATS stay private on Compose DNS. | Web ingress only, bound to host loopback for a host reverse proxy; DB, API, broker and monitoring private by default. |
+| Artifacts/Connectors | Existing local paths and keyrings shared by API/worker. | Separate `openship-dev_artifactdata` volume and read-only `./secrets` mounts. | Same identities, protected volume and role-specific secret mounts; preserve all existing keys. |
 | Build/reload | Existing `uv`/`pnpm` commands. | Build source; reload override mounts source and uses dev dependencies, not host virtualenv/node_modules. | Immutable API/web/PostgreSQL/NATS image digests; no source mounts, build-on-start or reload. |
 | Lifecycle | Start NATS/DB, apply migrations/bootstrap, then supervise API, worker, relay and web as separate processes. | PostgreSQL health + migration + authenticated JetStream bootstrap before API/worker/relay; API readiness checks worker health. | PostgreSQL health + one-shot migration and bootstrap, restart policies, bounded logs/resources and graceful stops. |
 
-The supported Compose project name is `openship`. Production explicitly maps
-the legacy `openship_pgdata` and `openship_artifactdata` volume names and adds
-`openship_natsdata`. Verify actual volume names before an upgrade. A newly
-named volume is an empty installation, not a migration. Preserve
+The local dependency project is `openship`; the dev stack uses the separate
+`openship-dev` project so both environments do not try to manage containers
+with the same names. Production explicitly maps the legacy `openship_pgdata`
+and `openship_artifactdata` volume names and adds `openship_natsdata`. The dev
+project therefore has separate `openship-dev_*` volumes. Existing volumes
+under the previous shared `openship` project remain intact and are not migrated
+or deleted. The first start of the separated dev project uses a new database,
+artifact and NATS volume; copy or restore data explicitly if the previous
+shared-project data is needed. Verify actual volume names before an upgrade. A
+newly named volume is an empty installation, not a migration. Preserve
 `ARTIFACT_STORAGE_ID`, marker, `CONNECTOR_INSTALLATION_ID`, keyrings and
 defaults. Runtime NATS subjects use the database installation identity; do not
 generate another namespace at every start.
@@ -100,8 +123,25 @@ keep that file owner-only and never mount it into application containers. API
 and worker receive existing Connector keyrings through their separate
 `./secrets` mount; relay and broker do not. ACL subjects currently use a
 single-installation wildcard, so dedicate one broker to one OpenShip
-installation. Never log effective Compose config or credential file contents
-into public CI artifacts.
+installation. The relay can publish its namespaced outbox subjects and read
+stream/consumer metadata for the configured streams and durables so it can
+refuse startup on missing or drifted topology; it cannot create or mutate
+JetStream resources. Never log effective Compose config or credential file
+contents into public CI artifacts.
+
+The local dependency Compose file and dev stack run [NATS NUI](https://github.com/nats-nui/nui)
+on loopback: local uses `http://127.0.0.1:${NATS_NUI_PORT:-31311}` and dev uses
+`http://127.0.0.1:${DEV_NATS_NUI_PORT:-31312}`. Each Compose project gets its
+own persistent NUI data volume. The local `up-dependencies` command and dev
+`start` generate a protected NATS CLI context for `nats://nats:4222` from that
+environment's operator credentials and mount the context directory read-only.
+The startup wrapper stages the profile in NUI's writable data volume before the
+image drops to its unprivileged user, so the host copy can keep restrictive
+permissions. NUI imports the profile at startup; open the UI and click Connect
+once. The profile contains unrestricted operator credentials, and NUI stores
+it in its persistent `natsnui_data` volume. NUI can modify streams and delete
+messages, so keep it on a trusted workstation. NUI documents this CLI-context
+startup option in its [connection import guide](https://natsnui.app/help/).
 
 For worker health checks, the API role may publish only to
 `openship.I.v1.rpc.worker.health` and subscribe to its installation's reply
@@ -289,27 +329,48 @@ dispositions, or unresolved exhaustion observations.
 ## Developer machine startup
 
 Prerequisites remain Python/uv, supported Node/pnpm and PostgreSQL; add the
-qualified NATS server or Docker Compose for the broker dependency. Pin versions
-from `deploy/versions.env`, not an unqualified `latest` download. The
-initialization script generates `server.local.json` with a loopback listener
-and a stable store path. Choose native or Compose NATS, not both on the same
-port.
+qualified NATS server or Docker Compose/Podman Compose for the broker
+dependency. Pin versions from `deploy/versions.env`, not an unqualified
+`latest` download. The initialization script generates `server.local.json`
+with a loopback listener and a stable store path. Choose native or Compose
+NATS, not both on the same port. For Compose dependencies, the root `.env`
+selects `CONTAINER_ENGINE`; otherwise the wrapper uses Docker.
 
 ```bash
-# From the repository root; first-time messaging setup only.
+# Prepare the native API environment and apply the existing DB migrations.
+cd apps/api
+uv sync --extra dev
+cp .env.example .env
+# Edit DATABASE_URL, ARTIFACT_STORAGE_ID, model profiles, and provider bindings.
+uv run alembic upgrade head
+cd ../..
+
+# From the repository root; first-time messaging setup.
 scripts/openship-stack --environment local init-messaging
-# Optional: use a pinned broker container with existing local PostgreSQL.
-scripts/openship-stack --environment local up-dependencies --only nats
+scripts/openship-stack --environment local init-artifacts
+# Compose-managed NATS and NUI; omit this line if using native NATS instead.
+scripts/openship-stack --environment local up-dependencies --only nats-nui
+# After the selected NATS server is ready, create JetStream resources.
 scripts/openship-stack --environment local bootstrap --apply
 ```
 
-For native NATS, run `nats-server -c
-.openship/messaging/local/server.local.json` in a separate terminal before
-bootstrap. For Compose dependencies, the wrapper records which services it
-started; `stop` only stops those services and leaves volumes in place. The
-existing `apps/api/.env` supplies `DATABASE_URL` and model settings.
-`NATS_AUTH_FILE` is selected per process below; `NATS_SERVERS` defaults to
-loopback.
+For native NATS, start this command in a separate terminal instead of running
+`up-dependencies --only nats-nui`. The Compose-managed NUI service is available
+only with the Compose-managed NATS service; it is not started alongside a
+native NATS process.
+
+```bash
+nats-server -c .openship/messaging/local/server.local.json
+```
+
+Do not run both NATS options on the same port. For Compose dependencies, the
+wrapper records which services it started; `stop` only stops those services
+and leaves volumes in place. The `apps/api/.env` file supplies
+`DATABASE_URL`, model settings and the stable `ARTIFACT_STORAGE_ID`.
+`init-artifacts` runs the maintenance initializer from `apps/api`; it
+initializes an empty root or verifies the existing storage marker without
+replacing it. `NATS_AUTH_FILE` is selected per process below; `NATS_SERVERS`
+defaults to loopback.
 
 For source development, keep the current native hot-reload workflow. Run each
 process from its existing package directory; the API terminals use the API's
@@ -339,10 +400,10 @@ The relay uses its own publish-only NATS role and is watched like the worker.
 These commands preserve the native Vite, Uvicorn, worker, and relay reload
 workflow. Bind the broker and PostgreSQL to loopback when they run natively.
 
-Continue to use the existing API dotenv file, database migrations and artifact
-initialization for a fresh installation. For an existing installation use the
-cutover procedure instead of initializing storage. Start separate terminals
-from `apps/api`, selecting each role's protected auth path in the environment:
+Continue to use the existing API dotenv file and database migrations. For an
+existing installation, use the cutover procedure below instead of changing the
+artifact storage identity. Start separate terminals from `apps/api`, selecting
+each role's protected auth path in the environment:
 
 ```bash
 NATS_AUTH_FILE=../../.openship/messaging/local/api.json uv run uvicorn src.openship.main:app --host 127.0.0.1 --port 8000
@@ -357,27 +418,87 @@ resources without making a live provider/search/AWS request.
 
 ## Development Compose startup
 
-Preserve `docker compose up --build` as the root quick-start command after
-first-time setup. The root file adds persistent NATS, messaging bootstrap and
-relay services; bootstrap is idempotent. Optional hot reload:
+From the repository root, prepare `.env` and run the wrapper commands. Set
+`CONTAINER_ENGINE=podman` in `.env` to use Podman; the default is Docker. You
+can override the file setting for one command with
+`CONTAINER_ENGINE=podman scripts/openship-stack ...`. `init-messaging` creates
+the protected NATS credentials. `init-artifacts` initializes a new empty
+`artifactdata` volume or verifies that its marker matches the stable ID.
 
 ```bash
+cp .env.example .env
+# Set a strong JWT_SECRET and a stable ARTIFACT_STORAGE_ID in .env.
+# Optionally set CONTAINER_ENGINE=podman in .env.
 scripts/openship-stack --environment dev init-messaging
+scripts/openship-stack --environment dev init-artifacts
+scripts/openship-stack --environment dev start
+scripts/openship-stack --environment dev doctor
+```
+
+The root file adds persistent PostgreSQL, NATS, NATS NUI, messaging bootstrap
+and relay services. `start` generates the protected dev NUI context, brings up
+PostgreSQL/NATS, runs migration and bootstrap as one-shot commands, then checks
+the persisted messaging state. On an inactive installation, the first plain
+`start` prints a read-only cutover preview and stable ID, then exits without
+starting API, worker, relay or web. If the preview is unblocked, explicitly
+confirm with `start --cutover`; that invocation stops any running Compose app
+writers. Stop native or separately managed API/worker/relay processes outside
+this Compose project that point at the same database; the wrapper cannot
+supervise them. It then
+rechecks and applies, then exits with instructions to run plain
+`start` again. The next plain start runs relay under closed gates, waits for
+cutover verification, opens execution then admission, and starts the full
+stack. A blocked preview is never force-applied; follow the manual recovery
+procedure below. Keep any such native processes stopped until this sequence
+finishes. These steps stay ordered with Podman Compose as well as Docker
+Compose. Use the source-mounted hot-reload stack when working on Python or web
+source:
+
+```bash
 scripts/openship-stack --environment dev --reload start
 scripts/openship-stack --environment dev doctor
 ```
 
-The default `scripts/openship-stack --environment dev start` builds the root
-quick-start stack without source mounts. Add `--reload` before `start` to use
-the development override. It mounts Python/web source read-only, keeps
+The same cutover gate applies with or without `--reload`. Stop the development
+stack with `scripts/openship-stack -e dev stop`; this uses both Compose files
+even if the preceding start omitted `--reload`, removes containers and network,
+and preserves named volumes.
+
+The default `start` builds the root quick-start stack without source mounts.
+Add `--reload` before `start` to use the development override. It mounts
+Python/web source read-only, keeps
 container-installed dependencies in the image or a named node_modules volume,
 runs Uvicorn reload, watches worker and relay Python files, and runs Vite on
 port 5173 with `/api` proxied to `api:8000`. Dependency/lockfile changes need a
 rebuild. API and worker preserve the existing model configuration, artifact
 volume and Connector secret mounts. Messaging credentials are mounted one
 role at a time from `.openship`, not through Connector `./secrets`. Existing
-artifact storage initialization stays explicit and is only for a genuinely
-new empty artifact store.
+artifact storage initialization remains explicit: `init-artifacts` refuses a
+non-empty root without its marker or a marker whose value differs from
+`ARTIFACT_STORAGE_ID`. For an existing store, keep its current ID and volume.
+
+The web client proxies `/api` to the API using the internal `api:8000` service
+name, in both Vite reload mode and the built Nginx image. PostgreSQL and NATS
+are likewise private to the Compose network. The API and web host bindings use
+`DEV_BIND_ADDRESS` (default `0.0.0.0`) for LAN access; set it to `127.0.0.1` in
+`.env` to restrict them to the developer machine. Open the web app at
+`http://localhost:5173` with `--reload`, or `http://localhost:8080` with the
+default stack. NATS NUI is at `http://localhost:31312`; its preloaded `OpenShip
+Dev` profile needs one click on Connect. The API docs are at
+`http://localhost:8000/docs`. Use the same
+ports with the developer machine's LAN address to access the stack from
+another LAN device. Use the wrapper's `status` and `stop` commands to inspect
+and stop services without deleting volumes:
+
+```bash
+scripts/openship-stack --environment dev status
+scripts/openship-stack --environment dev stop
+```
+
+Run the drained cutover procedure below against disposable development data to
+exercise PostgreSQL-to-JetStream queue migration and recovery. The startup flow
+does not bypass a blocked preview or delete existing PostgreSQL, artifact or
+JetStream data.
 
 ## Production Compose startup (not yet qualified)
 
@@ -388,6 +509,8 @@ mapping (`openship_pgdata`, `openship_artifactdata`) and provide existing
 artifact and Connector identities/keys. Use a production NATS certificate
 whose SAN covers the Compose service DNS name `nats`, and provide the issuing
 CA. The wrapper validates secrets/image digests without printing their values.
+Set `CONTAINER_ENGINE=podman` in the protected `.env.prod` to use Podman; Docker
+is the default.
 `init-messaging` copies the TLS files into the ignored protected directory and
 generates TLS-enabled server configuration with `sync_interval: always`.
 
@@ -398,18 +521,29 @@ chmod 600 .env.prod
 scripts/openship-stack --environment prod init-messaging \
   --tls-cert /path/to/server.crt --tls-key /path/to/server.key \
   --tls-ca /path/to/ca.crt
+# Only for a deliberately new, empty artifact volume after confirming its mapping:
+scripts/openship-stack --environment prod init-artifacts
 scripts/openship-stack --environment prod start
 scripts/openship-stack --environment prod doctor
 ```
 
-Fresh `prod start` orders PostgreSQL health and NATS process start → Alembic
-migration → authenticated JetStream account readiness → messaging bootstrap →
-API/worker/relay → web. API readiness uses Python's standard HTTP client and
+`prod start` brings up PostgreSQL and NATS, runs Alembic migration and
+authenticated JetStream bootstrap as one-shot commands, then checks startup
+state. It starts API/worker/relay and web only when transport is already active
+with both gates open, or after an operator has applied cutover and left both
+gates closed; it never applies, opens gates or restores ingress automatically.
+An inactive transport refuses application-service startup and points to the
+manual procedure below. API readiness uses Python's standard HTTP client and
 checks event subscription plus worker RPC. The one-shot bootstrap checks the
 real JetStream topology; TCP reachability alone is not readiness. Existing
 installation upgrades still require the drained cutover procedure. Production
 binds web only to host loopback for a host HTTPS reverse proxy; it publishes no
 API, database, NATS, or monitoring port.
+
+Run `init-artifacts` only when provisioning a new, confirmed-empty production
+artifact volume. For an existing installation, preserve the mapped volume and
+its current `ARTIFACT_STORAGE_ID`; a missing marker is a storage recovery issue,
+not a reason to initialize a replacement store.
 
 Set production restart policies, CPU/memory limits and bounded logs for each
 long-running service. Worker shutdown stops new pulls, drains active runs
@@ -465,6 +599,47 @@ a real upgrade. Keep an immutable copy of the old release and configuration.
    Observe the existing queued work, cancel/resume/reconnect, Connector and
    artifact journeys. Record counts and operator acceptance.
 
+### Production command sequence
+
+Use this sequence only after the production cutover has been rehearsed and
+accepted. Keep ingress blocked and old writers stopped through preview, apply
+and verification. Generate a unique UUID yourself and record it with the
+change record; production does not use the dev startup ID or auto-apply path.
+
+```bash
+# Create and record a unique ID. Then block ingress, stop every old API,
+# worker and relay, and take the stopped-writer backup.
+scripts/openship-stack -e prod cutover preview --cutover-id <CUTOVER_UUID>
+# This first preview examines the legacy schema and is read-only.
+
+# Apply additive migrations and bootstrap NATS. On an inactive installation
+# this intentionally exits before application services start.
+scripts/openship-stack -e prod start
+
+# Preview again against the expanded Phase 6A schema. Resolve every blocker
+# and rerun until status=preview.
+scripts/openship-stack -e prod cutover preview --cutover-id <CUTOVER_UUID>
+scripts/openship-stack -e prod cutover apply --cutover-id <CUTOVER_UUID> \
+  --operator <OPERATOR_ID> --writers-stopped
+
+# Starts the new services with admission and execution still closed.
+scripts/openship-stack -e prod start
+scripts/openship-stack -e prod cutover verify --cutover-id <CUTOVER_UUID>
+scripts/openship-stack -e prod execution open --cutover-id <CUTOVER_UUID>
+scripts/openship-stack -e prod admission open --cutover-id <CUTOVER_UUID>
+# Restore ingress only after both gate operations succeed.
+```
+
+`cutover apply` is bounded and resumable: if it stops partway, rerun it with
+the same UUID after confirming writers remain stopped. Do not open either gate
+until verification succeeds; open execution before admission. If preview is
+blocked, resolve the reported classifications using the reconciliation
+guidance below, then preview again. Never bypass a blocked report or delete
+JetStream/PostgreSQL state to force startup. `prod start` refuses an inactive
+transport and does not open gates; after apply it starts app services only
+while both gates are closed so the relay can catch up before the operator
+verifies.
+
 Required command grammar, shown with a documentation placeholder:
 
 ```text
@@ -506,9 +681,15 @@ Classification uses this precedence so a terminal or waiting status cannot
 hide unsafe queue state:
 
 1. A missing job or duplicate jobs is a blocker.
-2. Any non-null owner or lease is a blocker, including an expired lease. Stop
-   or reconcile the owner under the existing worker recovery rules.
-3. The run and single job fences must match.
+2. The run and single job fences must match.
+3. An owner or lease on a nonterminal run is a blocker, including an expired
+   lease. Stop or reconcile that owner under the existing worker recovery
+   rules. A terminal run with matching fences and no admitted, dispatching or
+   running tool operation and no `started` tool attempt is reported as
+   `terminal_owned_preserved`; it remains terminal and is never replayed. The
+   attested cutover apply clears only that row's stale owner and lease fields
+   while holding its run/job locks. Terminal rows with active execution
+   records remain blocked.
 4. A queued run is eligible only when `provider_started_at` is null and there
    are no provider-attempt, tool-operation, or tool-attempt rows, and its exact
    `(kind, graph_version)` exists in the runtime graph registry. Any dispatch
