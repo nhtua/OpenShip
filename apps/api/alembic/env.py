@@ -14,10 +14,12 @@ from openship.config import settings
 # access to the values within the .ini file in use.
 config = context.config
 
-# Keep migrations on the same database configuration as the application.
-# The ini value is only a fallback; container environments supply
-# DATABASE_URL, while native development may load it from the API .env file.
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+# The default configuration follows the application environment. Explicit
+# Alembic configurations carry their own URL (for example, isolated test
+# databases) and must not be replaced by the application's settings.
+default_config = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+if config.config_file_name and os.path.realpath(config.config_file_name) == default_config:
+    config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

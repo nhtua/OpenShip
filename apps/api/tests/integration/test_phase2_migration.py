@@ -27,12 +27,14 @@ from sqlalchemy import (
 )
 
 
-def _run_alembic(alembic_ini: Path, *args: str) -> subprocess.CompletedProcess:
+def _run_alembic(alembic_ini: Path, *args: str, database_url: str | None = None) -> subprocess.CompletedProcess:
     """Run an alembic command against the given alembic.ini."""
     env = {
         "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
         "ALEMBIC_CONFIG": str(alembic_ini),
     }
+    if database_url is not None:
+        env["DATABASE_URL"] = database_url
     cmd = [sys.executable, "-m", "alembic", *args]
     return subprocess.run(
         cmd,
@@ -89,6 +91,23 @@ datefmt = %H:%M:%S
     ini_path = tmp_path / "alembic.ini"
     ini_path.write_text(ini_content)
     return ini_path, db_path
+
+
+def test_explicit_config_uses_its_database_url(alembic_ini, tmp_path):
+    ini_path, db_path = alembic_ini
+    other_db = tmp_path / "environment.db"
+    result = _run_alembic(ini_path, "upgrade", "head", database_url=f"sqlite:///{other_db}")
+    assert result.returncode == 0, result.stderr
+    assert db_path.exists()
+    assert not other_db.exists()
+
+
+def test_default_config_uses_environment_database_url(tmp_path):
+    api_root = Path(__file__).parents[2]
+    db_path = tmp_path / "environment.db"
+    result = _run_alembic(api_root / "alembic.ini", "upgrade", "head", database_url=f"sqlite:///{db_path}")
+    assert result.returncode == 0, result.stderr
+    assert db_path.exists()
 
 
 @pytest.fixture
