@@ -46,6 +46,11 @@ the native startup, Docker/Podman selection, hot-reload, and queue cutover
 steps. The separate production manifest is not a production cutover
 qualification.
 
+Managed Connector keyrings are initialized once on the host and mounted
+read-only into the API and worker; `dev start` does not generate them. See the
+[managed Connector operations runbook](docs/operations/managed-connectors.md)
+for key setup, rotation, and the configured operator username.
+
 ## Local Development
 
 ### Prerequisites

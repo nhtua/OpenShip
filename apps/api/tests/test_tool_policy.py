@@ -76,7 +76,7 @@ def test_operator_policy_is_shared_by_catalog_and_execution(tmp_path, monkeypatc
         db.flush()
         db.add(state_model(id=1, revision=1))
         db.commit()
-        monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+        monkeypatch.setattr(settings, "connector_operator_username", actor.username)
         monkeypatch.setattr(settings, "tool_enabled_ids", None)
 
         snapshot = policy_module.read_effective_tool_policy(db)
@@ -136,7 +136,7 @@ def test_operator_policy_is_shared_by_catalog_and_execution(tmp_path, monkeypatc
         )
         assert api_workspace.enabled is False
 
-        monkeypatch.setattr(settings, "connector_operator_user_id", uuid4())
+        monkeypatch.setattr(settings, "connector_operator_username", "not-the-operator")
         with pytest.raises(policy_module.ToolPolicyError, match="forbidden"):
             policy_module.set_tool_policy(
                 db,
@@ -185,7 +185,7 @@ def test_aws_discovery_is_disabled_by_default_and_operator_opt_in(tmp_path, monk
         db.add(actor)
         db.add(ToolPolicyState(id=1, revision=1))
         db.commit()
-        monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+        monkeypatch.setattr(settings, "connector_operator_username", actor.username)
         monkeypatch.setattr(settings, "tool_enabled_ids", None)
 
         initial = policy_module.read_effective_tool_policy(db)
@@ -242,7 +242,7 @@ def test_legacy_cutover_preserves_current_effective_ids_after_ceiling_removal(
         db.flush()
         db.add(state_model(id=1, revision=1))
         db.commit()
-        monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+        monkeypatch.setattr(settings, "connector_operator_username", actor.username)
         monkeypatch.setattr(settings, "tool_enabled_ids", "workspace_list_files,unknown_tool")
 
         before = policy_module.read_effective_tool_policy(db)

@@ -106,7 +106,7 @@ def test_rotation_resumes_across_postgres_commits_and_retires_only_after_verific
         project = Project(owner_user_id=user.id, name="Rotation integration")
         db.add(project)
         db.flush()
-        monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
+        monkeypatch.setattr(settings, "connector_operator_username", user.username)
         connectors = []
         for kind, secret in (
             ("brave", "synthetic-brave-rotation-sentinel"),

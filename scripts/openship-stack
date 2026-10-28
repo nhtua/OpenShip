@@ -61,8 +61,9 @@ Commands:
 
 local starts native API, worker, relay, and Vite processes outside this wrapper.
 dev always uses docker or podman compose with docker-compose.yml and
-docker-compose.dev.yml for Vite/Uvicorn reload; --reload is a compatibility
-alias. prod uses the protected .env.prod and production manifest.
+docker-compose.dev.yml plus docker-compose.dev-ports.yml for Vite/Uvicorn
+reload; --reload is a compatibility alias. prod uses the protected .env.prod
+and production manifest.
 USAGE
 }
 
@@ -156,7 +157,12 @@ compose() {
       ;;
     dev)
       [[ -f "$ROOT/.env" ]] || { echo "copy .env.example to .env first" >&2; return 2; }
-      args=(-p openship-dev -f docker-compose.yml -f docker-compose.dev.yml)
+      args=(
+        -p openship-dev
+        -f docker-compose.yml
+        -f docker-compose.dev.yml
+        -f docker-compose.dev-ports.yml
+      )
       ;;
     prod)
       [[ -f "$ROOT/.env.prod" ]] || { echo "copy .env.prod.example to .env.prod first" >&2; return 2; }

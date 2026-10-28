@@ -218,7 +218,9 @@ def test_dev_override_preserves_native_reload_entry_points():
     assert 'command: ["pnpm", "run", "dev", "--host", "0.0.0.0"]' in development
     assert "VITE_API_PROXY_TARGET: http://api:8000" in development
     assert "/app/node_modules" in development
-    assert "!override" in development
+    assert "!reset []" in development
+    dev_ports = (ROOT / "docker-compose.dev-ports.yml").read_text()
+    assert '"${DEV_BIND_ADDRESS:-0.0.0.0}:${DEV_WEB_PORT:-5173}:5173"' in dev_ports
 
 
 def test_images_use_locked_runtime_dependencies_and_exclude_secret_contexts():

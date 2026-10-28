@@ -113,8 +113,8 @@ def _lock_connector_project(db: Session, connector: Connector, actor: User) -> N
 
 def require_global_operator(user: User) -> None:
     if (
-        settings.connector_operator_user_id is None
-        or user.id != settings.connector_operator_user_id
+        settings.connector_operator_username is None
+        or user.username != settings.connector_operator_username
     ):
         raise ConnectorCommandError("global_management_forbidden")
 

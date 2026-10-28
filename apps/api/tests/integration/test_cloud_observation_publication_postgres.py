@@ -1236,7 +1236,7 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
                         from src.openship.capabilities.policy import set_tool_policy
 
                         monkeypatch.setattr(
-                            settings, "connector_operator_user_id", user.id
+                            settings, "connector_operator_username", user.username
                         )
                         set_tool_policy(
                             mutation_db,
@@ -1271,7 +1271,7 @@ async def test_synthetic_botocore_metadata_observation_publishes_atomically(
     if publication_change == "policy_disabled_before_dispatch":
         from src.openship.capabilities.policy import set_tool_policy
 
-        monkeypatch.setattr(settings, "connector_operator_user_id", user.id)
+        monkeypatch.setattr(settings, "connector_operator_username", user.username)
         gateway = ToolGateway(operation_session)
         _operation_id, admission_status = gateway._admit(
             claim,

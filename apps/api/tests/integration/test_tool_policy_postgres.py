@@ -150,7 +150,7 @@ def test_concurrent_policy_writes_use_one_revision_precondition(
     with factory() as db:
         db.add(actor)
         db.commit()
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor_id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
 
     gate = threading.Barrier(3)
 

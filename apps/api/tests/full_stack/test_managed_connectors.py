@@ -110,7 +110,7 @@ def _register(
     responses: list[bytes],
     *,
     label: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     suffix = uuid.uuid4().hex[:12]
     registration_value = uuid.uuid4().hex
     response = _remember(
@@ -127,7 +127,7 @@ def _register(
     assert response.status_code == 201, response.text
     body = response.json()
     client.headers["Authorization"] = f"Bearer {body['access_token']}"
-    return body["user"]["id"], body["access_token"]
+    return body["user"]["id"], body["user"]["username"], body["access_token"]
 
 
 def _owned_project(client: httpx.Client, responses: list[bytes]) -> str:
@@ -456,7 +456,7 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
         "CONNECTOR_IDEMPOTENCY_HMAC_KEY_FILE": str(hmac_path),
         "CONNECTOR_DISPATCH_LOCK_FILE": str(secrets_dir / "managed-dispatch.lock"),
         "CONNECTOR_BROWSER_ORIGINS": "http://127.0.0.1:4173,http://127.0.0.1:5174",
-        "CONNECTOR_OPERATOR_USER_ID": "",
+        "CONNECTOR_OPERATOR_USERNAME": "",
         "ARTIFACT_ROOT": str(artifact_root),
         "ARTIFACT_STORAGE_ID": artifact_storage_id,
         "SYNTHETIC_SEARCH_CALL_LOG": str(call_log),
@@ -487,20 +487,24 @@ def test_managed_search_reuse_isolation_rotation_revocation_and_restart_safety(
 
         api_process, base_url = _start_logged_api(api_root, workdir, env, port, api_log)
         operator = httpx.Client(base_url=base_url, timeout=8)
-        operator_id, operator_token = _register(operator, responses, label="operator")
+        operator_id, operator_username, operator_token = _register(
+            operator, responses, label="operator"
+        )
         project_a = _owned_project(operator, responses)
 
         # Configure the account registered through the real API as the one
         # operator, then restart the API before any global secret is submitted.
         _stop(api_process)
-        env["CONNECTOR_OPERATOR_USER_ID"] = operator_id
+        env["CONNECTOR_OPERATOR_USERNAME"] = operator_username
         api_process, base_url = _start_logged_api(api_root, workdir, env, port, api_log)
         operator.close()
         operator = httpx.Client(base_url=base_url, timeout=8)
         operator.headers["Authorization"] = f"Bearer {operator_token}"
 
         owner_b = httpx.Client(base_url=base_url, timeout=8)
-        _owner_b_id, _owner_b_token = _register(owner_b, responses, label="consumer")
+        _owner_b_id, _owner_b_username, _owner_b_token = _register(
+            owner_b, responses, label="consumer"
+        )
         project_b = _owned_project(owner_b, responses)
 
         legacy_brave = _seed_legacy_project_connector(

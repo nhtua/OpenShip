@@ -231,7 +231,7 @@ def test_global_setup_encrypts_secret_once_and_exact_retry_returns_safe_result(
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     body = _create_body()
     request_id = uuid.uuid4()
     path = "/api/global-connectors"
@@ -469,7 +469,7 @@ def test_shared_service_requires_operator_for_global_search_creation(
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", uuid.uuid4())
+    monkeypatch.setattr(settings, "connector_operator_username", "not-the-operator")
     with SessionLocal() as db:
         with pytest.raises(ConnectorCommandError) as refused:
             create_connector(
@@ -533,7 +533,7 @@ def test_revoke_purges_secret_hides_connector_and_clears_project_defaults(
 ):
     actor, project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     with SessionLocal() as db:
         created = create_connector(
             db,
@@ -647,7 +647,7 @@ def test_global_connector_check_returns_only_safe_provider_status(
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     with SessionLocal() as db:
         created = create_connector(
             db,
@@ -718,7 +718,7 @@ def test_global_origin_rejection_is_definite_and_precedes_secret_body_read(
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     request, consumed = _request(
         "POST",
         "/api/global-connectors",
@@ -755,7 +755,7 @@ def test_setup_context_reports_only_fixed_safe_readiness_reasons(
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     if unavailable_part == "installation":
         monkeypatch.setattr(settings, "connector_installation_id", None)
     elif unavailable_part == "encryption":
@@ -794,7 +794,7 @@ def test_setup_context_exposes_operator_capability_and_readiness_without_key_met
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", uuid.uuid4())
+    monkeypatch.setattr(settings, "connector_operator_username", "not-the-operator")
     response = connector_setup_context(actor)
 
     assert response == {
@@ -813,7 +813,7 @@ def test_non_operator_global_write_and_foreign_project_write_are_hidden(
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", uuid.uuid4())
+    monkeypatch.setattr(settings, "connector_operator_username", "not-the-operator")
     global_request, global_consumed = _request(
         "POST",
         "/api/global-connectors",
@@ -856,7 +856,7 @@ def test_global_connector_is_visible_to_another_project_without_secret_or_manage
 ):
     operator, operator_project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", operator.id)
+    monkeypatch.setattr(settings, "connector_operator_username", operator.username)
     global_idempotency = uuid.uuid4()
     global_request, _ = _request(
         "POST",
@@ -891,7 +891,7 @@ def test_project_defaults_set_clear_and_advance_revision_monotonically(
 ):
     actor, project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     create_request, _ = _request(
         "POST",
         "/api/global-connectors",
@@ -1055,7 +1055,7 @@ def test_archived_project_rejects_settings_mutations(
     assert refused.value.detail["error"]["code"] == "project_archived"
     assert "replacement-secret-sentinel" not in str(refused.value.detail)
 
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     global_request, _ = _request(
         "POST",
         "/api/global-connectors",
@@ -1087,7 +1087,7 @@ def test_database_backed_write_rate_limit_and_invalid_secret_errors_are_safe(
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     monkeypatch.setattr(settings, "connector_write_rate_limit_per_minute", 1)
 
     async def create(secret, request_id):
@@ -1119,7 +1119,7 @@ def test_duplicate_properties_and_non_finite_json_are_rejected_without_echoing_s
 ):
     actor, _project_id = connector_identity
     _install_keys(monkeypatch, tmp_path)
-    monkeypatch.setattr(settings, "connector_operator_user_id", actor.id)
+    monkeypatch.setattr(settings, "connector_operator_username", actor.username)
     path = "/api/global-connectors"
     malformed_bodies = (
         (
