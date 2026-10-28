@@ -53,7 +53,7 @@ Use `-e ENV` as shorthand for `--environment ENV`; for example,
 | `... up-dependencies [--only SERVICE[,SERVICE...]]` | Local mode only. With no selector, starts PostgreSQL, NATS and NATS NUI under the stable `openship` project and records which services this wrapper started. Accepts comma-separated `postgres`, `nats` and `nats-nui`; `--only nats,nats-nui` starts NATS and NUI, and selecting `nats-nui` alone also starts its NATS dependency. NUI imports a protected local connection profile at startup; click Connect once in the UI. The command never deletes volumes. |
 | `... bootstrap --check` / `--apply` | Run a one-shot privileged messaging bootstrap, then remove that process. Check is read-only; apply creates missing compatible resources, refuses destructive drift. |
 | `... startup preview` / `startup apply --cutover-id UUID --dev-confirmed --writers-stopped` | Read-only startup-state classification and a gated dev cutover apply. The stable ID binds apply to the preview; the extra flag identifies disposable dev automation. Production operators use a separately created ID with `cutover preview` and `cutover apply`. |
-| `... start [--cutover]` / `stop` / `status` | Compose lifecycle for dev/prod. Dev checks startup state after migration/bootstrap: inactive transport requires a read-only preview and explicit `start --cutover`; blocked previews are never bypassed. The confirmed command applies and exits; the next plain start catches up, verifies and opens gates before starting the full stack. Production never auto-applies; inactive transport refuses app startup, while a manually applied cutover may start with both gates closed for operator verification. Dev stop runs Compose `down` with both dev manifests, removing containers/network while preserving volumes; production stop keeps its existing stop behavior. Local start prints native commands; local stop/status operate only explicitly recorded managed dependencies. |
+| `... start [--cutover UUID]` / `stop` / `status` | Compose lifecycle for dev/prod. Dev checks startup state after migration/bootstrap: inactive transport requires a read-only preview and explicit `start --cutover UUID` using the ID printed by that preview; a mismatch is refused. Blocked previews are never bypassed. The confirmed command applies and exits; the next plain start catches up, verifies and opens gates before starting the full stack. Production never auto-applies; inactive transport refuses app startup, while a manually applied cutover may start with both gates closed for operator verification. Dev stop runs Compose `down` with both dev manifests, removing containers/network while preserving volumes; production stop keeps its existing stop behavior. Local start prints native commands; local stop/status operate only explicitly recorded managed dependencies. |
 | `... cutover ACTION --cutover-id UUID` | ACTION is `preview`, `apply` or `verify`: read-only report, resumable bounded apply, then invariant checks. Apply requires admission closed and no old live owners. |
 | `... admission close` / `open` | Gate new user submissions; active work may drain. Closing needs PostgreSQL only. Opening refuses unresolved migration/recovery. Old binaries do not honor this gate and must be stopped separately. |
 | `... execution close` / `open` | Gate new execution claims while already-owned work may drain with leases renewed. Close admission first; closing needs PostgreSQL only. Opening refuses unresolved recovery and requires healthy JetStream topology. |
@@ -440,11 +440,11 @@ and relay services. `start` generates the protected dev NUI context, brings up
 PostgreSQL/NATS, runs migration and bootstrap as one-shot commands, then checks
 the persisted messaging state. On an inactive installation, the first plain
 `start` prints a read-only cutover preview and stable ID, then exits without
-starting API, worker, relay or web. If the preview is unblocked, explicitly
-confirm with `start --cutover`; that invocation stops any running Compose app
-writers. Stop native or separately managed API/worker/relay processes outside
-this Compose project that point at the same database; the wrapper cannot
-supervise them. It then
+starting API, worker, relay or web. If the preview is unblocked, copy that ID
+into `start --cutover <ID>` exactly as printed; the wrapper rejects a different
+ID. That invocation stops any running Compose app writers. Stop native or
+separately managed API/worker/relay processes outside this Compose project that
+point at the same database; the wrapper cannot supervise them. It then
 rechecks and applies, then exits with instructions to run plain
 `start` again. The next plain start runs relay under closed gates, waits for
 cutover verification, opens execution then admission, and starts the full

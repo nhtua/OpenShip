@@ -51,7 +51,7 @@ Commands:
     SERVICES: postgres, nats, nats-nui
   bootstrap --check|--apply
   doctor
-  start [--cutover] | stop | status
+  start [--cutover UUID] | stop | status
   startup preview|apply [--cutover-id UUID --dev-confirmed --writers-stopped]
   cutover preview|apply|verify [options]
   rollback preview|apply [options]
@@ -434,13 +434,18 @@ finish_dev_cutover() {
 }
 
 start_dev_stack() {
-  local confirm_cutover=0 status cutover_id close_failed
+  local confirm_cutover_id="" status cutover_id close_failed
   while (($#)); do
     case "$1" in
       --cutover)
-        ((confirm_cutover == 0)) || { echo "--cutover may be provided once" >&2; return 2; }
-        confirm_cutover=1
-        shift
+        [[ -z "$confirm_cutover_id" ]] || { echo "--cutover may be provided once" >&2; return 2; }
+        (($# >= 2)) || { echo "--cutover requires the Cutover ID printed by the first dev start" >&2; return 2; }
+        [[ "$2" =~ ^[[:xdigit:]]{8}(-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}$ ]] || {
+          echo "--cutover requires a UUID printed by the startup preview" >&2
+          return 2
+        }
+        confirm_cutover_id="$2"
+        shift 2
         ;;
       *) echo "unsupported dev start option: $1" >&2; return 2 ;;
     esac
@@ -458,11 +463,18 @@ start_dev_stack() {
   status="$(json_field "$CLI_JSON" status)"
   cutover_id="$(json_field "$CLI_JSON" cutover_id)"
 
+  if [[ -n "$confirm_cutover_id" && "${confirm_cutover_id,,}" != "${cutover_id,,}" ]]; then
+    echo "The supplied --cutover ID does not match the current startup preview." >&2
+    echo "Current Cutover ID: $cutover_id" >&2
+    return 2
+  fi
+
   case "$status" in
     confirmation_required)
-      if (( !confirm_cutover )); then
-        echo "Dev messaging is inactive. Review the read-only preview, stop all API/worker/relay processes outside this Compose project that use the same database, then rerun with --cutover to confirm an unblocked cutover." >&2
+      if [[ -z "$confirm_cutover_id" ]]; then
+        echo "Dev messaging is inactive. Review the read-only preview and stop all API/worker/relay processes outside this Compose project that use the same database." >&2
         echo "Cutover ID: $cutover_id" >&2
+        echo "Confirm this preview with: scripts/openship-stack -e dev start --cutover $cutover_id" >&2
         return 1
       fi
       running_dev_app_services
@@ -486,13 +498,17 @@ start_dev_stack() {
     resume_apply)
       running_dev_app_services
       if ! dev_startup_apply "$cutover_id" 0; then return 1; fi
-      if ((confirm_cutover)); then
+      if [[ -n "$confirm_cutover_id" ]]; then
         echo "Startup cutover resumed. Run scripts/openship-stack -e dev start again to verify catch-up and open dev gates." >&2
         return 1
       fi
       if ! finish_dev_cutover "$cutover_id"; then return 1; fi
       ;;
     finish_apply)
+      if [[ -n "$confirm_cutover_id" ]]; then
+        echo "This cutover is already applied; rerun dev start without --cutover to finish startup." >&2
+        return 2
+      fi
       if [[ "$(json_field "$CLI_JSON" admission_open)" == True || \
             "$(json_field "$CLI_JSON" execution_open)" == True ]]; then
         close_failed=0
@@ -506,7 +522,7 @@ start_dev_stack() {
       if ! finish_dev_cutover "$cutover_id"; then return 1; fi
       ;;
     active_ready)
-      if ((confirm_cutover)); then
+      if [[ -n "$confirm_cutover_id" ]]; then
         echo "No startup cutover is required; remove --cutover and retry." >&2
         return 2
       fi

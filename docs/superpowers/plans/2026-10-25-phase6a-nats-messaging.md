@@ -560,9 +560,10 @@ accidentally choosing the deterministic startup apply path.
   CLI operations. Preview is read-only. Apply recomputes the preview and calls
   the existing bounded `apply_cutover` only when unblocked; it never bypasses
   run/event classification blockers.
-- [x] Update `scripts/openship-stack` to accept `dev start --cutover`. Without
-  the flag, inactive transport prints preview/ID and exits nonzero asking for
-  confirmation. With it, stop Compose API/worker/relay/web (the operator must
+- [x] Update `scripts/openship-stack` to accept `dev start --cutover UUID`.
+  Without the option, inactive transport prints preview/ID and exits nonzero
+  with the exact confirmation command. With it, require the displayed ID, stop
+  Compose API/worker/relay/web (the operator must
   also stop native writers pointed at the same database), re-preview, apply
   with the same ID, and exit nonzero after successful apply. On a blocked
   preview, show the manual runbook link and preserve all data/volumes.
