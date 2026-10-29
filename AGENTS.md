@@ -49,6 +49,11 @@ engineer following best practices for open source development.
 - Prioritize maintainability and readability
 - Verify results before declaring completion
 - Report outcomes, blockers, and trade-offs clearly
+- Keep the active implementation plan current as work progresses. Record
+  verified progress under the relevant task, including evidence and remaining
+  work; update stale status in the same change. Check off an item only when
+  all its acceptance criteria have been verified, and split partially complete
+  items into clear completed and remaining pieces when useful.
 
 ## Git Workflow
 

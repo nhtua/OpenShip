@@ -37,8 +37,8 @@ Prior full-suite results are historical evidence only. Re-run affected checks fo
 - [x] Add a dedicated rootless API service/socket with service-scoped `--runtime=runsc`, preserving the normal `runc` default. A disposable Docker API fixture through the separate service executes and native inspection reports `runsc`; deletion is verified.
 - [x] Add the rootless Compose overlay, automatic selection for Podman plus `--sandbox`, the runtime-specific flags example and operator setup. Packaging/preflight checks: **12 passed**.
 - [x] Verify the installed socket-activated service and actual `runsc` execution/removal. Render with podman-compose 1.6.0 and confirm exactly one socket mount. Upstream OpenSandbox 1.2.0 passes configuration loading, startup, health, authenticated listing and unauthenticated rejection against the dedicated rootless API.
-- [ ] Pin the upstream image tuple and exercise complete OpenSandbox-created sandbox lifecycle, transfers, command execution and collection. The startup fixture does not pull or execute the placeholder execd image.
-- [ ] The [execd `v1.1.0` API schema](https://github.com/opensandbox-group/OpenSandbox/blob/docker/execd/v1.1.0/specs/execd-api.yaml) lacks the native `argv` command field required by this plan; the [current main schema](https://github.com/opensandbox-group/OpenSandbox/blob/main/specs/execd-api.yaml) includes it. Select and verify a compatible released image or build a pinned upstream revision before pinning the tuple; do not substitute a shell command. A lifecycle `Running` state and execd `/ping` show availability, not workload isolation or full readiness qualification.
+- [ ] Qualify and pin the complete deployment image tuple and exercise remote output collection. The trusted lifecycle/transfer/command/deletion probe has passed with locally built candidate images; it does not qualify the deployment profile.
+- [x] Investigate native `argv` support: execd `v1.1.0` lacks it; pinned upstream revision `97031ea81fee1b853e4cd89e5490b1be9f5ead55` supports it and was built and tested with the manager patch. Do not substitute a shell command. `Running` and execd `/ping` show availability, not isolation or full readiness qualification.
 - [ ] Qualify effective CPU/memory/task enforcement with `ignore-cgroups`, network denial, storage and deadlines. Startup success does not satisfy Task 2 or enable execution.
 
 Ruling: rootless Podman is the requested development target, using a separate API service profile because per-container Docker API runtime selection is ignored on the installed version. Keep the same application/manager boundary and all isolation gates. The dedicated service shares the user's container storage; it is not a separate engine authorization boundary.
@@ -140,6 +140,15 @@ For every task: write the named behavioral tests, run them and observe the inten
 
 **Files:** `deploy/sandbox/profile.json`, `deploy/sandbox/Dockerfile.python`, `deploy/sandbox/config.example.toml`, `apps/api/src/openship/sandboxes/client.py`, `apps/api/tests/test_opensandbox_client.py`, new `apps/api/tests/sandboxes/test_protocol.py`, `apps/api/pyproject.toml`, ordinary unit CI/hook selections, `docs/operations/opensandbox.md`.
 
+**Progress (2026-10-29):** In progress. The protocol compatibility slice was
+committed as `11eaaa1`; the [evidence report](../../reviews/2026-10-29-opensandbox-oci-compatibility.md)
+records the exact candidate image digests, commands' outcomes and limitations.
+The complete Task 1 acceptance criteria below remain open.
+
+- [x] Build manager and execd from pinned upstream source with the tested archive-extraction patch; record local candidate image and build-base digests, engine, runsc and kernel versions.
+- [x] Implement bounded lifecycle/proxy readiness, source upload and digest readback, fixed native argv, explicit integer-zero completion, bounded output and known-ID deletion in the HTTP adapter.
+- [x] Exercise the trusted fixture through the built manager's HTTP listener and real runsc sandbox: source readback, UID/GID 1000, stdout/stderr, completion, manager deletion and independent container absence. The manager used runc; the fixture did not enable generated-code execution.
+- [x] Add an engine-neutral trusted compatibility probe and regression tests; the focused suite passed 68 tests, and the network-free API lane passed 1,339 tests with 123 deselected. Repository commit hooks passed.
 - [ ] Inspect official release documentation/API schemas and pin server, execd, Python base/workload digest, Python patch, runsc/engine/kernel tuple and bootstrap/proxy behavior. Retain the existing httpx adapter if adequate; pin SDK/lockfile only if introduced. Record sources/revisions and required upstream additions.
 - [ ] Test `test_create_waits_for_ready_before_transfer`, `test_proxy_requires_authentication`, `test_unexpected_endpoint_is_refused`, `test_fixed_argv_uses_nonroot_clean_environment` and `test_command_requires_explicit_zero_exit_completion` against fixtures and the selected real server. Response loss/redirects must not trigger POST retries.
 - [ ] Add `inspect`, bounded `wait_ready`, scoped `list`, endpoint resolution and removal inspection to `OpenSandboxClient`. Keep exact upstream wire fields in the adapter. Normalize `/input` and `/output` image directories to the specified `/inputs` and `/outputs` before input/output integration.
@@ -155,6 +164,14 @@ For every task: write the named behavioral tests, run them and observe the inten
 
 **Files:** `deploy/sandbox/`, `docker-compose.sandbox.yml`, both preflight scripts, new `apps/api/tests/sandboxes/test_isolation.py` and `test_limits.py`, operations/evidence documents.
 
+**Progress (2026-10-29):** Host bootstrap, the dedicated rootless runsc API
+service and optional Compose configuration exist. A trusted test proved
+manager-to-execd connectivity and native runsc selection on an ordinary
+bridge; it did not test the hardened Compose profile or workload egress denial.
+All isolation, effective limits and independent deadline gates remain open.
+
+- [x] Install and verify a dedicated rootless API profile that selects runsc for sandbox creation while the ordinary Podman CLI defaults to runc.
+- [x] Add static configuration checks and an optional rootless Compose overlay; verify a trusted manager-to-execd path and actual runtime selection on the tested host.
 - [ ] Implement explicit host/network provisioning and protected deadline supervision compatible with the pinned upstream backend. Keep any engine-owning guard alongside manager infrastructure and outside generated code. Do not change the host default runtime or restart its engine implicitly.
 - [ ] Enforce read-only root/source/inputs, all writable byte/inode limits, bounded engine logs/metadata/staging, task/FD/swap ceilings and CPU/memory reservations. If upstream lacks a control, record and implement the smallest qualified profile/upstream addition; stop this gate if the control cannot be achieved.
 - [ ] Add `test_workload_cannot_reach_host_peer_dns_or_metadata`, `test_workload_cannot_read_or_invoke_execd_control`, `test_missing_runsc_has_no_fallback`, `test_all_writable_roots_are_bounded`, `test_guest_task_and_fd_limits` and `test_deadlines_hold_while_manager_is_down`. Include IPv4/IPv6, secret canaries, privilege/devices/socket probes, fork/thread/output floods and surviving workload descendants.
