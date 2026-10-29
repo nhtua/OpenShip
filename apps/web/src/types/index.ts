@@ -428,6 +428,28 @@ export interface ArtifactSummary {
   mutability: 'immutable' | 'mutable'
 }
 
+export interface LogicalFileSummary {
+  id: string
+  name: string
+  current_version_id: string
+  current_artifact: {
+    id: string
+    sha256: string
+    size_bytes: number
+    media_type: string
+    status: ArtifactSummary['status']
+  }
+  created_at: string
+}
+
+export interface LogicalFileVersion {
+  id: string
+  file_id: string
+  artifact_id: string
+  base_version_id: string | null
+  created_at: string
+}
+
 export interface SearchResultItem {
   title: string
   url: string

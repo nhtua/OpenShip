@@ -12,6 +12,8 @@ import type {
   ConnectorUsage,
   EnvironmentSummary,
   ConversationWorkspacePage,
+  LogicalFileSummary,
+  LogicalFileVersion,
   Conversation,
   OperationPage,
   Run,
@@ -343,6 +345,43 @@ export const workspaceApi = {
     params: { offset?: number; max_bytes?: number } = {},
   ): Promise<{ data: WorkspaceFileRead }> =>
     api.get(`/conversations/${conversationId}/workspace/files/${artifactId}`, { params }),
+}
+
+export const logicalFilesApi = {
+  list: (
+    conversationId: string,
+    params: { limit?: number; cursor?: string } = {},
+  ): Promise<{ data: { items: LogicalFileSummary[]; next_cursor: string | null } }> =>
+    api.get(`/conversations/${encodeURIComponent(conversationId)}/files`, { params }),
+
+  createFromArtifact: (
+    conversationId: string,
+    artifactId: string,
+    requestKey: string,
+  ): Promise<{ data: { file: LogicalFileSummary; version: LogicalFileVersion } }> =>
+    api.post(
+      `/conversations/${encodeURIComponent(conversationId)}/files/from-artifact`,
+      { artifact_id: artifactId, request_key: requestKey },
+    ),
+
+  replaceContent: (
+    conversationId: string,
+    fileId: string,
+    baseVersionId: string,
+    requestKey: string,
+    content: string,
+  ): Promise<{ data: LogicalFileVersion }> =>
+    api.put(
+      `/conversations/${encodeURIComponent(conversationId)}/files/${encodeURIComponent(fileId)}/content`,
+      content,
+      {
+        params: { base_version_id: baseVersionId },
+        headers: {
+          'Content-Type': 'text/plain',
+          'Idempotency-Key': requestKey,
+        },
+      },
+    ),
 }
 
 export default api

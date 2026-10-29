@@ -7,6 +7,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -118,4 +119,45 @@ class ArtifactQuota(Base):
             postgresql_where=(scope == "conversation"),
             sqlite_where=(scope == "conversation"),
         ),
+    )
+
+
+class LogicalFile(Base):
+    __tablename__ = "logical_files"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    current_version_id = Column(UUID(as_uuid=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["id", "current_version_id"],
+            ["file_versions.file_id", "file_versions.id"],
+            name="fk_logical_files_current_version",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+    )
+
+
+class FileVersion(Base):
+    __tablename__ = "file_versions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey("logical_files.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    artifact_id = Column(UUID(as_uuid=True), ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False)
+    base_version_id = Column(UUID(as_uuid=True), nullable=True)
+    actor_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    request_key = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("file_id", "id", name="uq_file_versions_file_id"),
+        UniqueConstraint("conversation_id", "request_key", name="uq_file_versions_request"),
     )

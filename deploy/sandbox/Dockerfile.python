@@ -1,0 +1,14 @@
+# Build with a digest-pinned Python base, for example:
+# podman build --build-arg PYTHON_BASE_IMAGE=python:3.11-slim@sha256:<digest> \
+#   -f deploy/sandbox/Dockerfile.python -t openship-python:local .
+ARG PYTHON_BASE_IMAGE
+FROM ${PYTHON_BASE_IMAGE}
+
+RUN groupadd --gid 1000 openship \
+    && useradd --uid 1000 --gid 1000 --no-create-home \
+        --shell /usr/sbin/nologin openship \
+    && install -d --owner=root --group=root --mode=0755 /code /input \
+    && install -d --owner=openship --group=openship --mode=0700 /output
+
+ENV PYTHONDONTWRITEBYTECODE=1
+WORKDIR /code

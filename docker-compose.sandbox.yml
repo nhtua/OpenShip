@@ -1,0 +1,38 @@
+# Optional infrastructure only. Phase 6B execution must remain disabled until
+# the profile is qualified as described in docs/operations/opensandbox.md.
+services:
+  opensandbox-server:
+    profiles: [sandbox]
+    image: ${OPENSHIP_SANDBOX_SERVER_IMAGE:?Set a digest-pinned OpenSandbox server image}
+    restart: unless-stopped
+    environment:
+      HOME: /var/lib/opensandbox
+      SANDBOX_CONFIG_PATH: /etc/opensandbox/config.toml
+      OPENSANDBOX_SERVER_API_KEY: ${OPENSHIP_SANDBOX_API_KEY:?Set the OpenSandbox API key}
+    volumes:
+      - ${OPENSHIP_SANDBOX_CONFIG:?Set the absolute OpenSandbox configuration path}:/etc/opensandbox/config.toml:ro
+      - ${OPENSHIP_SANDBOX_ENGINE_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - sandbox_metadata:/var/lib/opensandbox
+    networks:
+      - sandbox-control
+      - sandbox-data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+
+  worker:
+    networks:
+      - default
+      - sandbox-control
+
+volumes:
+  sandbox_metadata:
+
+networks:
+  sandbox-control:
+    internal: true
+  sandbox-data:
+    name: openship-sandbox-data
+    internal: true

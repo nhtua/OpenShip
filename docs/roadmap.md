@@ -2,7 +2,7 @@
 type: roadmap
 summary: Cumulative delivery phases that establish shared foundations with one working use case before expanding capabilities and deployment scale.
 status: proposed
-date: 2026-10-25
+date: 2026-10-28
 ---
 
 # OpenShip Delivery Roadmap
@@ -11,7 +11,7 @@ Build OpenShip through **small, end-to-end milestones**, rather than finishing e
 
 This roadmap is based on the [OpenShip Harness Architecture](./architects.md) in PR #18, at architecture revision `9fe9f37`, and was reviewed after delivery of Phases 1–3.
 
-**Delivery baseline (2026-10-25):** The user confirmed **Phases 1–5 complete**. Their phase descriptions and overview rows below are preserved as historical scope; earlier candidate/qualification records remain evidence for their recorded revisions. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **Phases 6–21 remain pending delivery work.** The two-role direction described in Phase 10B was agreed with the user on 2026-10-21; that design decision does not imply implementation or acceptance of the increment.
+**Delivery baseline (2026-10-28):** The user confirmed **Phases 1–5 complete** and reports **Phase 6A implemented**, now merged in PR #31 at `5fe6e03`. Their phase descriptions and overview rows below preserve historical scope; earlier candidate/qualification records remain evidence for their recorded revisions. Implementation does not itself establish deployment qualification or milestone acceptance. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **Phase 6B and Phases 7–21 remain pending delivery work.** The two-role direction described in Phase 10B was agreed with the user on 2026-10-21; that design decision does not imply implementation or acceptance of the increment.
 
 **Accepted forward architecture change:** NATS with JetStream is the main internal message broker. [Architecture §5](./architects.md#nats-messaging-foundation) defines routing, request/reply, and durable delivery. Phase **6A** introduces that transport and concurrent chat/SSE delivery; **6B** retains the generated-code/artifact milestone. This change applies from Phase 6 onward and does not rewrite or reopen Phases 1–5. Broker selection is accepted; implementation details and phase acceptance still require their normal review.
 
@@ -282,7 +282,7 @@ historical data migrations remain part of the application.
 
 ##### 6A — NATS Foundation and Concurrent Chat
 
-**Status:** Implementation in progress on [PR #31](https://github.com/nhtua/OpenShip/pull/31). The transactional outbox/relay, JetStream run consumer, API event fanout, read-only run/event cutover preview, resumable DB apply/verify, gate open/close controls, resumable rollback preview/apply, and local/dev/prod deployment definitions are implemented. Full PostgreSQL/JetStream qualification, Compose builds/cold starts and reload checks, and recovery/capacity exercises remain. The user confirmed 6A numbering and a drained maintenance cutover on 2026-10-25; production cutover is not authorized. Kubernetes and ECS are outside this migration. See the [source review](./reviews/2026-10-25-phase6a-messaging-review.md), [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](./superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](./operations/messaging.md).
+**Status:** Implemented and merged in [PR #31](https://github.com/nhtua/OpenShip/pull/31), confirmed by the user on 2026-10-28. The transactional outbox/relay, JetStream run consumer, API event fanout, cutover/gate/rollback controls, and local/dev/prod deployment definitions are present. Earlier planning/runbook records still describe outstanding qualification; reconcile those against the merged revision's evidence before claiming all exit gates or production readiness. This Phase 6B specification review does not perform that qualification or authorize production cutover. The user confirmed 6A numbering and a drained maintenance cutover on 2026-10-25. Kubernetes and ECS are outside this migration. See the [source review](./reviews/2026-10-25-phase6a-messaging-review.md), [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](./superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](./operations/messaging.md).
 
 **Build**
 
@@ -305,11 +305,15 @@ historical data migrations remain part of the application.
 - Wrong-project messages/reply subjects, stale fences, expired credentials, and altered execution identities cannot grant authority. Secrets do not enter general event broadcasts or failure records.
 - Broker outage retains accepted work in the outbox or reports admission unavailable explicitly. Recovery, storage-full behavior, consumer cleanup, backup/restore, and upgrade/cutover/rollback follow the declared profile. No normal dispatch/SSE table-polling loop remains.
 
-**Not yet:** External triggers, new model capabilities, generated-code execution, or a guarantee of exactly-once model/cloud effects. This documentation decision does not itself implement 6A.
+**Not yet:** External triggers, new model capabilities, generated-code execution, or a guarantee of exactly-once model/cloud effects.
 
 ##### 6B — Generated Code and Controlled Artifacts
 
-**Build on:** Accepted 6A messaging and Phase 4's artifact IDs/storage/transfer, gateway, and trusted runtime. This increment owns sandbox driver installation and qualification (including gVisor where selected), image build/reproducibility, the authenticated execution protocol, limits, isolation tests, and cleanup. NATS carries trusted control messages; sandboxes receive neither application database access nor general broker credentials. Extend logical mutable files and immutable captured versions through the existing artifact contract.
+**Status:** Implementation in progress. OpenSandbox configuration preflight, optional Compose packaging, immutable logical-file capture and bounded edits, a source inspection/editor UI with execution disabled, and protocol/cleanup coordination tests are present. The admission-to-publication run path, PostgreSQL concurrency qualification, and real gVisor isolation/recovery qualification remain incomplete. See the [Phase 6B sandbox and controlled-artifact design](./superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md) and [implementation plan](./superpowers/plans/2026-10-28-phase6b-opensandbox-implementation.md).
+
+**Selected execution architecture (2026-10-28):** Run standalone OpenSandbox Server alongside OpenShip, initially in Docker Compose, using its Docker backend configured for gVisor (`runsc`). The trusted OpenShip worker sends authenticated execution/file requests and waits for bounded output/results; only manager infrastructure receives the Docker socket. Reuse OpenSandbox's Kubernetes backend in the later cluster deployment, with separate qualification.
+
+**Build on:** Accepted 6A messaging and Phase 4's artifact IDs/storage/transfer, gateway, and trusted runtime. This increment owns OpenSandbox integration and packaging, host gVisor installation/qualification, image build/reproducibility, authenticated API use, limits, isolation tests, and cleanup. Reuse upstream lifecycle/execution APIs rather than build an OpenShip manager/driver. NATS carries trusted control messages; sandboxes receive neither application database access nor general broker credentials. Extend logical mutable files and immutable captured versions through the existing artifact contract.
 
 **Build**
 
@@ -889,4 +893,4 @@ These distinctions should remain explicit throughout implementation:
 
 NATS with JetStream is the selected internal messaging foundation from Phase 6A. Stronger isolation providers, additional external broker adapters, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
 
-**Next commitment:** Finish Phase 6A broker/PostgreSQL and deployment qualification, rehearse migration and recovery, then present the evidence for user acceptance. Preserve completed Phases 1–5, sandbox/mutable-file scope in 6B, and the Phase 10B maintenance-authority boundary.
+**Next commitment:** Complete the Phase 6B admission-to-publication path, then qualify PostgreSQL concurrency and the actual gVisor runtime before enabling execution. Reconcile Phase 6A qualification and acceptance evidence before enabling sandbox execution. Preserve completed Phases 1–5, sandbox/mutable-file scope in 6B, and the Phase 10B maintenance-authority boundary.

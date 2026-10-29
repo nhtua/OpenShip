@@ -339,8 +339,18 @@ def begin_artifact_delete(db: Session, user_id: uuid.UUID, artifact_id: uuid.UUI
     return artifact
 
 
-def require_artifact_not_pinned(db: Session, artifact: Artifact) -> None:
+def require_artifact_not_pinned(db: Session, artifact: Artifact, *, ignore_file_heads: bool = False) -> None:
     """Refuse deletion when a live run or operation pins this exact snapshot."""
+    from src.openship.artifacts.models import FileVersion, LogicalFile
+
+    head = db.query(LogicalFile.id).join(
+        FileVersion, LogicalFile.current_version_id == FileVersion.id
+    ).filter(
+        LogicalFile.deleted_at.is_(None),
+        FileVersion.artifact_id == artifact.id,
+    ).first()
+    if head is not None and not ignore_file_heads:
+        raise _error(409, "artifact_is_pinned", "Artifact is the current version of a file")
     artifact_text_id = str(artifact.id)
     runs = db.query(Run).filter(
         Run.conversation_id == artifact.conversation_id,

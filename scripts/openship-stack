@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ENVIRONMENT=""
 RELOAD=0
+SANDBOX=0
 
 load_container_engine() {
   local dotenv_file line value=""
@@ -41,7 +42,7 @@ load_container_engine() {
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/openship-stack (-e|--environment) local|dev|prod [--reload] COMMAND [ARGS]
+Usage: scripts/openship-stack (-e|--environment) local|dev|prod [--reload] [--sandbox] COMMAND [ARGS]
 Example: scripts/openship-stack -e dev start
 
 Commands:
@@ -64,6 +65,9 @@ dev always uses docker or podman compose with docker-compose.yml and
 docker-compose.dev.yml plus docker-compose.dev-ports.yml for Vite/Uvicorn
 reload; --reload is a compatibility alias. prod uses the protected .env.prod
 and production manifest.
+--sandbox selects the experimental OpenSandbox overlay for dev only; use it
+consistently with start, stop and status. Generated execution stays disabled
+until sandbox qualification succeeds.
 USAGE
 }
 
@@ -76,6 +80,10 @@ while (($#)); do
       ;;
     --reload)
       RELOAD=1
+      shift
+      ;;
+    --sandbox)
+      SANDBOX=1
       shift
       ;;
     --help|-h)
@@ -99,6 +107,10 @@ if [[ "$ENVIRONMENT" == prod && -n "${OPENSHIP_SECRETS_DIR:-}" ]]; then
 fi
 if ((RELOAD)) && [[ "$ENVIRONMENT" != dev ]]; then
   echo "--reload is supported only for the dev Compose stack" >&2
+  exit 2
+fi
+if ((SANDBOX)) && [[ "$ENVIRONMENT" != dev ]]; then
+  echo "--sandbox is supported only for the experimental dev stack" >&2
   exit 2
 fi
 
@@ -172,6 +184,9 @@ compose() {
       args=(-p "${COMPOSE_PROJECT_NAME:-openship}" --env-file .env.prod -f docker-compose.prod.yml)
       ;;
   esac
+  if ((SANDBOX)); then
+    args+=(-f docker-compose.sandbox.yml --profile sandbox)
+  fi
   (cd "$ROOT" && OPENSHIP_MESSAGING_DIR="$(compose_secret_dir)" "$CONTAINER_ENGINE" compose "${args[@]}" "$@")
 }
 
@@ -732,6 +747,9 @@ case "$COMMAND" in
         ;;
       dev)
         start_dev_stack "$@"
+        if ((SANDBOX)); then
+          compose up -d opensandbox-server
+        fi
         ;;
       prod)
         ensure_messaging_files

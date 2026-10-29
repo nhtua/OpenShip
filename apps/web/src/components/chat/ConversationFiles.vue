@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import Icon from '@/components/common/Icon.vue'
+import LogicalFiles from '@/components/chat/LogicalFiles.vue'
 import type { ArtifactSummary, ConversationWorkspaceSummary } from '@/types'
 
 const props = withDefaults(defineProps<{
@@ -20,6 +21,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   readOnly: false,
 })
+const showSourceFiles = ref(false)
 
 const emit = defineEmits<{
   'load-more': [conversationId: string]
@@ -95,7 +97,23 @@ function isJsonFile(file: ArtifactSummary): boolean {
     <div class="flex shrink-0 items-center gap-2 border-b border-border pb-3 text-xs text-muted-foreground">
       <span class="font-medium text-foreground">{{ fileCount }} {{ fileCount === 1 ? 'file' : 'files' }}</span>
       <span v-if="quotaLabel" class="ml-auto truncate">{{ quotaLabel }}</span>
+      <button
+        type="button"
+        class="shrink-0 rounded px-2 py-1 text-primary hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        :aria-pressed="showSourceFiles"
+        data-testid="toggle-source-files"
+        @click="showSourceFiles = !showSourceFiles"
+      >
+        {{ showSourceFiles ? 'Artifacts' : 'Source files' }}
+      </button>
     </div>
+    <LogicalFiles
+      v-if="showSourceFiles"
+      :conversation-id="conversationId"
+      :artifacts="files"
+      :read-only="readOnly"
+    />
+    <template v-else>
     <p v-if="error" class="shrink-0 text-xs text-destructive" role="alert">{{ error }}</p>
     <p v-if="workspace?.status === 'unavailable'" class="shrink-0 text-sm text-destructive" role="status">
       Workspace storage is unavailable.
@@ -198,5 +216,6 @@ function isJsonFile(file: ArtifactSummary): boolean {
     >
       {{ loadingMore ? 'Loading…' : 'Load more files' }}
     </button>
+    </template>
   </section>
 </template>

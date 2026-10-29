@@ -150,9 +150,25 @@ def phase2_db(database_url, alembic_ini):
                     # The migration lane is disposable. TRUNCATE avoids
                     # violating append-only row triggers while clearing data
                     # left by earlier integration modules on the shared lane.
-                    conn.execute(text(f"TRUNCATE TABLE {names} CASCADE"))
+                    # Do not cascade: messaging_state is deliberately omitted
+                    # because downgrade guards require its inactive singleton.
+                    conn.execute(text(f"TRUNCATE TABLE {names}"))
                 # The current head's downgrade safety check requires the
                 # installation-wide messaging gate row to remain present.
+                conn.execute(
+                    text(
+                        "INSERT INTO messaging_state "
+                        "(id, installation_id, transport_epoch, active, "
+                        "admission_open, execution_open) "
+                        "VALUES (1, :installation_id, :transport_epoch, false, true, true) "
+                        "ON CONFLICT (id) DO UPDATE SET active = false, "
+                        "admission_open = true, execution_open = true"
+                    ),
+                    {
+                        "installation_id": uuidlib.uuid4(),
+                        "transport_epoch": uuidlib.uuid4(),
+                    },
+                )
                 assert (
                     conn.execute(
                         text("SELECT active FROM messaging_state WHERE id = 1")

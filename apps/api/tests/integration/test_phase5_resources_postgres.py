@@ -102,6 +102,22 @@ def _run_alembic(ini: Path, *arguments: str) -> subprocess.CompletedProcess:
     )
 
 
+def _ensure_inactive_messaging_gate(engine) -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO messaging_state "
+                "(id, installation_id, transport_epoch, active, admission_open, execution_open) "
+                "VALUES (1, :installation_id, :transport_epoch, false, true, true) "
+                "ON CONFLICT (id) DO UPDATE SET active = false, "
+                "admission_open = true, execution_open = true"
+            ),
+            {"installation_id": uuid.uuid4(), "transport_epoch": uuid.uuid4()},
+        )
+
+
 def _insert_operation(connection, *, operation_id, run_id, project_id, conversation_id, user_id):
     connection.execute(
         text(
@@ -161,6 +177,7 @@ def test_resource_migration_enforces_scope_immutability_and_retention(database_u
     engine = _engine(database_url)
     upgraded = _run_alembic(ini, "upgrade", "head")
     assert upgraded.returncode == 0, upgraded.stderr
+    _ensure_inactive_messaging_gate(engine)
     with engine.connect() as connection:
         head_revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
@@ -518,6 +535,7 @@ def test_purged_connector_credential_prevents_irreversible_downgrade(database_ur
     engine = _engine(database_url)
     upgraded = _run_alembic(ini, "upgrade", "head")
     assert upgraded.returncode == 0, upgraded.stderr
+    _ensure_inactive_messaging_gate(engine)
     with engine.connect() as connection:
         head_revision = connection.execute(
             text("SELECT version_num FROM alembic_version")

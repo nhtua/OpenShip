@@ -1,0 +1,25 @@
+# Copy to a protected installation-specific location; replace the execd image
+# with a release digest matching the pinned server before starting the service.
+[server]
+host = "0.0.0.0"
+port = 8080
+max_sandbox_timeout_seconds = 120
+
+[runtime]
+type = "docker"
+execd_image = "REPLACE_WITH_PINNED_EXECD_IMAGE"
+execd_run_as_init = true
+
+[secure_runtime]
+type = "gvisor"
+docker_runtime = "runsc"
+
+[docker]
+network_mode = "openship-sandbox-data"
+publish_host = "127.0.0.1"
+no_new_privileges = true
+drop_capabilities = ["ALL"]
+pids_limit = 128
+
+[proxy]
+resolve_internal = true

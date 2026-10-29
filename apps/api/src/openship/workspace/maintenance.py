@@ -151,7 +151,7 @@ def plan_workspace_purge(db: Session, workspace_id: uuid.UUID | str) -> PurgePla
                 "workspace_artifact_scope_invalid",
                 "Workspace contains an artifact with an invalid storage association",
             )
-        require_artifact_not_pinned(db, artifact)
+        require_artifact_not_pinned(db, artifact, ignore_file_heads=True)
 
     return PurgePlan(
         workspace_id=str(workspace.id),
@@ -244,7 +244,7 @@ def purge_workspace(
             failed += 1
             continue
         try:
-            require_artifact_not_pinned(db, artifact)
+            require_artifact_not_pinned(db, artifact, ignore_file_heads=True)
             artifacts.append(artifact)
         except HTTPException:
             failed += 1
@@ -274,6 +274,15 @@ def purge_workspace(
         )
 
     try:
+        from datetime import UTC, datetime
+
+        from src.openship.artifacts.models import LogicalFile
+
+        for file in db.query(LogicalFile).filter_by(
+            conversation_id=conversation.id, project_id=conversation.project_id, deleted_at=None
+        ).with_for_update():
+            file.deleted_at = datetime.now(UTC)
+        db.flush()
         for artifact in artifacts:
             begin_artifact_delete(db, conversation.user_id, artifact.id)
         workspace.status = "deleted"

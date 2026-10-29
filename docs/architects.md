@@ -2,7 +2,7 @@
 type: architecture
 summary: Target self-hosted harness architecture with accepted NATS messaging, durable workflows, capability discovery, and secure execution.
 status: proposed
-date: 2026-10-25
+date: 2026-10-28
 ---
 
 # OpenShip Harness Architecture
@@ -129,7 +129,7 @@ The initial control plane is a modular monolith: API, registry, runtime, and pol
 | Tool gateway | Sole admission path for capability execution; validates arguments, checks policy, records operations, routes execution. |
 | Event ingestion | Receives external trigger events, validates authentication, routes to subscribed workflows, manages event lifecycle. |
 | Credential broker | Resolves connector references into scoped credentials or authenticated connector calls. |
-| Sandbox manager | Creates, supervises, terminates, and cleans up isolated execution environments. |
+| Sandbox manager | Standalone OpenSandbox Server manages isolated environments; OpenShip's trusted gateway adapter submits execution, captures results, and publishes authorized artifacts. |
 | State and artifact stores | Application state, checkpoints, event journal, operation records, versioned artifacts. |
 
 ## 4. Self-Hosted Deployment
@@ -142,11 +142,11 @@ Phase 6A targets native developer processes and separate development/production 
 | Development Compose | Existing root stack plus broker/relay/bootstrap; optional hot reload override. | Preserve current project/volume identities and loopback ports; persistent broker state. |
 | Production Compose | Standalone single-host stack with immutable release images and one persistent broker. | HTTPS browser ingress, private DB/broker/monitoring, broker TLS/auth, protected secrets and coordinated recovery. Single node does not promise host-failure availability. |
 
-Later sandbox deployment must qualify its Linux/VM execution boundary separately; it is not a prerequisite for this transport migration.
+Phase 6B adds standalone OpenSandbox Server alongside OpenShip in Compose, using its Docker backend with gVisor. The trusted runtime calls the private lifecycle/execution/file APIs and awaits bounded outputs; only manager infrastructure receives engine access. Qualify its Linux/VM execution boundary separately; it is not a prerequisite for the Phase 6A transport migration. Later Kubernetes deployment reuses the OpenSandbox integration with its Kubernetes backend and a qualified gVisor RuntimeClass. See the [Phase 6B design](./superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md).
 
 On macOS or Windows, use a dedicated Linux VM or a remote Linux worker for untrusted execution. The installer checks sandbox support before enabling executable capabilities. A machine lacking that support can still serve chat and workflow authoring; execution requests remain blocked until a compatible worker is available. There is no automatic fallback to host subprocess execution.
 
-The sandbox manager may need a container-runtime or VM interface. That access belongs only to its restricted worker host; neither the API, model runtime, nor any sandbox receives a Docker socket or equivalent administrative interface. Authenticate control-plane-to-worker requests, constrain the worker protocol, and reject expired or altered execution requests.
+OpenSandbox Server has the container-runtime interface on its restricted execution host; neither the API, model runtime, nor any sandbox receives a Docker socket or equivalent administrative interface. Authenticate the trusted runtime's OpenSandbox API requests; OpenShip retains project authorization, exact bundle admission and fencing. OpenSandbox supplies lifecycle/execution, not OpenShip user authority or artifact publication.
 
 Maintain coordinated backup/restore procedures for PostgreSQL, JetStream streams/consumer state, artifacts, configuration, and separately protected credential encryption keys. Declare retention, storage limits, disk synchronization, recovery point/time objectives, and replay policy for each supported deployment. A single persistent broker supports a small local installation without promising node-failure availability; a replicated profile must qualify quorum behavior across failure domains. Replication is not a backup. Restoring a backup enters reconciliation mode before resuming pending external mutations. Upgrades drain or checkpoint runs, preserve compatible message/runtime/package versions, and exercise reconnect and duplicate-delivery recovery. Monitor outbox age, pending acknowledgements, consumer lag, redelivery, exhausted deliveries, disk use, and execution capacity. See [JetStream operations](https://docs.nats.io/learn/backup-recovery/) and [disk synchronization settings](https://docs.nats.io/reference/config/jetstream/sync_interval).
 
@@ -464,7 +464,7 @@ Frontend capabilities request known renderers for documents, diagrams, diffs, re
 
 Treat generated code, imported scripts, third-party executables, local MCP servers, repository content, and tool responses as potentially hostile. Protect the host, control plane, credentials, other projects/runs, and unintended destinations. Contain accidental CPU, memory, disk, and process exhaustion as well.
 
-Use an isolation-provider interface for create, execute, stream logs, transfer selected artifacts, stop, and destroy operations. The first proposed Linux provider uses OCI images with gVisor. Its userspace application kernel reduces direct host-kernel exposure; compatibility/performance must be checked against supported DevOps tools. See the [gVisor architecture documentation](https://gvisor.dev/docs/).
+The user selected [OpenSandbox Server](https://github.com/opensandbox-group/OpenSandbox) with gVisor on 2026-10-28. Use its lifecycle/execution/file APIs through a narrow OpenShip adapter to create, execute, capture logs/results, transfer selected artifacts and destroy sandboxes. The initial Docker Compose service creates ephemeral OCI containers using `runsc`; later Kubernetes uses the same integration with its configured gVisor RuntimeClass. gVisor's userspace application kernel reduces direct host-kernel exposure; compatibility, limits and cleanup require qualification. See the [Phase 6B design](./superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md) and [gVisor architecture documentation](https://gvisor.dev/docs/).
 
 MicroVMs or dedicated worker VMs are later stronger-isolation options. Ordinary containers with namespace/seccomp controls alone are not the supported boundary for untrusted generated code. Select a worker satisfying the profile or refuse execution.
 
@@ -599,7 +599,7 @@ Drift detection compares desired revisions against observations. Options are rep
 | Internal messaging — accepted | NATS with JetStream | Subject routing, request/reply, durable consumers, broadcast, and replay in a compact portable server. Phase 6A qualifies delivery, recovery, concurrency, and operation. |
 | Discovery | pgvector, lexical search, local embeddings | Avoids a separate vector service; indexes remain disposable and access-filtered. |
 | Browser progress | SSE and HTTP commands | Reconnectable progress; add another transport if interactive sessions require it. |
-| Sandbox | OCI profiles with gVisor on compatible Linux workers | First isolation provider; validate tool behavior and provide VM workers when needed. |
+| Sandbox | Standalone OpenSandbox Server with gVisor | Docker backend alongside OpenShip in Compose first; Kubernetes backend/RuntimeClass later. Qualify image, network, limits and lifecycle behavior. |
 | Artifacts | Durable local storage interface; optional S3-compatible backend | Simple single-host setup and a path to distributed workers; access remains scoped. |
 | Distribution | Container images and Compose | Fits localhost/remote servers; installer also checks/provisions execution isolation. |
 | Telemetry | Structured logs/metrics, optional OpenTelemetry export | Track failures, queue delay, usage, limits, and waits without requiring hosted tracing. |
