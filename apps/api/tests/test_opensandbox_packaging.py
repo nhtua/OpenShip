@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
+HOST_FILES = ROOT / "scripts/bootstrap/roles/rootless_podman/files"
 
 
 def test_sandbox_overlay_is_private_and_opt_in():
@@ -88,15 +89,15 @@ def test_rootless_manager_uses_user_socket_and_keeps_socket_access_private():
 
 
 def test_rootless_engine_profile_passes_flags_only_to_runsc():
-    config = tomllib.loads((ROOT / "deploy/sandbox/containers.rootless.conf").read_text())
+    config = tomllib.loads((HOST_FILES / "containers.rootless.conf").read_text())
     assert config["engine"]["runtime"] == "runc"
     assert config["engine"]["runtimes"]["runsc"] == ["/usr/bin/runsc"]
     assert config["engine"]["runtimes_flags"] == {"runsc": ["ignore-cgroups"]}
 
 
 def test_sandbox_socket_selects_runsc_in_its_own_rootless_service():
-    service = (ROOT / "deploy/sandbox/openship-sandbox-engine.service").read_text()
-    socket = (ROOT / "deploy/sandbox/openship-sandbox-engine.socket").read_text()
+    service = (HOST_FILES / "openship-sandbox-engine.service").read_text()
+    socket = (HOST_FILES / "openship-sandbox-engine.socket").read_text()
     assert "ExecStart=/usr/bin/podman --runtime=runsc system service" in service
     assert "Requires=openship-sandbox-engine.socket" in service
     assert "Delegate=true" in service

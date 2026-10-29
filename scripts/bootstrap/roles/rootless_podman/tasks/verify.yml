@@ -1,0 +1,28 @@
+---
+- name: Exercise the sandbox API with cleanup on success or failure
+  block:
+    - name: Create a trusted probe without pulling images
+      ansible.builtin.command:
+        argv: [podman, --remote, --url, "{{ openship_sandbox_endpoint }}", create, --pull=never, --network=none, "{{ openship_probe_image }}", /bin/echo, 'Hello from gVisor!']
+      register: openship_probe
+      changed_when: true
+
+    - name: Require actual runsc before starting the probe
+      ansible.builtin.command:
+        argv: [podman, --remote, --url, "{{ openship_sandbox_endpoint }}", inspect, --format, '{{ "{{.OCIRuntime}}" }}', "{{ openship_probe.stdout }}"]
+      register: openship_probe_runtime
+      changed_when: false
+      failed_when: openship_probe_runtime.rc != 0 or openship_probe_runtime.stdout != 'runsc'
+
+    - name: Execute the trusted probe
+      ansible.builtin.command:
+        argv: [podman, --remote, --url, "{{ openship_sandbox_endpoint }}", start, --attach, "{{ openship_probe.stdout }}"]
+      register: openship_probe_result
+      changed_when: true
+      failed_when: openship_probe_result.rc != 0 or openship_probe_result.stdout != 'Hello from gVisor!'
+  always:
+    - name: Remove the known probe container
+      ansible.builtin.command:
+        argv: [podman, --remote, --url, "{{ openship_sandbox_endpoint }}", rm, --force, "{{ openship_probe.stdout }}"]
+      changed_when: true
+      when: openship_probe is defined and openship_probe.rc == 0 and openship_probe.stdout | length > 0

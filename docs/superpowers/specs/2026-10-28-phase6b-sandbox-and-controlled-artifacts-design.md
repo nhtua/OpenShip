@@ -390,8 +390,9 @@ Docker Engine packaging as an independently qualified deployment profile.
 Ordinary Podman containers use `runc`; only the sandbox API service selects
 `runsc`. On the tested Podman 6.1.1, Docker-compatible creation ignores
 `HostConfig.Runtime`, so use a separate socket-activated user service with
-service-scoped `--runtime=runsc`. Both API services share the user's container
+service-scoped `--runtime=runsc`. The local CLI and sandbox API share the user's container
 storage; this is runtime selection, not a separate authorization boundary.
+The standard `podman.socket` is not required and remains unmanaged.
 Put `ignore-cgroups` under `[engine.runtimes_flags]` for `runsc`, not in the
 executable path list. Qualify effective limits independently: bypassing
 runsc's cgroup management does not establish resource enforcement.

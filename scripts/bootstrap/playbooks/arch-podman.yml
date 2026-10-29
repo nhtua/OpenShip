@@ -1,0 +1,67 @@
+---
+- name: Prepare an Arch Linux host for OpenShip with rootless Podman
+  hosts: all
+  gather_facts: true
+  become: false
+  vars:
+    openship_configure_only: false
+    openship_arch_packages: [podman, podman-compose, runc, passt, shadow]
+  pre_tasks:
+    - name: Require an ordinary user on an Arch-derived host
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - ansible_facts.os_family == 'Archlinux'
+          - ansible_facts.user_uid != 0
+        fail_msg: Connect as the ordinary rootless user on Arch Linux or a derivative.
+
+    - name: Inspect installed official packages
+      ansible.builtin.command:
+        argv: "{{ ['pacman', '-Qq'] + openship_arch_packages }}"
+      register: openship_official_packages
+      failed_when: openship_official_packages.rc not in [0, 1]
+      changed_when: false
+      check_mode: false
+
+    - name: Inspect gVisor package
+      ansible.builtin.command:
+        argv: [pacman, -Qq, gvisor-bin]
+      register: openship_gvisor_package
+      failed_when: openship_gvisor_package.rc not in [0, 1]
+      changed_when: false
+      check_mode: false
+
+    - name: Locate the operator-provided AUR helper before changing packages
+      ansible.builtin.shell: command -v yay
+      changed_when: false
+      check_mode: false
+      when:
+        - not (openship_configure_only | bool)
+        - openship_gvisor_package.rc != 0
+
+    - name: Upgrade the complete system before installing missing packages
+      community.general.pacman:
+        update_cache: true
+        upgrade: true
+      become: true
+      when:
+        - not (openship_configure_only | bool)
+        - openship_official_packages.rc != 0 or openship_gvisor_package.rc != 0
+
+    - name: Install official rootless container dependencies
+      community.general.pacman:
+        name: "{{ openship_arch_packages }}"
+        state: present
+      become: true
+      when:
+        - not (openship_configure_only | bool)
+        - openship_official_packages.rc != 0
+
+    - name: Install gVisor with the operator-provided AUR helper
+      ansible.builtin.command:
+        argv: [yay, -S, --needed, --noconfirm, gvisor-bin]
+      when:
+        - not (openship_configure_only | bool)
+        - openship_gvisor_package.rc != 0
+  roles:
+    - rootless_podman

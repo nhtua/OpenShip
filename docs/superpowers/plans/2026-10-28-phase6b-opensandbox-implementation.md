@@ -42,6 +42,12 @@ Prior full-suite results are historical evidence only. Re-run affected checks fo
 
 Ruling: rootless Podman is the requested development target, using a separate API service profile because per-container Docker API runtime selection is ignored on the installed version. Keep the same application/manager boundary and all isolation gates. The dedicated service shares the user's container storage; it is not a separate engine authorization boundary.
 
+Follow-up: `scripts/bootstrap/bootstrap.sh arch-podman` now manages the
+host dependencies, drop-in and dedicated socket. The standard `podman.socket`
+is unnecessary for this setup and remains unmanaged; verify the ordinary
+`runc` default through the local CLI. See the
+[Ansible bootstrap guide](../../../scripts/bootstrap/README.md).
+
 ## Global constraints
 
 - First workload profile: **CPython 3.11, standard library only**; record the exact patch and an explicit empty third-party dependency lock. No runtime installs/builds, arbitrary images, shell entrypoints, cloud credentials or external workload network access.

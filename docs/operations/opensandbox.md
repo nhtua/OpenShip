@@ -64,22 +64,36 @@ backend and `secure_runtime.docker_runtime = "runsc"`; connect the manager
 to a rootless Podman API using `DOCKER_HOST`. The Compose overlay mounts the
 host socket at `/var/run/docker.sock` inside the manager.
 
-Two engine API profiles are needed on the tested Podman 6.1.1 installation:
+Separate CLI and sandbox API profiles are needed on the tested Podman 6.1.1 installation:
 its Docker-compatible create endpoint ignores `HostConfig.Runtime`, so sending
 `Runtime: runsc` to the ordinary socket creates a `runc` container. The supplied
 user units start a second socket-activated API with `--runtime=runsc` scoped to
-that service. The ordinary socket and CLI retain `runc`. Both APIs share the
-same user's container storage; the second socket is a runtime selection
-mechanism, not an access-control boundary between engines.
+that service. Ordinary CLI commands retain `runc`; the standard `podman.socket`
+is optional and can stay disabled. The CLI and sandbox API share the same user's
+container storage; the dedicated socket is a runtime selection mechanism,
+not an access-control boundary between engines.
+
+On Arch Linux or a derivative, the repeatable setup entry point is:
+
+```sh
+scripts/bootstrap/bootstrap.sh arch-podman --check
+scripts/bootstrap/bootstrap.sh arch-podman
+```
+
+Use `--configure-only` when dependencies are already installed. This manages
+only the sandbox socket and leaves the standard Podman API unmanaged. See
+the [Ansible bootstrap guide](../../scripts/bootstrap/README.md) for package,
+upgrade, prerequisite and verification behavior. The equivalent manual steps
+follow.
 
 1. Install the runtime flags and user units (run as your ordinary user):
 
    ```sh
-   install -D -m 600 deploy/sandbox/containers.rootless.conf \
+   install -D -m 600 scripts/bootstrap/roles/rootless_podman/files/containers.rootless.conf \
      ~/.config/containers/containers.conf.d/90-openship-sandbox.conf
-   install -D -m 644 deploy/sandbox/openship-sandbox-engine.service \
+   install -D -m 644 scripts/bootstrap/roles/rootless_podman/files/openship-sandbox-engine.service \
      ~/.config/systemd/user/openship-sandbox-engine.service
-   install -D -m 644 deploy/sandbox/openship-sandbox-engine.socket \
+   install -D -m 644 scripts/bootstrap/roles/rootless_podman/files/openship-sandbox-engine.socket \
      ~/.config/systemd/user/openship-sandbox-engine.socket
    systemctl --user daemon-reload
    systemctl --user enable --now openship-sandbox-engine.socket
@@ -124,8 +138,9 @@ mechanism, not an access-control boundary between engines.
    opensandbox-server --config /absolute/path/to/protected-config.toml
    ```
 
-   Check the engine's `/info`: the ordinary socket must report `runc`, and
-   the dedicated socket must report `runsc`. Inspect a created container with
+   Check local `podman info`: the default runtime must be `runc`. The dedicated
+   API's `/info` must report `runsc`; no ordinary API socket is required.
+   Inspect a created container with
    `podman inspect --format '{{.OCIRuntime}}' <container-id>` to verify `runsc`.
    Podman's Docker-compatible inspect reports the generic runtime `oci`, so
    that field cannot prove gVisor selection.

@@ -1,0 +1,14 @@
+---
+- name: Reload user units
+  environment: "{{ openship_systemd_environment }}"
+  ansible.builtin.systemd_service:
+    scope: user
+    daemon_reload: true
+
+- name: Restart active sandbox API
+  environment: "{{ openship_systemd_environment }}"
+  ansible.builtin.systemd_service:
+    scope: user
+    name: openship-sandbox-engine.service
+    state: restarted
+  when: openship_sandbox_service.rc == 0
