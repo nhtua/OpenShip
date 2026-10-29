@@ -47,6 +47,15 @@ before applying. The playbook does not bootstrap an AUR helper. Supported
 configuration requires Podman with `engine.runtimes_flags` support; the tested
 host has Podman 6.1.1, podman-compose 1.6.0 and Ansible Core 2.21.3.
 
+When gVisor is missing, `yay` also needs noninteractive sudo for its package
+commands; Ansible's become password is not forwarded to nested sudo. The
+playbook checks basic sudo availability before upgrading anything and makes
+`yay` fail immediately if further authorization is missing. This is not proof
+that every package command is permitted. If authorization is unavailable,
+install `gvisor-bin` interactively with `yay -S gvisor-bin`, then rerun.
+No sudo policy is installed or changed. See the
+[upstream Ansible explanation](https://github.com/ansible/ansible/issues/85536).
+
 For an existing host, skip package changes and optionally exercise a preloaded
 Alpine-compatible image through the sandbox API:
 

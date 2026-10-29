@@ -39,6 +39,30 @@
         - not (openship_configure_only | bool)
         - openship_gvisor_package.rc != 0
 
+    - name: Check noninteractive package sudo before invoking the AUR helper
+      ansible.builtin.command:
+        argv: [sudo, -n, pacman, --version]
+      register: openship_aur_sudo
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - not (openship_configure_only | bool)
+        - openship_gvisor_package.rc != 0
+
+    - name: Require separate sudo authorization for the AUR helper
+      ansible.builtin.assert:
+        quiet: true
+        that: openship_aur_sudo.rc == 0
+        fail_msg: >-
+          yay needs noninteractive sudo independently of Ansible's become
+          password. Install gvisor-bin interactively with yay -S gvisor-bin,
+          then rerun; or supply an administrator-approved noninteractive
+          package policy. This playbook does not change sudo policy.
+      when:
+        - not (openship_configure_only | bool)
+        - openship_gvisor_package.rc != 0
+
     - name: Upgrade the complete system before installing missing packages
       community.general.pacman:
         update_cache: true
@@ -59,7 +83,7 @@
 
     - name: Install gVisor with the operator-provided AUR helper
       ansible.builtin.command:
-        argv: [yay, -S, --needed, --noconfirm, gvisor-bin]
+        argv: [yay, -S, --needed, --noconfirm, --sudoflags=-n, gvisor-bin]
       when:
         - not (openship_configure_only | bool)
         - openship_gvisor_package.rc != 0

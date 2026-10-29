@@ -44,3 +44,8 @@ skipped. A subsequent apply reported `changed=0`, `failed=0`. The final trusted
 probe verified actual `runsc`, captured the expected echo and removed the
 container. Review findings on socket inodes, inventory isolation and AUR
 package convergence were fixed before completion.
+
+Fresh-install review also identified nested sudo in `yay`: Ansible's become
+password does not authenticate it. The playbook checks basic noninteractive
+package sudo before any upgrade and uses `--sudoflags=-n`; otherwise it gives
+interactive-install instructions without modifying sudo policy.
