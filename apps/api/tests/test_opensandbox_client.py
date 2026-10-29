@@ -9,6 +9,46 @@ from src.openship.sandboxes.client import OpenSandboxClient, SandboxProtocolErro
 
 
 @pytest.mark.asyncio
+async def test_wait_ready_checks_lifecycle_and_authenticated_proxy():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        assert request.headers["OPEN-SANDBOX-API-KEY"] == "secret"
+        if request.url.path.endswith("/proxy/44772/ping"):
+            return httpx.Response(200)
+        return httpx.Response(200, json={"id": "sandbox-1", "status": {"state": "Running"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+        await client.wait_ready("sandbox-1", timeout=1)
+    assert calls == ["/v1/sandboxes/sandbox-1", "/v1/sandboxes/sandbox-1/proxy/44772/ping"]
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_rejects_terminal_state_and_redirect():
+    for response in (httpx.Response(200, json={"id": "sandbox-1", "status": {"state": "Failed"}}),
+                     httpx.Response(302, headers={"location": "https://unexpected.example/"})):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request, response=response: response)) as http:
+            client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+            with pytest.raises(SandboxProtocolError):
+                await client.wait_ready("sandbox-1", timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_times_out_if_proxy_never_becomes_available():
+    def handler(request):
+        if request.url.path.endswith("/ping"):
+            return httpx.Response(503)
+        return httpx.Response(200, json={"id": "sandbox-1", "status": {"state": "Running"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+        with pytest.raises(SandboxProtocolError, match="timed out"):
+            await client.wait_ready("sandbox-1", timeout=0.05)
+
+
+@pytest.mark.asyncio
 async def test_create_uses_pinned_profile_and_correlates_attempt():
     attempt = uuid4()
     calls = []

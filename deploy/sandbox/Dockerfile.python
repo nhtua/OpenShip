@@ -7,8 +7,8 @@ FROM ${PYTHON_BASE_IMAGE}
 RUN groupadd --gid 1000 openship \
     && useradd --uid 1000 --gid 1000 --no-create-home \
         --shell /usr/sbin/nologin openship \
-    && install -d --owner=root --group=root --mode=0755 /code /input \
-    && install -d --owner=openship --group=openship --mode=0700 /output
+    && install -d --owner=root --group=root --mode=0755 /code /inputs \
+    && install -d --owner=openship --group=openship --mode=0700 /outputs
 
 ENV PYTHONDONTWRITEBYTECODE=1
 WORKDIR /code

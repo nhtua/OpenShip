@@ -24,6 +24,11 @@ class FakeClient:
         if self.fail_at == "upload":
             raise SandboxProtocolError("sandbox upload failed")
 
+    async def wait_ready(self, sandbox_id):
+        self.calls.append(("ready", sandbox_id))
+        if self.fail_at == "ready":
+            raise SandboxProtocolError("sandbox readiness failed")
+
     async def verify_source(self, sandbox_id, digest, size):
         self.calls.append(("verify", sandbox_id, digest, size))
 
@@ -79,11 +84,11 @@ def test_execution_is_single_dispatch_and_destroys_after_success():
     assert result.stdout == "ok"
     assert client.calls[0] == ("create", attempt_id)
     assert [call[0] for call in client.calls] == [
-        "create", "upload", "verify", "run", "destroy"
+        "create", "ready", "upload", "verify", "run", "destroy"
     ]
 
 
-@pytest.mark.parametrize("fail_at", ["upload", "run"])
+@pytest.mark.parametrize("fail_at", ["ready", "upload", "run"])
 def test_execution_destroys_after_any_known_sandbox_failure(fail_at):
     client, source = FakeClient(fail_at=fail_at), b"pass"
     with pytest.raises(SandboxProtocolError):
@@ -139,7 +144,7 @@ def test_cancellation_while_waiting_stops_command_and_destroys_sandbox():
                 attempt_id=uuid.uuid4(),
                 source=source,
                 sha256=hashlib.sha256(source).hexdigest(),
-                control=Control(stop_at=4),
+                control=Control(stop_at=5),
             )
         )
     assert client.command_cancelled is True

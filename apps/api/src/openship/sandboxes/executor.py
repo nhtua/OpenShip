@@ -43,6 +43,8 @@ async def execute_python(
         control.raise_if_stopped()
         sandbox_id = await client.create(attempt_id)
         control.raise_if_stopped()
+        await client.wait_ready(sandbox_id)
+        control.raise_if_stopped()
         await client.upload_source(sandbox_id, source, sha256)
         await client.verify_source(sandbox_id, sha256, len(source))
         control.raise_if_stopped()

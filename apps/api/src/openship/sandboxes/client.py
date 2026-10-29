@@ -74,6 +74,40 @@ class OpenSandboxClient:
         if not isinstance(sandbox_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sandbox_id):
             raise ValueError("invalid sandbox ID")
 
+    async def wait_ready(self, sandbox_id: str, *, timeout: float = 30) -> None:
+        """Wait for a running sandbox and its execd proxy, within a fixed deadline."""
+        self._validate_id(sandbox_id)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 30:
+            raise ValueError("invalid readiness timeout")
+        base = self._base + "/v1/sandboxes/" + sandbox_id
+        headers = {"OPEN-SANDBOX-API-KEY": self._key}
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    response = await self._http.get(base, headers=headers, timeout=5, follow_redirects=False)
+                    if response.status_code != 200:
+                        raise SandboxProtocolError("sandbox readiness inspection failed")
+                    try:
+                        body = response.json()
+                        state = body["status"]["state"]
+                        if body["id"] != sandbox_id or not isinstance(state, str):
+                            raise ValueError
+                    except (ValueError, KeyError, TypeError):
+                        raise SandboxProtocolError("invalid sandbox readiness response") from None
+                    if state == "Running":
+                        response = await self._http.get(
+                            base + "/proxy/44772/ping", headers=headers, timeout=5, follow_redirects=False,
+                        )
+                        if response.status_code == 200:
+                            return
+                        if response.status_code not in (502, 503, 504):
+                            raise SandboxProtocolError("sandbox proxy readiness failed")
+                    elif state not in ("Pending",):
+                        raise SandboxProtocolError("sandbox is not ready")
+                    await asyncio.sleep(0.25)
+        except (httpx.RequestError, TimeoutError):
+            raise SandboxProtocolError("sandbox readiness failed or timed out") from None
+
     async def upload_source(self, sandbox_id: str, source: bytes, sha256: str) -> None:
         """Transfer a bounded source capture; callers must verify materialization."""
         self._validate_id(sandbox_id)

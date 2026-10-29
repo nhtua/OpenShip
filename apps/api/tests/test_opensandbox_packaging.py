@@ -45,8 +45,8 @@ def test_python_image_keeps_input_read_only_and_output_owned_by_workload():
     dockerfile = (ROOT / "deploy/sandbox/Dockerfile.python").read_text()
     assert "ARG PYTHON_BASE_IMAGE" in dockerfile
     assert "--uid 1000" in dockerfile
-    assert "/code /input" in dockerfile
-    assert "/output" in dockerfile
+    assert "/code /inputs" in dockerfile
+    assert "/outputs" in dockerfile
 
 
 @pytest.mark.parametrize("engine", ["docker", "podman"])
