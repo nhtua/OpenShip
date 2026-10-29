@@ -135,12 +135,59 @@ async def test_missing_completion_is_not_success():
 
 
 @pytest.mark.asyncio
+async def test_command_accepts_execd_json_records_with_explicit_exit_code():
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=(
+            b'{"type":"stdout","text":"hello"}\n\n'
+            b'{"type":"execution_complete","exit_code":0}\n\n'
+        ))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+        result = await client.run_python("sandbox-1")
+    assert result.stdout == "hello"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", [b"", b"data: "])
+@pytest.mark.parametrize("exit_code", [None, True, False, 1, -1, 0.0, "0"])
+async def test_command_rejects_non_integer_or_unsuccessful_exit_code(prefix, exit_code):
+    completion = json.dumps({"type": "execution_complete", "exit_code": exit_code}).encode()
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              content=prefix + completion + b"\n\n")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+        with pytest.raises(SandboxProtocolError, match="uncertain"):
+            await client.run_python("sandbox-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [
+    b'{"type":"execution_complete","execution_time":1}\n\n',
+    b'{"type":"stdout","text":"partial"}\n\n',
+    b'{"type":"execution_complete","exit_code":0}\n\n{malformed}\n\n',
+])
+async def test_command_rejects_incomplete_or_invalid_json_records(payload):
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+        with pytest.raises(SandboxProtocolError, match="uncertain"):
+            await client.run_python("sandbox-1")
+
+
+@pytest.mark.asyncio
 async def test_upload_source_checks_digest_before_transfer():
     requests = []
 
     def handler(request):
         requests.append(request)
         assert request.url.path == "/v1/sandboxes/sandbox-1/proxy/44772/files/upload"
+        assert b'name="metadata"; filename="metadata.json"' in request.content
         assert b'/code/main.py' in request.content
         assert b'print(1)' in request.content
         return httpx.Response(200)

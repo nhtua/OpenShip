@@ -19,7 +19,7 @@
 | `scripts/check_opensandbox_config.py` | Static checks implemented; no engine inspection, effective isolation proof or deployment enablement. |
 | `docker-compose.sandbox.yml`, `deploy/sandbox/` and `scripts/openship-stack --sandbox` | Optional dev packaging implemented. Compatible server/execd/Python digests, protected supervision, storage/network enforcement, worker settings and production/native qualification remain. |
 | Migration `phase6b021`, `artifacts/logical_files.py` and `file_routes.py` | Captures from existing text artifacts, bounded UTF-8 replacements, expected-base edits, listing/history, tombstoning and pruning implemented. Concurrent PostgreSQL behavior, execution pins, publication conflicts and direct create/write capability remain. |
-| `sandboxes/client.py` and `executor.py` | Bounded source upload/readback, command streams, single-dispatch coordination and known-ID deletion implemented with mocked protocol tests. No production gateway caller, durable dispatch record, readiness inspection, input transfer, remote output capture or orphan reconciler. |
+| `sandboxes/client.py` and `executor.py` | Lifecycle/proxy readiness, bounded source upload/readback, command streams, single-dispatch coordination and known-ID deletion implemented. Trusted live runsc protocol fixture passes with a patched upstream manager and compatible execd build. No production gateway caller, durable dispatch record, input transfer, remote output collection or orphan reconciler. |
 | `sandboxes/collector.py` | Local regular-file/link/size validation implemented. It is not integrated with remote execd collection or artifact publication. |
 | `LogicalFiles.vue` | Current-source inspection and editing implemented. Run is statically disabled; history/pruning controls, bundle inspection and execution/results remain. |
 
@@ -48,6 +48,35 @@ host dependencies, drop-in and dedicated socket. The standard `podman.socket`
 is unnecessary for this setup and remains unmanaged; verify the ordinary
 `runc` default through the local CLI. See the
 [Ansible bootstrap guide](../../../scripts/bootstrap/README.md).
+
+## OCI compatibility follow-up (2026-10-29)
+
+This bounded follow-up addresses the tested manager/execd interoperability
+problems before returning to the remaining Phase 6B tasks. OpenShip consumes
+OpenSandbox HTTP APIs; engine selection stays in deployment configuration.
+OCI runtime compliance does not imply Docker Engine API compatibility.
+
+- [x] Reproduce image archive extraction failure for a running runsc helper;
+  verify extraction from a created helper and internal bridge connectivity.
+- [x] Correct multipart metadata and accept execd's blank-line-delimited JSON
+  events, retaining fixed argv and explicit integer zero exit status.
+- [x] Preserve the manager extraction fix as a patch against a pinned upstream
+  revision, with upstream regression tests and build instructions.
+- [x] Add a trusted HTTP compatibility probe reusable with any OpenSandbox
+  deployment; prove source readback, non-root execution, output and deletion.
+- [x] Build complete manager and execd images from the same pinned revision.
+  Verify the manager's real HTTP listener/proxy, native `runc` manager and
+  `runsc` sandbox selection, and physical sandbox deletion. This uses a
+  trusted ordinary-bridge fixture; the hardened Compose profile is unqualified.
+- [x] Record live evidence and obtain independent review (no critical or
+  important findings). Focused lane: **68 passed**; full network-free API lane:
+  **1,339 passed, 123 deselected**. Ruff, prototype/frontend tests, Vue
+  typecheck and secret scans passed. Keep files unchanged during commit hooks.
+
+The diagnostic image and trusted fixture do not qualify the hardened workload
+profile. Compatible production image digests and all Task 2 isolation checks
+remain required. See the [compatibility investigation](../../reviews/2026-10-29-opensandbox-oci-compatibility.md)
+and [operator build/probe instructions](../../operations/opensandbox.md).
 
 ## Global constraints
 

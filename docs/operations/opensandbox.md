@@ -160,3 +160,93 @@ controls pass qualification on this profile.
 References: [Podman API service](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html),
 [Podman runtime selection and flags](https://github.com/containers/podman/blob/main/libpod/oci_conmon_common.go),
 [OpenSandbox configuration](https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md).
+
+## Container engine compatibility
+
+OpenShip uses OpenSandbox's lifecycle and execd HTTP APIs. It does not invoke
+an engine CLI, mount an engine socket or choose a runtime in application code.
+The manager's `docker` backend requires a compatible Docker Engine API; the
+engine then invokes the configured OCI runtime. OCI compliance covers that
+lower boundary, not Docker Engine API behavior. A different OCI engine needs
+an OpenSandbox-supported backend, such as the Docker-compatible API or the
+Kubernetes backend; OCI support alone is insufficient.
+
+The installed rootless Podman/runsc combination exposed an upstream extraction
+problem: the engine archive API could not read execd image files after its
+temporary helper started. Reading those files from the created helper worked.
+The versioned
+[upstream patch](../../deploy/sandbox/patches/0001-extract-execd-before-runtime-start.patch)
+removes that unnecessary start without detecting the engine or changing the
+workload runtime. It includes upstream regression tests for cache reuse and
+cleanup after successful or failed reads. Its source base is
+[`97031ea81fee1b853e4cd89e5490b1be9f5ead55`](https://github.com/opensandbox-group/OpenSandbox/tree/97031ea81fee1b853e4cd89e5490b1be9f5ead55).
+This patch is maintained here pending an upstream fix; it has not been
+submitted upstream. Remove it once a qualified release contains the fix.
+
+execd `v1.1.0` rejects native `argv` and omits the exit status needed by
+OpenShip. Build manager and execd from the pinned revision above for further
+qualification. Do not substitute shell execution or infer successful exit
+from a completion event without an integer zero exit status. OpenShip accepts
+both `data:` events and execd's blank-line-delimited JSON objects, and sends
+upload metadata as a named multipart file as required by execd.
+
+For an operator-controlled upstream checkout, apply and test the patch before
+building. Set these paths to your checkouts; use a clean upstream checkout.
+
+```sh
+OPENSHIP_SOURCE=/absolute/path/to/openship
+OPENSANDBOX_SOURCE=/absolute/path/to/OpenSandbox
+CONTAINER_ENGINE=podman # or another builder with the same build interface
+git -C "$OPENSANDBOX_SOURCE" checkout --detach 97031ea81fee1b853e4cd89e5490b1be9f5ead55
+git -C "$OPENSANDBOX_SOURCE" apply --check "$OPENSHIP_SOURCE/deploy/sandbox/patches/0001-extract-execd-before-runtime-start.patch"
+git -C "$OPENSANDBOX_SOURCE" apply "$OPENSHIP_SOURCE/deploy/sandbox/patches/0001-extract-execd-before-runtime-start.patch"
+cd "$OPENSANDBOX_SOURCE/server"
+uv sync --frozen
+uv run pytest -q tests/test_execd_created_container.py tests/test_docker_service.py -k execd_archive
+"$CONTAINER_ENGINE" build -f "$OPENSANDBOX_SOURCE/server/Dockerfile" \
+  -t openship-opensandbox-server:compat-97031ea "$OPENSANDBOX_SOURCE/server"
+"$CONTAINER_ENGINE" build -f "$OPENSANDBOX_SOURCE/components/execd/Dockerfile" \
+  -t openship-execd:compat-97031ea "$OPENSANDBOX_SOURCE"
+```
+
+These are source-build instructions, not a qualified image tuple. The upstream
+Dockerfiles contain mutable base tags. Record builder/base digests, source
+revision, patch and build options; resolve and pin the resulting manager,
+execd and Python image digests in the protected deployment configuration.
+Keep execd's legacy SSE compatibility setting disabled so it retains exit codes.
+Qualify each deployment profile against its actual engine, runtime and network.
+
+## Trusted protocol probe
+
+With a test manager running, run the same trusted fixture against any backend:
+
+```sh
+cd apps/api
+# Supply these through the environment, using a dedicated test API key:
+# OPENSHIP_SANDBOX_SERVER_URL, OPENSHIP_SANDBOX_API_KEY,
+# OPENSHIP_SANDBOX_PYTHON_IMAGE (digest pinned).
+uv run python -m scripts.qualify_opensandbox --trusted-probe
+```
+
+The probe creates one sandbox, waits for execd, uploads a fixed trusted Python
+program, verifies the downloaded source digest, executes the fixed native argv,
+checks UID/GID `1000:1000`, stdout, stderr and explicit successful completion,
+then requests deletion and waits for lifecycle `404`. It never retries create
+or command POSTs. It prints an attempt UUID before creation for reconciliation
+if the response is lost. A failure exits nonzero; reconcile an uncertain
+attempt before repeating the probe. The receipt's
+`manager_deletion_confirmed` describes the manager response; independently
+inspect engine resources to prove physical cleanup and runtime selection.
+
+The probe requires no engine-specific imports, CLI or socket. Run it from a
+process that can reach the manager. The manager must also be able to reach
+execd: use the shared internal data bridge and `proxy.resolve_internal = true`
+in the Compose topology. A native host process may need a different network
+namespace or separately qualified route. Host-published runsc ports failed on
+the tested rootless profile despite working internal bridge connections.
+
+Success is HTTP protocol compatibility evidence and always reports
+`isolation_qualified: false`. The fixture does not establish workload resource,
+filesystem, storage, network or supervisor isolation. See the
+[compatibility investigation](../reviews/2026-10-29-opensandbox-oci-compatibility.md)
+for the tested versions, diagnostic build limitations and remaining checks.

@@ -1,0 +1,92 @@
+Subject: Read execd image artifacts without starting a runtime
+Base-Commit: 97031ea81fee1b853e4cd89e5490b1be9f5ead55
+Upstream: https://github.com/opensandbox-group/OpenSandbox
+License: Apache-2.0
+
+The standard archive API can read image files from a created container.
+Do not start a helper merely to extract those files: alternative OCI runtimes
+can make their running rootfs unavailable to the engine archive implementation.
+Keep workload runtime selection unchanged. Test cache reuse and cleanup after
+both successful reads and archive errors, without inspecting the engine vendor.
+
+diff --git a/server/opensandbox_server/services/docker/runtime.py b/server/opensandbox_server/services/docker/runtime.py
+index 02fb636..a7156b9 100644
+--- a/server/opensandbox_server/services/docker/runtime.py
++++ b/server/opensandbox_server/services/docker/runtime.py
+@@ -101,12 +101,9 @@ class DockerRuntimeMixin:
+                     if docker_platform is not None:
+                         create_kwargs["platform"] = docker_platform
+                     container = self.docker_client.containers.create(**create_kwargs)
+-                with self._docker_operation("execd cache start container", "execd-cache"):
+-                    container.start()
+-                    container.reload()
+-                    logger.info(
+-                        f"Created sandbox execd archive for container {container.id}"
+-                    )
++                # The archive API reads image files from a created container.
++                # Starting a runtime is unnecessary and can hide the image rootfs
++                # from the engine when an alternative OCI runtime owns the mounts.
+             except TypeError as exc:
+                 if docker_platform is not None:
+                     raise HTTPException(
+@@ -133,7 +130,7 @@ class DockerRuntimeMixin:
+                 with self._docker_operation("execd cache read archive", "execd-cache"):
+                     stream, _ = container.get_archive("/execd")
+                     data = b"".join(stream)
+-                # Also cache the full bootstrap.sh while the container is running.
++                # Also cache the full bootstrap.sh from the created container.
+                 if cache_key not in self._bootstrap_script_cache:
+                     with self._docker_operation("execd cache read bootstrap", "execd-cache"):
+                         bs_stream, _ = container.get_archive("/bootstrap.sh")
+diff --git a/server/tests/test_execd_created_container.py b/server/tests/test_execd_created_container.py
+new file mode 100644
+index 0000000..b293b35
+--- /dev/null
++++ b/server/tests/test_execd_created_container.py
+@@ -0,0 +1,46 @@
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 The OpenSandbox Authors
++
++from unittest.mock import MagicMock, patch
++
++import pytest
++from docker.errors import DockerException
++from fastapi import HTTPException
++
++from opensandbox_server.services.docker import DockerSandboxService
++from tests.test_docker_service import _app_config
++
++
++@pytest.mark.parametrize("read_failure", [False, True])
++@patch("opensandbox_server.services.docker.docker_service.docker")
++def test_execd_archive_uses_created_container_and_always_removes_it(mock_docker, read_failure):
++    client = mock_docker.from_env.return_value
++    client.containers.list.return_value = []
++    client.info.return_value = {"OSType": "linux", "Architecture": "amd64"}
++    container = MagicMock()
++    client.containers.create.return_value = container
++    container.start.side_effect = AssertionError("image extraction must not start a runtime")
++
++    def get_archive(path):
++        if read_failure:
++            raise DockerException("archive read failed")
++        return [path.encode()], {}
++
++    container.get_archive.side_effect = get_archive
++    service = DockerSandboxService(config=_app_config())
++    with patch.object(service, "_docker_operation"):
++        if read_failure:
++            with pytest.raises(HTTPException) as error:
++                service._fetch_execd_archive()
++            assert error.value.status_code == 500
++        else:
++            assert service._fetch_execd_archive() == b"/execd"
++            assert service._fetch_execd_archive() == b"/execd"
++            paths = [call.args[0] for call in container.get_archive.call_args_list]
++            assert "/bootstrap.sh" in paths
++            assert "/usr/local/bin/bwrap" in paths
++            assert "/usr/local/libexec/opensandbox-session-gate" in paths
++            assert "/usr/local/libexec/opensandbox-launcher" in paths
++    container.start.assert_not_called()
++    client.containers.create.assert_called_once()
++    container.remove.assert_called_once_with(force=True)

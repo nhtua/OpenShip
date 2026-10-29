@@ -120,7 +120,7 @@ class OpenSandboxClient:
             response = await self._http.post(
                 self._base + "/v1/sandboxes/" + sandbox_id + "/proxy/44772/files/upload",
                 headers={"OPEN-SANDBOX-API-KEY": self._key},
-                files=[("metadata", (None, metadata, "application/json")),
+                files=[("metadata", ("metadata.json", metadata, "application/json")),
                        ("file", ("main.py", source, "application/octet-stream"))],
                 timeout=30, follow_redirects=False,
             )
@@ -201,13 +201,19 @@ class OpenSandboxClient:
         try:
             for block in bytes(data).decode("utf-8").replace("\r\n", "\n").split("\n\n"):
                 parts = [line[5:].lstrip(" ") for line in block.split("\n") if line.startswith("data:")]
-                if not parts:
+                if parts:
+                    payload = "\n".join(parts)
+                elif block.lstrip().startswith("{"):
+                    # execd also emits bare JSON objects separated by blank lines.
+                    payload = block
+                else:
                     continue
-                event = json.loads("\n".join(parts))
+                event = json.loads(payload)
                 if event.get("type") == "error":
                     raise SandboxProtocolError("sandbox program failed")
                 if event.get("type") == "execution_complete":
-                    if event.get("exit_code") != 0 or isinstance(event.get("exit_code"), bool):
+                    exit_code = event.get("exit_code")
+                    if type(exit_code) is not int or exit_code != 0:
                         raise SandboxProtocolError("sandbox command outcome is uncertain")
                     complete = True
                 if event.get("type") in ("stdout", "stderr"):
