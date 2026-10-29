@@ -186,6 +186,9 @@ compose() {
   esac
   if ((SANDBOX)); then
     args+=(-f docker-compose.sandbox.yml --profile sandbox)
+    if [[ "$CONTAINER_ENGINE" == podman ]]; then
+      args+=(-f docker-compose.sandbox.rootless.yml)
+    fi
   fi
   (cd "$ROOT" && OPENSHIP_MESSAGING_DIR="$(compose_secret_dir)" "$CONTAINER_ENGINE" compose "${args[@]}" "$@")
 }

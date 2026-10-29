@@ -6,12 +6,15 @@ port = 8080
 max_sandbox_timeout_seconds = 120
 
 [runtime]
+# The Docker-compatible API backend also connects to rootless Podman. The
+# manager's DOCKER_HOST selects the socket; there is no separate rootless flag.
 type = "docker"
 execd_image = "REPLACE_WITH_PINNED_EXECD_IMAGE"
 execd_run_as_init = true
 
 [secure_runtime]
 type = "gvisor"
+# Select the engine's registered runsc profile for sandbox creation only.
 docker_runtime = "runsc"
 
 [docker]

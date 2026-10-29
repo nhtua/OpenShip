@@ -1,0 +1,11 @@
+[Unit]
+Description=OpenShip rootless sandbox engine socket
+Documentation=man:podman-system-service(1)
+
+[Socket]
+ListenStream=%t/openship-sandbox/podman.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

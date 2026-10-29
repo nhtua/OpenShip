@@ -384,8 +384,17 @@ not claim Kubernetes readiness or lifecycle-server HA.
 
 ## First support profile, image, and hard limits
 
-Proposed reference target: Linux x86_64, Ubuntu 24.04 LTS, cgroup v2, Docker
-Engine with a separately registered gVisor runtime dedicated to this profile.
+Development target: Linux x86_64, cgroup v2, rootless Podman with a separately
+registered gVisor runtime and a dedicated sandbox API service profile. Retain
+Docker Engine packaging as an independently qualified deployment profile.
+Ordinary Podman containers use `runc`; only the sandbox API service selects
+`runsc`. On the tested Podman 6.1.1, Docker-compatible creation ignores
+`HostConfig.Runtime`, so use a separate socket-activated user service with
+service-scoped `--runtime=runsc`. Both API services share the user's container
+storage; this is runtime selection, not a separate authorization boundary.
+Put `ignore-cgroups` under `[engine.runtimes_flags]` for `runsc`, not in the
+executable path list. Qualify effective limits independently: bypassing
+runsc's cgroup management does not establish resource enforcement.
 Configure the standalone server with `runtime.type = "docker"`,
 `secure_runtime.type = "gvisor"` and `secure_runtime.docker_runtime = "runsc"`.
 For later Kubernetes use `runtime.type = "kubernetes"` and
@@ -398,8 +407,10 @@ pins are an implementation/qualification deliverable; no current patch or
 platform is asserted qualified by this document.
 
 Native development and development/production Compose use this same manager
-boundary. An application stack running under Podman does not establish a
-qualified Podman sandbox driver. For macOS/Windows, use a documented Linux VM
+boundary. CLI success and API startup do not establish a qualified Podman
+sandbox profile; test actual `OCIRuntime` and all controls. See the
+[rootless setup guide](../../operations/opensandbox.md#rootless-podman-development).
+For macOS/Windows, use a documented Linux VM
 with the same profile; qualify that route separately before advertising it.
 Unsupported hosts retain chat and artifact access, with actionable execution
 unavailability. Never fall back to host Python, `runc`, or a weaker runtime.
