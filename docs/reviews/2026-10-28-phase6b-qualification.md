@@ -114,3 +114,42 @@ Physical deletion was checked separately. The upstream launcher is fail-open;
 this profile must not be enabled until missing or failed hardening causes
 execution to fail closed. Network isolation, writable storage, resource
 limits and independent deadlines remain unqualified.
+
+## Updated execd experiment
+
+An experimental patch updates both Go modules and pins the builder to Go
+1.27.3, `docker.io/library/golang@sha256:5bbe76a31abbe0f1449d7820e550131c020b097c24d3bcfc5ad1231779982c1c`.
+The resulting local execd OCI digest is
+`sha256:31209859b095e0625302478a6eb8100cf0af459eb392c99e7a4bbefe38e46c11`
+(image configuration ID `sha256:a12f665acf97c02c7aebccf883ef49ac87632c68f19a56a19876a91712e9a585`).
+Focused upstream runtime and controller tests passed. The patched manager and
+this image passed all five real-service protocol tests; the disposable manager
+was removed. The source patch is experimental and the other build inputs,
+including the Alpine base, still require reproducibility review.
+
+Syft 1.55.0 and Grype 0.121.0 produced the saved
+[inventory](evidence/phase6b-2026-10-29/execd-go-update.syft.json) and
+[match summary](evidence/phase6b-2026-10-29/execd-go-update.grype-summary.json).
+The scan reported 12 matches: 3 medium and 9 unknown, compared with 169
+matches (11 critical and 106 high) for the earlier diagnostic execd image.
+`GO-2026-6612` and `GO-2026-6604` no longer matched. The new results include
+BusyBox `CVE-2025-60876`, `GO-2026-6866`, `GO-2026-6860` and
+`GO-2026-5932`; these remain untriaged. The scanner warned that stripped Go
+symbols prevent precise function-level matching. In particular,
+[GO-2026-6866](https://pkg.go.dev/vuln/GO-2026-6866) affects x/net/html
+before 0.62.0, while the experiment uses 0.60.0, and
+[GO-2026-5932](https://pkg.go.dev/vuln/GO-2026-5932) concerns OpenPGP
+packages. Reachability and applicability require review; the absence of
+critical/high matches does not qualify this image.
+
+## Rootless resource limits
+
+A disposable trusted CLI fixture used `runsc` with `ignore-cgroups`, requesting
+512 MiB memory, no swap, one CPU and 128 processes. Podman inspection recorded
+those requested settings. The inspected runsc process was in a host cgroup
+with `memory.max=max`, `memory.swap.max=max`, `cpu.max=max 100000` and
+`pids.max=73925`; the fixture was removed. This demonstrates that the
+requested limits were not present on that process's cgroup. It does not rule
+out a different enforcement mechanism or establish the behavior of a
+manager-created sandbox. Effective resource limits remain a blocker and no
+unbounded pressure test was attempted.

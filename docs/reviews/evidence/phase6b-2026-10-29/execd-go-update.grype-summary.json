@@ -1,0 +1,394 @@
+{
+  "descriptor": {
+    "name": "grype",
+    "version": "0.121.0",
+    "configuration": {
+      "output": [
+        "json"
+      ],
+      "file": "/tmp/openship-phase6b-execd-updated-grype.json",
+      "pretty": false,
+      "distro": "",
+      "add-cpes-if-none": false,
+      "output-template-file": "",
+      "check-for-app-update": true,
+      "only-fixed": false,
+      "only-notfixed": false,
+      "ignore-wontfix": "",
+      "platform": "",
+      "search": {
+        "scope": "squashed",
+        "unindexed-archives": false,
+        "indexed-archives": true
+      },
+      "ignore": [
+        {
+          "vulnerability": "",
+          "include-aliases": false,
+          "reason": "",
+          "namespace": "",
+          "fix-state": "",
+          "package": {
+            "name": "kernel-headers",
+            "version": "",
+            "language": "",
+            "type": "rpm",
+            "location": "",
+            "upstream-name": "kernel"
+          },
+          "vex-status": "",
+          "vex-justification": "",
+          "match-type": "exact-indirect-match"
+        },
+        {
+          "vulnerability": "",
+          "include-aliases": false,
+          "reason": "",
+          "namespace": "",
+          "fix-state": "",
+          "package": {
+            "name": "linux(-.*)?-headers-.*",
+            "version": "",
+            "language": "",
+            "type": "deb",
+            "location": "",
+            "upstream-name": "linux.*"
+          },
+          "vex-status": "",
+          "vex-justification": "",
+          "match-type": "exact-indirect-match"
+        },
+        {
+          "vulnerability": "",
+          "include-aliases": false,
+          "reason": "",
+          "namespace": "",
+          "fix-state": "",
+          "package": {
+            "name": "linux-libc-dev",
+            "version": "",
+            "language": "",
+            "type": "deb",
+            "location": "",
+            "upstream-name": "linux"
+          },
+          "vex-status": "",
+          "vex-justification": "",
+          "match-type": "exact-indirect-match"
+        },
+        {
+          "vulnerability": "",
+          "include-aliases": false,
+          "reason": "",
+          "namespace": "",
+          "fix-state": "",
+          "package": {
+            "name": "linux-kbuild-.*",
+            "version": "",
+            "language": "",
+            "type": "deb",
+            "location": "",
+            "upstream-name": "linux.*"
+          },
+          "vex-status": "",
+          "vex-justification": "",
+          "match-type": "exact-indirect-match"
+        }
+      ],
+      "exclude": [],
+      "externalSources": {
+        "enable": false,
+        "maven": {
+          "searchUpstreamBySha1": true,
+          "baseUrl": "https://search.maven.org/solrsearch/select",
+          "rateLimit": 300000000
+        }
+      },
+      "match": {
+        "java": {
+          "using-cpes": false
+        },
+        "jvm": {
+          "using-cpes": true
+        },
+        "dotnet": {
+          "using-cpes": false
+        },
+        "golang": {
+          "using-cpes": false,
+          "always-use-cpe-for-stdlib": false,
+          "allow-main-module-pseudo-version-comparison": false
+        },
+        "javascript": {
+          "using-cpes": false
+        },
+        "python": {
+          "using-cpes": false
+        },
+        "ruby": {
+          "using-cpes": false
+        },
+        "rust": {
+          "using-cpes": false
+        },
+        "hex": {
+          "using-cpes": false
+        },
+        "stock": {
+          "using-cpes": true
+        },
+        "dpkg": {
+          "using-cpes": false,
+          "missing-epoch-strategy": "zero",
+          "use-cpes-for-eol": false
+        },
+        "rpm": {
+          "using-cpes": false,
+          "missing-epoch-strategy": "auto",
+          "use-cpes-for-eol": false
+        }
+      },
+      "fail-on-severity": "",
+      "registry": {
+        "insecure-skip-tls-verify": false,
+        "insecure-use-http": false,
+        "ca-cert": ""
+      },
+      "show-suppressed": false,
+      "include-matcher-suppressions": false,
+      "by-cve": false,
+      "SortBy": {
+        "sort-by": "risk"
+      },
+      "name": "",
+      "default-image-pull-source": "",
+      "from": null,
+      "vex-documents": [],
+      "vex-add": [],
+      "match-upstream-kernel-headers": false,
+      "fix-channel": {
+        "redhat-eus": {
+          "apply": "auto",
+          "versions": ">= 8.0"
+        },
+        "ubuntu-esm": {
+          "apply": "auto",
+          "versions": ""
+        }
+      },
+      "timestamp": true,
+      "alerts": {
+        "enable-eol-distro-warnings": true
+      },
+      "db": {
+        "cache-dir": "/tmp/openship-phase6b-grype-db",
+        "update-url": "https://grype.anchore.io/databases",
+        "ca-cert": "",
+        "auto-update": false,
+        "validate-by-hash-on-start": true,
+        "validate-age": true,
+        "max-allowed-built-age": 432000000000000,
+        "require-update-check": false,
+        "update-available-timeout": 30000000000,
+        "update-download-timeout": 300000000000,
+        "max-update-check-frequency": 7200000000000
+      },
+      "exp": {},
+      "dev": {
+        "db": {
+          "debug": false
+        }
+      }
+    },
+    "db": {
+      "status": {
+        "schemaVersion": "v6.1.10",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-10-29T00:24:34Z_1793255014.tar.zst?checksum=sha256%3Aa5ad3344d964e4d1472fa615b0e70f87c27cd21470fede2a8fbf6e4c6c32c907",
+        "built": "2026-10-29T06:23:34Z",
+        "path": "/tmp/openship-phase6b-grype-db/6/vulnerability.db",
+        "valid": true
+      },
+      "providers": {
+        "alma": {
+          "captured": "2026-10-29T00:25:07Z",
+          "input": "xxh64:22f55c3a0ab61197"
+        },
+        "alpine": {
+          "captured": "2026-10-29T00:24:41Z",
+          "input": "xxh64:178ca8102575dac1"
+        },
+        "amazon": {
+          "captured": "2026-10-29T00:24:40Z",
+          "input": "xxh64:e74f5b51ec39d53c"
+        },
+        "arch": {
+          "captured": "2026-10-29T00:24:40Z",
+          "input": "xxh64:709db23331c0e3ea"
+        },
+        "bitnami": {
+          "captured": "2026-10-29T00:24:40Z",
+          "input": "xxh64:ec2608686d74e92a"
+        },
+        "chainguard": {
+          "captured": "2026-10-29T00:24:54Z",
+          "input": "xxh64:b3d11aa24a93f686"
+        },
+        "chainguard-libraries": {
+          "captured": "2026-10-29T00:24:43Z",
+          "input": "xxh64:283be747bf40ca0b"
+        },
+        "debian": {
+          "captured": "2026-10-29T00:26:08Z",
+          "input": "xxh64:e1162f8d0fd3f103"
+        },
+        "echo": {
+          "captured": "2026-10-29T00:24:34Z",
+          "input": "xxh64:f5a140d23ff93699"
+        },
+        "eol": {
+          "captured": "2026-10-29T00:24:56Z",
+          "input": "xxh64:6a4fcfba7d1228fb"
+        },
+        "epss": {
+          "captured": "2026-10-29T00:24:55Z",
+          "input": "xxh64:a133e1532dc0ace3"
+        },
+        "fedora": {
+          "captured": "2026-10-29T00:24:51Z",
+          "input": "xxh64:fb2597a2a51c4001"
+        },
+        "github": {
+          "captured": "2026-10-29T00:24:54Z",
+          "input": "xxh64:b4194685a742e5f8"
+        },
+        "govulndb": {
+          "captured": "2026-10-29T00:24:46Z",
+          "input": "xxh64:149d14a40090346d"
+        },
+        "hummingbird": {
+          "captured": "2026-10-29T00:26:36Z",
+          "input": "xxh64:463adbb9bb49e6d1"
+        },
+        "kev": {
+          "captured": "2026-10-29T00:24:43Z",
+          "input": "xxh64:b675fcd717811eb2"
+        },
+        "mariner": {
+          "captured": "2026-10-29T00:24:44Z",
+          "input": "xxh64:00eaca123fe243e8"
+        },
+        "minimos": {
+          "captured": "2026-10-29T00:26:00Z",
+          "input": "xxh64:5bbdfd70a49d4cde"
+        },
+        "nvd": {
+          "captured": "2026-10-29T00:26:15Z",
+          "input": "xxh64:a3d62fe273fb781a"
+        },
+        "oracle": {
+          "captured": "2026-10-29T00:24:38Z",
+          "input": "xxh64:df29f6a29bc86787"
+        },
+        "photon": {
+          "captured": "2026-10-29T00:24:35Z",
+          "input": "xxh64:d9cf3501a08d5ea0"
+        },
+        "rhel": {
+          "captured": "2026-10-29T00:25:52Z",
+          "input": "xxh64:5845a559b6343d9b"
+        },
+        "secureos": {
+          "captured": "2026-10-29T00:24:41Z",
+          "input": "xxh64:24d6b77155546411"
+        },
+        "sles": {
+          "captured": "2026-10-29T00:26:13Z",
+          "input": "xxh64:160a8d3659956680"
+        },
+        "ubuntu": {
+          "captured": "2026-10-29T00:26:05Z",
+          "input": "xxh64:acdb3428f0621d20"
+        },
+        "wolfi": {
+          "captured": "2026-10-29T00:25:02Z",
+          "input": "xxh64:8b82130aa8897aa9"
+        }
+      }
+    },
+    "timestamp": "2026-10-29T21:19:07.021959274-06:00"
+  },
+  "matches": [
+    {
+      "id": "CVE-2025-60876",
+      "severity": "Medium",
+      "package": "busybox",
+      "version": "1.37.0-r31"
+    },
+    {
+      "id": "CVE-2025-60876",
+      "severity": "Medium",
+      "package": "busybox-binsh",
+      "version": "1.37.0-r31"
+    },
+    {
+      "id": "CVE-2025-60876",
+      "severity": "Medium",
+      "package": "ssl_client",
+      "version": "1.37.0-r31"
+    },
+    {
+      "id": "GO-2026-6866",
+      "severity": "Unknown",
+      "package": "golang.org/x/net",
+      "version": "v0.60.0"
+    },
+    {
+      "id": "GO-2026-6866",
+      "severity": "Unknown",
+      "package": "golang.org/x/net",
+      "version": "v0.60.0"
+    },
+    {
+      "id": "GO-2026-6866",
+      "severity": "Unknown",
+      "package": "golang.org/x/net",
+      "version": "v0.60.0"
+    },
+    {
+      "id": "GO-2026-6860",
+      "severity": "Unknown",
+      "package": "golang.org/x/net",
+      "version": "v0.60.0"
+    },
+    {
+      "id": "GO-2026-6860",
+      "severity": "Unknown",
+      "package": "golang.org/x/net",
+      "version": "v0.60.0"
+    },
+    {
+      "id": "GO-2026-6860",
+      "severity": "Unknown",
+      "package": "golang.org/x/net",
+      "version": "v0.60.0"
+    },
+    {
+      "id": "GO-2026-5932",
+      "severity": "Unknown",
+      "package": "golang.org/x/crypto",
+      "version": "v0.57.0"
+    },
+    {
+      "id": "GO-2026-5932",
+      "severity": "Unknown",
+      "package": "golang.org/x/crypto",
+      "version": "v0.57.0"
+    },
+    {
+      "id": "GO-2026-5932",
+      "severity": "Unknown",
+      "package": "golang.org/x/crypto",
+      "version": "v0.57.0"
+    }
+  ]
+}
