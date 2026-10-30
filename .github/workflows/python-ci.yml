@@ -73,7 +73,7 @@ jobs:
         with:
           enable-cache: true
       - run: cd apps/api && uv sync --extra dev
-      - run: cd apps/api && uv run pytest -p scripts.pytest_shard -q -o faulthandler_timeout=60 -m "not postgres and not provider_live and not full_stack and not jetstream"
+      - run: cd apps/api && uv run pytest -p scripts.pytest_shard -q -o faulthandler_timeout=60 -m "not postgres and not provider_live and not full_stack and not jetstream and not sandbox"
 
   # JetStream relay behavior is qualified against real PostgreSQL and the exact
   # authenticated NATS server image. The launcher creates the disposable broker

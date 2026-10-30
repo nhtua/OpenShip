@@ -45,6 +45,7 @@ def main() -> int:
         or docker.get("publish_host") != "127.0.0.1"
         or docker.get("no_new_privileges") is not True
         or docker.get("drop_capabilities") != ["ALL"]
+        or docker.get("add_capabilities", []) != []
         or isinstance(pids_limit, bool)
         or not isinstance(pids_limit, int)
         or not 1 <= pids_limit <= 128

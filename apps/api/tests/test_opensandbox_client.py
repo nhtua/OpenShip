@@ -9,6 +9,74 @@ from src.openship.sandboxes.client import OpenSandboxClient, SandboxProtocolErro
 
 
 @pytest.mark.asyncio
+async def test_inspect_returns_state_and_absence_without_following_redirects():
+    def handler(request):
+        assert request.headers["OPEN-SANDBOX-API-KEY"] == "secret"
+        if request.url.path.endswith("missing"):
+            return httpx.Response(404)
+        return httpx.Response(200, json={"id": "sandbox-1", "status": {"state": "Running"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+        assert await client.inspect("sandbox-1") == "Running"
+        assert await client.inspect("missing") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [
+    httpx.Response(302, headers={"location": "http://elsewhere/"}),
+    httpx.Response(200, json={"id": "wrong", "status": {"state": "Running"}}),
+    httpx.Response(200, json={"id": "sandbox-1", "status": {"state": None}}),
+    httpx.Response(500),
+])
+async def test_inspect_rejects_invalid_or_redirected_response(response):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response)) as http:
+        client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+        with pytest.raises(SandboxProtocolError):
+            await client.inspect("sandbox-1")
+
+
+@pytest.mark.asyncio
+async def test_list_attempt_is_scoped_and_exposes_pagination():
+    attempt = uuid4()
+
+    def handler(request):
+        assert request.url.params["metadata"] == f"openship-attempt={attempt}"
+        assert request.url.params["page"] == "2"
+        assert request.url.params["pageSize"] == "20"
+        return httpx.Response(200, json={
+            "items": [{"id": "sandbox-1", "metadata": {"openship-attempt": str(attempt)},
+                       "status": {"state": "Running"}}],
+            "pagination": {"page": 2, "pageSize": 20, "totalItems": 21,
+                           "totalPages": 2, "hasNextPage": False},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+        page = await client.list_attempt(attempt, page=2)
+        assert page.ids == ("sandbox-1",)
+        assert page.has_next is False
+
+
+@pytest.mark.asyncio
+async def test_list_attempt_rejects_unscoped_or_incomplete_results():
+    attempt = uuid4()
+    for body in (
+        {"items": [{"id": "wrong", "metadata": {"openship-attempt": str(uuid4())}}],
+         "pagination": {"page": 1, "pageSize": 20, "totalItems": 1, "totalPages": 1, "hasNextPage": False}},
+        {"items": [], "pagination": {"page": 1, "hasNextPage": "false"}},
+        {"items": [], "pagination": {"page": 1, "pageSize": 20, "totalItems": 1,
+                                     "totalPages": 1, "hasNextPage": False}},
+        {"items": [{"id": "same", "metadata": {"openship-attempt": str(attempt)}}] * 2,
+         "pagination": {"page": 1, "pageSize": 20, "totalItems": 2, "totalPages": 1, "hasNextPage": False}},
+    ):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request, body=body: httpx.Response(200, json=body))) as http:
+            client = OpenSandboxClient(http, "http://sandbox:8080", "secret", "image@sha256:" + "a" * 64)
+            with pytest.raises(SandboxProtocolError):
+                await client.list_attempt(attempt)
+
+
+@pytest.mark.asyncio
 async def test_wait_ready_checks_lifecycle_and_authenticated_proxy():
     calls = []
 

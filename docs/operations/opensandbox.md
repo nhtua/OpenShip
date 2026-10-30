@@ -183,6 +183,21 @@ cleanup after successful or failed reads. Its source base is
 This patch is maintained here pending an upstream fix; it has not been
 submitted upstream. Remove it once a qualified release contains the fix.
 
+The pinned upstream server also exempts single-tenant HTTP and WebSocket proxy
+routes from API-key authentication. OpenShip requires the
+[proxy authentication patch](../../deploy/sandbox/patches/0003-authenticate-manager-proxy.patch)
+when building this revision. It authenticates both transports whenever a server
+key is configured; the protected OpenShip configuration and static preflight
+must also require a nonempty key. The proxy must be tested on the built image.
+
+The separate [experimental capability patch](../../deploy/sandbox/patches/0002-experimental-capability-additions.patch)
+was tested only with trusted fixtures. It lets the supervisor switch UID/GID
+when all capabilities are otherwise dropped, but its grants apply to the
+container and the workload retained those capabilities in its bounding set.
+It is not part of the supported build instructions or a qualified profile.
+The static preflight rejects capability additions while the remaining
+supervisor, workload and isolation controls are investigated.
+
 execd `v1.1.0` rejects native `argv` and omits the exit status needed by
 OpenShip. Build manager and execd from the pinned revision above for further
 qualification. Do not substitute shell execution or infer successful exit
@@ -200,9 +215,12 @@ CONTAINER_ENGINE=podman # or another builder with the same build interface
 git -C "$OPENSANDBOX_SOURCE" checkout --detach 97031ea81fee1b853e4cd89e5490b1be9f5ead55
 git -C "$OPENSANDBOX_SOURCE" apply --check "$OPENSHIP_SOURCE/deploy/sandbox/patches/0001-extract-execd-before-runtime-start.patch"
 git -C "$OPENSANDBOX_SOURCE" apply "$OPENSHIP_SOURCE/deploy/sandbox/patches/0001-extract-execd-before-runtime-start.patch"
+git -C "$OPENSANDBOX_SOURCE" apply --check "$OPENSHIP_SOURCE/deploy/sandbox/patches/0003-authenticate-manager-proxy.patch"
+git -C "$OPENSANDBOX_SOURCE" apply "$OPENSHIP_SOURCE/deploy/sandbox/patches/0003-authenticate-manager-proxy.patch"
 cd "$OPENSANDBOX_SOURCE/server"
 uv sync --frozen
 uv run pytest -q tests/test_execd_created_container.py tests/test_docker_service.py -k execd_archive
+uv run pytest -q tests/test_auth_middleware.py tests/test_openship_proxy_auth.py
 "$CONTAINER_ENGINE" build -f "$OPENSANDBOX_SOURCE/server/Dockerfile" \
   -t openship-opensandbox-server:compat-97031ea "$OPENSANDBOX_SOURCE/server"
 "$CONTAINER_ENGINE" build -f "$OPENSANDBOX_SOURCE/components/execd/Dockerfile" \

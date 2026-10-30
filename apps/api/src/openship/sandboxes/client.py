@@ -27,6 +27,12 @@ class PythonResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class SandboxPage:
+    ids: tuple[str, ...]
+    has_next: bool
+
+
 class OpenSandboxClient:
     def __init__(self, http: httpx.AsyncClient, server_url: str, api_key: str, image: str):
         url = urlsplit(server_url)
@@ -73,6 +79,65 @@ class OpenSandboxClient:
     def _validate_id(sandbox_id: str) -> None:
         if not isinstance(sandbox_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sandbox_id):
             raise ValueError("invalid sandbox ID")
+
+    async def inspect(self, sandbox_id: str) -> str | None:
+        """Return manager lifecycle state, or None for manager-reported absence."""
+        self._validate_id(sandbox_id)
+        try:
+            response = await self._http.get(
+                self._base + "/v1/sandboxes/" + sandbox_id,
+                headers={"OPEN-SANDBOX-API-KEY": self._key}, timeout=5, follow_redirects=False,
+            )
+            if response.status_code == 404:
+                return None
+            if response.status_code != 200:
+                raise SandboxProtocolError("sandbox inspection failed")
+            body = response.json()
+            state = body["status"]["state"]
+            if body["id"] != sandbox_id or not isinstance(state, str) or not state:
+                raise ValueError
+            return state
+        except (httpx.RequestError, ValueError, KeyError, TypeError):
+            raise SandboxProtocolError("sandbox inspection failed") from None
+
+    async def list_attempt(self, attempt_id: UUID, *, page: int = 1) -> SandboxPage:
+        """List one bounded page scoped to an attempt; absence is not cleanup proof."""
+        if not isinstance(attempt_id, UUID):
+            raise TypeError("attempt ID must be a UUID")
+        if type(page) is not int or not 1 <= page <= 10000:
+            raise ValueError("invalid page")
+        try:
+            response = await self._http.get(
+                self._base + "/v1/sandboxes",
+                params={"metadata": f"openship-attempt={attempt_id}", "page": page, "pageSize": 20},
+                headers={"OPEN-SANDBOX-API-KEY": self._key}, timeout=5, follow_redirects=False,
+            )
+            if response.status_code != 200:
+                raise SandboxProtocolError("sandbox listing failed")
+            body = response.json()
+            items = body["items"]
+            pagination = body["pagination"]
+            total = pagination["totalItems"]
+            pages = pagination["totalPages"]
+            has_next = pagination["hasNextPage"]
+            if (not isinstance(items, list) or len(items) > 20
+                    or type(total) is not int or total < 0 or type(pages) is not int
+                    or pagination["page"] != page or type(pagination["page"]) is not int
+                    or pagination["pageSize"] != 20 or type(pagination["pageSize"]) is not int
+                    or type(has_next) is not bool or pages != (total + 19) // 20
+                    or len(items) != min(20, max(0, total - (page - 1) * 20))
+                    or has_next != (page < pages)):
+                raise ValueError
+            ids = []
+            for item in items:
+                sandbox_id = item["id"]
+                self._validate_id(sandbox_id)
+                if item["metadata"]["openship-attempt"] != str(attempt_id) or sandbox_id in ids:
+                    raise ValueError
+                ids.append(sandbox_id)
+            return SandboxPage(ids=tuple(ids), has_next=has_next)
+        except (httpx.RequestError, ValueError, KeyError, TypeError, AttributeError):
+            raise SandboxProtocolError("sandbox listing failed") from None
 
     async def wait_ready(self, sandbox_id: str, *, timeout: float = 30) -> None:
         """Wait for a running sandbox and its execd proxy, within a fixed deadline."""

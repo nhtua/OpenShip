@@ -1,0 +1,5160 @@
+{
+  "database_built": "2026-10-29T06:23:34Z",
+  "exported_manifest_digest": "sha256:b209fc487e930e8731c1b08691c4c487aa68c429a4bbecbc53dfca49bfa479be",
+  "image_id": "sha256:cf6ead84b76271576619022b45a7383c4e6352970211562760901949e4aad835",
+  "input": "localhost/openship-execd@sha256:1c54c8a76eb9af10b1fce1f9315a64f1338236a05d4b7a26c87cdc61e77b9692",
+  "matches": [
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-5026",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/78760",
+        "https://groups.google.com/g/golang-announce/c/iI-mYSI0lu8",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-5026",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/78760",
+        "https://groups.google.com/g/golang-announce/c/iI-mYSI0lu8",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-5026",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/78760",
+        "https://groups.google.com/g/golang-announce/c/iI-mYSI0lu8",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-5026",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/78760",
+        "https://groups.google.com/g/golang-announce/c/iI-mYSI0lu8",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4981",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/767860",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4981",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/767860",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4981",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/767860",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4981",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/767860",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4918",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/761640",
+        "https://go.dev/issue/78476",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4918",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/761640",
+        "https://go.dev/issue/78476",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4918",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/761640",
+        "https://go.dev/issue/78476",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4918",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/761640",
+        "https://go.dev/issue/78476",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4977",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/771520",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4977",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/771520",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4977",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/771520",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4977",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/771520",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4986",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/759940",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4986",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/759940",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4986",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/759940",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4986",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/759940",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6612",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847310",
+        "https://go.dev/issue/81743",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6612",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847310",
+        "https://go.dev/issue/81743",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6612",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847310",
+        "https://go.dev/issue/81743",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6612",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847310",
+        "https://go.dev/issue/81743",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6612",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847310",
+        "https://go.dev/issue/81743",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6612",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847310",
+        "https://go.dev/issue/81743",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6612",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847310",
+        "https://go.dev/issue/81743",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6604",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81739",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6604",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81739",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6604",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81739",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6604",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Critical",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81739",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4971",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M",
+        "https://go.dev/cl/775320"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4971",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M",
+        "https://go.dev/cl/775320"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4971",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M",
+        "https://go.dev/cl/775320"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4971",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M",
+        "https://go.dev/cl/775320"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6603",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847314",
+        "https://go.dev/issue/81857",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6603",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847314",
+        "https://go.dev/issue/81857",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6603",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847314",
+        "https://go.dev/issue/81857",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6603",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847314",
+        "https://go.dev/issue/81857",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6603",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847314",
+        "https://go.dev/issue/81857",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6603",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847314",
+        "https://go.dev/issue/81857",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6603",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847314",
+        "https://go.dev/issue/81857",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6611",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847308",
+        "https://go.dev/issue/81742",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6611",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847308",
+        "https://go.dev/issue/81742",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6611",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847308",
+        "https://go.dev/issue/81742",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6611",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847308",
+        "https://go.dev/issue/81742",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6611",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847308",
+        "https://go.dev/issue/81742",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6611",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847308",
+        "https://go.dev/issue/81742",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6611",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847308",
+        "https://go.dev/issue/81742",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5037",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/79694",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5037",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/79694",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5037",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/79694",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5037",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/79694",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-5972",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI",
+        "https://go.dev/cl/814980"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-5972",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI",
+        "https://go.dev/cl/814980"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-5972",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI",
+        "https://go.dev/cl/814980"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-5972",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI",
+        "https://go.dev/cl/814980"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6088",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/803320",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6088",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/803320",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6088",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/803320",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6088",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/803320",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6090",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/804261",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6090",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/804261",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6090",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/804261",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6090",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/804261",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6089",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/795540",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6089",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/795540",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6089",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/795540",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6089",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/795540",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5038",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/774481",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5038",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/774481",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5038",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/774481",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5038",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/774481",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6607",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81855",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6607",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81855",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6607",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81855",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6607",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81855",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6608",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81741",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6608",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81741",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6608",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81741",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6608",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81741",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-09-02",
+            "kind": "release",
+            "version": "0.56.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.56.0"
+        ]
+      },
+      "id": "GO-2026-6355",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/826524",
+        "https://groups.google.com/g/golang-announce/c/1y3fb2np35U"
+      ],
+      "version": "v0.55.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-09-02",
+            "kind": "release",
+            "version": "0.56.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.56.0"
+        ]
+      },
+      "id": "GO-2026-6355",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/826524",
+        "https://groups.google.com/g/golang-announce/c/1y3fb2np35U"
+      ],
+      "version": "v0.55.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-09-02",
+            "kind": "release",
+            "version": "0.56.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.56.0"
+        ]
+      },
+      "id": "GO-2026-6355",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/826524",
+        "https://groups.google.com/g/golang-announce/c/1y3fb2np35U"
+      ],
+      "version": "v0.55.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6617",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847313",
+        "https://go.dev/issue/81867",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6617",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847313",
+        "https://go.dev/issue/81867",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6617",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847313",
+        "https://go.dev/issue/81867",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6617",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847313",
+        "https://go.dev/issue/81867",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6617",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847313",
+        "https://go.dev/issue/81867",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6617",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847313",
+        "https://go.dev/issue/81867",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6617",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/847313",
+        "https://go.dev/issue/81867",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI",
+        "https://groups.google.com/g/golang-announce/c/ZPwCyRUuGBs"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6609",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81858",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6609",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81858",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6609",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81858",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6609",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81858",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6605",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81740",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6605",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81740",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6605",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81740",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6605",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81740",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-09-02",
+            "kind": "release",
+            "version": "0.56.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.56.0"
+        ]
+      },
+      "id": "GO-2026-6354",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/826504",
+        "https://groups.google.com/g/golang-announce/c/1y3fb2np35U"
+      ],
+      "version": "v0.55.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-09-02",
+            "kind": "release",
+            "version": "0.56.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.56.0"
+        ]
+      },
+      "id": "GO-2026-6354",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/826504",
+        "https://groups.google.com/g/golang-announce/c/1y3fb2np35U"
+      ],
+      "version": "v0.55.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-09-02",
+            "kind": "release",
+            "version": "0.56.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.56.0"
+        ]
+      },
+      "id": "GO-2026-6354",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/826504",
+        "https://groups.google.com/g/golang-announce/c/1y3fb2np35U"
+      ],
+      "version": "v0.55.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6610",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/836385",
+        "https://go.dev/issue/81115",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6610",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/836385",
+        "https://go.dev/issue/81115",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "0.60.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.60.0"
+        ]
+      },
+      "id": "GO-2026-6610",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/836385",
+        "https://go.dev/issue/81115",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6610",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/836385",
+        "https://go.dev/issue/81115",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6610",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/836385",
+        "https://go.dev/issue/81115",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6610",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/836385",
+        "https://go.dev/issue/81115",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9"
+        ]
+      },
+      "id": "GO-2026-6610",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/836385",
+        "https://go.dev/issue/81115",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6613",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81744",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6613",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81744",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6613",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81744",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6613",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81744",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6218",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/80494",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6218",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/80494",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6218",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/80494",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6218",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/80494",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4980",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/771180",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4980",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/771180",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4980",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/771180",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4980",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/771180",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4976",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/78948",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4976",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/78948",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4976",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/78948",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4976",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/78948",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.25.12"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.26.5"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.27.0-rc.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.12",
+          "1.26.5",
+          "1.27.0-rc.2"
+        ]
+      },
+      "id": "GO-2026-5856",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/79282",
+        "https://groups.google.com/g/golang-announce/c/OrmQE_Yp5Sc"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.25.12"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.26.5"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.27.0-rc.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.12",
+          "1.26.5",
+          "1.27.0-rc.2"
+        ]
+      },
+      "id": "GO-2026-5856",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/79282",
+        "https://groups.google.com/g/golang-announce/c/OrmQE_Yp5Sc"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.25.12"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.26.5"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.27.0-rc.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.12",
+          "1.26.5",
+          "1.27.0-rc.2"
+        ]
+      },
+      "id": "GO-2026-5856",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/79282",
+        "https://groups.google.com/g/golang-announce/c/OrmQE_Yp5Sc"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.25.12"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.26.5"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.27.0-rc.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.12",
+          "1.26.5",
+          "1.27.0-rc.2"
+        ]
+      },
+      "id": "GO-2026-5856",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/79282",
+        "https://groups.google.com/g/golang-announce/c/OrmQE_Yp5Sc"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5039",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/777060",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5039",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/777060",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5039",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/777060",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.25.11"
+          },
+          {
+            "date": "2026-06-02",
+            "kind": "release",
+            "version": "1.26.4"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.11",
+          "1.26.4"
+        ]
+      },
+      "id": "GO-2026-5039",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/777060",
+        "https://groups.google.com/g/golang-announce/c/tKs3rmcBcKw"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "state": "",
+        "versions": []
+      },
+      "id": "CVE-2025-60876",
+      "namespace": "nvd:cpe",
+      "package": "busybox",
+      "severity": "Medium",
+      "type": "apk",
+      "urls": [
+        "https://gist.github.com/subyumatest/41554af6a72aedaacaec026adc311092",
+        "https://lists.busybox.net/pipermail/busybox/attachments/20250823/ccdc96ef/attachment-0001.htm",
+        "https://lists.busybox.net/pipermail/busybox/attachments/20250828/e7f90492/attachment.htm",
+        "https://cert-portal.siemens.com/productcert/html/ssa-253495.html"
+      ],
+      "version": "1.37.0-r31"
+    },
+    {
+      "fix": {
+        "state": "",
+        "versions": []
+      },
+      "id": "CVE-2025-60876",
+      "namespace": "nvd:cpe",
+      "package": "busybox-binsh",
+      "severity": "Medium",
+      "type": "apk",
+      "urls": [
+        "https://gist.github.com/subyumatest/41554af6a72aedaacaec026adc311092",
+        "https://lists.busybox.net/pipermail/busybox/attachments/20250823/ccdc96ef/attachment-0001.htm",
+        "https://lists.busybox.net/pipermail/busybox/attachments/20250828/e7f90492/attachment.htm",
+        "https://cert-portal.siemens.com/productcert/html/ssa-253495.html"
+      ],
+      "version": "1.37.0-r31"
+    },
+    {
+      "fix": {
+        "state": "",
+        "versions": []
+      },
+      "id": "CVE-2025-60876",
+      "namespace": "nvd:cpe",
+      "package": "ssl_client",
+      "severity": "Medium",
+      "type": "apk",
+      "urls": [
+        "https://gist.github.com/subyumatest/41554af6a72aedaacaec026adc311092",
+        "https://lists.busybox.net/pipermail/busybox/attachments/20250823/ccdc96ef/attachment-0001.htm",
+        "https://lists.busybox.net/pipermail/busybox/attachments/20250828/e7f90492/attachment.htm",
+        "https://cert-portal.siemens.com/productcert/html/ssa-253495.html"
+      ],
+      "version": "1.37.0-r31"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.25.12"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.26.5"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.27.0-rc.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.12",
+          "1.26.5",
+          "1.27.0-rc.2"
+        ]
+      },
+      "id": "GO-2026-4970",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/OrmQE_Yp5Sc",
+        "https://go.dev/cl/797880"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.25.12"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.26.5"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.27.0-rc.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.12",
+          "1.26.5",
+          "1.27.0-rc.2"
+        ]
+      },
+      "id": "GO-2026-4970",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/OrmQE_Yp5Sc",
+        "https://go.dev/cl/797880"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.25.12"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.26.5"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.27.0-rc.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.12",
+          "1.26.5",
+          "1.27.0-rc.2"
+        ]
+      },
+      "id": "GO-2026-4970",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/OrmQE_Yp5Sc",
+        "https://go.dev/cl/797880"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.25.12"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.26.5"
+          },
+          {
+            "date": "2026-07-07",
+            "kind": "release",
+            "version": "1.27.0-rc.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.12",
+          "1.26.5",
+          "1.27.0-rc.2"
+        ]
+      },
+      "id": "GO-2026-4970",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "High",
+      "type": "go-module",
+      "urls": [
+        "https://groups.google.com/g/golang-announce/c/OrmQE_Yp5Sc",
+        "https://go.dev/cl/797880"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4982",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/769920",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4982",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/769920",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4982",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/769920",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.25.10"
+          },
+          {
+            "date": "2026-05-07",
+            "kind": "release",
+            "version": "1.26.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.10",
+          "1.26.3"
+        ]
+      },
+      "id": "GO-2026-4982",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/769920",
+        "https://groups.google.com/g/golang-announce/c/qcCIEXso47M"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6091",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/807100",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6091",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/807100",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6091",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/807100",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.25.13"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.26.6"
+          },
+          {
+            "date": "2026-08-13",
+            "kind": "release",
+            "version": "1.27.0-rc.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.25.13",
+          "1.26.6",
+          "1.27.0-rc.3"
+        ]
+      },
+      "id": "GO-2026-6091",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/cl/807100",
+        "https://groups.google.com/g/golang-announce/c/94pEornpRlI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6599",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81821",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6599",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81821",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6599",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81821",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6599",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81821",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6600",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81823",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6600",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81823",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6600",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81823",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.26.9"
+          },
+          {
+            "date": "2026-10-08",
+            "kind": "release",
+            "version": "1.27.2"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.9",
+          "1.27.2"
+        ]
+      },
+      "id": "GO-2026-6600",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Medium",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/81823",
+        "https://groups.google.com/g/golang-announce/c/U2fTuyDJznI"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-20",
+            "kind": "release",
+            "version": "1.26.10"
+          },
+          {
+            "date": "2026-10-20",
+            "kind": "release",
+            "version": "1.27.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.10",
+          "1.27.3"
+        ]
+      },
+      "id": "GO-2026-6809",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82345",
+        "https://groups.google.com/g/golang-announce/c/66pojueaQek"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-20",
+            "kind": "release",
+            "version": "1.26.10"
+          },
+          {
+            "date": "2026-10-20",
+            "kind": "release",
+            "version": "1.27.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.10",
+          "1.27.3"
+        ]
+      },
+      "id": "GO-2026-6809",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82345",
+        "https://groups.google.com/g/golang-announce/c/66pojueaQek"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-20",
+            "kind": "release",
+            "version": "1.26.10"
+          },
+          {
+            "date": "2026-10-20",
+            "kind": "release",
+            "version": "1.27.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.10",
+          "1.27.3"
+        ]
+      },
+      "id": "GO-2026-6809",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82345",
+        "https://groups.google.com/g/golang-announce/c/66pojueaQek"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-20",
+            "kind": "release",
+            "version": "1.26.10"
+          },
+          {
+            "date": "2026-10-20",
+            "kind": "release",
+            "version": "1.27.3"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "1.26.10",
+          "1.27.3"
+        ]
+      },
+      "id": "GO-2026-6809",
+      "namespace": "govulndb:language:go",
+      "package": "stdlib",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82345",
+        "https://groups.google.com/g/golang-announce/c/66pojueaQek"
+      ],
+      "version": "go1.25.9"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-27",
+            "kind": "release",
+            "version": "0.62.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.62.0"
+        ]
+      },
+      "id": "GO-2026-6866",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82622",
+        "https://groups.google.com/g/golang-announce/c/sqrs2vTx_Xs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-27",
+            "kind": "release",
+            "version": "0.62.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.62.0"
+        ]
+      },
+      "id": "GO-2026-6866",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82622",
+        "https://groups.google.com/g/golang-announce/c/sqrs2vTx_Xs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-27",
+            "kind": "release",
+            "version": "0.62.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.62.0"
+        ]
+      },
+      "id": "GO-2026-6866",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82622",
+        "https://groups.google.com/g/golang-announce/c/sqrs2vTx_Xs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-27",
+            "kind": "release",
+            "version": "0.62.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.62.0"
+        ]
+      },
+      "id": "GO-2026-6860",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82224",
+        "https://groups.google.com/g/golang-announce/c/sqrs2vTx_Xs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-27",
+            "kind": "release",
+            "version": "0.62.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.62.0"
+        ]
+      },
+      "id": "GO-2026-6860",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82224",
+        "https://groups.google.com/g/golang-announce/c/sqrs2vTx_Xs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "available": [
+          {
+            "date": "2026-10-27",
+            "kind": "release",
+            "version": "0.62.0"
+          }
+        ],
+        "state": "fixed",
+        "versions": [
+          "0.62.0"
+        ]
+      },
+      "id": "GO-2026-6860",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/net",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [
+        "https://go.dev/issue/82224",
+        "https://groups.google.com/g/golang-announce/c/sqrs2vTx_Xs"
+      ],
+      "version": "v0.58.0"
+    },
+    {
+      "fix": {
+        "state": "",
+        "versions": []
+      },
+      "id": "GO-2026-5932",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [],
+      "version": "v0.55.0"
+    },
+    {
+      "fix": {
+        "state": "",
+        "versions": []
+      },
+      "id": "GO-2026-5932",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [],
+      "version": "v0.55.0"
+    },
+    {
+      "fix": {
+        "state": "",
+        "versions": []
+      },
+      "id": "GO-2026-5932",
+      "namespace": "govulndb:language:go",
+      "package": "golang.org/x/crypto",
+      "severity": "Unknown",
+      "type": "go-module",
+      "urls": [],
+      "version": "v0.55.0"
+    }
+  ],
+  "scanner": "grype 0.121.0"
+}

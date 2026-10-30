@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "check_opensandbox_config.py"
 PROFILE = (
     '[docker]\nnetwork_mode = "openship-sandbox-data"\n'
@@ -51,3 +53,27 @@ def test_rejects_unbounded_or_external_sandbox_profile(tmp_path):
     result = check_config(tmp_path, config)
     assert result.returncode != 0
     assert "sandbox profile" in result.stderr.lower()
+
+
+@pytest.mark.parametrize("capabilities", ['["SYS_ADMIN"]', '["SETUID", "SETGID"]'])
+def test_rejects_capability_additions_until_profile_is_qualified(tmp_path, capabilities):
+    config = ('[runtime]\ntype = "docker"\nexecd_run_as_init = true\n' + EXECD_IMAGE +
+              '[secure_runtime]\ntype = "gvisor"\ndocker_runtime = "runsc"\n' +
+              PROFILE.replace('drop_capabilities = ["ALL"]',
+                              'drop_capabilities = ["ALL"]\nadd_capabilities = ' + capabilities) +
+              'api_key = "test-only-key"\n')
+    result = check_config(tmp_path, config)
+    assert result.returncode != 0
+
+
+def test_real_sandbox_tests_are_opt_in():
+    api_root = Path(__file__).resolve().parents[1]
+    test_file = "tests/sandboxes/test_protocol.py"
+    default = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", test_file],
+                             cwd=api_root, capture_output=True, text=True, check=False)
+    assert default.returncode == 5
+    assert "deselected" in default.stdout
+    selected = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", "-m", "sandbox", test_file],
+                              cwd=api_root, capture_output=True, text=True, check=False)
+    assert selected.returncode == 0
+    assert "test_proxy_requires_authentication" in selected.stdout

@@ -35,6 +35,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "ruff>=0.2.0",
     "pre-commit>=3.6.0",
+    "websockets>=15,<17",
 ]
 
 # The gate CI runs over apps/api. The rule set stays at ruff's defaults;
@@ -53,13 +54,14 @@ target-version = "py311"
 ignore = ["B008"]
 
 [tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
+addopts = "--import-mode=importlib -m 'not sandbox'"
 pythonpath = ["."]
 markers = [
     "postgres: requires a real PostgreSQL database named by TEST_POSTGRES_URL",
     "provider_live: contacts a real provider; opt-in via explicit OPENSHIP_LIVE_* selector",
     "full_stack: starts the real application stack with synthetic external services",
     "jetstream: requires a real authenticated NATS JetStream broker",
+    "sandbox: requires an explicitly configured real OpenSandbox deployment",
 ]
 
 [dependency-groups]

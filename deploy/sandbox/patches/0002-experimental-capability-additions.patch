@@ -1,0 +1,82 @@
+Subject: Allow explicit sandbox supervisor capability additions
+Base-Commit: 97031ea81fee1b853e4cd89e5490b1be9f5ead55
+Upstream: https://github.com/opensandbox-group/OpenSandbox
+License: Apache-2.0
+
+Experimental: adding capabilities affects the whole sandbox. This patch is
+not sufficient to qualify the workload or enable generated-code execution.
+Defaults remain unchanged. Applied only in an isolated trusted probe.
+
+diff --git a/server/configuration.md b/server/configuration.md
+index fa73ec8..13188dc 100644
+--- a/server/configuration.md
++++ b/server/configuration.md
+@@ -111,6 +111,7 @@ Example files: [`example.config.toml`](opensandbox_server/examples/example.confi
+ | `api_timeout` | integer \| omitted | `null` | Docker API timeout (s); default 180 when unset. |
+ | `host_ip` | string \| omitted | `null` | Host/IP used when rewriting bridge-mode endpoint URLs (e.g. `host.docker.internal`). |
+ | `drop_capabilities` | list of strings | See `config.py` | Linux capabilities dropped from sandbox containers. |
++| `add_capabilities` | list of strings | `[]` | Linux capabilities explicitly added to sandbox containers. |
+ | `apparmor_profile` | string \| omitted | `null` | AppArmor profile name; empty uses Docker default. Also applied to the execd cache container. |
+ | `no_new_privileges` | boolean | `true` | Block privilege escalation. |
+ | `seccomp_profile` | string \| omitted | `null` | Seccomp profile name or absolute path; empty uses Docker default. Also applied to the execd cache container (e.g. set `unconfined` on hosts whose default profile blocks execd). |
+diff --git a/server/opensandbox_server/config.py b/server/opensandbox_server/config.py
+index 24bb6b0..df0c439 100644
+--- a/server/opensandbox_server/config.py
++++ b/server/opensandbox_server/config.py
+@@ -1348,6 +1348,10 @@ class DockerConfig(BaseModel):
+             "Linux capabilities to drop from sandbox containers. Defaults to a conservative set to reduce host impact."
+         ),
+     )
++    add_capabilities: list[str] = Field(
++        default_factory=list,
++        description="Linux capabilities explicitly added to sandbox containers.",
++    )
+     apparmor_profile: Optional[str] = Field(
+         default=None,
+         description=(
+diff --git a/server/opensandbox_server/services/docker/container_ops.py b/server/opensandbox_server/services/docker/container_ops.py
+index 4783e37..e48b6b1 100644
+--- a/server/opensandbox_server/services/docker/container_ops.py
++++ b/server/opensandbox_server/services/docker/container_ops.py
+@@ -420,6 +420,8 @@ class DockerContainerOpsMixin:
+             host_config_kwargs["security_opt"] = security_opts
+         if docker_cfg.drop_capabilities:
+             host_config_kwargs["cap_drop"] = docker_cfg.drop_capabilities
++        if docker_cfg.add_capabilities:
++            host_config_kwargs["cap_add"] = docker_cfg.add_capabilities
+         if docker_cfg.pids_limit is not None:
+             host_config_kwargs["pids_limit"] = docker_cfg.pids_limit
+         if mem_limit is not None:
+diff --git a/server/tests/test_capability_profile.py b/server/tests/test_capability_profile.py
+new file mode 100644
+index 0000000..b7970a9
+--- /dev/null
++++ b/server/tests/test_capability_profile.py
+@@ -0,0 +1,27 @@
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 The OpenSandbox Authors
++
++from unittest.mock import patch
++
++from opensandbox_server.config import DockerConfig
++from opensandbox_server.services.docker import DockerSandboxService
++from tests.test_docker_service import _app_config
++
++
++@patch("opensandbox_server.services.docker.docker_service.docker")
++def test_explicit_capability_additions_are_applied_with_drops(mock_docker):
++    mock_docker.from_env.return_value.containers.list.return_value = []
++    config = _app_config()
++    config.docker = DockerConfig(drop_capabilities=["ALL"], add_capabilities=["SETUID", "SETGID"])
++    service = DockerSandboxService(config=config)
++    host_config = service._base_host_config_kwargs(None, None, "bridge")
++    assert host_config["cap_drop"] == ["ALL"]
++    assert host_config["cap_add"] == ["SETUID", "SETGID"]
++    assert "no-new-privileges=true" in host_config["security_opt"]
++
++
++@patch("opensandbox_server.services.docker.docker_service.docker")
++def test_capability_additions_are_absent_by_default(mock_docker):
++    mock_docker.from_env.return_value.containers.list.return_value = []
++    service = DockerSandboxService(config=_app_config())
++    assert "cap_add" not in service._base_host_config_kwargs(None, None, "bridge")

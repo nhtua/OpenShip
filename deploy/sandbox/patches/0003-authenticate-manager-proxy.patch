@@ -1,0 +1,152 @@
+Subject: Authenticate HTTP and WebSocket proxy access when a server key is configured
+Base-Commit: 97031ea81fee1b853e4cd89e5490b1be9f5ead55
+Upstream: https://github.com/opensandbox-group/OpenSandbox
+License: Apache-2.0
+
+OpenShip requires an authenticated manager control channel. Upstream's
+single-tenant proxy exempts HTTP and WebSocket requests even with an API key.
+Enforce the configured key for both protocols and retain no-key legacy mode;
+OpenShip preflight separately requires a configured nonempty server key.
+
+diff --git a/server/opensandbox_server/api/proxy.py b/server/opensandbox_server/api/proxy.py
+index f49ed55..00ba87d 100644
+--- a/server/opensandbox_server/api/proxy.py
++++ b/server/opensandbox_server/api/proxy.py
+@@ -258,15 +258,21 @@ def _schedule_proxy_renew(request: Request | WebSocket, sandbox_id: str) -> None
+
+
+ async def _authenticate_websocket_tenant(websocket: WebSocket) -> bool:
+-    """Authenticate WebSocket connections in multi-tenant mode.
++    """Authenticate WebSocket connections when credentials are configured.
+
+     BaseHTTPMiddleware only intercepts HTTP requests, so WebSocket
+     connections must be authenticated here to establish tenant context.
+-    Returns True if the request is authorized (or single-tenant mode).
++    Returns True if the request is authorized (or no key is configured).
+     """
+     provider = getattr(websocket.app.state, "tenant_provider", None)
+     if provider is None:
+-        return True
++        configured_key = get_config().server.api_key
++        if not configured_key or not configured_key.strip():
++            return True
++        if websocket.headers.get(SANDBOX_API_KEY_HEADER) == configured_key:
++            return True
++        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid or missing API key")
++        return False
+
+     api_key = websocket.headers.get(SANDBOX_API_KEY_HEADER)
+     if not api_key:
+diff --git a/server/opensandbox_server/middleware/auth.py b/server/opensandbox_server/middleware/auth.py
+index 4a4673d..f822e43 100644
+--- a/server/opensandbox_server/middleware/auth.py
++++ b/server/opensandbox_server/middleware/auth.py
+@@ -79,9 +79,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
+         if any(request.url.path.startswith(path) for path in self.EXEMPT_PATHS):
+             return await call_next(request)
+
+-        if self._is_proxy_path(request.url.path) and not self._is_multi_tenant:
+-            return await call_next(request)
+-
+         # If no API keys configured AND no tenant provider → skip auth
+         if not self._is_multi_tenant and not self.valid_api_keys:
+             return await call_next(request)
+diff --git a/server/tests/test_auth_middleware.py b/server/tests/test_auth_middleware.py
+index 58feb60..0d036cd 100644
+--- a/server/tests/test_auth_middleware.py
++++ b/server/tests/test_auth_middleware.py
+@@ -55,8 +55,8 @@ def test_auth_middleware_accepts_valid_key():
+     assert response.json() == {"ok": True}
+
+
+-def test_auth_middleware_skips_validation_for_proxy_to_sandbox():
+-    """Proxy-to-sandbox paths must not require API key; server only forwards to sandbox."""
++def test_auth_middleware_requires_validation_for_proxy_to_sandbox():
++    """Configured API keys protect the proxy as well as lifecycle APIs."""
+     app = _build_test_app()
+
+     @app.get("/sandboxes/{sandbox_id}/proxy/{port}/{full_path:path}")
+@@ -64,8 +64,10 @@ def test_auth_middleware_skips_validation_for_proxy_to_sandbox():
+         return {"proxied": True, "sandbox_id": sandbox_id, "port": port, "path": full_path}
+
+     client = TestClient(app)
+-    # No OPEN-SANDBOX-API-KEY header; should still succeed for proxy path
+-    response = client.get("/sandboxes/abc-123/proxy/8080/foo/bar")
++    path = "/sandboxes/abc-123/proxy/8080/foo/bar"
++    assert client.get(path).status_code == 401
++    assert client.get(path, headers={"OPEN-SANDBOX-API-KEY": "wrong"}).status_code == 401
++    response = client.get(path, headers={"OPEN-SANDBOX-API-KEY": "secret-key"})
+     assert response.status_code == 200
+     assert response.json()["proxied"] is True
+     assert response.json()["sandbox_id"] == "abc-123"
+@@ -73,8 +75,8 @@ def test_auth_middleware_skips_validation_for_proxy_to_sandbox():
+     assert response.json()["path"] == "foo/bar"
+
+
+-def test_auth_middleware_v1_proxy_path_exempt():
+-    """V1 prefix proxy path is also exempt."""
++def test_auth_middleware_v1_proxy_path_requires_key():
++    """The v1 proxy path is authenticated too."""
+     app = _build_test_app()
+
+     @app.get("/v1/sandboxes/{sandbox_id}/proxy/{port}/{full_path:path}")
+@@ -82,7 +84,9 @@ def test_auth_middleware_v1_proxy_path_exempt():
+         return {"proxied": True}
+
+     client = TestClient(app)
+-    response = client.get("/v1/sandboxes/sid/proxy/443/")
++    path = "/v1/sandboxes/sid/proxy/443/"
++    assert client.get(path).status_code == 401
++    response = client.get(path, headers={"OPEN-SANDBOX-API-KEY": "secret-key"})
+     assert response.status_code == 200
+     assert response.json()["proxied"] is True
+
+diff --git a/server/tests/test_openship_proxy_auth.py b/server/tests/test_openship_proxy_auth.py
+new file mode 100644
+index 0000000..07f64ff
+--- /dev/null
++++ b/server/tests/test_openship_proxy_auth.py
+@@ -0,0 +1,43 @@
++# SPDX-License-Identifier: Apache-2.0
++# Copyright 2026 OpenShip contributors
++
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++from opensandbox_server.api import proxy
++from opensandbox_server.api import lifecycle
++from opensandbox_server.api.schema import Endpoint
++from starlette.websockets import WebSocketDisconnect
++from tests.test_auth_middleware import _app_config_with_api_key
++from tests.test_routes_proxy import _FakeBackendWebSocket, _FakeWebSocketConnector
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("key,expected", [(None, False), ("wrong", False), ("secret-key", True)])
++async def test_single_tenant_websocket_proxy_requires_configured_key(monkeypatch, key, expected):
++    monkeypatch.setattr(proxy, "get_config", _app_config_with_api_key)
++    close = AsyncMock()
++    websocket = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()),
++                                headers={} if key is None else {"OPEN-SANDBOX-API-KEY": key},
++                                close=close)
++    assert await proxy._authenticate_websocket_tenant(websocket) is expected
++    assert close.await_count == (0 if expected else 1)
++
++
++def test_websocket_proxy_authentication_guards_a_working_backend(client, monkeypatch):
++    class StubService:
++        def get_endpoint(self, *args, **kwargs):
++            return Endpoint(endpoint="10.0.0.10:44772")
++
++    monkeypatch.setattr(client.app.state, "tenant_provider", None, raising=False)
++    monkeypatch.setattr(proxy, "get_config", _app_config_with_api_key)
++    monkeypatch.setattr(lifecycle, "sandbox_service", StubService())
++    monkeypatch.setattr(proxy.websockets, "connect", _FakeWebSocketConnector(_FakeBackendWebSocket()))
++    path = "/v1/sandboxes/sandbox-1/proxy/44772/ws"
++    for headers in ({}, {"OPEN-SANDBOX-API-KEY": "wrong"}):
++        with pytest.raises(WebSocketDisconnect):
++            with client.websocket_connect(path, headers=headers):
++                pytest.fail("unauthenticated proxy connected to a working backend")
++    with client.websocket_connect(path, headers={"OPEN-SANDBOX-API-KEY": "secret-key"}) as ws:
++        assert ws.receive_text() == "backend-ready"
