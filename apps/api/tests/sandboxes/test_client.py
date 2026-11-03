@@ -84,6 +84,43 @@ async def test_create_lost_response_is_interrupted_without_retry():
     assert len(calls) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [None, {}, {"state": "Pending"}, {"state": "Failed"}])
+async def test_create_rejects_missing_or_nonrunning_provider_status(status):
+    response = {"id": "sbx-1", "expiresAt": "2026-11-03T13:00:00Z"}
+    if status is not None:
+        response["status"] = status
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda req: httpx.Response(202, json=response)
+    )) as http:
+        with pytest.raises(SandboxUnavailable, match="interrupted"):
+            await OpenSandboxClient("http://sandbox.test", "test-key", http=http).create(requirements())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sandbox_id, expires", [
+    ("../unsafe", "2026-11-03T13:00:00Z"),
+    ("sbx-1", "not-a-date"),
+    ("sbx-1", "2026-11-03T13:00:00"),
+])
+async def test_create_rejects_malformed_identity_or_expiration(sandbox_id, expires):
+    body = {"id": sandbox_id, "expiresAt": expires, "status": {"state": "Running"}}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(202, json=body))) as http:
+        with pytest.raises(SandboxUnavailable, match="interrupted"):
+            await OpenSandboxClient("http://sandbox.test", "test-key", http=http).create(requirements())
+
+
+@pytest.mark.asyncio
+async def test_create_provider_failure_does_not_expose_response_or_key():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda req: httpx.Response(500, text="private-provider-detail test-key")
+    )) as http:
+        with pytest.raises(SandboxUnavailable) as error:
+            await OpenSandboxClient("http://sandbox.test", "test-key", http=http).create(requirements())
+    assert "test-key" not in str(error.value)
+    assert "private-provider-detail" not in str(error.value)
+
+
 @pytest.mark.parametrize("alias", ["../x", "/tmp/x", "a/b", ".", "a\\b"])
 def test_rejects_unsafe_input_aliases(alias):
     with pytest.raises(ValidationError):
@@ -122,6 +159,15 @@ def test_rejects_per_input_and_total_input_limits():
                         InputFile(alias="third", artifact=artifact(b"x"))))
 
 
+def test_rejects_duplicate_aliases_within_each_file_set():
+    item = InputFile(alias="same", artifact=artifact(b"x"))
+    output = OutputSpec(alias="same", media_type="text/plain", kind="data")
+    with pytest.raises(ValidationError):
+        request(inputs=(item, item))
+    with pytest.raises(ValidationError):
+        request(outputs=(output, output))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status, absent", [(404, True), (503, False)])
 async def test_inspection_distinguishes_absence_from_unavailability(status, absent):
@@ -137,6 +183,34 @@ async def test_inspection_distinguishes_absence_from_unavailability(status, abse
         else:
             with pytest.raises(SandboxUnavailable):
                 await client.inspect(handle)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [
+    {},
+    {"id": "another", "status": {"state": "Running"}, "expiresAt": "2026-11-03T13:00:00Z"},
+    {"id": "sbx-1", "status": {"state": "Failed"}, "expiresAt": "2026-11-03T13:00:00Z"},
+    {"id": "sbx-1", "status": {"state": "Running"}, "expiresAt": "2026-11-03T13:00:00"},
+])
+async def test_inspection_rejects_malformed_or_nonrunning_responses(body):
+    handle = SandboxHandle(provider_id="local", sandbox_id="sbx-1", requirements_key=requirements().key,
+                           expires_at=datetime(2026, 11, 3, 13, tzinfo=UTC))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, json=body))) as http:
+        with pytest.raises(SandboxUnavailable, match="inspection"):
+            await OpenSandboxClient("http://sandbox.test", "test-key", http=http).inspect(handle)
+
+
+@pytest.mark.asyncio
+async def test_inspection_preserves_identity_and_uses_provider_expiration():
+    handle = SandboxHandle(provider_id="local", sandbox_id="sbx-1", requirements_key=requirements().key,
+                           expires_at=datetime(2026, 11, 3, 13, tzinfo=UTC))
+    body = {"id": "sbx-1", "status": {"state": "Running"}, "expiresAt": "2026-11-03T13:30:00Z"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, json=body))) as http:
+        result = await OpenSandboxClient("http://sandbox.test", "test-key", http=http).inspect(handle)
+    assert result is not None
+    assert result.sandbox_id == handle.sandbox_id
+    assert result.requirements_key == handle.requirements_key
+    assert result.expires_at == datetime(2026, 11, 3, 13, 30, tzinfo=UTC)
 
 
 @pytest.mark.asyncio

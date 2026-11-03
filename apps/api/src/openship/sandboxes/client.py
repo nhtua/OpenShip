@@ -50,6 +50,8 @@ class OpenSandboxClient:
             )
             response.raise_for_status()
             data = response.json()
+            if data["status"]["state"] != "Running":
+                raise ValueError("sandbox not running")
             expires = datetime.fromisoformat(data["expiresAt"])
             if expires.tzinfo is None:
                 raise ValueError("missing timezone")
