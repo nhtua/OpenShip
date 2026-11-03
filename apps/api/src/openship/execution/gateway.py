@@ -150,6 +150,9 @@ class _CombinedControl:
     def request_timeout_seconds(self, limit: float) -> float:
         return self._parent.request_timeout_seconds(limit)
 
+    def remaining_seconds(self) -> float:
+        return self._parent.remaining_seconds()
+
     def raise_if_stopped(self) -> None:
         self._parent.raise_if_stopped()
         if self._slot_lost.is_set():
@@ -319,14 +322,18 @@ class ToolGateway:
             claim=claim,
             operation_id=operation_id,
             control=control,
-            max_output_bytes=min(
-                pinned_config.limits.max_observation_bytes,
-                (
-                    settings.artifact_cloud_observation_reservation_bytes
-                    if definition.artifact_kind == "cloud_observation"
-                    else settings.artifact_search_reservation_bytes
-                ),
-                64 * 1024,
+            max_output_bytes=(
+                min(4 * 1024 * 1024, settings.artifact_upload_max_bytes)
+                if definition.artifact_kind == "analysis_output"
+                else min(
+                    pinned_config.limits.max_observation_bytes,
+                    (
+                        settings.artifact_cloud_observation_reservation_bytes
+                        if definition.artifact_kind == "cloud_observation"
+                        else settings.artifact_search_reservation_bytes
+                    ),
+                    64 * 1024,
+                )
             ),
             reserve_output=bool(manifest.outputs),
             artifact_kind=definition.artifact_kind or "search_result",
@@ -368,6 +375,7 @@ class ToolGateway:
             artifact_store=store,
             session_factory=self._session_factory,
             operation_id=operation_id,
+            claim=claim,
             aws_access_factory=(
                 self._aws_access_factory(
                     broker=aws_broker,
@@ -474,6 +482,38 @@ class ToolGateway:
                 attempt_id=attempt_id,
                 definition=definition,
                 result=observation,
+            )
+
+        if definition.artifact_kind == "analysis_output":
+            staged_rows: list[Artifact] = []
+            try:
+                staged_outputs = self._stage_analysis_outputs(
+                    claim, operation_id, observation, store, context, staged_rows
+                )
+            except ToolPublicationError as failure:
+                self._remove_staged_analysis(staged_rows, store, context)
+                return await self._fail_active(
+                    claim, operation_id, attempt_id, failure.code
+                )
+            except ArtifactStorageError:
+                self._remove_staged_analysis(staged_rows, store, context)
+                return await self._fail_active(
+                    claim, operation_id, attempt_id, "artifact_publication_failed"
+                )
+            except Exception:  # noqa: BLE001 - filesystem internals do not cross the gateway.
+                self._remove_staged_analysis(staged_rows, store, context)
+                return await self._fail_active(
+                    claim, operation_id, attempt_id, "artifact_publication_failed"
+                )
+            return self._publish(
+                claim=claim,
+                operation_id=operation_id,
+                attempt_id=attempt_id,
+                staged=staged_outputs,
+                observation=observation,
+                store=store,
+                context=context,
+                definition=definition,
             )
 
         try:
@@ -696,7 +736,11 @@ class ToolGateway:
                         artifact_name=artifact_name,
                     )
                     attempt_id = attempt.id
-                    artifact_id = artifact.id if artifact is not None else None
+                    # Analysis reservations are one row per declared alias; the
+                    # staging transaction below selects them by operation scope.
+                    artifact_id = None if isinstance(artifact, tuple) else (
+                        artifact.id if artifact is not None else None
+                    )
                     slot_id = slot.id
                     db.commit()
                     return operation_id, attempt_id, artifact_id, slot_id
@@ -965,6 +1009,60 @@ class ToolGateway:
         except ArtifactStorageError:
             pass
 
+    def _stage_analysis_outputs(
+        self, claim, operation_id, observation, store, context, staged_rows
+    ):
+        """Stage every reserved analysis output before any of them can publish."""
+        with self._session_factory() as db:
+            rows = (
+                db.query(Artifact)
+                .filter(
+                    Artifact.originating_operation_id == operation_id,
+                    Artifact.originating_run_id == claim.run_id,
+                    Artifact.conversation_id == context.authorization.conversation_id,
+                    Artifact.project_id == context.authorization.project_id,
+                    Artifact.kind == "analysis_output",
+                    Artifact.status == "staging",
+                )
+                .order_by(Artifact.display_name)
+                .all()
+            )
+        outputs = getattr(observation, "outputs", None)
+        if (
+            not isinstance(outputs, dict)
+            or len(rows) != len(outputs)
+            or not rows
+            or any(len(data) > 4 * 1024 * 1024 for data in outputs.values())
+            or sum(len(data) for data in outputs.values()) > 8 * 1024 * 1024
+        ):
+            raise ToolPublicationError("invalid_tool_output")
+        staged: list[StagedArtifact] = []
+        for row in rows:
+            data = outputs.get(row.display_name)
+            if data is None:
+                raise ToolPublicationError("invalid_tool_output")
+            expected = ArtifactRef(
+                id=row.id,
+                sha256=hashlib.sha256(data).hexdigest(),
+                size_bytes=len(data),
+                media_type=row.media_type,
+            )
+            staged_rows.append(row)
+            staged_output = store.stage(
+                row.id,
+                (data,),
+                expected,
+                project_id=context.authorization.project_id,
+                conversation_id=context.authorization.conversation_id,
+            )
+            store.publish_file(staged_output, row.relative_storage_key)
+            staged.append(staged_output)
+        return tuple(staged)
+
+    def _remove_staged_analysis(self, rows, store, context) -> None:
+        for row in rows:
+            self._remove_staging(store, row.id, context)
+
     def _publish(
         self,
         *,
@@ -1042,7 +1140,7 @@ class ToolGateway:
                 claim,
                 attempt_id,
                 observation,
-                (staged,),
+                staged if isinstance(staged, tuple) else (staged,),
                 definition=definition,
             )
             try:
@@ -1119,7 +1217,11 @@ class ToolGateway:
             logger.warning("Tool publication outcome remains unknown")
         return self._interrupted(operation_id, "execution_interrupted")
 
-    def _cleanup_uncommitted(self, staged: StagedArtifact, store, context) -> None:
+    def _cleanup_uncommitted(self, staged, store, context) -> None:
+        for item in staged if isinstance(staged, tuple) else (staged,):
+            self._cleanup_one_uncommitted(item, store, context)
+
+    def _cleanup_one_uncommitted(self, staged: StagedArtifact, store, context) -> None:
         try:
             with self._session_factory() as db:
                 artifact = (

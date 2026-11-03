@@ -27,6 +27,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_KIND = "search_result"
 _UPLOAD_KIND = "upload"
 _CLOUD_OBSERVATION_KIND = "cloud_observation"
+_ANALYSIS_KIND = "analysis_output"
 _ZERO_SHA256 = "0" * 64
 
 
@@ -157,7 +158,12 @@ def reserve_artifact(
     provenance: str | None = None,
 ) -> Artifact:
     """Reserve per-conversation and project quota without committing the caller's transaction."""
-    if kind not in (_SEARCH_KIND, _UPLOAD_KIND, _CLOUD_OBSERVATION_KIND):
+    if kind not in (
+        _SEARCH_KIND,
+        _UPLOAD_KIND,
+        _CLOUD_OBSERVATION_KIND,
+        _ANALYSIS_KIND,
+    ):
         raise _error(422, "invalid_artifact_kind", "Artifact kind is invalid")
     if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 0:
         raise _error(422, "invalid_artifact_size", "Artifact size limit is invalid")
@@ -171,8 +177,24 @@ def reserve_artifact(
         raise _error(413, "artifact_too_large", "Artifact exceeds the configured size limit")
     try:
         normalized_key = str(uuid.UUID(str(request_key)))
-    except (TypeError, ValueError) as exc:
-        raise _error(422, "invalid_idempotency_key", "Idempotency-Key must be a UUID") from exc
+    except (TypeError, ValueError):
+        # Analysis outputs reserve one idempotency scope per declared alias.
+        operation_part, separator, alias_part = str(request_key).partition(":")
+        if kind != _ANALYSIS_KIND or separator != ":":
+            raise _error(
+                422, "invalid_idempotency_key", "Idempotency-Key must be a UUID"
+            ) from None
+        try:
+            operation_part = str(uuid.UUID(operation_part))
+        except (TypeError, ValueError):
+            raise _error(
+                422, "invalid_idempotency_key", "Idempotency-Key must be a UUID"
+            ) from None
+        if not alias_part or ":" in alias_part or len(alias_part) > 128:
+            raise _error(
+                422, "invalid_idempotency_key", "Idempotency-Key must be a UUID"
+            ) from None
+        normalized_key = f"{operation_part}:{alias_part}"
     display_name = validate_artifact_name(display_name)
     media_type = _validate_media_type(media_type)
     if expected_sha256 is not None and not _SHA256.fullmatch(expected_sha256):

@@ -156,6 +156,7 @@ _BUILTIN_IDS = frozenset(
         "aws_s3_bucket_metadata",
         "aws_read_catalog",
         "aws_read",
+        "sandbox_analysis",
     }
 )
 _REGISTERED: dict[str, ToolDefinitionEntry] = {}
@@ -686,6 +687,39 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             artifact_name="s3-bucket-metadata.json",
             error_mapper=_aws_error,
             safe_failure_code="aws_unavailable",
+            model_selectable=False,
+        )
+    elif manifest.id == "sandbox_analysis":
+        # Late import: the analysis tool consults the installed catalog.
+        from src.openship.sandboxes.tool import (
+            AnalysisArguments,
+            AnalysisObservation,
+            AnalysisResult,
+            analysis_error,
+            analysis_evidence,
+            analysis_execute,
+        )
+
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=(
+                "Run one prepared analysis program over selected conversation "
+                "files inside the installed sandbox. OpenShip prepares the "
+                "current bytes and keeps only the declared, validated data "
+                "outputs; the sandbox owns its own lifecycle."
+            ),
+            argument_model=AnalysisArguments,
+            result_model=AnalysisResult,
+            handler=analysis_execute,
+            handler_result_model=AnalysisObservation,
+            input_artifact_ids=lambda arguments: (
+                arguments.source_id,
+                *sorted(arguments.input_ids.values()),
+            ),
+            evidence_projector=analysis_evidence,
+            artifact_kind="analysis_output",
+            error_mapper=analysis_error,
+            safe_failure_code="provider_unavailable",
             model_selectable=False,
         )
     else:

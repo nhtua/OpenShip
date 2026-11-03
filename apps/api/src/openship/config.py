@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     connector_setup_max_body_bytes: int = Field(default=32 * 1024, ge=1024, le=128 * 1024)
     connector_write_rate_limit_per_minute: int = Field(default=20, ge=1, le=120)
 
+    # Opt-in sandbox execution profile. Disabled by default so a plain
+    # deployment is unchanged; an operator provisions an OpenSandbox endpoint,
+    # its credential file and the workload image identity before use.
+    sandbox_enabled: bool = False
+    sandbox_endpoint: str = ""
+    sandbox_key_file: Path = Path("/run/secrets/openship-sandbox-key")
+    sandbox_image: str = ""
+    sandbox_profile_id: str = "python311"
+    sandbox_dependency_identity: str = "stdlib"
+
     # Shared persistent local artifact storage. Initialization is an explicit
     # operator action; API requests never create or replace an empty root.
     artifact_root: Path = Path("var/artifacts")

@@ -529,6 +529,13 @@ class Worker:
                 error_code="configuration_error",
             )
 
+        # The pinned execution selects the fixed journey graph for analysis runs.
+        graph_factory = resolve_graph(
+            run.kind,
+            run.graph_version,
+            execution=execution,
+        )
+
         thread_id = f"{run.id}-{claim.checkpoint_ns}"
         window = begin_execution_window(
             job,

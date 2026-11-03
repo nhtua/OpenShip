@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 from .agent_graph import build_agent_graph
+from .analysis_graph import build_analysis_graph
 from .graph import build_chat_graph
 from .tool_graph import build_tool_graph
 
@@ -22,8 +23,28 @@ _GRAPH_FACTORIES: dict[tuple[str, int], Callable] = {
 }
 
 
-def resolve_graph(kind: str, graph_version: int) -> Callable:
-    """Resolve an exact maintained graph version; never guess historical intent."""
+_ANALYSIS_CAPABILITY = "sandbox_analysis"
+
+
+def resolve_graph(
+    kind: str,
+    graph_version: int,
+    execution=None,
+) -> Callable:
+    """Resolve an exact maintained graph version; never guess historical intent.
+
+    A pinned tool execution that authorizes the sandbox analysis capability
+    runs the fixed analysis journey inside the same persisted graph version, so
+    a durable run always resolves to the same implementation.
+    """
+    if (
+        kind == "tool"
+        and execution is not None
+        and any(
+            item.id == _ANALYSIS_CAPABILITY for item in execution.allowed_capabilities
+        )
+    ):
+        return build_analysis_graph
     try:
         return _GRAPH_FACTORIES[(kind, graph_version)]
     except KeyError as exc:

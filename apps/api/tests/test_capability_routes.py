@@ -63,6 +63,7 @@ def test_catalog_auth_and_secret_redaction(monkeypatch):
         "aws_s3_bucket_metadata",
         "aws_read_catalog",
         "aws_read",
+        "sandbox_analysis",
     }
     assert all(not item.available for item in summary)
     assert by_id["brave_web_search"].unavailable_reason == "runtime_unavailable"
@@ -72,8 +73,10 @@ def test_catalog_auth_and_secret_redaction(monkeypatch):
     assert by_id["aws_check_connection"].unavailable_reason == "deployment_restricted"
     assert by_id["aws_s3_bucket_storage"].unavailable_reason == "deployment_restricted"
     assert by_id["aws_s3_bucket_metadata"].unavailable_reason == "deployment_restricted"
+    assert by_id["sandbox_analysis"].unavailable_reason == "deployment_restricted"
     assert by_id["workspace_list_files"].deployment_restricted is True
     assert by_id["aws_s3_bucket_metadata"].deployment_restricted is True
+    assert by_id["sandbox_analysis"].deployment_restricted is True
     assert sentinel not in body
     assert "credential_binding_ref" not in body
     assert "BRAVE_SEARCH_API_KEY" not in body

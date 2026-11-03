@@ -51,7 +51,7 @@ class Artifact(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('search_result', 'upload', 'cloud_observation')",
+            "kind IN ('search_result', 'upload', 'cloud_observation', 'analysis_output')",
             name="ck_artifacts_kind",
         ),
         CheckConstraint(

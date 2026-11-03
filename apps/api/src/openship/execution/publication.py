@@ -364,33 +364,83 @@ def mark_tool_dispatching(
     )
     artifact = None
     if reserve_output:
+        reserved: list[Artifact] = []
         if artifact_kind == "search_result":
             arguments = _search_arguments(operation)
             display_name = search_artifact_filename(arguments.query)
             maximum = settings.artifact_search_reservation_bytes
+            reserved.append(
+                reserve_artifact(
+                    db,
+                    conversation_id=operation.conversation_id,
+                    project_id=operation.project_id,
+                    max_bytes=min(max(1, max_output_bytes), maximum, 64 * 1024),
+                    kind=artifact_kind,
+                    request_key=str(operation.id),
+                    display_name=display_name,
+                    media_type="application/json",
+                    source="tool",
+                    originating_run_id=operation.run_id,
+                    originating_operation_id=operation.id,
+                    provenance=provenance,
+                )
+            )
         elif artifact_kind == "cloud_observation" and artifact_name:
             display_name = artifact_name
             maximum = settings.artifact_cloud_observation_reservation_bytes
+            reserved.append(
+                reserve_artifact(
+                    db,
+                    conversation_id=operation.conversation_id,
+                    project_id=operation.project_id,
+                    max_bytes=min(max(1, max_output_bytes), maximum, 64 * 1024),
+                    kind=artifact_kind,
+                    request_key=str(operation.id),
+                    display_name=display_name,
+                    media_type="application/json",
+                    source="tool",
+                    originating_run_id=operation.run_id,
+                    originating_operation_id=operation.id,
+                    provenance=provenance,
+                )
+            )
+        elif artifact_kind == "analysis_output":
+            declared = json.loads(operation.arguments_json).get("output_media") or {}
+            if (
+                not declared
+                or len(declared) > 8
+                or any(
+                    not alias or media not in ("text/plain", "application/json")
+                    for alias, media in declared.items()
+                )
+            ):
+                raise ToolPublicationError("invalid_tool_output")
+            for alias, media_type in sorted(declared.items()):
+                reserved.append(
+                    reserve_artifact(
+                        db,
+                        conversation_id=operation.conversation_id,
+                        project_id=operation.project_id,
+                        max_bytes=min(
+                            max(1, max_output_bytes),
+                            4 * 1024 * 1024,
+                            settings.artifact_upload_max_bytes,
+                        ),
+                        kind=artifact_kind,
+                        request_key=f"{operation.id}:{alias}",
+                        display_name=alias,
+                        media_type=media_type,
+                        source="tool",
+                        originating_run_id=operation.run_id,
+                        originating_operation_id=operation.id,
+                        provenance=provenance,
+                    )
+                )
+            artifact = tuple(reserved)
         else:
             raise ToolPublicationError("invalid_tool_output")
-        artifact = reserve_artifact(
-            db,
-            conversation_id=operation.conversation_id,
-            project_id=operation.project_id,
-            max_bytes=min(
-                max(1, max_output_bytes),
-                maximum,
-                64 * 1024,
-            ),
-            kind=artifact_kind,
-            request_key=str(operation.id),
-            display_name=display_name,
-            media_type="application/json",
-            source="tool",
-            originating_run_id=operation.run_id,
-            originating_operation_id=operation.id,
-            provenance=provenance,
-        )
+        if artifact is None:
+            artifact = reserved[0]
     attempt = ToolAttempt(
         operation_id=operation.id,
         ordinal=1,
@@ -602,6 +652,10 @@ def publish_tool_result(
     conversation, operation, attempt = _attempt_and_operation(db, claim, attempt_id)
     if operation.status != "running" or attempt.outcome != "started":
         raise ToolPublicationError("lease_lost")
+    if definition is not None and definition.artifact_kind == "analysis_output":
+        return publish_analysis_result(
+            db, claim, attempt_id, conversation, operation, attempt, observation, staged_outputs, definition
+        )
     generic_publication = (
         definition is not None and definition.external_publication_hook is not None
     )
@@ -774,6 +828,136 @@ def publish_tool_result(
         status="succeeded",
         result=result_data,
         artifacts=(artifact_ref,),
+    )
+
+
+def publish_analysis_result(
+    db: Session,
+    claim: Claim,
+    attempt_id: uuid.UUID,
+    conversation: Conversation,
+    operation: ToolOperation,
+    attempt: ToolAttempt,
+    observation,
+    staged_outputs: tuple[StagedArtifact, ...],
+    definition: ToolDefinitionEntry,
+) -> PublishedToolResult:
+    """Atomically expose every reserved analysis output, result and event."""
+    if operation.status != "running" or attempt.outcome != "started":
+        raise ToolPublicationError("lease_lost")
+    normalized = definition.validate_handler_result(operation, observation)
+    evidence = definition.project_evidence(normalized)
+    if not isinstance(evidence, dict) or not all(
+        isinstance(item, dict) and {"sha256", "size_bytes"} <= set(item)
+        for item in evidence.values()
+    ):
+        raise ToolPublicationError("invalid_tool_output")
+    snapshot = canonical_json(evidence)
+    if len(snapshot) > 64 * 1024:
+        raise ToolPublicationError("output_limit_exceeded")
+    if len(staged_outputs) != len(evidence):
+        raise ToolPublicationError("invalid_tool_output")
+
+    slot_id = _slot_id_for_operation(db, operation.id, claim)
+    refs: dict[str, ArtifactRef] = {}
+    ready_rows: list[Artifact] = []
+    for staged in staged_outputs:
+        artifact = (
+            db.query(Artifact)
+            .filter(Artifact.id == staged.artifact_id)
+            .with_for_update()
+            .first()
+        )
+        alias = artifact.display_name if artifact is not None else None
+        expected = evidence.get(alias) if alias is not None else None
+        if (
+            artifact is None
+            or artifact.status != "staging"
+            or artifact.originating_run_id != operation.run_id
+            or artifact.originating_operation_id != operation.id
+            or artifact.conversation_id != operation.conversation_id
+            or artifact.project_id != operation.project_id
+            or artifact.kind != "analysis_output"
+            or artifact.media_type not in ("text/plain", "application/json")
+            or expected is None
+            or staged.observed.sha256 != expected["sha256"]
+            or staged.observed.size_bytes != expected["size_bytes"]
+        ):
+            raise ToolPublicationError("artifact_publication_failed")
+        ready = mark_artifact_ready(db, artifact.id, staged.observed)
+        ready_rows.append(ready)
+        refs[str(alias)] = ArtifactRef(
+            id=ready.id,
+            sha256=ready.sha256,
+            size_bytes=ready.size_bytes,
+            media_type=ready.media_type,
+        )
+
+    try:
+        validated = definition.result_model(outputs=refs)
+        result_data = validated.model_dump(mode="json")
+    except (ValidationError, TypeError):
+        raise ToolPublicationError("invalid_tool_output") from None
+
+    result_bytes = canonical_json(result_data)
+    if len(result_bytes) > int(
+        definition.manifest.limits.get("max_model_result_bytes", 16 * 1024)
+    ):
+        raise ToolPublicationError("output_limit_exceeded")
+
+    now = _utc_now()
+    operation.status = "succeeded"
+    operation.error_code = None
+    operation.result_json = result_bytes.decode("utf-8")
+    operation.result_digest = hashlib.sha256(result_bytes).hexdigest()
+    operation.output_artifact_ids = json.dumps(
+        [str(ready.id) for ready in ready_rows], separators=(",", ":")
+    )
+    operation.finished_at = now
+    operation.updated_at = now
+    attempt.outcome = "succeeded"
+    attempt.error_code = None
+    attempt.response_digest = hashlib.sha256(snapshot).hexdigest()
+    attempt.finished_at = now
+    if not release_execution_slot(db, claim, slot_id):
+        raise ToolPublicationError("lease_lost")
+    for ready in ready_rows:
+        _event(
+            db,
+            conversation,
+            operation.run_id,
+            "artifact.created",
+            {
+                "schema_version": 1,
+                "operation_id": str(operation.id),
+                "artifact_id": str(ready.id),
+                "sha256": ready.sha256,
+                "size_bytes": ready.size_bytes,
+                "media_type": ready.media_type,
+                "name": ready.display_name,
+            },
+        )
+    _event(
+        db,
+        conversation,
+        operation.run_id,
+        "tool.completed",
+        {
+            "schema_version": 1,
+            "operation_id": str(operation.id),
+            "attempt_id": str(attempt.id),
+            "capability_id": operation.capability_id,
+            "status": "succeeded",
+            "artifact_ids": [str(ready.id) for ready in ready_rows],
+            "result_digest": operation.result_digest,
+        },
+    )
+    db.flush()
+    return PublishedToolResult(
+        operation_id=operation.id,
+        status="succeeded",
+        result=result_data,
+        artifacts=tuple(refs[alias] for alias in sorted(refs)),
     )
 
 

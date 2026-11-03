@@ -264,6 +264,29 @@ def _local_implementation_digest() -> str:
     return digest.hexdigest()
 
 
+_SANDBOX_SOURCE_FILES = (
+    "sandboxes/client.py",
+    "sandboxes/contracts.py",
+    "sandboxes/outputs.py",
+    "sandboxes/sessions.py",
+    "sandboxes/tool.py",
+)
+
+
+def _sandbox_implementation_digest() -> str:
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for relative in _SANDBOX_SOURCE_FILES:
+        path = root / relative
+        name = relative.encode("utf-8")
+        body = path.read_bytes()
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(len(body).to_bytes(8, "big"))
+        digest.update(body)
+    return digest.hexdigest()
+
+
 def _aws_implementation_digest() -> str:
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
@@ -523,6 +546,44 @@ def _workspace_manifests() -> tuple[CapabilityManifest, CapabilityManifest]:
     return tuple(manifests)
 
 
+def _sandbox_manifest() -> CapabilityManifest:
+    """The credential-free, operator-provisioned sandbox analysis capability."""
+    # Late import: the analysis tool resolves installed manifests for dispatch.
+    from src.openship.sandboxes.tool import AnalysisArguments, AnalysisResult
+
+    fields = {
+        "schema_version": 1,
+        "id": "sandbox_analysis",
+        "version": "1.0.0",
+        "implementation_digest": _sandbox_implementation_digest(),
+        "input_schema": AnalysisArguments.model_json_schema(),
+        "output_schema": AnalysisResult.model_json_schema(),
+        "effect": "read_only_external",
+        "enablement_requirements": ("operator_enabled", "sandbox_runtime"),
+        "limits": {
+            "timeout_seconds": 30,
+            "max_source_bytes": 256 * 1024,
+            "max_input_bytes": 8 * 1024 * 1024,
+            "max_total_input_bytes": 16 * 1024 * 1024,
+            "max_inputs": 8,
+            "max_output_bytes": 4 * 1024 * 1024,
+            "max_total_output_bytes": 8 * 1024 * 1024,
+            "max_outputs": 8,
+            "max_model_result_bytes": 16 * 1024,
+        },
+        "outputs": (
+            OutputPolicy(name="sandbox-output", mutability="immutable").model_dump(
+                mode="json"
+            ),
+        ),
+        "execution_kind": "maintained",
+        "credential_binding_ref": None,
+    }
+    return CapabilityManifest(
+        **fields, manifest_digest=canonical_digest(fields)
+    )
+
+
 def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
     from src.openship.capabilities.definitions import registered_tool_definitions
 
@@ -533,6 +594,7 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
         *_aws_manifests(),
         *_aws_discovery_manifests(),
         _s3_metadata_manifest(),
+        _sandbox_manifest(),
     )
     registered = tuple(entry.manifest for entry in registered_tool_definitions())
     return (*builtins, *registered)

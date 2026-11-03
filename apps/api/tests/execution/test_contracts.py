@@ -49,7 +49,14 @@ def test_tool_ids_and_connector_kinds_are_independent():
         "aws_s3_bucket_metadata",
         "aws_read_catalog",
         "aws_read",
+        "sandbox_analysis",
     }
+    analysis = manifests["sandbox_analysis"]
+    assert analysis.effect == "read_only_external"
+    assert analysis.credential_binding_ref is None
+    assert analysis.enablement_requirements == ("operator_enabled", "sandbox_runtime")
+    assert len(analysis.outputs) == 1
+    assert analysis.outputs[0].mutability == "immutable"
     assert manifests["brave_web_search"].connector_kinds == ("brave",)
     assert manifests["tavily_web_search"].connector_kinds == ("tavily",)
     assert legacy["brave_web_search"].credential_binding_ref == "BRAVE_SEARCH_API_KEY"
