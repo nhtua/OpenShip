@@ -47,6 +47,7 @@ from ..runs.models import (
     RunJob,
     RunTranscriptRecord,
 )
+from ..sandboxes.models import WorkflowSandbox
 from ..workspace.models import ConversationWorkspace, Project
 
 __all__ = [
@@ -90,4 +91,5 @@ __all__ = [
     "ToolPolicyOverride",
     "ToolPolicyState",
     "User",
+    "WorkflowSandbox",
 ]
