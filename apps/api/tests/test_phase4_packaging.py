@@ -37,7 +37,7 @@ def test_artifact_volume_is_shared_and_search_keys_are_runtime_only():
     assert "TOOL_ENABLED_IDS" in worker
 
 
-def test_compose_ports_and_no_sandbox_runtime():
+def test_compose_ports_and_application_runtime_boundary():
     compose = (REPO_ROOT / "docker-compose.yml").read_text()
     services = yaml.safe_load(compose)["services"]
     assert "ports" not in services["postgres"]
@@ -50,16 +50,14 @@ def test_compose_ports_and_no_sandbox_runtime():
         "${DEV_BIND_ADDRESS:-0.0.0.0}:${DEV_WEB_PORT:-5173}:5173"
     ]
 
-    lowered = compose.lower()
-    for forbidden in (
-        "/var/run/docker.sock",
-        "runsc",
-        "gvisor",
-        "privileged:",
-        "docker:dind",
-        "openship-sandbox",
-    ):
-        assert forbidden not in lowered
+    assert services["opensandbox-server"]["profiles"] == ["sandbox"]
+    assert services["opensandbox-gateway"]["profiles"] == ["sandbox"]
+    for name, service in services.items():
+        if name == "opensandbox-server":
+            continue
+        lowered = yaml.safe_dump(service).lower()
+        for forbidden in ("/var/run/docker.sock", "runsc", "gvisor", "privileged:", "docker:dind"):
+            assert forbidden not in lowered, f"{name} violates the application runtime boundary"
 
 
 def test_production_web_container_routes_api_and_sse_to_fastapi():

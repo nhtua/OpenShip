@@ -1,0 +1,11 @@
+[Unit]
+Description=OpenShip rootful Podman API selecting gVisor for sandbox workloads
+Requires=openship-sandbox-podman.socket
+After=openship-sandbox-podman.socket
+
+[Service]
+Type=exec
+Delegate=yes
+KillMode=process
+Environment=CONTAINERS_CONF_OVERRIDE=/etc/openship/containers/podman-rootful.conf
+ExecStart=/usr/bin/podman --runtime=runsc system service

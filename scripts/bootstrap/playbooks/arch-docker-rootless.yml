@@ -1,0 +1,15 @@
+---
+- name: Prepare an Arch Linux host for OpenShip with rootless Docker and gVisor
+  hosts: all
+  gather_facts: true
+  become: false
+  pre_tasks:
+    - name: Require an ordinary user on an Arch-derived host
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - ansible_facts.os_family == 'Archlinux'
+          - ansible_facts.user_uid != 0
+        fail_msg: Connect as the ordinary developer account; host tasks use become.
+  roles:
+    - docker_engine

@@ -1,0 +1,29 @@
+# Copy to a protected installation-specific location; replace the execd image
+# with a release digest matching the pinned server before starting the service.
+[server]
+host = "0.0.0.0"
+port = 8080
+# Permit OpenShip's requested 30-minute lifetime; OpenSandbox owns expiration.
+max_sandbox_timeout_seconds = 1800
+
+[runtime]
+# The Docker-compatible API backend also connects to rootless Podman. The
+# manager's DOCKER_HOST selects the socket; there is no separate rootless flag.
+type = "docker"
+execd_image = "REPLACE_WITH_PINNED_EXECD_IMAGE"
+execd_run_as_init = true
+
+[secure_runtime]
+type = "gvisor"
+# Select the engine's registered runsc profile for sandbox creation only.
+docker_runtime = "runsc"
+
+[docker]
+network_mode = "openship-sandbox-data"
+publish_host = "127.0.0.1"
+no_new_privileges = true
+# Keep upstream capability defaults: execd needs SETUID/SETGID to run as UID 1000.
+pids_limit = 128
+
+[proxy]
+resolve_internal = true

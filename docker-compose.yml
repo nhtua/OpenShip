@@ -5,6 +5,47 @@ name: openship-dev
 # database credentials in the standalone production stack.
 # Use openship-stack to run the one-shot migrations/bootstrap before app services.
 services:
+  opensandbox-server:
+    profiles: [sandbox]
+    image: ${OPENSHIP_SANDBOX_SERVER_IMAGE:-openship-sandbox-configuration-required:missing}
+    restart: unless-stopped
+    entrypoint:
+      - python
+      - -c
+      - "import os, sys; key = os.environ.get('OPENSANDBOX_SERVER_API_KEY', ''); key.strip() or sys.exit('OpenSandbox API key is required'); os.execvp('opensandbox-server', ['opensandbox-server', '--config', '/etc/opensandbox/config.toml'])"
+    environment:
+      HOME: /var/lib/opensandbox
+      SANDBOX_CONFIG_PATH: /etc/opensandbox/config.toml
+      OPENSANDBOX_SERVER_API_KEY: ${OPENSHIP_SANDBOX_API_KEY:-}
+    volumes:
+      - ${OPENSHIP_SANDBOX_CONFIG:-./.openship/sandbox/config-required.toml}:/etc/opensandbox/config.toml:ro
+      - ${OPENSHIP_SANDBOX_ENGINE_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - sandbox_metadata:/var/lib/opensandbox
+    networks:
+      - sandbox-manager
+      - sandbox-data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+
+  opensandbox-gateway:
+    profiles: [sandbox]
+    image: ${OPENSHIP_SANDBOX_GATEWAY_IMAGE:-openship-sandbox-configuration-required:missing}
+    restart: unless-stopped
+    depends_on:
+      opensandbox-server:
+        condition: service_healthy
+    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: []
+    volumes:
+      - ./deploy/sandbox/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${OPENSHIP_SANDBOX_AUTH_MAP:-./.openship/sandbox/auth-required.map}:/etc/opensandbox/auth.map:ro
+    networks:
+      - sandbox-control
+      - sandbox-manager
+
   migrate:
     build: ./apps/api
     command: ["uv", "run", "alembic", "upgrade", "head"]
@@ -172,6 +213,9 @@ services:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
       - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/worker.json:/run/nats-auth/worker.json:ro"
+    networks:
+      - default
+      - sandbox-control
     depends_on:
       postgres:
         condition: service_healthy
@@ -241,3 +285,13 @@ volumes:
   artifactdata:
   natsdata:
   natsnui_data:
+  sandbox_metadata:
+
+networks:
+  sandbox-manager:
+    internal: true
+  sandbox-control:
+    internal: true
+  sandbox-data:
+    name: openship-sandbox-data
+    internal: true

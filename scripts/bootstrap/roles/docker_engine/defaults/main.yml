@@ -1,0 +1,11 @@
+---
+openship_configure_only: false
+openship_verify: false
+openship_docker_packages: [docker, docker-compose, docker-buildx, rootlesskit, slirp4netns, fuse-overlayfs, shadow]
+openship_docker_aur_packages: [gvisor-bin, docker-rootless-extras]
+openship_user_config_dir: "{{ ansible_facts.env.XDG_CONFIG_HOME | default(ansible_facts.user_dir + '/.config', true) }}"
+openship_user_data_dir: "{{ ansible_facts.env.XDG_DATA_HOME | default(ansible_facts.user_dir + '/.local/share', true) }}"
+openship_user_runtime_dir: "/run/user/{{ ansible_facts.user_uid }}"
+openship_docker_endpoint: "unix://{{ openship_user_runtime_dir }}/openship-docker/docker.sock"
+# Trusted diagnostic fixture, not a qualified Phase 6B workload image.
+openship_docker_probe_image: docker.io/library/python@sha256:0451b9eeed3e5a9523d8958cc33262eb5843c7af3114c50f45d99f56e2b883ac

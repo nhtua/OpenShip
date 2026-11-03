@@ -1,0 +1,61 @@
+---
+- name: Inspect existing system Docker configuration
+  ansible.builtin.stat:
+    path: /etc/docker/daemon.json
+  register: openship_system_docker_stat
+
+- name: Read existing Docker configuration
+  ansible.builtin.slurp:
+    src: /etc/docker/daemon.json
+  register: openship_system_docker_read
+  when: openship_system_docker_stat.stat.exists
+  no_log: true
+
+- name: Decode Docker configuration
+  ansible.builtin.set_fact:
+    openship_system_docker_existing: >-
+      {{ (openship_system_docker_read.content | b64decode | from_json)
+         if openship_system_docker_stat.stat.exists else {} }}
+  no_log: true
+
+- name: Preserve other settings and register runsc without ignore-cgroups
+  ansible.builtin.set_fact:
+    openship_system_docker_config: >-
+      {{ openship_system_docker_existing | combine({'default-runtime': openship_system_docker_existing.get('default-runtime', 'runc'),
+         'runtimes': (openship_system_docker_existing.get('runtimes', {}) |
+           combine({'runsc': {'path': '/usr/bin/runsc', 'runtimeArgs': []}}))}) }}
+  no_log: true
+
+- name: Create system Docker configuration directory
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Validate and install Docker runtime registration
+  ansible.builtin.copy:
+    content: "{{ openship_system_docker_config | to_nice_json }}\n"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+    validate: /usr/bin/dockerd --validate --config-file %s
+  register: openship_system_docker_write
+  no_log: true
+  diff: false
+
+- name: Start and enable system Docker and its socket
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [docker.socket, docker.service]
+
+- name: Reload supported runtime and default-runtime settings when changed
+  ansible.builtin.systemd_service:
+    name: docker.service
+    state: reloaded
+  when: openship_system_docker_write.changed

@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenShip rootless Podman API for gVisor sandboxes
+Requires=openship-sandbox-engine.socket
+After=openship-sandbox-engine.socket
+Documentation=man:podman-system-service(1)
+StartLimitIntervalSec=0
+
+[Service]
+Delegate=true
+Type=exec
+KillMode=process
+# Podman's Docker-compatible API can ignore HostConfig.Runtime. Scope the
+# runtime to this service; the ordinary Podman service keeps its runc default.
+ExecStart=/usr/bin/podman --runtime=runsc system service

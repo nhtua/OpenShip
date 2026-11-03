@@ -1,0 +1,6 @@
+---
+openship_configure_only: false
+openship_verify: false
+openship_rootful_engines: [docker, podman]
+openship_rootful_packages: "{{ (['docker', 'docker-compose', 'docker-buildx'] if 'docker' in openship_rootful_engines else []) + (['podman', 'podman-compose'] if 'podman' in openship_rootful_engines else []) + ['runc'] }}"
+openship_rootful_probe_image: docker.io/library/python@sha256:0451b9eeed3e5a9523d8958cc33262eb5843c7af3114c50f45d99f56e2b883ac

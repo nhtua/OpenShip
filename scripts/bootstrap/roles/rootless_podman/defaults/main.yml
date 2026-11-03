@@ -1,0 +1,6 @@
+---
+openship_verify: false
+openship_probe_image: docker.io/library/alpine:latest
+openship_user_config_dir: "{{ ansible_facts.env.XDG_CONFIG_HOME | default(ansible_facts.user_dir + '/.config', true) }}"
+openship_user_runtime_dir: "/run/user/{{ ansible_facts.user_uid }}"
+openship_sandbox_endpoint: "unix://{{ openship_user_runtime_dir }}/openship-sandbox/podman.sock"
