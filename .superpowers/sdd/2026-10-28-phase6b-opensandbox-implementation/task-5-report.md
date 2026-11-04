@@ -394,3 +394,140 @@ pre-existing parent-owned `progress.md` modification.
 This final evidence update is a separate report-only commit, with its own
 reviewed/scanned message file and applicable normal hooks. Its commit ID is
 provided in the handoff rather than embedding its own hash in this report.
+
+## Task 5 deep-review fix round — I1 and I2
+
+Base: `9a75119`. Both Important findings were verified against the current code
+and reproduced before their respective production fixes. This round changes
+only `apps/api/src/openship/runs/resume.py`, its existing integration test file,
+and this appended report. No minor findings, Task 6 work, history rewrite,
+subagent dispatch, or parent-owned `progress.md` edits are included.
+
+### I1 — recheck idempotency at the serialized admission boundary
+
+The fast request lookup previously had no matching lookup after
+`_lock_active_conversation_scope`. The regression forces a competing transaction
+to commit after the fast lookup but before the scope-lock hand-off completes.
+The competitor uses a separate real database session and the real resume
+service/outbox/event path. Only scheduling at the lock boundary is controlled;
+the run, job, event and outbox writes and the outer authenticated route are real.
+
+SQLite does not implement PostgreSQL `SELECT FOR UPDATE`. This is a deterministic
+serialization-window regression, not a claim of live PostgreSQL threaded-lock
+qualification. It deliberately does not rely on thread timing or sleeps.
+
+RED, from `apps/api`:
+
+```sh
+uv run pytest tests/integration/test_analysis_resume.py -q -k 'serialized_admission' > /tmp/opencode/task5-fix-i1-red.log 2>&1
+```
+
+```text
+test_resume_rechecks_request_after_serialized_admission[last_step]
+E AssertionError: {"error":{"code":"run_already_active","message":"Another run is already active on this conversation."}}
+E assert 409 == 202
+test_resume_rechecks_request_after_serialized_admission[from_beginning]
+E AssertionError: assert 'run_already_active' == 'client_request_id_conflict'
+2 failed, 18 deselected, 2 warnings in 4.89s
+```
+
+Fix: the fast and locked lookups now use the same `_resume_replay` comparison,
+binding request identity to the existing conversation and source-run/mode
+digest. The second lookup happens immediately after the scope lock, before
+active-run checks or new writes. An identical contender returns the committed
+winner; a different mode retains the normal `client_request_id_conflict` domain
+error. Existing ownership checks and conversation → project → run lock ordering
+are unchanged.
+
+GREEN:
+
+```sh
+uv run pytest tests/integration/test_analysis_resume.py -q -k 'serialized_admission or request_identity' > /tmp/opencode/task5-fix-i1-green.log 2>&1
+```
+
+```text
+3 passed, 17 deselected, 2 warnings in 5.47s
+```
+
+The tests assert exactly one durable run for the request UUID, one run job, one
+`tool.submitted` event, one command outbox entry, and one event-fanout outbox
+entry. There are exactly two outbox rows in total, as required by the existing
+command-plus-event messaging design—not a duplicate admission. No additional
+sandbox command is sent.
+
+### I2 — malformed committed projection fails visibly and closed
+
+The new table-driven API regression covers malformed/empty artifact-ID JSON,
+JSON null/scalar ID lists, malformed result JSON, missing `outputs`, null/list/
+string `outputs`, and malformed output refs. Result cases exercise both
+succeeded and failed terminal operations; failed review-result projection
+previously let validation errors escape. The real HTTP client has server
+exception rethrow disabled so the regression explicitly observes HTTP 500 versus
+the required domain refusal.
+
+Initial RED (`task5-fix-i2-red.log`) also exposed a test assumption: terminal run
+jobs remain recorded rather than being deleted. The test was corrected before
+production changes to compare before/after job counts, as it already did for
+runs, events and outbox rows. Corrected RED:
+
+```sh
+uv run pytest tests/integration/test_analysis_resume.py -q -k 'corrupt_committed_projection' > /tmp/opencode/task5-fix-i2-red-corrected.log 2>&1
+```
+
+```text
+E AssertionError: Internal Server Error
+E assert 500 == 409
+11 failed, 8 passed, 20 deselected, 2 warnings in 15.39s
+```
+
+All 11 failures were actual HTTP 500 responses: empty/null/boolean/integer
+artifact-ID JSON and all seven corrupt failed-operation result shapes. The
+eight already-refused succeeded-result/malformed-JSON cases remain covered.
+
+Fix: `_committed_analysis_result` bounds parsing, projection and exact-ref
+extraction within one domain-error boundary. It requires a JSON string list
+for artifact IDs and an output map for successful results, keeps the existing
+artifact-set comparison, and converts `KeyError`, `TypeError` and `ValueError`
+(including JSON/Pydantic validation errors) to HTTP 409
+`analysis_inputs_unavailable`. It still takes output digests from the committed
+result, never repins current artifact-row metadata, never modifies that result,
+and never dispatches execution or source review to recover it.
+
+GREEN, including the existing accepted/rejected Task 4 digest-bound replay and
+changed-output-metadata regressions:
+
+```sh
+uv run pytest tests/integration/test_analysis_resume.py -q -k 'corrupt_committed_projection or digest_bound_review or does_not_repin' > /tmp/opencode/task5-fix-i2-green.log 2>&1
+```
+
+```text
+22 passed, 17 deselected, 2 warnings in 17.25s
+```
+
+Every corrupt case asserts `analysis_inputs_unavailable`, no admitted request
+run, unchanged run/job/event/outbox counts, unchanged stored corrupt operation
+data, one original operation, and no additional sandbox creation or command.
+The preserved accepted/rejected replay tests also assert no repeated review.
+
+### Combined fix-round verification and self-review
+
+```sh
+uv run pytest tests/sandboxes/ tests/integration/test_analysis_results.py tests/integration/test_analysis_resume.py tests/test_tool_worker.py -q > /tmp/opencode/task5-fix-regressions-green.log 2>&1
+```
+
+```text
+209 passed, 2 warnings in 83.55s (0:01:23)
+```
+
+`uv run ruff check .` and `git diff --check` passed. The complete unfiltered API
+suite and normal commit hooks are also run for this fix round; their final
+results are appended below after completion.
+
+Self-review checked that the request recheck precedes all fresh admission
+side effects, mismatch semantics match the fast path, malformed terminal data
+does not mutate state or create a recovery effect, and valid accepted/rejected
+results retain their operation identity and exact digest refs. No auth, fencing,
+worker recovery, cancellation, provider review, UI, or scheduler code changed.
+The only verification limitation remains live PostgreSQL/NATS/provider
+qualification; the deterministic database regression is explicitly not labeled
+as a live PostgreSQL concurrency test.

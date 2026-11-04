@@ -547,3 +547,124 @@ def test_a_does_not_repin_changed_output_metadata(
     assert response.status_code == 409, response.text
     assert response.json()["error"]["code"] == "analysis_inputs_unavailable"
     assert len(provider.commands) == 1
+
+
+@pytest.mark.parametrize("winner_mode", ["last_step", "from_beginning"])
+def test_resume_rechecks_request_after_serialized_admission(
+    client, auth_token, artifact_store, monkeypatch, tmp_path, winner_mode,
+):
+    """A competing transaction commits between fast lookup and lock hand-off."""
+    from src.openship.chat.models import Conversation
+    from src.openship.runs import resume as commands
+    from src.openship.runs.models import Event, Outbox, RunJob
+    from src.openship.runs.schemas import ResumeAnalysisRequest
+
+    provider, old = setup_analysis(client, auth_token, monkeypatch, tmp_path)
+    _execute(old)
+    request_id = uuid.uuid4()
+    with SessionLocal() as db:
+        source = db.get(Run, uuid.UUID(old))
+        principal_id = db.get(Conversation, source.conversation_id).user_id
+    lock_scope = commands._lock_active_conversation_scope
+    winners = []
+
+    def hand_off_lock(db, **scope):
+        # SQLite does not implement SELECT FOR UPDATE. Force the relevant
+        # serialization window deterministically, with a separate real commit,
+        # instead of relying on thread timing or claiming PostgreSQL coverage.
+        with monkeypatch.context() as patch:
+            patch.setattr(commands, "_lock_active_conversation_scope", lock_scope)
+            with SessionLocal() as competitor:
+                winner = commands.resume_analysis(
+                    competitor, principal_id=principal_id, run_id=uuid.UUID(old),
+                    command=ResumeAnalysisRequest(mode=winner_mode, client_request_id=request_id),
+                )
+                competitor.commit()
+                winners.append(winner.id)
+        return lock_scope(db, **scope)
+
+    monkeypatch.setattr(commands, "_lock_active_conversation_scope", hand_off_lock)
+    response = resume(client, old, request_id=str(request_id))
+    assert len(winners) == 1
+    if winner_mode == "last_step":
+        assert response.status_code == 202, response.text
+        assert response.json()["id"] == str(winners[0])
+    else:
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "client_request_id_conflict"
+    with SessionLocal() as db:
+        assert db.query(Run).filter_by(client_request_id=str(request_id)).one().id == winners[0]
+        assert db.query(RunJob).filter_by(run_id=winners[0]).count() == 1
+        submitted = db.query(Event).filter_by(run_id=winners[0], type="tool.submitted").one()
+        assert db.query(Outbox).filter_by(run_id=winners[0], destination="command").count() == 1
+        assert db.query(Outbox).filter_by(run_id=winners[0], destination="event", event_id=submitted.id).count() == 1
+        assert db.query(Outbox).filter_by(run_id=winners[0]).count() == 2
+    assert len(provider.commands) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "payload", "status"),
+    [
+        ("output_artifact_ids", "{", "succeeded"),
+        ("output_artifact_ids", "", "succeeded"),
+        ("output_artifact_ids", "null", "succeeded"),
+        ("output_artifact_ids", "false", "succeeded"),
+        ("output_artifact_ids", "7", "succeeded"),
+        *[
+            ("result_json", payload, status)
+            for status in ("succeeded", "failed")
+            for payload in (
+                "{", "{}", "null", '{"outputs": null}',
+                '{"outputs": []}', '{"outputs": "wrong"}',
+                '{"outputs": {"report.txt": null}}',
+            )
+        ],
+    ],
+)
+def test_corrupt_committed_projection_is_a_visible_refusal(
+    client, auth_token, artifact_store, monkeypatch, tmp_path, field, payload, status,
+):
+    from fastapi.testclient import TestClient
+
+    from src.openship.execution.models import ToolOperation
+    from src.openship.runs.models import Event, Outbox, RunJob
+
+    provider, old = setup_analysis(client, auth_token, monkeypatch, tmp_path)
+    _execute(old)
+    provider.dead = True
+    request_id = str(uuid.uuid4())
+    with SessionLocal() as db:
+        row = db.get(Run, uuid.UUID(old))
+        conversation_id = row.conversation_id
+        operation = db.query(ToolOperation).filter_by(run_id=row.id).one()
+        operation_id = operation.id
+        setattr(operation, field, payload)
+        operation.status = status
+        db.commit()
+        before = (
+            db.query(Run).filter_by(conversation_id=conversation_id).count(),
+            db.query(Event).filter_by(conversation_id=conversation_id).count(),
+            db.query(Outbox).filter_by(conversation_id=conversation_id).count(),
+            db.query(RunJob).join(Run, Run.id == RunJob.run_id).filter(Run.conversation_id == conversation_id).count(),
+        )
+    # Observe the actual HTTP refusal rather than letting TestClient re-raise a
+    # server exception before we can assert that it is not an HTTP 500.
+    reader = TestClient(client.app, headers=dict(client.headers), raise_server_exceptions=False)
+    try:
+        response = resume(reader, old, request_id=request_id)
+    finally:
+        reader.close()
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "analysis_inputs_unavailable"
+    with SessionLocal() as db:
+        assert db.query(Run).filter_by(client_request_id=request_id).count() == 0
+        assert (
+            db.query(Run).filter_by(conversation_id=conversation_id).count(),
+            db.query(Event).filter_by(conversation_id=conversation_id).count(),
+            db.query(Outbox).filter_by(conversation_id=conversation_id).count(),
+            db.query(RunJob).join(Run, Run.id == RunJob.run_id).filter(Run.conversation_id == conversation_id).count(),
+        ) == before
+        assert getattr(db.get(ToolOperation, operation_id), field) == payload
+        assert db.query(ToolOperation).filter_by(conversation_id=conversation_id).count() == 1
+    assert len(provider.commands) == 1
+    assert len(provider.created_ids) == 1

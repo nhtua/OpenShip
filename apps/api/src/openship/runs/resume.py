@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..artifacts.contracts import ArtifactRef
 from ..artifacts.models import Artifact
-from ..capabilities.contracts import canonical_digest
+from ..capabilities.contracts import PublishedToolResult, canonical_digest
 from ..events.service import append_event
 from ..execution.models import ToolOperation
 from ..execution.publication import project_published_result
@@ -45,6 +45,54 @@ def _require_refs(db, run, refs):
             )
 
 
+def _committed_analysis_result(db, operation) -> PublishedToolResult:
+    """Refuse corrupt terminal data without granting another execution."""
+    try:
+        artifact_ids = json.loads(operation.output_artifact_ids)
+        if not isinstance(artifact_ids, list) or not all(
+            isinstance(item, str) for item in artifact_ids
+        ):
+            raise ValueError("invalid committed artifact ID list")
+        result = project_published_result(db, operation)
+        if result.status == "interrupted" or (
+            result.status == "succeeded" and len(result.artifacts) != len(artifact_ids)
+        ):
+            raise ValueError("committed outputs are unavailable")
+        if result.status == "succeeded":
+            data = result.result
+            if not isinstance(data, dict) or not isinstance(data.get("outputs"), dict):
+                raise ValueError("invalid committed output map")
+            # Projection discovers ready rows, but the committed result—not
+            # today's row metadata—is the authority for their exact refs.
+            outputs = tuple(
+                ArtifactRef.model_validate_json(json.dumps(item))
+                for item in data["outputs"].values()
+            )
+            if {ref.id for ref in outputs} != {ref.id for ref in result.artifacts}:
+                raise ValueError("committed output identities do not match")
+            result = result.model_copy(update={"artifacts": outputs})
+        return result
+    except (KeyError, TypeError, ValueError):
+        raise _tool_command_error(
+            409,
+            "analysis_inputs_unavailable",
+            "The committed analysis result is no longer available; execution will not be repeated.",
+        ) from None
+
+
+def _resume_replay(db, *, conversation_id, request_id, digest) -> Run | None:
+    existing = db.query(Run).filter_by(client_request_id=str(request_id)).first()
+    if existing is not None and (
+        existing.conversation_id != conversation_id or existing.command_digest != digest
+    ):
+        raise _tool_command_error(
+            409,
+            "client_request_id_conflict",
+            "This request ID already identifies a different command.",
+        )
+    return existing
+
+
 def resume_analysis(
     db: Session,
     *,
@@ -62,25 +110,27 @@ def resume_analysis(
         db, principal_id, str(prior.conversation_id)
     )
     digest = canonical_digest({"resume_analysis": str(run_id), "mode": command.mode})
-    existing = (
-        db.query(Run)
-        .filter_by(client_request_id=str(command.client_request_id))
-        .first()
+    existing = _resume_replay(
+        db,
+        conversation_id=conversation.id,
+        request_id=command.client_request_id,
+        digest=digest,
     )
     if existing is not None:
-        if (
-            existing.conversation_id != conversation.id
-            or existing.command_digest != digest
-        ):
-            raise _tool_command_error(
-                409,
-                "client_request_id_conflict",
-                "This request ID already identifies a different command.",
-            )
         return existing
     conversation = _lock_active_conversation_scope(
         db, user_id=principal_id, conversation_id=conversation.id
     )
+    # A competing admission may have committed while this request waited for
+    # the scope lock. Replay its result before checking active work or queuing.
+    existing = _resume_replay(
+        db,
+        conversation_id=conversation.id,
+        request_id=command.client_request_id,
+        digest=digest,
+    )
+    if existing is not None:
+        return existing
     prior = (
         db.query(Run).filter_by(id=run_id).with_for_update().populate_existing().one()
     )
@@ -141,29 +191,8 @@ def resume_analysis(
                     "analysis_execution_interrupted",
                     "The earlier command may still be running or was interrupted. Wait for definite provider availability; it will not be sent again. Start from beginning only when ready.",
                 )
-            result = project_published_result(db, operation)
-            if result.status == "interrupted" or (
-                operation.status == "succeeded"
-                and len(result.artifacts)
-                != len(json.loads(operation.output_artifact_ids))
-            ):
-                raise _tool_command_error(
-                    409,
-                    "analysis_inputs_unavailable",
-                    "The committed analysis result is no longer available; execution will not be repeated.",
-                )
+            result = _committed_analysis_result(db, operation)
             saved["tool_result"] = result.model_dump(mode="json")
-            if result.status == "succeeded":
-                # Projection discovers ready rows, but the committed result—not
-                # today's row metadata—is the authority for their exact refs.
-                outputs = tuple(
-                    ArtifactRef.model_validate_json(json.dumps(item))
-                    for item in result.result["outputs"].values()
-                )
-                if {ref.id for ref in outputs} != {ref.id for ref in result.artifacts}:
-                    raise _tool_command_error(409, "analysis_inputs_unavailable", "The committed analysis output set is no longer available.")
-                result = result.model_copy(update={"artifacts": outputs})
-                saved["tool_result"] = result.model_dump(mode="json")
             journey = journey.model_copy(
                 update={
                     "completed_phases": ("prepare", "execute") + (("use_outputs",) if "use_outputs" in journey.completed_phases else ()),
