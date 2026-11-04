@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from src.openship.artifacts.contracts import ArtifactRef
 from src.openship.artifacts.filesystem import ArtifactStorageError
@@ -24,7 +24,10 @@ from src.openship.database.session import SessionLocal
 from src.openship.execution.gateway import ToolGateway
 from src.openship.execution.publication import ToolPublicationError
 from src.openship.runs.models import Run
-from src.openship.sandboxes.client import OpenSandboxClient, SandboxUnavailable
+from src.openship.sandboxes.client import (
+    OpenSandboxClient,
+    SandboxUnavailable,
+)
 from src.openship.sandboxes.contracts import (
     ExecutionRequest,
     InputFile,
@@ -33,7 +36,11 @@ from src.openship.sandboxes.contracts import (
     RuntimeRequirements,
     _alias,
 )
-from src.openship.sandboxes.sessions import get_or_create_sandbox
+from src.openship.sandboxes.sessions import (
+    clear_command_uncertain,
+    get_or_create_sandbox,
+    mark_command_uncertain,
+)
 
 from .outputs import OutputValidationFailed, validate_outputs
 
@@ -48,10 +55,26 @@ class AnalysisArguments(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    source_id: UUID
+    source_id: UUID | None = None
+    source_prompt: str | None = None
     input_ids: dict[str, UUID] = {}
     parameters: dict[str, Any] = {}
     output_media: dict[str, str]
+
+    @field_validator("source_prompt")
+    @classmethod
+    def _bounded_source_prompt(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("source prompt must not be blank")
+        if value is not None and len(value.encode()) > 16 * 1024:
+            raise ValueError("source prompt exceeds limit")
+        return value
+
+    @model_validator(mode="after")
+    def _one_source_origin(self):
+        if (self.source_id is None) == (self.source_prompt is None):
+            raise ValueError("exactly one of source_id or source_prompt is required")
+        return self
 
     @field_validator("source_id", mode="before")
     def _parse_source_id(cls, value):
@@ -120,10 +143,29 @@ def analysis_error(error: Exception) -> str | None:
 
 def runtime_requirements() -> RuntimeRequirements:
     """Derive the sandbox runtime identity from installation settings."""
-    if not settings.sandbox_image:
+    if not settings.sandbox_image or not settings.sandbox_endpoint.strip():
         raise SandboxUnavailable("sandbox runtime image is not configured")
+    try:
+        endpoint = httpx.URL(settings.sandbox_endpoint)
+        if (
+            endpoint.scheme not in ("http", "https")
+            or not endpoint.host
+            or endpoint.userinfo
+            or endpoint.query
+            or endpoint.fragment
+        ):
+            raise ValueError("invalid endpoint identity")
+    except ValueError:
+        raise SandboxUnavailable("sandbox provider identity is not configured") from None
+    deployment = settings.sandbox_deployment_id.strip()
+    if not deployment:
+        raise SandboxUnavailable("sandbox deployment identity is not configured")
+    endpoint_identity = f"{endpoint.scheme}://{endpoint.host}:{endpoint.port}{endpoint.path.rstrip('/')}"
+    provider_id = "opensandbox:" + hashlib.sha256(
+        f"{deployment}\n{endpoint_identity}".encode()
+    ).hexdigest()
     return RuntimeRequirements(
-        provider_id="openship-phase6b",
+        provider_id=provider_id,
         profile_id=settings.sandbox_profile_id,
         image=settings.sandbox_image,
         dependency_identity=settings.sandbox_dependency_identity,
@@ -145,6 +187,7 @@ def sandbox_client_factory() -> OpenSandboxClient:
         settings.sandbox_endpoint,
         key,
         http=httpx.AsyncClient(trust_env=False, follow_redirects=False),
+        owns_http=True,
     )
 
 
@@ -241,6 +284,8 @@ async def analysis_execute(arguments, invocation, control):
         raise ToolPublicationError("execution_interrupted")
     if invocation.artifact_store is None:
         raise ToolPublicationError("artifact_storage_unavailable")
+    if arguments.source_id is None:
+        raise ToolPublicationError("invalid_tool_arguments")
     with invocation.session_factory() as db:
         request = _execution_request(db, claim, invocation.operation_id, arguments)
         files = prepare_execution(
@@ -248,22 +293,53 @@ async def analysis_execute(arguments, invocation, control):
         )
 
     client = sandbox_client_factory()
-    handle = await get_or_create_sandbox(
-        invocation.session_factory,
-        client,
-        claim=claim,
-        root_run_id=claim.run_id,
-        requirements=request.requirements,
-    )
-    result = await client.execute(handle, request, files, control)
-    outputs = validate_outputs(request, result)
-    return AnalysisObservation(outputs=outputs)
+    handle = None
+    try:
+        handle = await get_or_create_sandbox(
+            invocation.session_factory,
+            client,
+            claim=claim,
+            root_run_id=claim.run_id,
+            requirements=request.requirements,
+        )
+        # Reserve the shared handle before the single command request. A worker
+        # crash after dispatch is then fail-closed even if its exception handler
+        # never gets a chance to mark ambiguity.
+        mark_command_uncertain(
+            invocation.session_factory,
+            claim=claim,
+            sandbox_id=handle.sandbox_id,
+            operation_id=invocation.operation_id,
+        )
+        try:
+            result = await client.execute(handle, request, files, control)
+        except BaseException:
+            if not client.command_uncertain:
+                clear_command_uncertain(
+                    invocation.session_factory,
+                    claim=claim,
+                    sandbox_id=handle.sandbox_id,
+                    operation_id=invocation.operation_id,
+                )
+            raise
+        clear_command_uncertain(
+            invocation.session_factory,
+            claim=claim,
+            sandbox_id=handle.sandbox_id,
+            operation_id=invocation.operation_id,
+        )
+        outputs = validate_outputs(request, result)
+        return AnalysisObservation(outputs=outputs)
+    finally:
+        await client.aclose()
 
 
 async def execute_analysis(
     context, request: ExecutionRequest, control
 ) -> PublishedToolResult:
     """Submit one authorized analysis through the normal gateway transaction."""
+    if any(output.kind != "data" or output.expectation is not None for output in request.outputs):
+        raise ToolPublicationError("invalid_tool_output")
     arguments = {
         "source_id": str(request.source.id),
         "input_ids": {item.alias: str(item.artifact.id) for item in request.inputs},

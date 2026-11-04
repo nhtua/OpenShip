@@ -3,7 +3,7 @@ import gzip
 import hashlib
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx
@@ -13,7 +13,10 @@ from pydantic import ValidationError
 from src.openship.artifacts.contracts import ArtifactRef
 from src.openship.providers.control import InvocationControl
 from src.openship.providers.errors import ProviderError
-from src.openship.sandboxes.client import OpenSandboxClient, SandboxUnavailable
+from src.openship.sandboxes.client import (
+    OpenSandboxClient,
+    SandboxUnavailable,
+)
 from src.openship.sandboxes.contracts import (
     ExecutionRequest,
     InputFile,
@@ -38,6 +41,27 @@ def requirements() -> RuntimeRequirements:
     )
 
 
+def future_expiry() -> str:
+    return (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_close_preserves_caller_owned_http_client():
+    http = httpx.AsyncClient()
+    await OpenSandboxClient("http://sandbox.test", "test-key", http=http).aclose()
+    assert not http.is_closed
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_close_closes_invocation_owned_http_client():
+    http = httpx.AsyncClient()
+    await OpenSandboxClient(
+        "http://sandbox.test", "test-key", http=http, owns_http=True
+    ).aclose()
+    assert http.is_closed
+
+
 def request(**overrides):
     values = {
         "root_run_id": uuid4(), "operation_id": uuid4(), "requirements": requirements(),
@@ -55,7 +79,7 @@ async def test_create_requests_provider_owned_thirty_minute_sandbox():
         calls.append(req)
         return httpx.Response(202, json={
             "id": "sbx-1", "status": {"state": "Running"},
-            "expiresAt": "2026-11-03T13:00:00Z",
+            "expiresAt": future_expiry(),
         })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
@@ -87,7 +111,7 @@ async def test_create_lost_response_is_interrupted_without_retry():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [None, {}, {"state": "Pending"}, {"state": "Failed"}])
 async def test_create_rejects_missing_or_nonrunning_provider_status(status):
-    response = {"id": "sbx-1", "expiresAt": "2026-11-03T13:00:00Z"}
+    response = {"id": "sbx-1", "expiresAt": future_expiry()}
     if status is not None:
         response["status"] = status
     async with httpx.AsyncClient(transport=httpx.MockTransport(
@@ -202,15 +226,30 @@ async def test_inspection_rejects_malformed_or_nonrunning_responses(body):
 
 @pytest.mark.asyncio
 async def test_inspection_preserves_identity_and_uses_provider_expiration():
+    expiry = datetime.now(UTC) + timedelta(minutes=30)
     handle = SandboxHandle(provider_id="local", sandbox_id="sbx-1", requirements_key=requirements().key,
-                           expires_at=datetime(2026, 11, 3, 13, tzinfo=UTC))
-    body = {"id": "sbx-1", "status": {"state": "Running"}, "expiresAt": "2026-11-03T13:30:00Z"}
+                           expires_at=expiry)
+    body = {"id": "sbx-1", "status": {"state": "Running"}, "expiresAt": expiry.isoformat()}
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, json=body))) as http:
         result = await OpenSandboxClient("http://sandbox.test", "test-key", http=http).inspect(handle)
     assert result is not None
     assert result.sandbox_id == handle.sandbox_id
     assert result.requirements_key == handle.requirements_key
-    assert result.expires_at == datetime(2026, 11, 3, 13, 30, tzinfo=UTC)
+    assert result.expires_at == expiry
+
+
+@pytest.mark.asyncio
+async def test_inspection_treats_expired_running_handle_as_absent():
+    expired = datetime.now(UTC) - timedelta(seconds=1)
+    handle = SandboxHandle(provider_id="local", sandbox_id="sbx-1",
+                           requirements_key=requirements().key, expires_at=expired)
+    body = {"id": "sbx-1", "status": {"state": "Running"},
+            "expiresAt": expired.isoformat()}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(200, json=body)
+    )) as http:
+        result = await OpenSandboxClient("http://sandbox.test", "test-key", http=http).inspect(handle)
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -322,6 +361,30 @@ async def test_execute_rejects_missing_or_nonzero_completion_without_retry(strea
                 handle, req, PreparedFiles(source=b"print('hello')", inputs={}), InvocationControl()
             )
     assert len(commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_completion_keeps_command_handle_uncertain():
+    def handler(req):
+        if req.url.path.endswith("/command"):
+            return httpx.Response(200, text='{"type":"stdout","text":"working"}\n')
+        return httpx.Response(200, json=[])
+
+    req = request()
+    handle = SandboxHandle(
+        provider_id="local",
+        sandbox_id="sbx-1",
+        requirements_key=req.requirements.key,
+        expires_at=datetime.now(UTC) + timedelta(minutes=30),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OpenSandboxClient("http://sandbox.test", "test-key", http=http)
+        with pytest.raises(SandboxUnavailable, match="interrupted"):
+            await client.execute(
+                handle, req, PreparedFiles(source=b"print('hello')", inputs={}),
+                InvocationControl(),
+            )
+    assert client.command_uncertain
 
 
 @pytest.mark.asyncio
@@ -501,7 +564,8 @@ async def test_cancellation_during_execution_or_download_rejects_success(blocked
     handle = SandboxHandle(provider_id="local", sandbox_id="sbx-1", requirements_key=req.requirements.key,
                            expires_at=datetime(2026, 11, 3, 13, tzinfo=UTC))
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        task = asyncio.create_task(OpenSandboxClient("http://sandbox.test", "test-key", http=http).execute(
+        client = OpenSandboxClient("http://sandbox.test", "test-key", http=http)
+        task = asyncio.create_task(client.execute(
             handle, req, PreparedFiles(source=b"print('hello')", inputs={}), InvocationControl(stop=lambda: stopped)
         ))
         await asyncio.wait_for(reached.wait(), timeout=2)
@@ -639,13 +703,15 @@ async def test_cancelled_command_cannot_return_late_success():
     handle = SandboxHandle(provider_id="local", sandbox_id="sbx-1", requirements_key=req.requirements.key,
                            expires_at=datetime(2026, 11, 3, 13, tzinfo=UTC))
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        task = asyncio.create_task(OpenSandboxClient("http://sandbox.test", "test-key", http=http).execute(
+        client = OpenSandboxClient("http://sandbox.test", "test-key", http=http)
+        task = asyncio.create_task(client.execute(
             handle, req, PreparedFiles(source=b"print('hello')", inputs={}), InvocationControl(stop=lambda: stopped)
         ))
         await asyncio.wait_for(waiting.wait(), timeout=2)
         stopped = True
         with pytest.raises(ProviderError, match="cancelled"):
             await asyncio.wait_for(task, timeout=1)
+        assert client.command_uncertain
         release.set()
 
 

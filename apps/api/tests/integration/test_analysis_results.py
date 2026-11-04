@@ -133,6 +133,22 @@ class Sandbox:
                     "status": {"state": "Running"},
                 },
             )
+        if (
+            request.method == "GET"
+            and path.startswith("/v1/sandboxes/")
+            and path.count("/") == 3
+        ):
+            sandbox_id = path.rsplit("/", 1)[-1]
+            if sandbox_id not in self.created_ids:
+                return httpx.Response(404)
+            return httpx.Response(
+                200,
+                json={
+                    "id": sandbox_id,
+                    "expiresAt": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
+                    "status": {"state": "Running"},
+                },
+            )
         if path.endswith("/proxy/44772/ping"):
             return httpx.Response(200, json={})
         if path.endswith("/directories"):
@@ -332,7 +348,7 @@ def test_analysis_run_retains_declared_outputs(
             ToolAttempt.operation_id == operation.id
         ).one()
         stored = db.get(Run, _uuid.UUID(run_id))
-        assert stored.status == "completed"
+        assert stored.status == "completed", (stored.error_code, provider.commands)
         assert operation.status == "succeeded"
         assert attempt.outcome == "succeeded"
 
@@ -374,9 +390,9 @@ def test_changed_inputs_cannot_reuse_residual_sandbox_files(
     )
     _execute(second)
 
-    # Each root run owns one pointer, so each asks for its own sandbox; either
-    # way both requests upload their own complete inputs into fresh paths.
-    assert provider.created_ids == ["sbx-lane-1", "sbx-lane-2"]
+    # Two runs in this conversation reuse its live sandbox pointer, but each
+    # sends its complete current inputs into a fresh request directory.
+    assert provider.created_ids == ["sbx-lane-1"]
     assert len(provider.commands) == 2
     assert len({body["cwd"] for body in provider.commands}) == 2
     assert len(provider.produced) == 2

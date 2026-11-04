@@ -485,7 +485,7 @@ class ToolGateway:
             )
 
         if definition.artifact_kind == "analysis_output":
-            staged_rows: list[Artifact] = []
+            staged_rows: list[StagedArtifact] = []
             try:
                 staged_outputs = self._stage_analysis_outputs(
                     claim, operation_id, observation, store, context, staged_rows
@@ -1047,7 +1047,6 @@ class ToolGateway:
                 size_bytes=len(data),
                 media_type=row.media_type,
             )
-            staged_rows.append(row)
             staged_output = store.stage(
                 row.id,
                 (data,),
@@ -1055,13 +1054,14 @@ class ToolGateway:
                 project_id=context.authorization.project_id,
                 conversation_id=context.authorization.conversation_id,
             )
+            staged_rows.append(staged_output)
             store.publish_file(staged_output, row.relative_storage_key)
             staged.append(staged_output)
         return tuple(staged)
 
     def _remove_staged_analysis(self, rows, store, context) -> None:
-        for row in rows:
-            self._remove_staging(store, row.id, context)
+        for staged in rows:
+            self._cleanup_one_uncommitted(staged, store, context)
 
     def _publish(
         self,

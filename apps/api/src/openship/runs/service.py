@@ -1242,6 +1242,32 @@ def submit_tool_run(
             ),
         )
         graph_version = 1
+
+    model_configuration = None
+    model_selection = None
+    if command.capability.id == "sandbox_analysis":
+        pinned_model = _resolve_selection(None, None)
+        bounded_limits = pinned_model.limits.model_copy(
+            update={
+                "max_attempts": min(
+                    pinned_model.limits.max_attempts,
+                    execution.loop_limits.max_generation_attempts,
+                ),
+                "max_output_tokens": min(
+                    pinned_model.limits.max_output_tokens,
+                    execution.loop_limits.max_output_tokens_per_request,
+                ),
+            }
+        )
+        pinned_model = pinned_model.model_copy(update={"limits": bounded_limits})
+        model_configuration = pinned_model.model_dump_json()
+        model_selection = json.dumps(
+            {
+                "profile_id": pinned_model.primary.id,
+                "fallback_profile_ids": [item.id for item in pinned_model.fallbacks],
+            },
+            sort_keys=True,
+        )
     run = Run(
         conversation_id=conversation.id,
         project_id=conversation.project_id,
@@ -1262,8 +1288,8 @@ def submit_tool_run(
         status="queued",
         attempt=0,
         fence=0,
-        model_selection=None,
-        model_configuration=None,
+        model_selection=model_selection,
+        model_configuration=model_configuration,
     )
     db.add(run)
     db.flush()

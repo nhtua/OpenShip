@@ -25,8 +25,19 @@ class SandboxUnavailable(Exception):
     """Safe provider failure; never includes credentials or provider bodies."""
 
 
+class SandboxCommandUncertain(SandboxUnavailable):
+    """The single command POST may have reached the provider without completion."""
+
+
 class OpenSandboxClient:
-    def __init__(self, base_url: str, api_key: str, *, http: httpx.AsyncClient):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        *,
+        http: httpx.AsyncClient,
+        owns_http: bool = False,
+    ):
         parsed = httpx.URL(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.host or parsed.userinfo:
             raise ValueError("invalid OpenSandbox endpoint")
@@ -35,6 +46,16 @@ class OpenSandboxClient:
         self.base_url = str(parsed).rstrip("/")
         self._headers = {"OPEN-SANDBOX-API-KEY": api_key, "Accept-Encoding": "identity"}
         self._http = http
+        self._owns_http = owns_http
+        self._command_uncertain = False
+
+    @property
+    def command_uncertain(self) -> bool:
+        return self._command_uncertain
+
+    async def aclose(self) -> None:
+        if self._owns_http:
+            await self._http.aclose()
 
     async def create(self, requirements: RuntimeRequirements) -> SandboxHandle:
         body = {
@@ -55,6 +76,8 @@ class OpenSandboxClient:
             expires = datetime.fromisoformat(data["expiresAt"])
             if expires.tzinfo is None:
                 raise ValueError("missing timezone")
+            if expires <= datetime.now(expires.tzinfo):
+                raise ValueError("sandbox already expired")
             return SandboxHandle(provider_id=requirements.provider_id, sandbox_id=data["id"],
                                  requirements_key=requirements.key, expires_at=expires)
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
@@ -75,6 +98,8 @@ class OpenSandboxClient:
             expires = datetime.fromisoformat(data["expiresAt"])
             if expires.tzinfo is None:
                 raise ValueError("missing timezone")
+            if expires <= datetime.now(expires.tzinfo):
+                return None
             return handle.model_copy(update={"expires_at": expires})
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             raise SandboxUnavailable("sandbox inspection unavailable") from None
@@ -93,10 +118,19 @@ class OpenSandboxClient:
                     raise SandboxUnavailable("sandbox invocation deadline exceeded")
                 if done:
                     return task.result()
+        except BaseException:
+            if not task.done():
+                task.cancel()
+            result = await asyncio.gather(task, return_exceptions=True)
+            if result and isinstance(result[0], SandboxCommandUncertain):
+                self._command_uncertain = True
+            raise
         finally:
             if not task.done():
                 task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+                result = await asyncio.gather(task, return_exceptions=True)
+                if result and isinstance(result[0], SandboxCommandUncertain):
+                    self._command_uncertain = True
 
     async def _execute(
         self, handle: SandboxHandle, request: ExecutionRequest,
@@ -165,45 +199,65 @@ class OpenSandboxClient:
             stdout, stderr = [], []
             diagnostic_bytes = 0
             completed = False
+            command_dispatched = False
             buffer = b""
-            async with self._http.stream(
-                "POST", f"{base}/command", headers=self._headers, json=body,
-                timeout=control.request_timeout_seconds(35), follow_redirects=False,
-            ) as response:
-                response.raise_for_status()
-                if response.headers.get("content-encoding", "identity").lower() != "identity":
-                    raise SandboxUnavailable("unsupported sandbox response encoding")
-                async for chunk in response.aiter_bytes(chunk_size=65536):
-                    control.raise_if_stopped()
-                    buffer += chunk
-                    # JSON may encode a single diagnostic byte as six ASCII
-                    # bytes (for example, a NUL as \\u0000).
-                    if len(buffer) > 2 * 1024 * 1024:
-                        raise SandboxUnavailable("sandbox diagnostics exceeded limit")
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
-                        if not line.strip():
-                            continue
-                        event = json.loads(line)
-                        if not isinstance(event, dict):
-                            raise SandboxUnavailable("invalid sandbox command event")
-                        kind = event.get("type")
-                        if kind in ("stdout", "stderr"):
-                            text = event["text"]
-                            if not isinstance(text, str):
+            try:
+                command_dispatched = True
+                async with self._http.stream(
+                    "POST", f"{base}/command", headers=self._headers, json=body,
+                    timeout=control.request_timeout_seconds(35), follow_redirects=False,
+                ) as response:
+                    response.raise_for_status()
+                    if response.headers.get("content-encoding", "identity").lower() != "identity":
+                        raise SandboxUnavailable("unsupported sandbox response encoding")
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        control.raise_if_stopped()
+                        buffer += chunk
+                        # JSON may encode a single diagnostic byte as six ASCII
+                        # bytes (for example, a NUL as \\u0000).
+                        if len(buffer) > 2 * 1024 * 1024:
+                            raise SandboxUnavailable("sandbox diagnostics exceeded limit")
+                        while b"\n" in buffer:
+                            line, buffer = buffer.split(b"\n", 1)
+                            if not line.strip():
+                                continue
+                            event = json.loads(line)
+                            if not isinstance(event, dict):
                                 raise SandboxUnavailable("invalid sandbox command event")
-                            diagnostic_bytes += len(text.encode("utf-8"))
-                            if diagnostic_bytes > 256 * 1024:
-                                raise SandboxUnavailable("sandbox diagnostics exceeded limit")
-                            (stdout if kind == "stdout" else stderr).append(text)
-                        elif kind == "execution_complete":
-                            if completed or type(event.get("exit_code")) is not int or event["exit_code"] != 0:
+                            kind = event.get("type")
+                            if kind in ("stdout", "stderr"):
+                                text = event["text"]
+                                if not isinstance(text, str):
+                                    raise SandboxUnavailable("invalid sandbox command event")
+                                diagnostic_bytes += len(text.encode("utf-8"))
+                                if diagnostic_bytes > 256 * 1024:
+                                    raise SandboxUnavailable("sandbox diagnostics exceeded limit")
+                                (stdout if kind == "stdout" else stderr).append(text)
+                            elif kind == "execution_complete":
+                                if completed:
+                                    raise SandboxUnavailable("duplicate completion event")
+                                completed = True
+                                if type(event.get("exit_code")) is not int or event["exit_code"] != 0:
+                                    raise SandboxUnavailable("sandbox command failed")
+                            elif kind == "error":
                                 raise SandboxUnavailable("sandbox command failed")
-                            completed = True
-                        elif kind == "error":
-                            raise SandboxUnavailable("sandbox command failed")
+            except asyncio.CancelledError:
+                if command_dispatched and not completed:
+                    self._command_uncertain = True
+                    raise
+                raise
+            except Exception as failure:
+                if command_dispatched and not completed:
+                    self._command_uncertain = True
+                    if isinstance(failure, httpx.HTTPError):
+                        raise SandboxCommandUncertain(
+                            "sandbox command interrupted; completion is uncertain"
+                        ) from failure
+                raise
             control.raise_if_stopped()
             if buffer.strip() or not completed:
+                if not completed:
+                    self._command_uncertain = True
                 raise SandboxUnavailable("sandbox command interrupted")
             async with self._http.stream(
                 "GET", f"{base}/directories/list", headers=self._headers,
@@ -262,5 +316,7 @@ class OpenSandboxClient:
                 outputs[alias] = bytes(data)
             control.raise_if_stopped()
             return ExecutionResult(exit_code=0, stdout="".join(stdout), stderr="".join(stderr), outputs=outputs)
+        except (SandboxCommandUncertain, SandboxUnavailable):
+            raise
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             raise SandboxUnavailable("sandbox execution interrupted") from None

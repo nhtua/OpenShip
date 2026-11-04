@@ -16,7 +16,7 @@ import pytest
 from fastapi import HTTPException
 
 from src.openship.artifacts.contracts import ArtifactRef
-from src.openship.artifacts.filesystem import LocalArtifactStore
+from src.openship.artifacts.filesystem import ArtifactStorageError, LocalArtifactStore
 from src.openship.artifacts.models import Artifact
 from src.openship.artifacts.service import reserve_artifact  # noqa: F401
 from src.openship.auth.models import User
@@ -33,6 +33,11 @@ from src.openship.database.session import SessionLocal
 from src.openship.execution.models import ExecutionSlot, ToolAttempt, ToolOperation
 from src.openship.execution.projections import project_operation  # noqa: F401
 from src.openship.providers.control import InvocationControl
+from src.openship.runs.analysis_graph import (
+    build_analysis_graph,
+    decode_journey,
+    resume_phase,
+)
 from src.openship.runs.models import Event, Run, RunJob
 from src.openship.runs.queue import Claim
 from src.openship.sandboxes import tool as sandbox_tool
@@ -44,6 +49,7 @@ from src.openship.sandboxes.contracts import (
     RuntimeRequirements,
 )
 from src.openship.sandboxes.sessions import get_or_create_sandbox  # noqa: F401
+from src.openship.sandboxes.tool import AnalysisArguments
 from src.openship.workspace.models import Project
 
 ANALYSIS_ID = "sandbox_analysis"
@@ -72,6 +78,7 @@ def enable_sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "tool_enabled_ids", ANALYSIS_ID)
     monkeypatch.setattr(settings, "sandbox_enabled", True)
     monkeypatch.setattr(settings, "sandbox_endpoint", "http://sandbox.test")
+    monkeypatch.setattr(settings, "sandbox_deployment_id", "lane-deployment")
     monkeypatch.setattr(settings, "sandbox_image", REQUIREMENTS.image)
     monkeypatch.setattr(settings, "sandbox_profile_id", REQUIREMENTS.profile_id)
     monkeypatch.setattr(settings, "sandbox_dependency_identity", REQUIREMENTS.dependency_identity)
@@ -481,6 +488,352 @@ async def test_second_analysis_reuses_one_sandbox_with_fresh_directories(
 
 
 @pytest.mark.asyncio
+async def test_lost_command_reply_blocks_later_operation_on_same_sandbox(
+    monkeypatch, tmp_path
+):
+    enable_sandbox(monkeypatch, tmp_path)
+    lane = Lane(tmp_path)
+    source = lane.store_artifact(PARSER_SOURCE)
+    log = lane.store_artifact(b"first\n")
+    provider = Provider()
+
+    def lose_first_reply(_body):
+        if len(provider.commands) == 1:
+            raise httpx.ReadTimeout("response lost")
+        return httpx.Response(200, content=(
+            b'{"type":"execution_complete","exit_code":0}\n'
+        ))
+
+    provider.command_response = lose_first_reply
+    provider.listing = lambda path: _declared_entries(path)
+    provider.download = lambda path: b"FIRST\n" if path.endswith(".txt") else b'{"lines": 1}'
+    provider.install(monkeypatch)
+    outputs = [("report.txt", "text/plain"), ("summary.json", "application/json")]
+    first = lane.request(source, [("log.txt", log)], outputs)
+    second = lane.request(source, [("log.txt", log)], outputs)
+
+    failed = await sandbox_tool.execute_analysis(
+        lane.context(), first, InvocationControl()
+    )
+    blocked = await sandbox_tool.execute_analysis(
+        lane.context(), second, InvocationControl()
+    )
+
+    assert failed.status != "succeeded"
+    assert blocked.status != "succeeded"
+    assert provider.created == 1
+    assert len(provider.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_refuses_unreviewed_source_declaration(
+    monkeypatch, tmp_path
+):
+    enable_sandbox(monkeypatch, tmp_path)
+    lane = Lane(tmp_path)
+    source = lane.store_artifact(PARSER_SOURCE)
+    log = lane.store_artifact(b"first\n")
+    provider = Provider()
+    provider.install(monkeypatch)
+    request = lane.request(source, [("log.txt", log)], [("returned.py", "text/plain")])
+    request = request.model_copy(update={
+        "outputs": (OutputSpec(
+            alias="returned.py", media_type="text/plain", kind="source",
+            expectation="parse the selected log file",
+        ),),
+    })
+
+    with pytest.raises(sandbox_tool.ToolPublicationError, match="invalid result"):
+        await sandbox_tool.execute_analysis(
+            lane.context(), request, InvocationControl()
+        )
+    assert provider.created == 0
+    assert provider.commands == []
+
+
+def test_failed_execute_remains_the_first_incomplete_phase(monkeypatch, tmp_path):
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.openship.capabilities.contracts import PublishedToolResult, ToolFailure
+
+    lane = Lane(tmp_path)
+    source = lane.store_artifact(PARSER_SOURCE)
+    log = lane.store_artifact(b"first\n")
+    arguments = {
+        "source_id": str(source.id),
+        "input_ids": {"log.txt": str(log.id)},
+        "parameters": {},
+        "output_media": {"report.txt": "text/plain"},
+    }
+
+    class FailedGateway:
+        async def execute_tool(self, **_kwargs):
+            return PublishedToolResult(
+                operation_id=_uuid.uuid4(),
+                status="failed",
+                error=ToolFailure(code="provider_unavailable", message="provider unavailable"),
+            )
+
+    graph = build_analysis_graph(
+        MemorySaver(),
+        gateway_factory=FailedGateway,
+        invocation_factory=lambda _state: (
+            lane.claim, lane.context(), InvocationControl()
+        ),
+    )
+    final = graph.invoke(
+        {
+            "run_id": str(lane.run.id),
+            "execution_configuration": lane.execution.model_dump_json(),
+            "tool_command_json": json.dumps({
+                "capability": lane.ref.model_dump(mode="json"),
+                "arguments": arguments,
+            }),
+        },
+        config={"configurable": {"thread_id": f"failed-{lane.run.id}"}},
+    )
+
+    journey = decode_journey(final["journey_json"])
+    assert journey.completed_phases == ("prepare",)
+    assert resume_phase(journey) == "execute"
+
+
+def test_generated_source_is_captured_and_exact_ref_is_handed_to_execution(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.openship.capabilities.contracts import PublishedToolResult, ToolFailure
+    from src.openship.providers.contracts import ProviderTurnResult
+    from src.openship.runs import analysis_graph
+    from tests.providers.conftest import run_snapshot
+
+    lane = Lane(tmp_path)
+    log = lane.store_artifact(b"warning: service unavailable\n")
+    generated = "from pathlib import Path\nPath('unused')\n"
+    observed = {}
+    model_calls = 0
+
+    async def fake_model_turn(request, model_config, control, recorder, **kwargs):
+        nonlocal model_calls
+        model_calls += 1
+        observed["request"] = request
+        observed["model_config"] = model_config
+        observed["kwargs"] = kwargs
+        return ProviderTurnResult(
+            text=generated,
+            selected_profile_id=model_config.primary.id,
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(analysis_graph, "run_model_turn", fake_model_turn)
+
+    class Recorder:
+        pass
+
+    class CaptureGateway:
+        async def execute_tool(self, **kwargs):
+            observed["tool_arguments"] = kwargs["arguments"]
+            observed["tool_inputs"] = kwargs["inputs"]
+            return PublishedToolResult(
+                operation_id=_uuid.uuid4(),
+                status="failed",
+                error=ToolFailure(code="provider_unavailable", message="test handoff"),
+            )
+
+    invocation = SimpleNamespace(
+        claim=lane.claim,
+        context=lane.context(),
+        control=InvocationControl(),
+        recorder=Recorder(),
+        authorize_profile=lambda _profile: None,
+    )
+    arguments = AnalysisArguments(
+        source_prompt="Parse the selected log and write a concise report.",
+        input_ids={"log.txt": log.id},
+        parameters={},
+        output_media={"report.txt": "text/plain"},
+    )
+    state = {
+        "run_id": str(lane.run.id),
+        "execution_configuration": lane.execution.model_dump_json(),
+        "model_configuration": run_snapshot(),
+        "tool_command_json": json.dumps({
+            "capability": lane.ref.model_dump(mode="json"),
+            "arguments": arguments.model_dump(mode="json"),
+        }),
+    }
+    graph = build_analysis_graph(
+        MemorySaver(),
+        gateway_factory=CaptureGateway,
+        invocation_factory=lambda _state: invocation,
+    )
+
+    final = graph.invoke(
+        state, config={"configurable": {"thread_id": f"generated-{lane.run.id}"}}
+    )
+    replay = graph.invoke(
+        state, config={"configurable": {"thread_id": f"generated-replay-{lane.run.id}"}}
+    )
+
+    journey = decode_journey(final["journey_json"])
+    source = journey.generated_source
+    assert source is not None
+    with lane.store.open_verified(lane.db.get(Artifact, source.id)) as file:
+        assert file.read() == generated.encode()
+    assert source.sha256 == hashlib.sha256(generated.encode()).hexdigest()
+    assert observed["model_config"].primary.id
+    assert observed["request"].tools == ()
+    assert observed["tool_arguments"]["source_id"] == str(source.id)
+    assert "source_prompt" not in observed["tool_arguments"]
+    assert tuple(item.id for item in observed["tool_inputs"]) == (source.id, log.id)
+    assert decode_journey(replay["journey_json"]).generated_source == source
+    assert model_calls == 1
+
+
+def test_oversized_generated_source_fails_before_sandbox_execution(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.openship.providers.contracts import ProviderTurnResult
+    from src.openship.providers.errors import ProviderError
+    from src.openship.runs import analysis_graph
+    from tests.providers.conftest import run_snapshot
+
+    lane = Lane(tmp_path)
+    log = lane.store_artifact(b"log\n")
+    executed = []
+
+    async def oversized_model_turn(request, model_config, control, recorder, **kwargs):
+        return ProviderTurnResult(
+            text="x" * (256 * 1024 + 1),
+            selected_profile_id=model_config.primary.id,
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(analysis_graph, "run_model_turn", oversized_model_turn)
+
+    class Recorder:
+        pass
+
+    class Gateway:
+        async def execute_tool(self, **kwargs):
+            executed.append(kwargs)
+
+    args = AnalysisArguments(
+        source_prompt="Write a parser.",
+        input_ids={"log.txt": log.id},
+        output_media={"report.txt": "text/plain"},
+    )
+    graph = build_analysis_graph(
+        MemorySaver(),
+        gateway_factory=Gateway,
+        invocation_factory=lambda _state: SimpleNamespace(
+            claim=lane.claim,
+            context=lane.context(),
+            control=InvocationControl(),
+            recorder=Recorder(),
+            authorize_profile=lambda _profile: None,
+        ),
+    )
+    with pytest.raises(ProviderError, match="exceeds its size limit"):
+        graph.invoke(
+            {
+                "run_id": str(lane.run.id),
+                "execution_configuration": lane.execution.model_dump_json(),
+                "model_configuration": run_snapshot(),
+                "tool_command_json": json.dumps({
+                    "capability": lane.ref.model_dump(mode="json"),
+                    "arguments": args.model_dump(mode="json"),
+                }),
+            },
+            config={"configurable": {"thread_id": f"oversized-{lane.run.id}"}},
+        )
+    assert executed == []
+    assert (
+        lane.db.query(Artifact)
+        .filter(
+            Artifact.originating_run_id == lane.run.id,
+            Artifact.source == "generated",
+        )
+        .count()
+        == 0
+    )
+
+    async def unavailable_model(*_args, **_kwargs):
+        raise ProviderError("provider_unavailable")
+
+    monkeypatch.setattr(analysis_graph, "run_model_turn", unavailable_model)
+    with pytest.raises(ProviderError, match="provider could not be reached"):
+        graph.invoke(
+            {
+                "run_id": str(lane.run.id),
+                "execution_configuration": lane.execution.model_dump_json(),
+                "model_configuration": run_snapshot(),
+                "tool_command_json": json.dumps({
+                    "capability": lane.ref.model_dump(mode="json"),
+                    "arguments": args.model_dump(mode="json"),
+                }),
+            },
+            config={"configurable": {"thread_id": f"unavailable-{lane.run.id}"}},
+        )
+    assert executed == []
+
+
+def test_runtime_identity_changes_with_provider_deployment(monkeypatch, tmp_path):
+    enable_sandbox(monkeypatch, tmp_path)
+    first = sandbox_tool.runtime_requirements()
+    monkeypatch.setattr(settings, "sandbox_endpoint", "http://other-sandbox.test")
+    second = sandbox_tool.runtime_requirements()
+    assert first.provider_id != second.provider_id
+    assert first.key != second.key
+
+
+def test_analysis_arguments_require_exactly_one_source_origin():
+    prompt = "Read log.txt and write report.txt as UTF-8 text."
+    generated = AnalysisArguments(
+        source_prompt=prompt,
+        input_ids={"log.txt": _uuid.uuid4()},
+        output_media={"report.txt": "text/plain"},
+    )
+    assert generated.source_prompt == prompt
+    assert generated.source_id is None
+
+    prepared = AnalysisArguments(
+        source_id=_uuid.uuid4(),
+        input_ids={},
+        output_media={"report.txt": "text/plain"},
+    )
+    assert prepared.source_prompt is None
+
+    with pytest.raises(ValueError, match="exactly one"):
+        AnalysisArguments(
+            source_prompt=prompt,
+            source_id=_uuid.uuid4(),
+            output_media={"report.txt": "text/plain"},
+        )
+
+
+def test_generated_source_is_a_valid_journey_without_selected_inputs():
+    from src.openship.runs.analysis_graph import (
+        AnalysisJourney,
+        _journey_of,
+        encode_journey,
+    )
+
+    generated = ArtifactRef(
+        id=_uuid.uuid4(), sha256=hashlib.sha256(b"print('hello')").hexdigest(),
+        size_bytes=len(b"print('hello')"), media_type="text/plain",
+    )
+    journey = AnalysisJourney(root_run_id=str(_uuid.uuid4()), generated_source=generated)
+
+    assert _journey_of({"journey_json": encode_journey(journey)}) == journey
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["deleted", "foreign"])
 async def test_stale_or_foreign_input_reference_refuses_before_any_provider_call(
     monkeypatch, tmp_path, case
@@ -804,6 +1157,44 @@ async def test_stale_fence_during_publication_cannot_publish_sandbox_outputs(
         synchronize_session=False
     )
     lane.db.commit()
+
+
+@pytest.mark.asyncio
+async def test_partial_output_staging_removes_already_installed_content(
+    monkeypatch, tmp_path
+):
+    enable_sandbox(monkeypatch, tmp_path)
+    lane = Lane(tmp_path)
+    source = lane.store_artifact(PARSER_SOURCE)
+    log = lane.store_artifact(b"first\n")
+    provider = Provider()
+    provider.command_response = lambda _body: httpx.Response(
+        200, content=b'{"type":"execution_complete","exit_code":0}\n'
+    )
+    provider.listing = lambda path: _declared_entries(path)
+    provider.download = lambda path: b"FIRST\n" if path.endswith(".txt") else b'{"lines": 1}'
+    provider.install(monkeypatch)
+    original_stage = lane.store.stage
+    calls = []
+
+    def fail_second_stage(*args, **kwargs):
+        calls.append(args[0])
+        if len(calls) == 2:
+            raise ArtifactStorageError("injected second-output staging failure")
+        return original_stage(*args, **kwargs)
+
+    monkeypatch.setattr(lane.store, "stage", fail_second_stage)
+    request = lane.request(
+        source, [("log.txt", log)],
+        [("report.txt", "text/plain"), ("summary.json", "application/json")],
+    )
+    result = await sandbox_tool.execute_analysis(
+        lane.context(), request, InvocationControl()
+    )
+    assert result.status != "succeeded"
+    first_row = lane.db.get(Artifact, calls[0])
+    assert first_row.status != "ready"
+    assert not (lane.store.root / first_row.relative_storage_key).exists()
 
 
 @pytest.mark.asyncio

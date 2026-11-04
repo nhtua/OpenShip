@@ -587,6 +587,20 @@ class Worker:
                 clock=time.monotonic,
                 stop=supervision.stop,
             )
+            if run.model_configuration:
+                from types import SimpleNamespace
+
+                from ..providers.attempts import DatabaseAttemptRecorder
+
+                return SimpleNamespace(
+                    claim=claim,
+                    context=context,
+                    control=control,
+                    recorder=DatabaseAttemptRecorder(
+                        self.Session, run.id, claim.fence, commit_each=True
+                    ),
+                    authorize_profile=authorize_current_profile,
+                )
             return claim, context, control
 
         graph = graph_factory(
@@ -598,6 +612,7 @@ class Worker:
             "run_id": str(run.id),
             "tool_command_json": run.tool_command_json or "",
             "execution_configuration": run.execution_configuration or "",
+            "model_configuration": run.model_configuration or "",
         }
         supervisor_thread = threading.Thread(
             target=self._supervise_in_thread,

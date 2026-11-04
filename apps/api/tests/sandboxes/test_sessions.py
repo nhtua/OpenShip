@@ -45,6 +45,22 @@ def _seed(factory):
     return run_id, claim, project_id, conversation_id
 
 
+def _seed_another_run(factory, owner_claim, project_id, conversation_id):
+    """Create another run in the same project/conversation with an equal fence."""
+    run_id = _uuid.uuid4()
+    with factory() as db:
+        db.add(Run(id=run_id, project_id=project_id, conversation_id=conversation_id,
+                   status="running", fence=owner_claim.fence))
+        db.add(RunJob(run_id=run_id, fence=owner_claim.fence,
+                      owner_id=owner_claim.worker_id,
+                      lease_until=owner_claim.lease_until, available_at=NOW))
+        db.commit()
+    claim = Claim(run_id=run_id, fence=owner_claim.fence,
+                  lease_until=owner_claim.lease_until, worker_id=owner_claim.worker_id,
+                  user_id=owner_claim.user_id)
+    return run_id, claim
+
+
 def _requirements(image="python:test", profile="python311", cpu="1", memory="512Mi"):
     return RuntimeRequirements(provider_id="local", profile_id=profile, image=image,
                                dependency_identity="stdlib", cpu=cpu, memory=memory)
@@ -59,6 +75,8 @@ def _saved_pointer(factory, run_id, project_id, conversation_id, *, status, requ
             status=status, fence=1,
             sandbox_id=sandbox_id if status == "active" else None,
             expires_at=expires_at if status == "active" else None,
+            requested_at=NOW if status == "requested" else None,
+            intent_id=_uuid.uuid4() if status == "requested" else None,
         ))
         db.commit()
 
@@ -183,6 +201,24 @@ async def test_uncertain_creation_blocks_automatic_recreation(lane, seeded):
 
 
 @pytest.mark.asyncio
+async def test_expired_create_intent_can_be_replaced_by_later_authorized_run(lane, seeded):
+    factory, (run_id, claim, project_id, conversation_id) = lane, seeded
+    _saved_pointer(factory, run_id, project_id, conversation_id, status="requested",
+                   requirements=_requirements())
+    with factory() as db:
+        row = db.query(models.WorkflowSandbox).one()
+        row.requested_at = NOW - timedelta(seconds=1831)
+        db.commit()
+    client = FakeClient()
+    handle = await sessions.get_or_create_sandbox(
+        factory, client, claim=claim, root_run_id=run_id,
+        requirements=_requirements(),
+    )
+    assert handle.sandbox_id == "sbx-1"
+    assert client.created == 1
+
+
+@pytest.mark.asyncio
 async def test_stale_claim_cannot_select_or_create(lane, seeded):
     """A released lease cannot adopt another owner's sandbox or send a create."""
     factory, (run_id, claim, project_id, conversation_id) = lane, seeded
@@ -281,6 +317,153 @@ async def test_foreign_root_run_is_refused(lane, seeded):
     with pytest.raises(ValueError):
         await sessions.get_or_create_sandbox(factory, FakeClient(), claim=claim,
                                              root_run_id=_uuid.uuid4(), requirements=_requirements())
+
+
+@pytest.mark.asyncio
+async def test_two_runs_in_same_conversation_reuse_one_sandbox(lane, seeded):
+    factory, (first_run, first_claim, project_id, conversation_id) = lane, seeded
+    second_run, second_claim = _seed_another_run(
+        factory, first_claim, project_id, conversation_id
+    )
+    client = FakeClient()
+    first = await sessions.get_or_create_sandbox(
+        factory, client, claim=first_claim, root_run_id=first_run,
+        requirements=_requirements(),
+    )
+    second = await sessions.get_or_create_sandbox(
+        factory, client, claim=second_claim, root_run_id=second_run,
+        requirements=_requirements(),
+    )
+    assert first.sandbox_id == second.sandbox_id
+    assert client.created == 1
+
+
+@pytest.mark.asyncio
+async def test_different_conversations_do_not_share_sandbox(lane):
+    factory = lane
+    first_run, first_claim, *_ = _seed(factory)
+    second_run, second_claim, *_ = _seed(factory)
+    client = FakeClient()
+    first = await sessions.get_or_create_sandbox(
+        factory, client, claim=first_claim, root_run_id=first_run,
+        requirements=_requirements(),
+    )
+    second = await sessions.get_or_create_sandbox(
+        factory, client, claim=second_claim, root_run_id=second_run,
+        requirements=_requirements(),
+    )
+    assert first.sandbox_id != second.sandbox_id
+    assert client.created == 2
+
+
+@pytest.mark.asyncio
+async def test_equal_fence_from_later_run_cannot_ack_prior_run_intent(lane, seeded):
+    factory, (first_run, first_claim, project_id, conversation_id) = lane, seeded
+    second_run, second_claim = _seed_another_run(
+        factory, first_claim, project_id, conversation_id
+    )
+    client = FakeClient()
+    with factory() as db:
+        row = models.WorkflowSandbox(
+            root_run_id=first_run, project_id=project_id,
+            conversation_id=conversation_id, provider_id="local",
+            requirements_key=_requirements().key, status="requested", fence=1,
+            requested_at=NOW, intent_id=_uuid.uuid4(),
+        )
+        db.add(row)
+        db.commit()
+        row_id = row.id
+    with pytest.raises(sessions.SandboxCreationUncertain):
+        await sessions.get_or_create_sandbox(
+            factory, client, claim=second_claim, root_run_id=second_run,
+            requirements=_requirements(),
+        )
+    with factory() as db:
+        row = db.get(models.WorkflowSandbox, row_id)
+        assert row.root_run_id == first_run
+    assert client.created == 0
+
+
+@pytest.mark.asyncio
+async def test_uncertain_command_blocks_reuse_until_provider_expiration(lane, seeded):
+    factory, (run_id, claim, project_id, conversation_id) = lane, seeded
+    expiry = datetime.now(UTC) + timedelta(minutes=30)
+    _saved_pointer(factory, run_id, project_id, conversation_id, status="active",
+                   requirements=_requirements(), expires_at=expiry)
+    row = _row(factory, run_id)
+    sessions.mark_command_uncertain(
+        factory, claim=claim, sandbox_id=row.sandbox_id, operation_id=_uuid.uuid4()
+    )
+    with pytest.raises(sessions.SandboxCommandUncertain):
+        await sessions.get_or_create_sandbox(
+            factory, FakeClient(), claim=claim, root_run_id=run_id,
+            requirements=_requirements(),
+        )
+    with factory() as db:
+        current = db.get(models.WorkflowSandbox, row.id)
+        current.command_uncertain_until = NOW - timedelta(seconds=1)
+        db.commit()
+    client = FakeClient(inspect_state="absent")
+    await sessions.get_or_create_sandbox(
+        factory, client, claim=claim, root_run_id=run_id,
+        requirements=_requirements(),
+    )
+    assert client.created == 1
+
+
+def test_only_matching_operation_can_clear_command_uncertainty(lane, seeded):
+    factory, (run_id, claim, project_id, conversation_id) = lane, seeded
+    expiry = datetime.now(UTC) + timedelta(minutes=30)
+    _saved_pointer(factory, run_id, project_id, conversation_id, status="active",
+                   requirements=_requirements(), expires_at=expiry)
+    row = _row(factory, run_id)
+    operation_id = _uuid.uuid4()
+    sessions.mark_command_uncertain(
+        factory, claim=claim, sandbox_id=row.sandbox_id, operation_id=operation_id
+    )
+    sessions.clear_command_uncertain(
+        factory,
+        claim=claim,
+        sandbox_id=row.sandbox_id,
+        operation_id=_uuid.uuid4(),
+    )
+    with factory() as db:
+        assert db.get(models.WorkflowSandbox, row.id).command_operation_id == operation_id
+    sessions.clear_command_uncertain(
+        factory,
+        claim=claim,
+        sandbox_id=row.sandbox_id,
+        operation_id=operation_id,
+    )
+    with factory() as db:
+        current = db.get(models.WorkflowSandbox, row.id)
+        assert current.command_operation_id is None
+        assert current.command_uncertain_until is None
+
+
+def test_stale_claim_cannot_dispatch_into_a_reused_sandbox(lane, seeded):
+    factory, (run_id, claim, project_id, conversation_id) = lane, seeded
+    _saved_pointer(
+        factory,
+        run_id,
+        project_id,
+        conversation_id,
+        status="active",
+        requirements=_requirements(),
+        expires_at=datetime.now(UTC) + timedelta(minutes=30),
+    )
+    with factory() as db:
+        db.query(RunJob).filter(RunJob.run_id == run_id).update(
+            {RunJob.fence: claim.fence + 1, RunJob.owner_id: "replacement-worker"}
+        )
+        db.commit()
+    with pytest.raises(sessions.SandboxClaimUncertain):
+        sessions.mark_command_uncertain(
+            factory,
+            claim=claim,
+            sandbox_id=_row(factory, run_id).sandbox_id,
+            operation_id=_uuid.uuid4(),
+        )
 
 
 @pytest.fixture

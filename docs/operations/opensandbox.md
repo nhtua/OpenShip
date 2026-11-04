@@ -152,15 +152,17 @@ full application demonstration, security qualification, or a portable image pin.
 
 ## Runtime ownership and next verification
 
-OpenShip will request a 30-minute lifetime, save a workflow-scoped handle and
-reuse it only on a compatible requested step. **Do not add per-step delete,
+OpenShip requests a 30-minute lifetime and saves one conversation-context
+pointer. Compatible runs in the same project/conversation can reuse it; each
+execution still transfers selected inputs to a fresh directory. **Do not add per-step delete,
 TTL renewal, orphan reconciliation or deletion-gated physical reservations.**
 OpenSandbox handles expiration/cleanup. Accepted reports remain in OpenShip
 storage regardless of provider disappearance. A lost/ambiguous response is an
 interrupted application step, not permission to resend code.
 
-The application client, output judge, A/B resume and real parser journey are
-all unchecked work in the new plan. Use existing tests plus one reproducible
-real-service demonstration when they are implemented. A dedicated qualification
+The pre–Task 4 correction gate and full real parser journey remain in progress
+in the implementation plan; current tests cover generated-source handoff and
+conversation-scoped reuse. Run one reproducible real-service demonstration
+after the correction gate. A dedicated qualification
 launcher/runner/CI certification platform, security scans and production matrix
 are deferred. Optional host probes do not certify provider isolation.

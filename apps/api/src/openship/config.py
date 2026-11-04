@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     # its credential file and the workload image identity before use.
     sandbox_enabled: bool = False
     sandbox_endpoint: str = ""
+    sandbox_deployment_id: str = "default"
     sandbox_key_file: Path = Path("/run/secrets/openship-sandbox-key")
     sandbox_image: str = ""
     sandbox_profile_id: str = "python311"

@@ -129,6 +129,40 @@ def test_manual_tool_run_has_no_model_or_chat_message(monkeypatch):
         db.close()
 
 
+def test_sandbox_analysis_run_pins_generation_model_at_submission(monkeypatch):
+    manifest = next(
+        item for item in list_capability_manifests() if item.id == "sandbox_analysis"
+    )
+    monkeypatch.setattr(settings, "tool_enabled_ids", "sandbox_analysis")
+    monkeypatch.setattr(settings, "sandbox_enabled", True)
+    db = SessionLocal()
+    try:
+        user, _project, conversation = _principals(db)[0]
+        command = _command(
+            capability=CapabilityRef(
+                id=manifest.id,
+                version=manifest.version,
+                manifest_digest=manifest.manifest_digest,
+            ),
+            arguments={
+                "source_prompt": "Parse log.txt and write report.txt.",
+                "input_ids": {"log.txt": str(uuid.uuid4())},
+                "parameters": {},
+                "output_media": {"report.txt": "text/plain"},
+            },
+        )
+
+        run = submit_tool_run(db, user.id, conversation.id, command)
+        db.commit()
+
+        assert run.model_configuration
+        assert json.loads(run.model_configuration)["binding_origin"] == "submission"
+        assert json.loads(run.model_selection)["profile_id"]
+        assert run.graph_version == 1
+    finally:
+        db.close()
+
+
 def test_aws_read_manual_command_uses_pinned_connector_and_binding_free_config(monkeypatch):
     monkeypatch.setattr(settings, "tool_enabled_ids", "aws_read")
     db = SessionLocal()

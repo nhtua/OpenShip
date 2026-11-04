@@ -4,20 +4,20 @@
 
 **Goal:** Generate a small analysis program, send its selected inputs to OpenSandbox, validate and retain its outputs, and support explicit workflow resume.
 
-**Architecture:** Extend the existing gateway/run/artifact path with a narrow provider client. OpenSandbox is the Sandbox Manager service in `docker-compose.yml`, using the rootful Docker socket and gVisor by default; reuse the existing Ansible bootstrap for host dependencies. A workflow-scoped provider handle permits compatible reuse during the requested 1,800-second lifetime; OpenSandbox alone expires, cleans and deletes sandboxes. Existing graph state stores accepted outputs, not sandbox snapshots or replayable process state.
+**Architecture:** Extend the existing gateway/run/artifact path with a narrow provider client. OpenSandbox is the Sandbox Manager service in `docker-compose.yml`, using the rootful Docker socket and gVisor by default; reuse the existing Ansible bootstrap for host dependencies. The current conversation-backed slice reuses one compatible provider handle during its requested 1,800-second lifetime; each run gets a fresh execution directory and independent artifact records. A future explicit workflow identity must separate workflows; OpenSandbox alone expires, cleans and deletes sandboxes. Existing graph state stores accepted outputs, not sandbox snapshots or replayable process state.
 
 **Tech Stack:** Python 3.11+, FastAPI, SQLAlchemy/Alembic, LangGraph, existing PostgreSQL/JetStream/artifact storage, httpx or the upstream Python SDK, Vue/TypeScript, standalone OpenSandbox on rootful Docker/gVisor.
 
 **Spec:** [Approved scope](../specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md).
 
-**Reset:** 2026-11-03. Start from `main` (`5fe6e03` at reset), not the old `0a1fc6b` application implementation. [Scope review and carry-forward decisions](../../reviews/2026-11-03-phase6b-scope-reset.md). Tasks 1 and 1A are complete; Tasks 2–6 remain open. The client alone is not an integrated application feature.
+**Reset:** 2026-11-03. Start from `main` (`5fe6e03` at reset), not the old `0a1fc6b` application implementation. [Scope review and carry-forward decisions](../../reviews/2026-11-03-phase6b-scope-reset.md). Tasks 1, 1A, 2 and 3 have committed implementation/evidence; the final review identified required corrections in the pre–Task 4 gate below. Tasks 4–6 remain open. The client alone is not an integrated application feature.
 
 **Plan revision — 2026-11-03:** Split the remaining Task 1 execution deliverable into **Task 1A**, including provider startup and real-provider verification before downstream integration. At the user's request, execution order is **1A → 1 → 2 → 3 → 4 → 5 → 6**; the original Task 1 goal is complete only when **both Task 1 and Task 1A** pass. Task 6 still owns the full application/parser/resume demonstration.
 
 ## Global constraints
 
 - Request 1,800-second sandbox lifetime, 30-second command timeout, 1 CPU and 512 MiB. Provider owns enforcement; no TTL renewal or per-step destruction.
-- Workflow-scoped reusable handle only: root run ID, provider identity, sandbox ID, requirement key and expiration. No installation-wide physical reservation, cleanup state machine or orphan reconciliation.
+- One reusable pointer per project/conversation for this slice: run/intent owner, provider identity, sandbox ID, requirement key and expiration. Do not treat conversation identity as a future universal workflow ID. No installation-wide physical reservation, cleanup state machine or orphan reconciliation.
 - Reuse compatible live sandboxes; source/input/parameter changes use a fresh request directory, not a new container. Replace on changed runtime requirements or definitive expiry/absence, only during an authorized execution request.
 - Unknown provider/command outcomes stop the attempt, not trigger POST retries or speculative replacement. Existing run/operation fencing and request idempotency remain authoritative.
 - Python 3.11 standard-library profile only. Fixed argv; no application/cloud credentials or host execution. Socket access belongs only to OpenSandbox infrastructure.
@@ -98,13 +98,15 @@ Each task follows red → minimal implementation → green → reviewed commit. 
 
 **Files:** Create `apps/api/src/openship/sandboxes/{models,sessions}.py` and the next unused Alembic revision for `WorkflowSandbox`; modify `apps/api/src/openship/database/models.py`; test `apps/api/tests/sandboxes/test_sessions.py` and `apps/api/tests/integration/test_workflow_sandbox_postgres.py`.
 
-**Interfaces:** Consume Task 1's create/inspect/contracts after Task 1A verifies the complete client/provider boundary. Produce async `get_or_create_sandbox(session_factory, client: OpenSandboxClient, *, claim: Claim, root_run_id: UUID, requirements: RuntimeRequirements) -> SandboxHandle`. Persist one reusable pointer per authorized root run, scoped through its project/conversation. Provider waits have no open DB transaction; recheck the existing claim before saving a returned ID. Serialize concurrent creates through the existing durable run claim and operation identity; once a create may have been sent, an uncertain owner/acknowledgement blocks automatic recreation rather than assuming an expired claim proves absence. Do not introduce a provider-reconciliation ledger.
+**Interfaces:** Consume Task 1's create/inspect/contracts after Task 1A verifies the complete client/provider boundary. Produce async `get_or_create_sandbox(session_factory, client: OpenSandboxClient, *, claim: Claim, root_run_id: UUID, requirements: RuntimeRequirements) -> SandboxHandle`. Persist one reusable pointer per project/conversation in this slice, with unique intent identity for each owning run. Provider waits have no open DB transaction; recheck the matching intent and live claim before saving a returned ID. Serialize cross-run selection at the conversation lock. An unresolved create blocks speculation until its conservative lifetime bound, and a late acknowledgement cannot replace a successor. Do not introduce a provider-reconciliation ledger.
 
-**Complete — 2026-11-03:** `sandboxes/{models,sessions}.py` add the single `WorkflowSandbox` pointer row (unique per `root_run_id`, scoped through project/conversation FKs, `requested|active` state constraint, no cleanup/orphan tables) and on-demand selection: request intent is committed before any provider round-trip, inspect/create waits run with no open DB transaction, and a returned sandbox ID is saved only while the same durable claim is still current. A committed-but-unacknowledged create raises `SandboxCreationUncertain` and blocks automatic recreation (checked before claim freshness, so an expired claim never proves absence). Alembic revision `phase6b026` (down_revision `phase6a020`) avoids the abandoned branch's 021–025 identifiers; its downgrade refuses while pointers exist. Unit lane `tests/sandboxes/test_sessions.py` passed **11 tests** (red first: claim-lock and commit-semantics failures were root-caused to dangling FK seeds and session-context close semantics, fixed at the source). PostgreSQL lane `tests/integration/test_workflow_sandbox_postgres.py` passed **4 tests** against a disposable PostgreSQL 16 service (`postgres:16`, the docs expect 15): fresh main-data alembic upgrade to head `phase6b026`, independent-session reuse of one handle, table-level duplicate-pointer rejection, and claim-stolen-during-wait blocking acknowledgement and recreation. Ruff passed; the network-free backend rerun and live-provider journey are tracked by the regression below.
+**Historical implementation — 2026-11-03, corrected before Task 4:** the first pointer used one row per `root_run_id` in `phase6b026`; final review superseded that scope. Revision `phase6b028` migrates to one project/conversation pointer and records request time/intent plus command uncertainty. Earlier 11-unit/4-PostgreSQL results below are historical evidence for the original behavior, not acceptance of shared reuse.
 
-- [x] Tests written and green: equal-requirement deliveries reuse one sandbox ID; changed image/profile changes the requirements key and replaces the pointer (source/parameters are outside the runtime key by construction); expired-but-present pointers probe then replace on definitive absence; `SandboxUnavailable` never recreates and keeps the saved pointer; a `requested` row blocks recreation; a stale claim cannot select or create; two root runs never share a handle; foreign roots are refused.
+**Initial implementation evidence (historical):** `sandboxes/{models,sessions}.py` added the first pointer and on-demand selection: request intent is committed before any provider round-trip, inspect/create waits run with no open DB transaction, and a returned sandbox ID is saved only while the same durable claim is still current. A committed-but-unacknowledged create raises `SandboxCreationUncertain` and blocks automatic recreation (checked before claim freshness, so an expired claim never proves absence). Alembic revision `phase6b026` (down_revision `phase6a020`) avoids the abandoned branch's 021–025 identifiers; its downgrade refuses while pointers exist. Unit lane `tests/sandboxes/test_sessions.py` passed **11 tests** (red first: claim-lock and commit-semantics failures were root-caused to dangling FK seeds and session-context close semantics, fixed at the source). PostgreSQL lane `tests/integration/test_workflow_sandbox_postgres.py` passed **4 tests** against a disposable PostgreSQL 16 service (`postgres:16`, the docs expect 15): fresh main-data alembic upgrade to head `phase6b026`, independent-session reuse of one handle, table-level duplicate-pointer rejection, and claim-stolen-during-wait blocking acknowledgement and recreation. Ruff passed; the network-free backend rerun and live-provider journey are tracked by the regression below.
+
+- [x] Historical tests: equal requirements reused within one root; runtime changes replaced the pointer; provider unavailability blocked create. These tests were revised for conversation scope and conservative uncertainty as part of the pre–Task 4 correction gate.
 - [x] Unit module ran red first (10 failures: the claim-lock helper could not resolve the seeded FK chain, then session-context close discarded pending mutations), then green after fixing the seed's explicit ids and adding explicit commits at each mutation point — 11 passed; the pointer row leaves replaced/lost sandboxes to the provider TTL with no deletion/capacity/orphan machinery.
-- [x] Alembic `phase6b026` adds the table with FK-unique-scoped rows; the PostgreSQL lane upgrades fresh lane data through the full chain, asserts head is `phase6b026` (not the abandoned 021–025), enforces one pointer per root run via IntegrityError, and proves independent-session selection plus claim theft during a provider wait blocks both the acknowledgement and any automatic recreation.
+- [x] Historical Alembic `phase6b026` installed the initial per-run table; migration `phase6b028` replaces its uniqueness with conversation scope and adds bounded-intent state. PostgreSQL verification for the current schema remains part of the correction gate.
 - [x] `uv run pytest -q tests/sandboxes` passed 72 (11 new + 61 Task 1); `uv run pytest -q -m postgres tests/integration/test_workflow_sandbox_postgres.py` passed 4 with a disposable `postgres:16` service via `TEST_POSTGRES_URL` on loopback :5433; missing infrastructure skips with a report rather than passing.
 - [x] Commit the verified reuse task with the scanned message file (`4478d0e`; hooks passed: API Ruff, API unit tests, Run Tests, frontend checks, staged secret scan).
 
@@ -115,12 +117,68 @@ Each task follows red → minimal implementation → green → reviewed commit. 
 **Interfaces:** Consume Tasks 1, 1A and 2. Produce `prepare_execution(db, *, claim: Claim, request: ExecutionRequest, store) -> PreparedFiles`, `validate_outputs(request: ExecutionRequest, result: ExecutionResult) -> mapping[str, bytes]`, and async `execute_analysis(context, request: ExecutionRequest, control: InvocationControl) -> PublishedToolResult`. The gateway owns its usual operation/attempt, input pins, active slot and publication transaction. The fixed graph prepares source/inputs, executes and uses accepted outputs.
 
 - [x] Tests written and green using real artifact records/store: selected current bytes plus generated JSON/log outputs reach a new operation-specific directory, earlier sandbox files cannot replace them (two root runs, distinct `cwd`, distinct produced bytes), wrong-scope/deleted refs fail, and saved reports survive provider disappearance. Nonzero/missing completion, invalid/oversized/undeclared files and cancellation/lost fence cannot publish success; a committed result replays without another provider command (`apps/api/tests/sandboxes/test_tool.py` 14 cases).
-- [x] Implemented source/input capture through the existing artifact services, Task 1A's transfer/execution/collection client and text/JSON data validation (`sandboxes/outputs.py`, `sandboxes/tool.py`); generated source stays inert and no provider I/O is duplicated. All output refs, results and events publish through the existing fenced staging/publication helpers, and nothing waits for sandbox deletion.
-- [x] Registered the exact capability (`sandbox_analysis`, credential-free v1 manifest) and the supported graph/configuration version through the production dispatch table (`_builtin_definition`, `list_capability_manifests`), availability (`sandbox_runtime` readiness) and worker path; execution remains only through the authorized run/tool-command routes, with the fixed journey resolved from the run's pinned execution configuration. Source generation keeps the existing pinned model boundary and captures bytes before dispatch.
+- [x] Implemented materialization of existing source/input artifacts, Task 1A's transfer/execution/collection client and text/JSON data validation (`sandboxes/outputs.py`, `sandboxes/tool.py`). Output refs, results and events publish through the existing fenced staging/publication helpers, and nothing waits for sandbox deletion. Generated-source capture and pinned-model handoff were added in the pre–Task 4 correction work below.
+- [x] Registered the exact capability (`sandbox_analysis`, credential-free v1 manifest) and the supported graph/configuration version through the production dispatch table (`_builtin_definition`, `list_capability_manifests`), availability (`sandbox_runtime` readiness) and worker path; execution remains only through the authorized run/tool-command routes, with the fixed journey resolved from the run's pinned execution configuration.
+- [x] Pre–Task 4 correction adds explicit `source_prompt` generation using the submission-pinned model, bounded provider attempts, immutable artifact capture and exact-reference handoff. Verification and PostgreSQL evidence remain in the correction gate.
 - [x] Focused tests green: `uv run pytest -q tests/sandboxes/ tests/integration/test_analysis_results.py` → 91 passed (61 Task 1 + 11 Task 2 + 14 Task 3 + 5 integration), `uv run ruff check .` passed, and the API→real worker→gateway fixture runs with provider transport stubbed only at its HTTP boundary. The production handler executes rather than remaining a fail-closed placeholder; the full real-provider demonstration remains Task 6.
-- [ ] Commit the working data-output path with a scanned message file.
+- [x] Committed the working data-output path with a scanned message file (`7722a9d`; hooks passed: API Ruff, API unit tests, Run Tests, frontend checks, staged secret scan).
 
-### Task 4: Judge expected source outputs before workflow use
+### Pre–Task 4 correction gate — final Tasks 1–3 review
+
+**Status:** correction gate satisfied; Task 4 has not started. Earlier checked
+items record their original verification, not acceptance of the subsequently
+clarified reuse semantics. See
+[the final review](../../reviews/2026-11-04-phase6b-tasks-1-3-final-review.md)
+for file/line evidence, reproductions and the superseded earlier assessment.
+
+- [x] Reconcile the spec/plan/operations/SDD scope wording: compatible runs in one project/conversation may reuse the environment, but directories/artifacts remain per execution. No workflow engine or conversation-conversion feature was added; conversation is not a universal workflow identity (R1).
+- [x] Implement deterministic shared-pointer selection, conversation-lock serialization, UUID intent identity, latest-intent acknowledgement and migration cleanup of prior duplicate pointers (R1).
+- [x] Bound stale-create recovery, block same-sandbox reuse after uncertain command/cancellation until provider expiration, and reject expired create/inspect handles without treating provider unavailability as absence (R2–R4).
+- [x] Preserve fail-closed source declarations, keep failed execute incomplete, and implement pinned-model generated-source capture and exact-ref handoff (R5–R7).
+- [x] Bind provider compatibility to endpoint/deployment identity, remove installed unpublished files after partial output staging, and close invocation-owned but not caller-owned HTTP clients (R8–R10).
+- [x] PostgreSQL fixture at `phase6b028`: 7 passed, including independent-session contention, late acknowledgement/equal fence, and artifact constraint checks. Focused lanes: 124 passed; network-free regression: 1,411 passed, 131 deselected. Missing infrastructure was not counted as a pass (R11).
+- [x] Reconcile spec/plan/operations/SDD wording and record final verification. Correction commit remains to be recorded before Task 4; do not edit applied 026/027 history or reuse abandoned 021–025 revision IDs.
+
+**Review evidence (historical):** original focused lane 91 passed; head was
+`phase6b027`; PostgreSQL was skipped without `TEST_POSTGRES_URL`; nine probes
+reproduced the review findings. Correction work below is separate. Task 4 has not
+started.
+
+**Correction verification:** `uv run pytest -q tests/sandboxes/ tests/integration/test_analysis_results.py tests/test_tool_run_commands.py` → 124 passed; disposable PostgreSQL 16 lane at head `phase6b028` → 7 passed; `uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'` → 1,411 passed, 131 deselected; Ruff passed; `uv run alembic heads` → `phase6b028 (head)`; `git diff --check` passed. 97 existing/deprecation warnings were reported in the network-free lane. Task 4 remains unstarted.
+
+Correction execution order (TDD, each test must be observed failing first):
+
+1. **Shared reuse state:** permanent unit/PG tests for same-scope runs, distinct
+   scopes, shared-pointer uniqueness/selection, same numeric fence across runs,
+   intent/ack ownership, unresolved-intent ordering and two-run create races.
+   Then add schema/migration updates and adjust API integration reuse evidence.
+2. **Provider uncertainty:** tests for stale requested create recovery only after
+   conservative expiry, lost command reply blocking later dispatch, fresh
+   sandbox expiry versus an expired handle returned as Running, and transport
+   unavailable not being treated as absence.
+3. **Task 3 contract/state:** source declarations remain fail-closed with kind /
+   expectation preserved; failed execute stays the first incomplete phase;
+   partial staging removes all known uncommitted keys but preserves ready or
+   uncertain-commit content.
+4. **Preparation/model handoff:** trace existing pinned-model runner and budget;
+   add `source_prompt` as the explicit generation request (mutually exclusive
+   with an existing `source_id`); pin the default model snapshot at analysis
+   submission; run a model-only bounded turn using that snapshot and normal
+   attempt/budget accounting; capture bounded source as an immutable artifact;
+   persist its exact ref/digest in journey state and pass that ref to execution.
+   Test exact generated bytes/ref handoff, provider/model outage, size/finish
+   rejection, redelivery reusing captured source, and no sandbox execution
+   before an authorized task submission. No generic workflow/compiler.
+5. **Deployment/transport:** test provider endpoint/deployment identity affects
+   compatibility; ensure invocation-owned `AsyncClient` closes on success,
+   failure and cancellation, while injected clients remain caller-owned.
+6. **PostgreSQL and docs:** expect `phase6b028` head and `analysis_output`
+   constraint; run PostgreSQL independent-session contention / late ack / equal
+   fence cases; reconcile current spec/plan/operations/ledger wording and then
+   focused plus network-free regressions. Do not check this gate until all
+   required criteria are verified.
+
+### Task 4: Returned-source expectation review
 
 **Files:** Extend `apps/api/src/openship/sandboxes/outputs.py`, `tool.py` and the analysis graph's result step; test `apps/api/tests/sandboxes/test_output_review.py`.
 

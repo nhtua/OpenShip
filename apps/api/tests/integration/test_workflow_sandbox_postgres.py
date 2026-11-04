@@ -7,6 +7,7 @@ selection with independent SQLAlchemy sessions so no provider wait can hold a
 transaction open.
 """
 
+import asyncio
 import os
 import re
 import subprocess
@@ -110,7 +111,7 @@ datefmt = %H:%M:%S
         check=False,
     )
     assert current.returncode == 0, current.stderr
-    assert re.search(r"phase6b026\s*\(head\)", current.stdout), current.stdout
+    assert re.search(r"phase6b028\s*\(head\)", current.stdout), current.stdout
     assert not re.search(r"phase6b02[1-5]\w*\s*\(head\)", current.stdout), current.stdout
 
     engine = create_engine(lane_url, pool_size=8, max_overflow=4)
@@ -195,13 +196,40 @@ def _seed_run(Sessions):
     return run_id, claim, project_id, conversation_id
 
 
+def _seed_followup_run(Sessions, first_id, first_claim, project_id, conversation_id):
+    """Finish the prior run before admitting its next run in the same conversation."""
+    now = datetime.now(UTC)
+    run_id = _uuid.uuid4()
+    with Sessions() as db:
+        db.query(Run).filter(Run.id == first_id).update({Run.status: "completed"})
+        db.add(Run(id=run_id, project_id=project_id,
+                   conversation_id=conversation_id, status="running", fence=1))
+        db.add(RunJob(run_id=run_id, fence=1, owner_id="pg-worker-2",
+                      lease_until=now + timedelta(minutes=5), available_at=now))
+        db.commit()
+    claim = Claim(
+        run_id=run_id,
+        fence=1,
+        lease_until=now + timedelta(minutes=5),
+        worker_id="pg-worker-2",
+        user_id=first_claim.user_id,
+    )
+    return run_id, claim
+
+
 def test_upgrade_adds_one_scoped_pointer_table(pg_lane):
-    """Fresh main data upgrades to phase6b026 with the scoped pointer table."""
+    """Fresh main data upgrades through 027 and shared-scope 028."""
     engine, _ = pg_lane
     insp = sa_inspect(engine)
     assert "workflow_sandboxes" in insp.get_table_names()
     columns = {column["name"] for column in insp.get_columns("workflow_sandboxes")}
-    assert {"root_run_id", "project_id", "conversation_id", "requirements_key"} <= columns
+    assert {"root_run_id", "project_id", "conversation_id", "requirements_key",
+            "requested_at", "intent_id", "command_uncertain_until"} <= columns
+    assert "command_operation_id" in columns
+    artifact_checks = " ".join(
+        item["sqltext"] for item in insp.get_check_constraints("artifacts")
+    )
+    assert "analysis_output" in artifact_checks
 
 
 @pytest.mark.asyncio
@@ -230,7 +258,7 @@ async def test_independent_sessions_reuse_one_pointer(pg_lane):
 
 @pytest.mark.asyncio
 async def test_duplicate_pointer_for_a_root_run_is_rejected(pg_lane):
-    """PostgreSQL enforces the one-handle-per-root-run scope in the table itself."""
+    """PostgreSQL enforces one pointer per project/conversation scope."""
     _, Sessions = pg_lane
     run_id, claim, project_id, conversation_id = _seed_run(Sessions)
     client = FakeClient()
@@ -247,12 +275,142 @@ async def test_duplicate_pointer_for_a_root_run_is_rejected(pg_lane):
                 requirements_key=_requirements().key,
                 status="requested",
                 fence=claim.fence,
+                requested_at=datetime.now(UTC),
+                intent_id=_uuid.uuid4(),
             )
         )
         with pytest.raises(IntegrityError):
             db.commit()
         db.rollback()
     assert client.created == 1
+
+
+@pytest.mark.asyncio
+async def test_two_runs_same_scope_serialize_to_one_provider_pointer(pg_lane):
+    _, Sessions = pg_lane
+    first_id, first_claim, project_id, conversation_id = _seed_run(Sessions)
+    client = FakeClient()
+    first = await sessions.get_or_create_sandbox(
+        Sessions, client, claim=first_claim, root_run_id=first_id,
+        requirements=_requirements(),
+    )
+    second_id, second_claim = _seed_followup_run(
+        Sessions, first_id, first_claim, project_id, conversation_id
+    )
+    second = await sessions.get_or_create_sandbox(
+        Sessions, client, claim=second_claim, root_run_id=second_id,
+        requirements=_requirements(),
+    )
+    assert first.sandbox_id == second.sandbox_id
+    assert client.created == 1
+    with Sessions() as db:
+        scoped = db.query(WorkflowSandbox).filter_by(
+            project_id=project_id, conversation_id=conversation_id
+        )
+        assert scoped.count() == 1
+        row = scoped.one()
+        assert row.project_id == project_id
+        assert row.conversation_id == conversation_id
+
+
+@pytest.mark.asyncio
+async def test_independent_sessions_cannot_race_provider_create(pg_lane):
+    _, Sessions = pg_lane
+    run_id, claim, _project_id, _conversation_id = _seed_run(Sessions)
+
+    create_started = asyncio.Event()
+    release_create = asyncio.Event()
+
+    class ContendedClient(FakeClient):
+        async def create(self, requirements):
+            self.created += 1
+            create_started.set()
+            await release_create.wait()
+            return SandboxHandle(
+                provider_id=requirements.provider_id,
+                sandbox_id="pg-contended-sandbox",
+                requirements_key=requirements.key,
+                expires_at=datetime.now(UTC) + timedelta(minutes=30),
+            )
+
+    client = ContendedClient()
+    first_task = asyncio.create_task(
+        sessions.get_or_create_sandbox(
+            Sessions, client, claim=claim, root_run_id=run_id,
+            requirements=_requirements(),
+        )
+    )
+    await asyncio.wait_for(create_started.wait(), timeout=5)
+    with pytest.raises(sessions.SandboxCreationUncertain):
+        await sessions.get_or_create_sandbox(
+            Sessions, client, claim=claim, root_run_id=run_id,
+            requirements=_requirements(),
+        )
+    release_create.set()
+    first = await asyncio.wait_for(first_task, timeout=5)
+    second = await sessions.get_or_create_sandbox(
+        Sessions, client, claim=claim, root_run_id=run_id,
+        requirements=_requirements(),
+    )
+    assert first.sandbox_id == second.sandbox_id
+    assert client.created == 1
+
+
+@pytest.mark.asyncio
+async def test_late_equal_fence_create_ack_cannot_replace_successor(pg_lane):
+    _, Sessions = pg_lane
+    first_id, first_claim, project_id, conversation_id = _seed_run(Sessions)
+
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class LateAckClient(FakeClient):
+        async def create(self, requirements):
+            self.created += 1
+            ordinal = self.created
+            if ordinal == 1:
+                first_started.set()
+                await release_first.wait()
+            return SandboxHandle(
+                provider_id=requirements.provider_id,
+                sandbox_id=f"pg-late-{ordinal}",
+                requirements_key=requirements.key,
+                expires_at=datetime.now(UTC) + timedelta(minutes=30),
+            )
+
+    client = LateAckClient()
+    first_task = asyncio.create_task(
+        sessions.get_or_create_sandbox(
+            Sessions, client, claim=first_claim, root_run_id=first_id,
+            requirements=_requirements(),
+        )
+    )
+    await asyncio.wait_for(first_started.wait(), timeout=5)
+    second_id, second_claim = _seed_followup_run(
+        Sessions, first_id, first_claim, project_id, conversation_id
+    )
+    with Sessions() as db:
+        row = db.query(WorkflowSandbox).filter_by(
+            project_id=project_id, conversation_id=conversation_id
+        ).one()
+        row.requested_at = datetime.now(UTC) - timedelta(seconds=1831)
+        db.commit()
+
+    second = await sessions.get_or_create_sandbox(
+        Sessions, client, claim=second_claim, root_run_id=second_id,
+        requirements=_requirements(),
+    )
+    release_first.set()
+    with pytest.raises(sessions.SandboxClaimUncertain):
+        await asyncio.wait_for(first_task, timeout=5)
+    assert second.sandbox_id == "pg-late-2"
+    with Sessions() as db:
+        row = db.query(WorkflowSandbox).filter_by(
+            project_id=project_id, conversation_id=conversation_id
+        ).one()
+        assert row.root_run_id == second_id
+        assert row.sandbox_id == second.sandbox_id
+    assert client.created == 2
 
 
 @pytest.mark.asyncio

@@ -48,18 +48,29 @@ class WorkflowSandbox(Base):
     sandbox_id = Column(String(255), nullable=True)
     requirements_key = Column(String(64), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)
+    requested_at = Column(DateTime(timezone=True), nullable=True)
+    intent_id = Column(UUID(as_uuid=True), nullable=True)
+    command_uncertain_until = Column(DateTime(timezone=True), nullable=True)
+    command_operation_id = Column(UUID(as_uuid=True), nullable=True)
     status = Column(String(16), nullable=False, server_default="requested")
     fence = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
-        UniqueConstraint("root_run_id", name="uq_workflow_sandboxes_root_run"),
+        UniqueConstraint(
+            "project_id", "conversation_id", name="uq_workflow_sandboxes_scope"
+        ),
         CheckConstraint("status IN ('requested', 'active')", name="ck_workflow_sandbox_status"),
         CheckConstraint("fence >= 1", name="ck_workflow_sandbox_fence"),
         CheckConstraint(
-            "(status = 'requested' AND sandbox_id IS NULL AND expires_at IS NULL) "
-            "OR (status = 'active' AND sandbox_id IS NOT NULL AND expires_at IS NOT NULL)",
+            "(status = 'requested' AND sandbox_id IS NULL AND expires_at IS NULL "
+            "AND requested_at IS NOT NULL AND intent_id IS NOT NULL "
+            "AND command_uncertain_until IS NULL AND command_operation_id IS NULL) "
+            "OR (status = 'active' AND sandbox_id IS NOT NULL AND expires_at IS NOT NULL "
+            "AND requested_at IS NULL AND intent_id IS NULL "
+            "AND ((command_uncertain_until IS NULL AND command_operation_id IS NULL) "
+            "OR (command_uncertain_until IS NOT NULL AND command_operation_id IS NOT NULL)))",
             name="ck_workflow_sandbox_state",
         ),
         Index(

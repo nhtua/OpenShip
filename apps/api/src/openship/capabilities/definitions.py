@@ -713,7 +713,7 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             handler=analysis_execute,
             handler_result_model=AnalysisObservation,
             input_artifact_ids=lambda arguments: (
-                arguments.source_id,
+                *((arguments.source_id,) if arguments.source_id is not None else ()),
                 *sorted(arguments.input_ids.values()),
             ),
             evidence_projector=analysis_evidence,

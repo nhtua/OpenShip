@@ -1,6 +1,6 @@
 ---
 type: spec
-summary: A small OpenSandbox client integration with workflow-scoped reuse, checked outputs and explicit resume.
+summary: A small OpenSandbox client integration with conversation-context reuse, checked outputs and explicit resume.
 status: approved-scope-awaiting-implementation
 date: 2026-11-03
 ---
@@ -72,9 +72,11 @@ runtime requirement, not a credentialed CLI deliverable in 6B.
 
 ## Prepare → request → validate → continue
 
-1. Resolve selected ready artifacts in the current project/conversation. Capture
-   generated Python source and any generated JSON/log input through the existing
-   artifact service. Record exact refs/digests; never execute source in OpenShip.
+1. Resolve selected ready artifacts in the current project/conversation. Generate
+   Python source through the run's submission-pinned model or resolve prepared
+   source; capture generated source and generated JSON/log inputs through the
+   existing artifact service. Record exact refs/digests; never execute source in
+   OpenShip.
 2. Build a small execution request: workflow execution identity, existing logical
    operation identity, runtime requirement key, source/input refs, bounded JSON
    parameters and declared output names/types/expectations. No host paths, caller
@@ -97,21 +99,27 @@ do not build a second queue, scheduler, artifact store or operation ledger.
 
 ## Workflow-scoped reuse, not lifecycle management
 
-Persist a small `WorkflowSandbox` record containing the existing root run identity
-used as the workflow-execution scope, provider deployment identity, sandbox ID,
-runtime requirement key and provider expiration time (or a conservative deadline
-derived from creation). This record contains no credentials, input bytes,
-workspace snapshot, deletion state or physical-capacity reservation.
+Persist one current `WorkflowSandbox` pointer for the project's ongoing
+conversation context, with its owning run/intent identity, provider deployment
+identity, sandbox ID, runtime requirement key and provider expiration time (or a
+conservative deadline derived from creation). This record contains no credentials,
+input bytes, workspace snapshot, deletion state or physical-capacity reservation.
 The provider deployment identity refers to the configured OpenSandbox installation,
 not a model provider; derive runtime requirements server-side.
 
-- Never share it across workflow executions or projects. Conversation identity
-  alone is not a workflow scope. Explicit child/resume attempts may reference
-  their authorized original root run; a run-from-beginning has a new root.
-- On a requested execution, use the existing run claim to serialize selection
-  and check the saved provider handle on demand. Reuse a live compatible sandbox.
+- In this conversation-backed slice, runs in the same project/conversation may
+  reuse one compatible, unexpired environment. Do not share across projects or
+  different conversations. A future explicit workflow identity must separate
+  workflows even when they appear in one conversation; conversation identity is
+  not a universal workflow ID.
+- On a requested execution, lock the conversation scope, persist a unique
+  run/intent identity, then check the saved provider handle on demand. Acknowledge
+  only the matching intent while that run claim is live. Reuse a live compatible
+  sandbox.
   Ordinary source, selected-data and parameter changes do **not** require a new
   sandbox; each request supplies its complete selected inputs in a distinct path.
+  Generated source uses the submission-pinned model, is captured as an immutable
+  artifact, and is passed to execution by its exact ref/digest.
 - A different runtime/image/dependency/resource profile changes the requirement
   key. Request a new sandbox and update the reusable pointer. Leave the old one
   to OpenSandbox's original TTL; do not delete it or wait for its deletion.
@@ -163,7 +171,7 @@ or process snapshot is required. Retained user artifacts are not forbidden.
 | Choice | Behavior |
 | --- | --- |
 | A — Rerun the last interrupted step | Use saved outputs from earlier completed steps. If the current step requests sandbox execution, prepare its inputs from that state and reuse the compatible live workflow sandbox, or request a new one if expired/absent or requirements changed. |
-| B — Rerun from the beginning | Start a new root run with the original selected initial input refs, rerun the journey and obtain a new workflow sandbox only when an execution step requests one. Keep earlier run results unchanged. |
+| B — Rerun from the beginning | Start a new run with the original selected initial input refs and rerun the journey. A compatible live sandbox in the same conversation may be reused, but each execution gets a fresh directory and independent artifact records. Keep earlier run results unchanged. |
 
 The user's later reuse decision supersedes the original always-new-sandbox-on-
 resume proposal. Neither choice revives a process or trusts residual sandbox
