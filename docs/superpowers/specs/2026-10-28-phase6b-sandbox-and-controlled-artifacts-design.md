@@ -10,9 +10,11 @@ date: 2026-11-03
 ## Decision and deliverable
 
 The user approved this scope reset on 2026-11-03, including a **30-minute
-sandbox lifetime**, a **workflow-scoped reusable sandbox record**, and deferral
-of the dedicated qualification platform. This replaces the previous broad 6B
-specification and its implementation progress, not the accepted Phases 1–6A.
+sandbox lifetime**, reusable compatible sandboxes, and deferral of the dedicated
+qualification platform. The initial workflow-scoped pointer proposal was later
+clarified to a project/conversation pointer for this slice. This replaces the
+previous broad 6B specification and its implementation progress, not the
+accepted Phases 1–6A.
 
 **Deliver:** OpenShip prepares a small Python program and selected input files,
 asks OpenSandbox to run it, validates the returned outputs, retains accepted
@@ -97,7 +99,7 @@ No database transaction spans a provider/model HTTP wait. Preserve current
 ownership/archive/policy checks, operation deduplication and late-result fencing;
 do not build a second queue, scheduler, artifact store or operation ledger.
 
-## Workflow-scoped reuse, not lifecycle management
+## Conversation-context reuse, not lifecycle management
 
 Persist one current `WorkflowSandbox` pointer for the project's ongoing
 conversation context, with its owning run/intent identity, provider deployment
@@ -195,7 +197,7 @@ sandbox delete; command timeout/expiration remain with OpenSandbox.
 | --- | --- |
 | Useful task | Generated parser receives only selected current inputs; expected `summary.json`/`report.txt` are saved and used in the next step/answer. |
 | Provider ownership | Create requests carry lifetime 1,800 seconds. No normal-use delete, renewal, orphan-listing or cleanup loop exists in OpenShip. |
-| Reuse | Two compatible requests in one workflow reuse its ID with distinct input directories; changed requirements or an expired/absent handle create a new one on demand. Different workflows do not share it. |
+| Reuse | Two compatible requests in one project/conversation reuse the current pointer's ID with distinct input directories; changed requirements or an expired/absent handle create a new one on demand. Different projects/conversations do not share it. A future explicit workflow identity must separate workflows within one conversation. |
 | Untrusted outputs | Invalid/oversized/undeclared or executable binary outputs fail; expected returned source passes or fails the LLM expectation check before use and is never executed by OpenShip. |
 | Durability | Saved accepted outputs remain readable after provider expiration and application restart. Provider unavailability cannot invalidate already committed results. |
 | Explicit resume | A skips completed sandbox steps and uses saved outputs; B creates a new root and reruns them. Restart/redelivery is not a sandbox request; repeated resume commands are idempotent. |

@@ -316,7 +316,7 @@ historical data migrations remain part of the application.
 **Build**
 
 - Generate/capture Python source, selected text/JSON inputs and bounded parameters using existing immutable artifacts.
-- Request a **30-minute (1,800-second)** sandbox lifetime. Keep a **workflow-scoped reusable sandbox record**; reuse compatible live sandboxes, replace on changed runtime requirements or expiry/absence only when execution is requested. No OpenShip cleanup/reconciliation controller or deletion-gated capacity reservation.
+- Request a **30-minute (1,800-second)** sandbox lifetime. Keep one **project/conversation-scoped reusable sandbox pointer** for this slice; reuse compatible live sandboxes with a fresh directory per execution, replace on changed runtime requirements or expiry/absence only when execution is requested. Future workflow identity must separate workflows within a conversation. No OpenShip cleanup/reconciliation controller or deletion-gated capacity reservation.
 - Accept bounded declared text/JSON outputs; expected code/script outputs remain inert text and require an LLM expectation check before workflow use. Security scanning is deferred, not certified by the judge.
 - Save accepted output refs and use them in the next step. Offer **A: rerun the interrupted step using saved prior outputs**, or **B: rerun from the beginning as a new root run**. Neither restart nor broker redelivery silently reruns sandbox code.
 - Preserve credential-free execution, existing authorization/quotas/fencing, authorized downloads and escaped previews. Provider configuration owns network/runtime controls.
@@ -890,4 +890,4 @@ These distinctions should remain explicit throughout implementation:
 
 NATS with JetStream is the selected internal messaging foundation from Phase 6A. Stronger isolation providers, additional external broker adapters, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
 
-**Next commitment:** Deliver the small Phase 6B prepare → OpenSandbox request → validate/save → continue journey, with 30-minute provider-owned lifetime, workflow-scoped reuse and explicit A/B resume. Preserve Phases 1–6A and existing application controls; do not reintroduce lifecycle management, mutable-file scope or a qualification platform as prerequisites. The Phase 10B maintenance-authority boundary remains unchanged.
+**Next commitment:** Deliver the small Phase 6B prepare → OpenSandbox request → validate/save → continue journey, with 30-minute provider-owned lifetime, project/conversation-scoped reuse for this slice, and explicit A/B resume. Preserve Phases 1–6A and existing application controls; do not reintroduce lifecycle management, mutable-file scope or a qualification platform as prerequisites. The Phase 10B maintenance-authority boundary remains unchanged.

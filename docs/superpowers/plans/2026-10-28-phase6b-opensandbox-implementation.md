@@ -46,7 +46,7 @@ Paths are relative to the repository root; these are planned targets, not claims
 | `apps/api/src/openship/sandboxes/client.py` | Documented provider API calls, fixed execution, bounded transfers/completion. No delete/list-orphans/renew controller. |
 | `docker-compose.yml`, `docker-compose.sandbox*.yml`, `scripts/openship-stack`, `deploy/sandbox/` | Existing OpenSandbox manager/gateway setup integrated into base Compose, Docker/gVisor defaults and provider-only startup; preserve optional alternatives without duplicate service definitions. |
 | `apps/api/tests/live/test_opensandbox.py`, `docs/operations/opensandbox.md` | Opt-in real-provider client/lifecycle smoke test and reproducible worktree-local commands/evidence; no new qualification framework. |
-| `apps/api/src/openship/sandboxes/models.py`, `sessions.py` | One workflow-scoped reusable-handle row and on-demand selection/persistence. |
+| `apps/api/src/openship/sandboxes/models.py`, `sessions.py` | One project/conversation-scoped reusable-handle row and on-demand selection/persistence. |
 | `apps/api/src/openship/sandboxes/tool.py`, `outputs.py` | Authorized input preparation, gateway integration, output validation/judging and existing artifact/result publication. |
 | `apps/api/src/openship/runs/analysis_graph.py`, `resume.py` | Fixed analysis journey/checkpoints and explicit A/B commands, without a generic workflow compiler. |
 | Existing capability/configuration/run files | Add only necessary new contracts/versions/dispatch wiring; old versions keep their meaning. |
@@ -94,7 +94,7 @@ Each task follows red → minimal implementation → green → reviewed commit. 
 - [x] Start only the worktree-local OpenSandbox manager/gateway on rootful Docker and run the opt-in real-provider test for create/inspect, input changes, distinct-directory reuse, output, failures, cancellation and separate 60-second expiration. Production creates request 1,800 seconds. The combined task-done test passed 66 tests.
 - [x] Record reproducible commands, image identities, results and limitations in `docs/operations/opensandbox.md`; commit the scoped changes as `761bd0a` using a scanned message file and passing hooks. This is not isolation certification or the Task 6 application journey.
 
-### Task 2: Workflow-scoped sandbox reuse
+### Task 2: Conversation-scoped sandbox reuse
 
 **Files:** Create `apps/api/src/openship/sandboxes/{models,sessions}.py` and the next unused Alembic revision for `WorkflowSandbox`; modify `apps/api/src/openship/database/models.py`; test `apps/api/tests/sandboxes/test_sessions.py` and `apps/api/tests/integration/test_workflow_sandbox_postgres.py`.
 
@@ -193,7 +193,7 @@ Correction execution order (TDD, each test must be observed failing first):
 
 **Files:** Create `apps/api/src/openship/runs/resume.py`, extend `analysis_graph.py`, `runs/{routes,schemas,service}.py` and only needed additive persistence; create `apps/web/src/components/chat/RunResume.vue`, extend existing run card, `services/api.ts` and `types/index.ts`. Test `apps/api/tests/sandboxes/test_analysis_resume.py`, `apps/api/tests/integration/test_analysis_resume.py`, and `apps/web/tests/RunResume.test.ts`.
 
-**Interfaces:** Produce `ResumeAnalysisRequest(mode: last_step|from_beginning, client_request_id: UUID)` and `resume_analysis(db, *, principal_id: UUID, run_id: UUID, command: ResumeAnalysisRequest) -> Run`, exposed as authenticated `POST /api/runs/{run_id}/resume-analysis`. Consume `AnalysisState` and Task 2's root-scoped reuse; use existing run submission/outbox rather than a second scheduler.
+**Interfaces:** Produce `ResumeAnalysisRequest(mode: last_step|from_beginning, client_request_id: UUID)` and `resume_analysis(db, *, principal_id: UUID, run_id: UUID, command: ResumeAnalysisRequest) -> Run`, exposed as authenticated `POST /api/runs/{run_id}/resume-analysis`. Consume `AnalysisState` and Task 2's project/conversation-scoped pointer; keep identity scope separate from per-run state and use existing run submission/outbox rather than a second scheduler.
 
 - [ ] Write tests: A resumes `use_outputs` with accepted report refs and **zero** provider calls; A resuming `execute` uses prior step refs and compatible live handle or on-demand replacement after expiry. B starts a new root from initial refs, reruns preparation/execution and leaves old results unchanged. Missing/pruned inputs fail without earlier-step recomputation. Double-click/replayed resume returns one new run; restart after dispatch marks interruption instead of resending code; lost acknowledgement after commit reuses the result.
 - [ ] Run those backend tests red; implement the fixed journey's checkpoint/resume command. Keep initial refs/output refs in ordinary state. An uncertain still-running command yields an actionable blocked/interrupted state until provider availability is definite; never use a snapshot or hidden input-byte replay store.
