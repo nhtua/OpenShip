@@ -312,3 +312,225 @@ This report is committed separately as task-verification documentation. Its
 documentation-only commit runs applicable hooks and uses its own separately
 scanned `/tmp` message file. The report commit ID is supplied in the final
 handoff rather than attempting to embed its own hash in itself.
+
+## Task 4 review fix round — findings against `809e651`
+
+All three findings were verified, reproduced before their respective production
+fixes, and corrected in one fix round. Fix commit: `f3f7814` (`fix: close
+returned-source review supervision and persistence gaps`). No history was
+rewritten and no subagents were dispatched.
+
+The earlier tests mocked `run_model_turn` in the gateway integration path and
+therefore missed the combined-control supervision defect. The new integration
+helper configures a real eligible operator profile and uses the real gateway,
+provider adapter/runner, current-profile authorization, attempt recorder,
+artifact store, admission and fenced publication. Only remote sandbox/model
+transports are synthetic; `run_model_turn` is not replaced in these regressions.
+
+### Finding 1 — critical: combined gateway control lacked `is_stopped()`
+
+Added a real-gateway source-review regression that reaches real provider-runner
+supervision and asserts successful provider-attempt persistence and idempotent
+replay. Added all four parent-stop/slot-loss combinations, checking both the
+boolean supervision contract and `raise_if_stopped()` behavior.
+
+RED, from `apps/api`:
+
+```sh
+uv run pytest tests/sandboxes/test_tool.py -q -k 'real_runner_supervision or combined_control_preserves' > /tmp/opencode/task4-fix1-red.log 2>&1
+```
+
+Exit 1; exact relevant output:
+
+```text
+E       AssertionError: ToolFailure(code='provider_unavailable', message='The search service is temporarily unavailable.')
+E       assert 'failed' == 'succeeded'
+E       AttributeError: '_CombinedControl' object has no attribute 'is_stopped'
+5 failed, 35 deselected, 1 warning in 5.16s
+```
+
+Fix: `_CombinedControl.is_stopped()` now reports slot loss OR the parent's stop
+signal. Existing deadline delegation and parent-first `raise_if_stopped()`
+semantics are unchanged.
+
+GREEN:
+
+```sh
+uv run pytest tests/sandboxes/test_tool.py -q -k 'real_runner_supervision or combined_control_preserves' > /tmp/opencode/task4-fix1-green.log 2>&1
+```
+
+```text
+5 passed, 35 deselected, 1 warning in 5.23s
+```
+
+### Finding 2 — important: invalid source lost digest-bound refusal
+
+Added real-gateway persistence/replay tests for invalid UTF-8, an ELF-shaped
+binary and a ZIP-shaped archive. They assert a locally computed exact SHA-256,
+negative persisted review, no accepted refs or ready operation-output artifacts,
+and replay with one sandbox execution and zero remote model requests.
+
+RED:
+
+```sh
+uv run pytest tests/sandboxes/test_tool.py -q -k invalid_source_refusal > /tmp/opencode/task4-fix2-red.log 2>&1
+```
+
+```text
+E       AssertionError: assert None is not None
+3 failed, 37 deselected, 1 warning in 4.51s
+```
+
+The failure was the generic failed result with `result=None`, rather than a
+persisted `ReviewDecision`. Fix: `validate_outputs` still enforces declared-set
+and transfer-byte bounds for every output, but leaves source content untouched
+for `review_source_output`. Ordinary text/JSON data validation is unchanged.
+
+GREEN:
+
+```sh
+uv run pytest tests/sandboxes/test_tool.py -q -k invalid_source_refusal > /tmp/opencode/task4-fix2-green.log 2>&1
+```
+
+```text
+3 passed, 37 deselected, 1 warning in 4.54s
+```
+
+### Finding 3 — important: aggregate UTF-8 review evidence exceeded 16 KiB
+
+Added eight-output gateway tests with maximum-length, heavily JSON-escaped
+aliases and multibyte reasons. The original 1024-character emoji reasons
+reproduced both lost success evidence and rolled-back failure publication.
+
+RED:
+
+```sh
+uv run pytest tests/sandboxes/test_tool.py -q -k multibyte_review_evidence > /tmp/opencode/task4-fix3-red.log 2>&1
+```
+
+```text
+E       AssertionError: assert None is not None
+E       AssertionError: ToolFailure(code='invalid_tool_output', message='The maintained tool returned an invalid result.')
+E       assert 'interrupted' == 'failed'
+2 failed, 38 deselected, 1 warning in 4.27s
+```
+
+Expanded cases also cover JSON escape expansion (`U+0001` reasons), valid
+near-limit multibyte reasons, both accepted/rejected model answers, and direct
+contract enforcement. The expanded RED command was:
+
+```sh
+uv run pytest tests/sandboxes/test_tool.py tests/sandboxes/test_output_review.py -q -k 'multibyte_review_evidence or serialized_reason_bytes' > /tmp/opencode/task4-fix3-expanded-red.log 2>&1
+```
+
+It emitted `FF` and exceeded the 120-second command timeout before providing a
+complete summary. This incomplete run is not counted as passing evidence; the
+completed two-case RED above established the intended publication failures.
+
+Fix: `ReviewDecision.reason` must be nonempty and at most 1024 bytes **after
+canonical JSON string serialization**, counting both UTF-8 and escaping. A
+model judgment is converted to this bounded contract inside the review's
+validation/error boundary. Over-budget reasons become a short negative decision
+with the original source digest; they are not accepted, truncated or allowed to
+reach oversized publication. The trusted model instructions state this bound.
+With eight outputs and bounded aliases/refs this leaves room under the existing
+16-KiB result limit, which remains enforced without being raised or bypassed.
+
+GREEN (all eight expanded cases):
+
+```sh
+uv run pytest tests/sandboxes/test_tool.py tests/sandboxes/test_output_review.py -q -k 'multibyte_review_evidence or serialized_reason_bytes' > /tmp/opencode/task4-fix3-green.log 2>&1
+```
+
+```text
+8 passed, 54 deselected, 1 warning in 6.88s
+```
+
+The tests assert complete serialized result size, serialized per-reason size,
+persisted operation status/result and exact source digests. Valid near-limit
+reasons preserve acceptance/rejection; excessive reasons persist refusals.
+All replay paths keep one sandbox command and exactly eight initial model
+requests, with no additional requests on replay.
+
+### Final fix-round verification and commits
+
+Latest complete task suite (all sandbox tests and analysis-result consumers),
+after the last test assertion was added:
+
+```sh
+uv run pytest tests/sandboxes/ tests/integration/test_analysis_results.py -q > /tmp/opencode/task4-fix-task-final.log 2>&1
+```
+
+```text
+150 passed, 2 warnings in 49.24s
+```
+
+`uv run ruff check .` returned `All checks passed!` and
+`git diff --cached --check` exited 0.
+
+The fix message was reviewed and scanned immediately before committing:
+
+```sh
+rayloc scan '/tmp/openship-phase6b-task4-review-fix-message.txt'
+```
+
+```text
+rayloc — CLEAN
+0 finding(s); 0 retained; 1 of 1 file(s) completed; 9 line(s); 511 B read
+```
+
+```sh
+git commit --file '/tmp/openship-phase6b-task4-review-fix-message.txt' > /tmp/opencode/task4-fix-commit.log 2>&1
+```
+
+Exit 0; commit-time hooks exercised the complete network-free API unit lane as
+configured in `.pre-commit-config.yaml`, not just the focused task tests:
+
+```text
+Ruff Lint............................................(no files to check)Skipped
+Run Tests................................................................Passed
+API Ruff Lint............................................................Passed
+API Unit Tests...........................................................Passed
+Vue Typecheck............................................................Passed
+Frontend Unit Tests......................................................Passed
+rayloc staged secret scan................................................Passed
+[task/phase6b-sandbox-client f3f7814] fix: close returned-source review supervision and persistence gaps
+ 5 files changed, 164 insertions(+), 5 deletions(-)
+```
+
+Fix files:
+
+- `apps/api/src/openship/execution/gateway.py`
+- `apps/api/src/openship/sandboxes/contracts.py`
+- `apps/api/src/openship/sandboxes/outputs.py`
+- `apps/api/tests/sandboxes/test_output_review.py`
+- `apps/api/tests/sandboxes/test_tool.py`
+
+This appended verification section is a separate documentation commit using its
+own scanned message and applicable hooks; its hash is in the final handoff.
+
+### Combined Task 4 self-review and remaining concerns
+
+Reviewed the entire Task 4 production diff from `cf3bcbe`, including gateway,
+publication, capability registration, tool, contracts, output review and graph
+consumption—not just the follow-up patch. All three reported findings are
+addressed with no severity downgrade.
+
+- Source collection remains bounded; invalid source is never approved or
+  imported/executed, and its exact bytes now reach local refusal logic.
+- Negative reviews persist through the existing fenced failure transaction;
+  accepted results retain the exact reviewed artifact digest. Aggregate reason
+  bounds are enforced before the publication transaction, including JSON escape
+  expansion, for success and failure paths.
+- Real-runner integration covers the previously missing supervision boundary,
+  real current-profile checks and durable provider-attempt accounting. Parent
+  stop and slot-loss signals still stop the combined control.
+- No sandbox pointer/session identity, per-run output directory, gateway logical
+  call ID, artifact ownership check, fence, model pin or provider budget was
+  changed. Task 5 must replay the existing operation/state, never create another
+  sandbox execution to recover output-review/use failures.
+- Existing parent-owned `progress.md` remains unstaged and untouched. No Task
+  1–3 implementation or unrelated user work was reverted.
+- No unresolved issue among these findings. Existing external PostgreSQL/NATS
+  qualification limitations and the expectation-only (not security-certified)
+  nature of model judgment still apply. Existing deprecation warnings remain.
