@@ -10,6 +10,7 @@ import hashlib
 import json
 import uuid as _uuid
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -90,10 +91,13 @@ def enable_sandbox(monkeypatch, tmp_path):
 class Lane:
     """One seeded project/conversation/tool-run with claim and real store."""
 
+    sessions: ClassVar[list] = []
+
     def __init__(self, tmp_path):
         self.store = LocalArtifactStore(tmp_path / "store", _uuid.uuid4())
         self.store.initialize()
         self.db = SessionLocal()
+        self.sessions.append(self.db)
         self.user = User(
             username=f"sandbox_{_uuid.uuid4().hex[:12]}",
             email=f"sandbox_{_uuid.uuid4().hex}@example.test",
@@ -226,6 +230,15 @@ class Lane:
                 for alias, media in outputs
             ),
         )
+
+
+@pytest.fixture(autouse=True)
+def close_lane_sessions():
+    """Do not let journey fixtures exhaust the shared database connection pool."""
+    yield
+    for session in Lane.sessions:
+        session.close()
+    Lane.sessions.clear()
 
 
 def _ref(artifact: Artifact) -> ArtifactRef:
@@ -526,7 +539,7 @@ async def test_lost_command_reply_blocks_later_operation_on_same_sandbox(
 
 
 @pytest.mark.asyncio
-async def test_execute_analysis_refuses_unreviewed_source_declaration(
+async def test_execute_analysis_refuses_source_without_pinned_review_model(
     monkeypatch, tmp_path
 ):
     enable_sandbox(monkeypatch, tmp_path)
@@ -534,6 +547,11 @@ async def test_execute_analysis_refuses_unreviewed_source_declaration(
     source = lane.store_artifact(PARSER_SOURCE)
     log = lane.store_artifact(b"first\n")
     provider = Provider()
+    provider.command_response = lambda _body: httpx.Response(
+        200, content=b'{"type":"execution_complete","exit_code":0}\n'
+    )
+    provider.listing = lambda path: [{"path": f"{path}/returned.py", "size": 9, "type": "file"}]
+    provider.download = lambda _path: b"print(1)\n"
     provider.install(monkeypatch)
     request = lane.request(source, [("log.txt", log)], [("returned.py", "text/plain")])
     request = request.model_copy(update={
@@ -543,12 +561,153 @@ async def test_execute_analysis_refuses_unreviewed_source_declaration(
         ),),
     })
 
-    with pytest.raises(sandbox_tool.ToolPublicationError, match="invalid result"):
-        await sandbox_tool.execute_analysis(
-            lane.context(), request, InvocationControl()
+    result = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    assert result.status == "failed"
+    assert result.error.code == "invalid_tool_output"
+    assert result.artifacts == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accepted", [True, False, None])
+async def test_source_review_is_persisted_and_replayed_without_execution(monkeypatch, tmp_path, accepted):
+    from src.openship.providers.contracts import ProviderTurnResult
+    from src.openship.sandboxes import outputs
+    from tests.providers.conftest import run_snapshot
+
+    enable_sandbox(monkeypatch, tmp_path)
+    lane = Lane(tmp_path)
+    lane.run.model_configuration = run_snapshot()
+    lane.db.commit()
+    source = lane.store_artifact(PARSER_SOURCE)
+    returned = b"raise RuntimeError('returned source must remain inert')\n"
+    provider = Provider()
+    provider.command_response = lambda _body: httpx.Response(
+        200, content=b'{"type":"execution_complete","exit_code":0}\n'
+    )
+    provider.listing = lambda path: [{"path": f"{path}/returned.py", "size": len(returned), "type": "file"}]
+    provider.download = lambda _path: returned
+    provider.install(monkeypatch)
+    reviewed = []
+
+    async def judge(request, config, control, recorder, **kwargs):
+        reviewed.append(request)
+        if accepted is None:
+            from src.openship.providers.errors import ProviderError
+
+            raise ProviderError("provider_unavailable")
+        return ProviderTurnResult(
+            text=json.dumps({"accepted": accepted, "reason": "Expectation decision only"}),
+            finish_reason="stop", selected_profile_id=config.primary.id,
         )
-    assert provider.created == 0
-    assert provider.commands == []
+
+    monkeypatch.setattr(outputs, "run_model_turn", judge)
+    request = lane.request(source, [], [("returned.py", "text/plain")])
+    request = request.model_copy(update={"outputs": (OutputSpec(
+        alias="returned.py", media_type="text/plain", kind="source",
+        expectation="Raise a RuntimeError without reading inputs.",
+    ),)})
+    result = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    assert result.status == ("succeeded" if accepted else "failed"), result.error
+    decision = result.result["reviews"]["returned.py"]
+    assert decision["accepted"] is bool(accepted)
+    assert decision["output_sha256"] == hashlib.sha256(returned).hexdigest()
+    if accepted:
+        assert len(result.artifacts) == 1
+        row = lane.db.get(Artifact, result.artifacts[0].id)
+        with lane.store.open_verified(row) as handle:
+            assert handle.read() == returned
+        assert row.sha256 == decision["output_sha256"]
+    else:
+        assert not result.artifacts
+        assert result.result["outputs"] == {}
+    replay = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    assert replay == result
+    assert len(provider.commands) == len(reviewed) == 1
+
+
+@pytest.mark.parametrize("kind", ["source", "text", "json"])
+def test_analysis_result_step_escapes_text_and_keeps_source_inert(monkeypatch, tmp_path, kind):
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.openship.providers.contracts import ProviderTurnResult
+    from src.openship.sandboxes import outputs
+    from tests.providers.conftest import run_snapshot
+
+    enable_sandbox(monkeypatch, tmp_path)
+    lane = Lane(tmp_path)
+    lane.run.model_configuration = run_snapshot()
+    lane.db.commit()
+    source = lane.store_artifact(PARSER_SOURCE)
+    returned = b"raise RuntimeError('never run')\n# <script>alert(1)</script>"
+    if kind == "json":
+        returned = b'{"comment":"<script>alert(1)</script>"}'
+    provider = Provider()
+    provider.command_response = lambda _body: httpx.Response(
+        200, content=b'{"type":"execution_complete","exit_code":0}\n'
+    )
+    provider.listing = lambda path: [{"path": f"{path}/returned.py", "size": len(returned), "type": "file"}]
+    provider.download = lambda _path: returned
+    provider.install(monkeypatch)
+
+    async def judge(request, config, *_args, **_kwargs):
+        return ProviderTurnResult(
+            text='{"accepted":true,"reason":"Matches expectation, not a safety assessment"}',
+            finish_reason="stop", selected_profile_id=config.primary.id,
+        )
+
+    monkeypatch.setattr(outputs, "run_model_turn", judge)
+    from src.openship.execution.gateway import ToolGateway
+
+    graph = build_analysis_graph(
+        MemorySaver(), gateway_factory=lambda: ToolGateway(SessionLocal),
+        invocation_factory=lambda _state: (lane.claim, lane.context(), InvocationControl()),
+    )
+    final = graph.invoke({
+        "run_id": str(lane.run.id),
+        "execution_configuration": lane.execution.model_dump_json(),
+        "model_configuration": run_snapshot(),
+        "tool_command_json": json.dumps({
+            "capability": lane.ref.model_dump(mode="json"),
+            "arguments": {
+                "source_id": str(source.id), "output_media": {
+                    "returned.py": "application/json" if kind == "json" else "text/plain",
+                },
+                "output_expectations": (
+                    {"returned.py": "Raise RuntimeError; include a script-tag comment."}
+                    if kind == "source" else {}
+                ),
+            },
+        }),
+    }, config={"configurable": {"thread_id": f"review-{lane.run.id}"}})
+    assert "<script>" not in final["analysis_summary"]["returned.py"]
+    assert "&lt;script&gt;" in final["analysis_summary"]["returned.py"]
+    if kind == "source":
+        assert final["tool_result"]["result"]["reviews"]["returned.py"]["output_sha256"] == hashlib.sha256(returned).hexdigest()
+    else:
+        assert final["tool_result"]["result"]["reviews"] == {}
+    assert resume_phase(decode_journey(final["journey_json"])) is None
+    assert len(provider.commands) == 1
+
+
+def test_publication_validation_rejects_missing_or_mismatched_source_review(tmp_path):
+    from types import SimpleNamespace
+
+    from src.openship.capabilities.definitions import get_tool_definition_by_id
+    from src.openship.sandboxes.contracts import ReviewDecision
+    from src.openship.sandboxes.tool import AnalysisObservation
+
+    definition = get_tool_definition_by_id(ANALYSIS_ID)
+    operation = SimpleNamespace(arguments_json=json.dumps({
+        "source_id": str(_uuid.uuid4()), "output_media": {"returned.py": "text/plain"},
+        "output_expectations": {"returned.py": "Define parse."},
+    }))
+    for reviews in ({}, {"returned.py": ReviewDecision(
+        accepted=True, reason="matches", output_sha256=hashlib.sha256(b"different").hexdigest(),
+    )}):
+        with pytest.raises((ValueError, sandbox_tool.OutputValidationFailed)):
+            definition.validate_handler_result(operation, AnalysisObservation(
+                outputs={"returned.py": b"def parse(): pass"}, reviews=reviews,
+            ))
 
 
 def test_failed_execute_remains_the_first_incomplete_phase(monkeypatch, tmp_path):
@@ -655,6 +814,7 @@ def test_generated_source_is_captured_and_exact_ref_is_handed_to_execution(
         input_ids={"log.txt": log.id},
         parameters={},
         output_media={"report.txt": "text/plain"},
+        output_expectations={"report.txt": "Define a parser for the selected log format."},
     )
     state = {
         "run_id": str(lane.run.id),
@@ -686,6 +846,7 @@ def test_generated_source_is_captured_and_exact_ref_is_handed_to_execution(
     assert source.sha256 == hashlib.sha256(generated.encode()).hexdigest()
     assert observed["model_config"].primary.id
     assert observed["request"].tools == ()
+    assert json.loads(observed["request"].messages[-1].content)["output_expectations"] == arguments.output_expectations
     assert observed["tool_arguments"]["source_id"] == str(source.id)
     assert "source_prompt" not in observed["tool_arguments"]
     assert tuple(item.id for item in observed["tool_inputs"]) == (source.id, log.id)

@@ -476,6 +476,7 @@ def mark_tool_failed(
     *,
     attempt_id: uuid.UUID | None = None,
     status: str = "failed",
+    result_data: dict | None = None,
 ) -> PublishedToolResult:
     """Record a fixed failure and release reserved output quota in this transaction."""
     if code not in _ERROR_MESSAGES or status not in ("failed", "cancelled"):
@@ -542,8 +543,18 @@ def mark_tool_failed(
 
     operation.status = status
     operation.error_code = code
-    operation.result_json = None
-    operation.result_digest = None
+    if result_data is not None:
+        if operation.capability_id != "sandbox_analysis":
+            raise ToolPublicationError("invalid_tool_output")
+        result_data = get_tool_definition_by_id(operation.capability_id).validate_public_result(result_data)
+        encoded_result = canonical_json(result_data)
+        if len(encoded_result) > 16 * 1024 or result_data.get("outputs"):
+            raise ToolPublicationError("invalid_tool_output")
+        operation.result_json = encoded_result.decode()
+        operation.result_digest = hashlib.sha256(encoded_result).hexdigest()
+    else:
+        operation.result_json = None
+        operation.result_digest = None
     operation.output_artifact_ids = "[]"
     operation.finished_at = _utc_now()
     operation.updated_at = operation.finished_at
@@ -566,6 +577,7 @@ def mark_tool_failed(
     return PublishedToolResult(
         operation_id=operation.id,
         status=status,
+        result=result_data,
         error=ToolFailure(code=code, message=_ERROR_MESSAGES[code]),
     )
 
@@ -627,6 +639,10 @@ def project_published_result(
         return PublishedToolResult(
             operation_id=operation.id,
             status=operation.status,
+            result=(
+                get_tool_definition_by_id(operation.capability_id).validate_public_result(json.loads(operation.result_json))
+                if operation.capability_id == "sandbox_analysis" and operation.result_json else None
+            ),
             error=ToolFailure(code=code, message=_ERROR_MESSAGES[code]),
         )
     raise HTTPException(
@@ -894,7 +910,7 @@ def publish_analysis_result(
         )
 
     try:
-        validated = definition.result_model(outputs=refs)
+        validated = definition.result_model(outputs=refs, reviews=normalized.reviews)
         result_data = validated.model_dump(mode="json")
     except (ValidationError, TypeError):
         raise ToolPublicationError("invalid_tool_output") from None

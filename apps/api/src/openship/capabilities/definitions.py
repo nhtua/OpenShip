@@ -698,6 +698,7 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             analysis_error,
             analysis_evidence,
             analysis_execute,
+            validate_analysis_observation,
         )
 
         entry = ToolDefinitionEntry(
@@ -712,6 +713,7 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             result_model=AnalysisResult,
             handler=analysis_execute,
             handler_result_model=AnalysisObservation,
+            output_validator=validate_analysis_observation,
             input_artifact_ids=lambda arguments: (
                 *((arguments.source_id,) if arguments.source_id is not None else ()),
                 *sorted(arguments.input_ids.values()),

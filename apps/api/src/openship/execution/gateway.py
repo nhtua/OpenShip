@@ -485,6 +485,15 @@ class ToolGateway:
             )
 
         if definition.artifact_kind == "analysis_output":
+            reviews = getattr(observation, "reviews", {})
+            if any(not decision.accepted for decision in reviews.values()):
+                return self._finish_failure(
+                    claim, operation_id, attempt_id, "invalid_tool_output",
+                    result_data={
+                        "outputs": {},
+                        "reviews": {alias: decision.model_dump() for alias, decision in reviews.items()},
+                    },
+                )
             staged_rows: list[StagedArtifact] = []
             try:
                 staged_outputs = self._stage_analysis_outputs(
@@ -789,7 +798,7 @@ class ToolGateway:
     def _finish_after_dispatch(self, claim, operation_id, attempt_id, code):
         return self._finish_failure(claim, operation_id, attempt_id, code)
 
-    def _finish_failure(self, claim, operation_id, attempt_id, code):
+    def _finish_failure(self, claim, operation_id, attempt_id, code, result_data=None):
         if code not in _PRE_DISPATCH_MESSAGES:
             code = "provider_unavailable"
         db = self._session_factory()
@@ -801,6 +810,7 @@ class ToolGateway:
                 code,
                 attempt_id=attempt_id,
                 status="cancelled" if code == "cancelled" else "failed",
+                result_data=result_data,
             )
             db.commit()
             return result

@@ -8,6 +8,7 @@ transaction with admission or publication.
 """
 
 import hashlib
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -33,6 +34,7 @@ from src.openship.sandboxes.contracts import (
     InputFile,
     OutputSpec,
     PreparedFiles,
+    ReviewDecision,
     RuntimeRequirements,
     _alias,
 )
@@ -42,7 +44,7 @@ from src.openship.sandboxes.sessions import (
     mark_command_uncertain,
 )
 
-from .outputs import OutputValidationFailed, validate_outputs
+from .outputs import OutputValidationFailed, review_source_output, validate_outputs
 
 ANALYSIS_ID = "sandbox_analysis"
 _TEXT_MEDIA = "text/plain"
@@ -51,7 +53,7 @@ _MEDIA_TYPES = (_TEXT_MEDIA, _JSON_MEDIA)
 
 
 class AnalysisArguments(BaseModel):
-    """Declared source, selected inputs and expected data outputs."""
+    """Declared source, selected inputs, data outputs and trusted source expectations."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -60,6 +62,7 @@ class AnalysisArguments(BaseModel):
     input_ids: dict[str, UUID] = {}
     parameters: dict[str, Any] = {}
     output_media: dict[str, str]
+    output_expectations: dict[str, str] = {}
 
     @field_validator("source_prompt")
     @classmethod
@@ -74,6 +77,11 @@ class AnalysisArguments(BaseModel):
     def _one_source_origin(self):
         if (self.source_id is None) == (self.source_prompt is None):
             raise ValueError("exactly one of source_id or source_prompt is required")
+        for alias, expectation in self.output_expectations.items():
+            if self.output_media.get(alias) != _TEXT_MEDIA or not expectation.strip():
+                raise ValueError("source expectation requires a declared text output")
+            if len(expectation.encode()) > 16 * 1024:
+                raise ValueError("source expectation exceeds limit")
         return self
 
     @field_validator("source_id", mode="before")
@@ -116,6 +124,7 @@ class AnalysisObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     outputs: dict[str, bytes]
+    reviews: dict[str, ReviewDecision] = {}
 
 
 class AnalysisResult(BaseModel):
@@ -124,12 +133,31 @@ class AnalysisResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     outputs: dict[str, ArtifactRef]
+    reviews: dict[str, ReviewDecision] = {}
+
+
+def validate_analysis_observation(operation, value) -> AnalysisObservation:
+    """Bind review evidence to declared aliases and the exact publication bytes."""
+    observation = AnalysisObservation.model_validate(value)
+    arguments = AnalysisArguments.model_validate_json(operation.arguments_json)
+    if (
+        set(observation.outputs) != set(arguments.output_media)
+        or set(observation.reviews) != set(arguments.output_expectations)
+    ):
+        raise OutputValidationFailed("output/review set does not match declarations")
+    for alias, decision in observation.reviews.items():
+        if decision.output_sha256 != hashlib.sha256(observation.outputs[alias]).hexdigest():
+            raise OutputValidationFailed("review digest does not match publication bytes")
+    return observation
 
 
 def analysis_evidence(observation: AnalysisObservation) -> dict[str, dict[str, Any]]:
     """Digest-and-size evidence per alias; the bytes themselves stay unstored."""
     return {
-        alias: {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+        alias: {
+            "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data),
+            **({"review": observation.reviews[alias].model_dump()} if alias in observation.reviews else {}),
+        }
         for alias, data in observation.outputs.items()
     }
 
@@ -236,7 +264,11 @@ def _execution_request(
         ),
         parameters=dict(arguments.parameters),
         outputs=tuple(
-            OutputSpec(alias=alias, media_type=media, kind="data")
+            OutputSpec(
+                alias=alias, media_type=media,
+                kind="source" if alias in arguments.output_expectations else "data",
+                expectation=arguments.output_expectations.get(alias),
+            )
             for alias, media in sorted(arguments.output_media.items())
         ),
     )
@@ -278,7 +310,7 @@ def prepare_execution(db, *, claim, request: ExecutionRequest, store) -> Prepare
 
 
 async def analysis_execute(arguments, invocation, control):
-    """Run one prepared sandbox analysis and return only validated output bytes."""
+    """Run once, then validate bytes and review declared source before publication."""
     claim = getattr(invocation, "claim", None)
     if claim is None:
         raise ToolPublicationError("execution_interrupted")
@@ -291,6 +323,8 @@ async def analysis_execute(arguments, invocation, control):
         files = prepare_execution(
             db, claim=claim, request=request, store=invocation.artifact_store
         )
+        run = db.get(Run, claim.run_id)
+        model_configuration = run.model_configuration
 
     client = sandbox_client_factory()
     handle = None
@@ -329,7 +363,28 @@ async def analysis_execute(arguments, invocation, control):
             operation_id=invocation.operation_id,
         )
         outputs = validate_outputs(request, result)
-        return AnalysisObservation(outputs=outputs)
+        model_context = None
+        if any(spec.kind == "source" for spec in request.outputs) and model_configuration:
+            from src.openship.providers.attempts import DatabaseAttemptRecorder
+            from src.openship.providers.runner import authorize_current_profile
+            from src.openship.runs.service import parse_run_model_config
+
+            model_context = SimpleNamespace(
+                config=parse_run_model_config(model_configuration, claim.run_id),
+                recorder=DatabaseAttemptRecorder(
+                    invocation.session_factory, claim.run_id, claim.fence, commit_each=True,
+                ),
+                authorize_profile=authorize_current_profile,
+                max_output_tokens=invocation.execution.loop_limits.max_output_tokens_per_request,
+            )
+        reviews = {}
+        for spec in request.outputs:
+            if spec.kind == "source":
+                reviews[spec.alias] = await review_source_output(
+                    output=outputs[spec.alias], spec=spec,
+                    model_context=model_context, control=control,
+                )
+        return AnalysisObservation(outputs=outputs, reviews=reviews)
     finally:
         await client.aclose()
 
@@ -338,7 +393,7 @@ async def execute_analysis(
     context, request: ExecutionRequest, control
 ) -> PublishedToolResult:
     """Submit one authorized analysis through the normal gateway transaction."""
-    if any(output.kind != "data" or output.expectation is not None for output in request.outputs):
+    if any(output.kind == "data" and output.expectation is not None for output in request.outputs):
         raise ToolPublicationError("invalid_tool_output")
     arguments = {
         "source_id": str(request.source.id),
@@ -346,6 +401,9 @@ async def execute_analysis(
         "parameters": request.parameters,
         "output_media": {item.alias: item.media_type for item in request.outputs},
     }
+    expectations = {item.alias: item.expectation for item in request.outputs if item.kind == "source"}
+    if expectations:
+        arguments["output_expectations"] = expectations
     gateway = ToolGateway(context.session_factory or SessionLocal)
     return await gateway.execute_tool(
         claim=context.claim,

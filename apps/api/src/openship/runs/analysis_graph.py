@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import uuid
 from typing import Any
@@ -352,6 +353,7 @@ def _generate_source(
                         "task": prompt,
                         "inputs": sorted(arguments.input_ids),
                         "outputs": arguments.output_media,
+                        "output_expectations": arguments.output_expectations,
                         "parameters": arguments.parameters,
                     },
                     ensure_ascii=False,
@@ -538,6 +540,8 @@ def build_analysis_graph(
                 safe_message="Conversation artifact storage is unavailable.",
             )
         summaries: dict[str, str] = {}
+        _, _, arguments = _command_from(state)
+        reviews = (result.result or {}).get("reviews", {})
         with context.session_factory() as db:
             run = db.query(Run).filter(Run.id == claim.run_id).first()
             if run is None:
@@ -575,9 +579,17 @@ def build_analysis_graph(
                         "invalid_response",
                         safe_message="A saved analysis output could not be verified.",
                     ) from None
-                summaries[row.display_name or str(row.id)] = data[
+                if row.display_name in arguments.output_expectations:
+                    from src.openship.sandboxes.contracts import ReviewDecision
+
+                    review = ReviewDecision.model_validate(reviews.get(row.display_name, {}))
+                    if not review.accepted or review.output_sha256 != ref.sha256:
+                        raise ProviderError(
+                            "invalid_response", safe_message="A saved source output lacks a matching expectation review.",
+                        )
+                summaries[row.display_name or str(row.id)] = html.escape(data[
                     :_PREVIEW_BYTES
-                ].decode("utf-8", errors="replace")
+                ].decode("utf-8", errors="replace"), quote=False)
         return {
             "analysis_summary": summaries,
             "journey_json": _advance(journey, phase=USE_OUTPUTS),
