@@ -108,10 +108,11 @@ The control plane owns identity, conversations, scheduling, policy, and durable 
 
 Maintained built-in tools such as search may execute inside the supervised
 runtime worker through the gateway. That trusted execution tier does not run
-model-generated code or imported executables. Phase 6 must provide and qualify
-the sandbox driver, worker protocol, image build, resource controls and cleanup
-before those untrusted execution kinds are enabled. Installation documentation
-and reproducible image ownership belong to that phase.
+model-generated code or imported executables. Phase 6B integrates the external
+OpenSandbox provider using its authenticated APIs; the provider/operator owns
+resource controls and cleanup. The first application deliverable demonstrates
+the selected client contract and documents installation without building an
+OpenShip sandbox driver or provider qualification platform.
 
 The event ingestion layer provides the connection between external signals and workflow execution, enabling OpenShip to "work" against defined events and report to DevOps engineers. This offloads routine monitoring and response tasks, reducing toil for the engineering team.
 
@@ -129,7 +130,7 @@ The initial control plane is a modular monolith: API, registry, runtime, and pol
 | Tool gateway | Sole admission path for capability execution; validates arguments, checks policy, records operations, routes execution. |
 | Event ingestion | Receives external trigger events, validates authentication, routes to subscribed workflows, manages event lifecycle. |
 | Credential broker | Resolves connector references into scoped credentials or authenticated connector calls. |
-| Sandbox manager | Creates, supervises, terminates, and cleans up isolated execution environments. |
+| Sandbox manager | External OpenSandbox service owns provisioning, execution, expiration, cleanup and deletion; OpenShip is its task/input/result client. |
 | State and artifact stores | Application state, checkpoints, event journal, operation records, versioned artifacts. |
 
 ## 4. Self-Hosted Deployment
@@ -142,7 +143,7 @@ Phase 6A targets native developer processes and separate development/production 
 | Development Compose | Existing root stack plus broker/relay/bootstrap; optional hot reload override. | Preserve current project/volume identities and loopback ports; persistent broker state. |
 | Production Compose | Standalone single-host stack with immutable release images and one persistent broker. | HTTPS browser ingress, private DB/broker/monitoring, broker TLS/auth, protected secrets and coordinated recovery. Single node does not promise host-failure availability. |
 
-Later sandbox deployment must qualify its Linux/VM execution boundary separately; it is not a prerequisite for this transport migration.
+Phase 6B integrates standalone OpenSandbox on rootful Docker/gVisor through its authenticated APIs. Only manager infrastructure receives the engine socket; OpenShip requests a 1,800-second lifetime and keeps a workflow-scoped reusable handle. Lifecycle management and provider isolation certification are not OpenShip deliverables or prerequisites for the transport migration. See the [revised 6B spec](./superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md).
 
 On macOS or Windows, use a dedicated Linux VM or a remote Linux worker for untrusted execution. The installer checks sandbox support before enabling executable capabilities. A machine lacking that support can still serve chat and workflow authoring; execution requests remain blocked until a compatible worker is available. There is no automatic fallback to host subprocess execution.
 
@@ -428,12 +429,12 @@ Runs use `queued`, `running`, `waiting_input`, `waiting_approval`, `waiting_conn
 | Condition | Behavior |
 | --- | --- |
 | Browser disconnect | Run continues or remains durably waiting; reconnect reconstructs current state. |
-| Worker crash / lease loss | Stop new dispatches, revoke short-lived grants, reconcile outstanding operations, resume under a new owner. |
+| Worker crash / lease loss | Stop new dispatches and revoke short-lived grants; reconcile external mutations as appropriate. Phase 6B sandbox execution is interrupted and resumes only on an explicit A/B user command. |
 | Model outage / rate limit | Bounded retries; pause/fail when the budget is exhausted. |
 | Connector missing / expired | Enter `waiting_connector`; allow authorized setup without losing progress. |
 | Timeout after possible mutation | Mark outcome uncertain; reconcile before any repeat attempt. |
 | Partial infrastructure failure | Report completed/uncertain actions and artifacts; propose recovery/compensation without implying universal rollback. |
-| Cancellation | Stop admitting steps, revoke grants, terminate sandboxes, reconcile dispatched operations. Completed changes are not undone. |
+| Cancellation | Stop admitting steps, revoke grants, reject late results and reconcile mutations as appropriate. Phase 6B leaves physical sandbox expiration/cleanup to OpenSandbox. Completed changes are not undone. |
 | Permission / package revoked | Deny new invocations, invalidate affected grants, expose a blocked state. |
 
 Budgets cover steps, loops, recursion, parallelism, tokens, time, network traffic, and artifact/log volume. Retries and compensation are explicit behavior, not unlimited autonomous repair loops.
@@ -464,7 +465,7 @@ Frontend capabilities request known renderers for documents, diagrams, diffs, re
 
 Treat generated code, imported scripts, third-party executables, local MCP servers, repository content, and tool responses as potentially hostile. Protect the host, control plane, credentials, other projects/runs, and unintended destinations. Contain accidental CPU, memory, disk, and process exhaustion as well.
 
-Use an isolation-provider interface for create, execute, stream logs, transfer selected artifacts, stop, and destroy operations. The first proposed Linux provider uses OCI images with gVisor. Its userspace application kernel reduces direct host-kernel exposure; compatibility/performance must be checked against supported DevOps tools. See the [gVisor architecture documentation](https://gvisor.dev/docs/).
+Use the external OpenSandbox service through a narrow task/execution/file client. The initial provider deployment uses rootful Docker with gVisor (`runsc`); operators install/configure it, and OpenSandbox owns container lifecycle and controls. OpenShip prepares selected inputs, waits for results, validates returned bytes and retains accepted artifacts. No local sandbox manager/driver, watchdog or orphan reconciler is part of Phase 6B. See the [approved 6B scope](./superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md).
 
 MicroVMs or dedicated worker VMs are later stronger-isolation options. Ordinary containers with namespace/seccomp controls alone are not the supported boundary for untrusted generated code. Select a worker satisfying the profile or refuse execution.
 
@@ -474,21 +475,20 @@ MicroVMs or dedicated worker VMs are later stronger-isolation options. Ordinary 
 | Installed-tool sandbox | Reviewed executable tools and local MCP servers. | Explicit endpoint allowlist and limited capabilities; no installation-wide secrets. |
 | Credentialed CLI sandbox | Terraform/platform CLIs requiring direct credentials. | Separate authorization for the executable bundle, target, credential scope, and time window; minimum feasible provider authority. |
 
-### Enforced controls
+### Provider controls and OpenShip's boundary
 
-- Run without root, drop capabilities, apply runtime syscall controls, and use a read-only base filesystem with bounded scratch space.
-- Deny privileged mode, host PID/network namespaces, device passthrough, administrative sockets, control-plane mounts, and arbitrary host paths.
-- Isolate workspaces per run. Materialize approved input versions and transfer artifacts through a restricted broker; never share writable workspaces across projects/runs.
-- Limit CPU, memory, processes, disk, time, output size, and concurrency outside the sandbox.
-- Deny network by default. Enforce destinations outside the sandbox, including DNS, IPv4/IPv6, redirects, and resolved addresses; block metadata/control-plane endpoints. Private destinations require explicit connector policy.
-- Pin/scan images and dependencies. Prebuild tool profiles; do not grant unrestricted package installation/network access to construct an image during execution.
-- Destroy sandboxes on completion, timeout, or cancellation. Reap abandoned instances after crashes and clean temporary data under retention policy.
+- OpenSandbox/operator owns workload identity, syscall/capability controls, network/storage isolation, CPU/memory/process/time enforcement and physical recovery. Use supported upstream settings; OpenShip does not independently certify or compensate for provider internals.
+- Engine sockets, control-plane mounts and application credentials never enter generated workloads. Only manager infrastructure receives engine administration access.
+- OpenShip authorizes selected artifact refs, bounds transferred/published data, uses fresh request directories and publishes under existing operation/fence rules. A reusable handle is scoped to one workflow execution, never shared across projects or unrelated runs.
+- Request a fixed **1,800-second** sandbox lifetime; reuse a compatible live handle on demand. Changed runtime requirements or definite expiry/absence permit replacement during an authorized execution request. Source/data changes alone do not require a new container.
+- OpenSandbox owns expiration/cleanup/deletion. OpenShip neither deletes after each step nor renews/reconciles sandboxes, and does not hold installation capacity until confirmed deletion. Cancellation stops application progression/late publication, not a claimed physical process lifetime.
+- Pin deployment releases/prebuild the first profile. Security scanning, provider hardening/isolation certification and broader production qualification are deferred from 6B; this does not claim existing upstream advisories are fixed.
 
-Retain explicitly published artifacts and approved resumable workspace snapshots. During long waits, snapshot necessary non-secret state, destroy the sandbox, and rebuild it on resume. Snapshots are private untrusted artifacts; a live process is never the durable workflow state.
+Retain accepted output artifacts and ordinary workflow/checkpoint refs, not sandbox snapshots or replayable input caches. On explicit resume, A reruns the interrupted step using saved earlier outputs; B starts from original initial inputs under a new root run. An execution step may reuse its compatible live workflow handle, but never trusts residual files or revives a process. Completed earlier sandbox steps use saved outputs. Restart alone starts no sandbox; a live sandbox is never durable workflow state.
 
 ### Ephemeral code execution
 
-Generated code becomes a versioned artifact with digest, runtime/dependencies, input references, requested capabilities, and limits. Validate these fields and bind authorization to that digest before dispatch. Static checks or LLM safety review provide feedback, while isolation and gateway policy enforce safety.
+Generated code is captured as an immutable text artifact with exact input refs and configured runtime requirements. The existing gateway authorizes dispatch. Returned text/JSON remains untrusted; expected script/source outputs require an LLM check against the workflow expectation before use and remain inert. This judge is not security scanning or proof of safety. No returned code executes in trusted application processes, and no separate bundle-inspection/editor subsystem is required for 6B.
 
 Start in the generated-code profile. For external actions, prefer a narrow broker interface admitting typed requests through the gateway. Its identity is valid only for selected operations, inputs/resources, run, and duration; the sandbox cannot convert it into generic credential/network access.
 

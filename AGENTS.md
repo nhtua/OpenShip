@@ -49,6 +49,11 @@ engineer following best practices for open source development.
 - Prioritize maintainability and readability
 - Verify results before declaring completion
 - Report outcomes, blockers, and trade-offs clearly
+- Keep the active implementation plan current as work progresses. Record
+  verified progress under the relevant task, including evidence and remaining
+  work; update stale status in the same change. Check off an item only when
+  all its acceptance criteria have been verified, and split partially complete
+  items into clear completed and remaining pieces when useful.
 
 ## Git Workflow
 
@@ -76,7 +81,7 @@ Use any available tools to complete tasks efficiently.
   → validation → execution)
 - **Key features:** Multi-cloud support, human-in-the-loop, workflow
   templates, Git integration
-- **State:** Early development / PoC phase
+- **State:** Early development
 
 ## Project Structure
 
@@ -100,3 +105,4 @@ At the beginning of any user task:
 1. Consult `using-agent-skills/SKILL.md` to map the task to the correct domain skill (e.g., `spec-driven-development`, `doubt-driven-development`, or `frontend-ui-engineering`).
 2. Follow the anti-rationalization guidelines and quality gates in the selected skill.
 3. Apply `superpowers` TDD and subagent execution workflows to write, verify, and commit the code.
+4. Auto-load/apply the Karpathy Guidelines (`karpathy-guidelines`) whenever handling non-trivial coding tasks, refactoring multi-file codebases, or executing feature implementations where scope containment, minimal diffs, and test-driven verification are critical. Skip only for single-line fixes, simple typos, or scratch pad code generation.
