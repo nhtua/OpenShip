@@ -125,9 +125,9 @@ Each task follows red → minimal implementation → green → reviewed commit. 
 
 ### Pre–Task 4 correction gate — final Tasks 1–3 review
 
-**Status:** correction gate satisfied; Task 4 has not started. Earlier checked
-items record their original verification, not acceptance of the subsequently
-clarified reuse semantics. See
+**Status:** correction gate satisfied; Task 4 completed after one review/fix
+round. Earlier checked items record their original verification, not acceptance
+of the subsequently clarified reuse semantics. See
 [the final review](../../reviews/2026-11-04-phase6b-tasks-1-3-final-review.md)
 for file/line evidence, reproductions and the superseded earlier assessment.
 
@@ -137,14 +137,13 @@ for file/line evidence, reproductions and the superseded earlier assessment.
 - [x] Preserve fail-closed source declarations, keep failed execute incomplete, and implement pinned-model generated-source capture and exact-ref handoff (R5–R7).
 - [x] Bind provider compatibility to endpoint/deployment identity, remove installed unpublished files after partial output staging, and close invocation-owned but not caller-owned HTTP clients (R8–R10).
 - [x] PostgreSQL fixture at `phase6b028`: 7 passed, including independent-session contention, late acknowledgement/equal fence, and artifact constraint checks. Focused lanes: 124 passed; network-free regression: 1,411 passed, 131 deselected. Missing infrastructure was not counted as a pass (R11).
-- [x] Reconcile spec/plan/operations/SDD wording and record final verification. Correction commit remains to be recorded before Task 4; do not edit applied 026/027 history or reuse abandoned 021–025 revision IDs.
+- [x] Reconcile spec/plan/operations/SDD wording and record final verification. Corrections committed in `098ec7c`, `a92eb72`, and `cf3bcbe` before Task 4; do not edit applied 026/027 history or reuse abandoned 021–025 revision IDs.
 
 **Review evidence (historical):** original focused lane 91 passed; head was
 `phase6b027`; PostgreSQL was skipped without `TEST_POSTGRES_URL`; nine probes
-reproduced the review findings. Correction work below is separate. Task 4 has not
-started.
+reproduced the review findings. Correction work below is separate and complete.
 
-**Correction verification:** `uv run pytest -q tests/sandboxes/ tests/integration/test_analysis_results.py tests/test_tool_run_commands.py` → 124 passed; disposable PostgreSQL 16 lane at head `phase6b028` → 7 passed; `uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'` → 1,411 passed, 131 deselected; Ruff passed; `uv run alembic heads` → `phase6b028 (head)`; `git diff --check` passed. 97 existing/deprecation warnings were reported in the network-free lane. Task 4 remains unstarted.
+**Correction verification:** `uv run pytest -q tests/sandboxes/ tests/integration/test_analysis_results.py tests/test_tool_run_commands.py` → 124 passed; disposable PostgreSQL 16 lane at head `phase6b028` → 7 passed; `uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'` → 1,411 passed, 131 deselected; Ruff passed; `uv run alembic heads` → `phase6b028 (head)`; `git diff --check` passed. 97 existing/deprecation warnings were reported in the network-free lane.
 
 Correction execution order (TDD, each test must be observed failing first):
 
@@ -184,10 +183,10 @@ Correction execution order (TDD, each test must be observed failing first):
 
 **Interfaces:** Produce async `review_source_output(*, output: bytes, spec: OutputSpec, model_context, control: InvocationControl) -> ReviewDecision`, using the existing pinned provider runner and budgets. Task 3 calls it before publishing a source output as accepted. Persist its decision/digest in the existing result/state, not another approval service.
 
-- [ ] Write tests for expected code accepted/rejected against a trusted expectation, unexpected source, a response trying to instruct the judge, unavailable/malformed review and content exceeding the review budget. Verify no partial/truncated text receives approval and returned code never runs/imports in OpenShip. Existing text/JSON previews remain escaped and binary/archive outputs fail.
-- [ ] Run the module red; implement bounded expectation-only review with trusted instructions separate from returned text. Whole content must fit review limits; otherwise fail visibly. A review failure does not repeat sandbox execution or grant authority.
-- [ ] Rerun output-review and tool tests green. Check the exact reviewed SHA-256 equals the stored accepted source; a passing decision is not labeled a security scan or safety certificate.
-- [ ] Commit with a scanned message file.
+- [x] Write tests for expected code accepted/rejected against a trusted expectation, unexpected source, a response trying to instruct the judge, unavailable/malformed review and content exceeding the review budget. Verify no partial/truncated text receives approval and returned code never runs/imports in OpenShip. Existing text/JSON previews remain escaped and binary/archive outputs fail.
+- [x] Run the module red; implement bounded expectation-only review with trusted instructions separate from returned text. Whole content must fit review limits; otherwise fail visibly. A review failure does not repeat sandbox execution or grant authority.
+- [x] Rerun output-review and tool tests green. Check the exact reviewed SHA-256 equals the stored accepted source; a passing decision is not labeled a security scan or safety certificate.
+- [x] Commit with scanned message files; hooks passed (`8e3cac4`, `809e651`, `f3f7814`, `bd08cdc`). Task/consumer tests: 150 passed; network-free API lane: 1,434 passed, 131 deselected. Independent review raised one Critical and two Important cross-task issues; one TDD fix round addressed all three, and scoped re-review passed.
 
 ### Task 5: Explicit A/B resume and minimal run UI
 
