@@ -1,5 +1,7 @@
 # Phase 6B Task 5 — explicit analysis resume
 
+Status: implemented and verified. Implementation commit: `11188e8`.
+
 ## Scope and implementation plan
 
 Implemented the supplied Task 5 brief in the existing worktree, based on
@@ -352,3 +354,43 @@ in the ownership test (`Concrete password assignment`, test line 422). This was
 a fixture value, not a real credential. Replaced it with a freshly generated
 UUID-based test password rather than suppressing or bypassing the scanner.
 The changed fixture is reverified and the complete normal hooks rerun on retry.
+
+## Final commit and hook evidence
+
+The targeted ownership fixture rerun passed (`task5-password-fixture-green.log`):
+
+```text
+1 passed, 17 deselected, 2 warnings in 4.34s
+```
+
+Scanning the updated test file directly returned CLEAN with zero findings.
+After staging the corrected test and report, the exact implementation message
+file was scanned again in a separate call immediately before retrying:
+
+```sh
+rayloc scan '/tmp/openship-phase6b-task5-commit-message.txt'
+git commit --file '/tmp/openship-phase6b-task5-commit-message.txt' > /tmp/opencode/task5-commit-retry.log 2>&1
+```
+
+Message scan: CLEAN, zero findings (9 lines, 503 bytes). Commit exited 0:
+
+```text
+Ruff Lint............................................(no files to check)Skipped
+Run Tests................................................................Passed
+API Ruff Lint............................................................Passed
+API Unit Tests...........................................................Passed
+Vue Typecheck............................................................Passed
+Frontend Unit Tests......................................................Passed
+rayloc staged secret scan................................................Passed
+[task/phase6b-sandbox-client 11188e8] feat: add explicit fixed-analysis resume and minimal run controls
+20 files changed, 1597 insertions(+), 7 deletions(-)
+```
+
+The API hook reran the entire final network-free API lane, including the
+generated-password fixture correction. No hooks were skipped or suppressed.
+After the implementation commit, `git status --short` contained only the
+pre-existing parent-owned `progress.md` modification.
+
+This final evidence update is a separate report-only commit, with its own
+reviewed/scanned message file and applicable normal hooks. Its commit ID is
+provided in the handoff rather than embedding its own hash in this report.
