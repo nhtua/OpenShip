@@ -92,13 +92,21 @@ def test_openship_application_images_run_as_uid_1000():
     nginx = (REPO_ROOT / "apps/web/nginx.conf").read_text()
 
     assert "useradd --uid 1000 --gid 1000" in api_dockerfile
+    runtime = api_dockerfile.split("FROM runtime AS development", 1)[0]
     development = api_dockerfile.split("FROM runtime AS development", 1)[1].split(
         "FROM runtime AS production", 1
     )[0]
     production = api_dockerfile.split("FROM runtime AS production", 1)[1]
+    assert "ENV HOME=/home/openship" not in runtime
     assert re.findall(r"(?m)^USER (.+)$", development)[-1] == "1000:1000"
     assert development.index("USER 1000:1000") > development.index(
         "RUN uv sync --frozen --all-groups"
+    )
+    assert development.index("ENV HOME=/home/openship") > development.index(
+        "RUN uv sync --frozen --all-groups"
+    )
+    assert production.index("ENV HOME=/home/openship") < production.index(
+        "USER 1000:1000"
     )
     assert re.findall(r"(?m)^USER (.+)$", production)[-1] == "1000:1000"
 
