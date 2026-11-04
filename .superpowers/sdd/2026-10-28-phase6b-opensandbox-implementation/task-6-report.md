@@ -158,16 +158,21 @@ explicit decision separately from passing tests. Acceptance remains **pending**.
 
 ## Commits and hooks
 
-No code/test commit exists for Task 6. The documentation/evidence commit is the
-commit introducing this report, subject `docs: record Task 6 real-service
-prerequisite stop`; identify it with:
+No code/test commit exists for Task 6. Documentation/evidence commit:
+`12f7bc3` (`docs: record Task 6 real-service prerequisite stop`). It includes the
+final successful backend result. Identify the latest report-evidence revision with:
 
 ```sh
 git log -1 --format='%h %s' -- .superpowers/sdd/2026-10-28-phase6b-opensandbox-implementation/task-6-report.md
 ```
 
-Hook preflight passed as recorded above; the final commit must also run normal
-hooks without bypass. The task-specific message file is
+Normal hooks on `12f7bc3` passed: historical PoC tests, Vue typecheck, frontend
+tests and staged-secret scan; file-gated Python lint/API hooks had no matching
+files. Hooks temporarily stashed and restored the unstaged parent-owned changes;
+they were not included in the commit. No hook was bypassed. The final evidence
+follow-up commit also uses normal hooks. The task-specific message file was
 `/tmp/openship-phase6b-task6-prerequisite-stop-commit-message.txt`, scanned with
-`rayloc scan` immediately before consumption. Only the operator guide and this
+`rayloc scan` immediately before consumption. The report-only hook-evidence
+follow-up uses `/tmp/openship-phase6b-task6-hook-evidence-commit-message.txt` with
+the same scan-before-consumption workflow. Only the operator guide and this
 report are staged; parent-owned `progress.md` is excluded.
