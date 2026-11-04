@@ -531,3 +531,54 @@ worker recovery, cancellation, provider review, UI, or scheduler code changed.
 The only verification limitation remains live PostgreSQL/NATS/provider
 qualification; the deterministic database regression is explicitly not labeled
 as a live PostgreSQL concurrency test.
+
+### Fix-round whole-suite and commit results
+
+The unfiltered API run completed after the fix, without excluding external lanes:
+
+```sh
+uv run pytest tests/ -q > /tmp/opencode/task5-fix-api-full.log 2>&1
+```
+
+```text
+1493 passed, 77 skipped, 97 warnings, 53 errors in 503.15s (0:08:23)
+```
+
+There were no test-body failures. The 53 setup errors remain the same external
+qualification prerequisites: all 38 collected cases in
+`tests/integration/test_messaging_relay.py` require `TEST_POSTGRES_URL`, and all
+15 collected cases in `tests/integration/test_messaging_topology.py` require
+`TEST_NATS_AUTH_FILE` and `TEST_NATS_SERVER_CONFIG` from the disposable broker
+launcher. Individual node IDs are in `task5-fix-api-full.log`, lines 732–784.
+No live PostgreSQL/NATS/provider qualification or Task 6 work is claimed.
+
+The reviewed implementation message file was scanned CLEAN (zero findings,
+8 lines, 411 bytes) in a separate call immediately before committing:
+
+```sh
+rayloc scan '/tmp/openship-phase6b-task5-i1-i2-commit-message.txt'
+git commit --file '/tmp/openship-phase6b-task5-i1-i2-commit-message.txt' > /tmp/opencode/task5-fix-commit.log 2>&1
+```
+
+Commit exited 0 with all applicable normal hooks passing:
+
+```text
+Ruff Lint............................................(no files to check)Skipped
+Run Tests................................................................Passed
+API Ruff Lint............................................................Passed
+API Unit Tests...........................................................Passed
+Vue Typecheck............................................................Passed
+Frontend Unit Tests......................................................Passed
+rayloc staged secret scan................................................Passed
+[task/phase6b-sandbox-client 8d3447d] fix: close analysis resume admission and projection gaps
+3 files changed, 323 insertions(+), 36 deletions(-)
+```
+
+The API hook reran the complete network-free lane; it did not narrow verification
+to the added cases. No hooks or secret checks were bypassed. After the fix
+commit, only parent-owned `progress.md` was modified and it remained unstaged.
+
+Both I1 and I2 are addressed with regression evidence; no unresolved finding
+from this fix round remains. This final verification append is committed
+separately with its own scanned message and applicable hooks, with that report
+commit ID supplied in the final handoff.
