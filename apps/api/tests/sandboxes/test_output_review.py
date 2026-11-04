@@ -10,7 +10,7 @@ from src.openship.providers.contracts import ProviderTurnResult, RunModelConfig
 from src.openship.providers.control import InvocationControl
 from src.openship.providers.errors import ProviderError
 from src.openship.sandboxes import outputs
-from src.openship.sandboxes.contracts import OutputSpec
+from src.openship.sandboxes.contracts import OutputSpec, ReviewDecision
 from tests.providers.conftest import run_snapshot
 
 
@@ -27,6 +27,12 @@ SPEC = OutputSpec(
     alias="parser.py", media_type="text/plain", kind="source",
     expectation="Define parse(text) returning the number of lines.",
 )
+
+
+@pytest.mark.parametrize("reason", ["😀" * 1024, "\x01" * 1024])
+def test_review_decision_bounds_serialized_reason_bytes(reason):
+    with pytest.raises(ValueError, match="reason.*byte"):
+        ReviewDecision(accepted=True, reason=reason, output_sha256="0" * 64)
 
 
 @pytest.mark.asyncio

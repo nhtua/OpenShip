@@ -349,6 +349,139 @@ def _declared_entries(outputs_dir, report=b"FIRST\n", summary=b'{"lines": 1}'):
     ]
 
 
+def real_review_lane(monkeypatch, tmp_path, returned, *, reason="Matches expectation", accepted=True):
+    """Real gateway, provider runner, profile authorization and attempt recorder."""
+    from src.openship.providers.registry import load_profiles
+    from tests.providers.conftest import run_snapshot, sdk_chunk, serve_requests
+
+    enable_sandbox(monkeypatch, tmp_path)
+    lane = Lane(tmp_path)
+    snapshot = run_snapshot(credential_ref="")
+    profile = json.loads(snapshot)["primary"]
+    profile.pop("profile_revision")
+    monkeypatch.setattr(settings, "model_profiles_json", json.dumps([profile]))
+    monkeypatch.setattr(settings, "model_default_profile_id", profile["id"])
+    assert load_profiles(settings).availability(profile["id"]).available
+    lane.run.model_configuration = snapshot
+    lane.db.commit()
+    source = lane.store_artifact(PARSER_SOURCE)
+    provider = Provider()
+    provider.command_response = lambda _body: httpx.Response(
+        200, content=b'{"type":"execution_complete","exit_code":0}\n'
+    )
+    provider.listing = lambda path: [
+        {"path": f"{path}/{alias}", "size": len(data), "type": "file"}
+        for alias, data in returned.items()
+    ]
+    provider.download = lambda path: returned[path.rsplit("/", 1)[-1]]
+    provider.install(monkeypatch)
+    transport = serve_requests(monkeypatch, [{"chunks": [sdk_chunk(
+        content=json.dumps({"accepted": accepted, "reason": reason}, ensure_ascii=False),
+        finish_reason="stop",
+    )]}])
+    request = lane.request(source, [], [(alias, "text/plain") for alias in returned])
+    request = request.model_copy(update={"outputs": tuple(
+        OutputSpec(alias=alias, media_type="text/plain", kind="source", expectation="Return a parser.")
+        for alias in returned
+    )})
+    return lane, provider, transport, request
+
+
+@pytest.mark.asyncio
+async def test_gateway_source_review_uses_real_runner_supervision(monkeypatch, tmp_path):
+    from src.openship.runs.models import ProviderAttempt
+
+    lane, provider, transport, request = real_review_lane(
+        monkeypatch, tmp_path, {"returned.py": b"def parse(text): return text.splitlines()"},
+    )
+    result = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    assert result.status == "succeeded", result.error
+    assert result.result["reviews"]["returned.py"]["accepted"]
+    attempt = lane.db.query(ProviderAttempt).filter(ProviderAttempt.run_id == lane.run.id).one()
+    assert attempt.outcome == "succeeded"
+    replay = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    assert replay == result
+    assert len(provider.commands) == transport.requests == 1
+
+
+@pytest.mark.parametrize("parent_stop,slot_stop", [(False, False), (True, False), (False, True), (True, True)])
+def test_combined_control_preserves_parent_and_slot_stop(parent_stop, slot_stop):
+    import asyncio
+
+    from src.openship.execution.gateway import _CombinedControl
+    from src.openship.providers.errors import ProviderError
+
+    slot_lost = asyncio.Event()
+    if slot_stop:
+        slot_lost.set()
+    control = _CombinedControl(InvocationControl(stop=lambda: parent_stop), slot_lost)
+    assert control.is_stopped() is (parent_stop or slot_stop)
+    if parent_stop or slot_stop:
+        with pytest.raises(ProviderError, match="cancel"):
+            control.raise_if_stopped()
+    else:
+        control.raise_if_stopped()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returned", [b"\xffinvalid UTF-8", b"\x7fELF\x00binary", b"PK\x03\x04archive"])
+async def test_invalid_source_refusal_persists_and_replays(monkeypatch, tmp_path, returned):
+    lane, provider, transport, request = real_review_lane(
+        monkeypatch, tmp_path, {"returned.py": returned},
+    )
+    result = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    assert result.status == "failed"
+    assert result.error.code == "invalid_tool_output"
+    assert result.result is not None
+    decision = result.result["reviews"]["returned.py"]
+    assert not decision["accepted"]
+    assert decision["output_sha256"] == hashlib.sha256(returned).hexdigest()
+    assert result.artifacts == () and result.result["outputs"] == {}
+    assert lane.db.query(Artifact).filter(
+        Artifact.originating_operation_id == result.operation_id,
+        Artifact.status == "ready",
+    ).count() == 0
+    operation = lane.db.get(ToolOperation, result.operation_id)
+    assert json.loads(operation.result_json) == result.result
+    replay = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    assert replay == result
+    assert len(provider.commands) == 1
+    assert transport.requests == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accepted", [True, False])
+@pytest.mark.parametrize("reason,fits", [("😀" * 1024, False), ("\x01" * 1024, False), ("😀" * 255, True)])
+async def test_multibyte_review_evidence_fits_persisted_result(monkeypatch, tmp_path, accepted, reason, fits):
+    from src.openship.capabilities.contracts import canonical_json
+
+    # Maximum alias escaping plus eight reasons: raw UTF-8 and JSON escapes count.
+    returned = {('"' * 124 + f"{index}.py"): b"def parse(text): return text" for index in range(8)}
+    lane, provider, transport, request = real_review_lane(
+        monkeypatch, tmp_path, returned, reason=reason, accepted=accepted,
+    )
+    result = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    succeeded = fits and accepted
+    assert result.status == ("succeeded" if succeeded else "failed"), result.error
+    assert result.result is not None
+    assert len(result.artifacts) == (8 if succeeded else 0)
+    assert len(result.result["outputs"]) == (8 if succeeded else 0)
+    assert len(result.result["reviews"]) == 8
+    assert len(canonical_json(result.result)) <= 16 * 1024
+    for alias, decision in result.result["reviews"].items():
+        assert decision["accepted"] is succeeded
+        assert len(canonical_json(decision["reason"])) <= 1024
+        assert decision["output_sha256"] == hashlib.sha256(returned[alias]).hexdigest()
+    operation = lane.db.get(ToolOperation, result.operation_id)
+    assert len(operation.result_json.encode()) <= 16 * 1024
+    assert operation.status == result.status
+    assert json.loads(operation.result_json) == result.result
+    replay = await sandbox_tool.execute_analysis(lane.context(), request, InvocationControl())
+    assert replay == result
+    assert len(provider.commands) == 1
+    assert transport.requests == 8
+
+
 @pytest.mark.asyncio
 async def test_sandbox_analysis_journey_publishes_declared_outputs(monkeypatch, tmp_path):
     enable_sandbox(monkeypatch, tmp_path)

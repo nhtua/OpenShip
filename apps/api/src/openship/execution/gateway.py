@@ -153,6 +153,9 @@ class _CombinedControl:
     def remaining_seconds(self) -> float:
         return self._parent.remaining_seconds()
 
+    def is_stopped(self) -> bool:
+        return self._slot_lost.is_set() or self._parent.is_stopped()
+
     def raise_if_stopped(self) -> None:
         self._parent.raise_if_stopped()
         if self._slot_lost.is_set():

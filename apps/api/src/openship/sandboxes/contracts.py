@@ -111,5 +111,14 @@ class ExecutionResult(Contract):
 
 class ReviewDecision(Contract):
     accepted: bool
-    reason: str = Field(max_length=1024)
+    reason: str = Field(min_length=1, max_length=1024)
     output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("reason")
+    @classmethod
+    def bounded_reason_bytes(cls, value: str) -> str:
+        # Count JSON escaping as well as multibyte UTF-8. Eight decisions plus
+        # maximal aliases/artifact refs must fit the 16-KiB public result bound.
+        if len(canonical_json(value)) > 1024:
+            raise ValueError("review reason exceeds its serialized byte bound")
+        return value
