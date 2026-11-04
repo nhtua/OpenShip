@@ -194,13 +194,23 @@ Correction execution order (TDD, each test must be observed failing first):
 
 **Interfaces:** Produce `ResumeAnalysisRequest(mode: last_step|from_beginning, client_request_id: UUID)` and `resume_analysis(db, *, principal_id: UUID, run_id: UUID, command: ResumeAnalysisRequest) -> Run`, exposed as authenticated `POST /api/runs/{run_id}/resume-analysis`. Consume `AnalysisState` and Task 2's project/conversation-scoped pointer; keep identity scope separate from per-run state and use existing run submission/outbox rather than a second scheduler.
 
-- [ ] Write tests: A resumes `use_outputs` with accepted report refs and **zero** provider calls; A resuming `execute` uses prior step refs and compatible live handle or on-demand replacement after expiry. B starts a new root from initial refs, reruns preparation/execution and leaves old results unchanged. Missing/pruned inputs fail without earlier-step recomputation. Double-click/replayed resume returns one new run; restart after dispatch marks interruption instead of resending code; lost acknowledgement after commit reuses the result.
-- [ ] Run those backend tests red; implement the fixed journey's checkpoint/resume command. Keep initial refs/output refs in ordinary state. An uncertain still-running command yields an actionable blocked/interrupted state until provider availability is definite; never use a snapshot or hidden input-byte replay store.
-- [ ] Write/run frontend tests red, then add only the two named resume choices and retained result/error links in existing run UI. Bind to the exact run/request identity; disable duplicate submissions and keep unrelated chat usable. No source editor or bundle inspector.
-- [ ] Run backend/database cases, `pnpm typecheck` and `pnpm exec vitest run tests/RunResume.test.ts` green. Verify restart alone starts no sandbox and cancellation rejects late output without deleting the provider sandbox.
-- [ ] Commit with a scanned message file.
+- [x] Write tests: A resumes `use_outputs` with accepted report refs and **zero** provider calls; A resuming `execute` uses prior step refs and compatible live handle or on-demand replacement after expiry. B starts a new root from initial refs, reruns preparation/execution and leaves old results unchanged. Missing/pruned inputs fail without earlier-step recomputation. Double-click/replayed resume returns one new run; restart after dispatch marks interruption instead of resending code; lost acknowledgement after commit reuses the result.
+- [x] Run those backend tests red; implement the fixed journey's checkpoint/resume command. Keep initial refs/output refs in ordinary state. An uncertain still-running command yields an actionable blocked/interrupted state until provider availability is definite; never use a snapshot or hidden input-byte replay store.
+- [x] Write/run frontend tests red, then add only the two named resume choices and retained result/error links in existing run UI. Bind to the exact run/request identity; disable duplicate submissions and keep unrelated chat usable. No source editor or bundle inspector.
+- [x] Run backend/database cases, `pnpm typecheck` and `pnpm exec vitest run tests/RunResume.test.ts` green. Verify restart alone starts no sandbox and cancellation rejects late output without deleting the provider sandbox. Additional verification: 1,471 API tests and 350 frontend tests passed; typecheck/build passed. Two Important review findings were fixed TDD (`8d3447d`) and scoped re-review passed; full evidence in the SDD Task 5 report.
+- [x] Commit with scanned message files (`11188e8`, `9a75119`, `8d3447d`, `763cdd0`); hooks passed.
 
 ### Task 6: One real parser demonstration and existing regressions
+
+**Status: BLOCKED / NOT COMPLETE (2026-11-04).** The safe read-only prerequisite
+check found no authorized disposable PostgreSQL/JetStream targets, application
+stack configuration, or explicit permission/configuration for this worktree to
+reuse the existing provider deployment. No real journey test or application
+code was added; therefore no Task 6 application/demo criteria are checked. See
+`.superpowers/sdd/2026-10-28-phase6b-opensandbox-implementation/task-6-report.md`
+for sanitized inspection evidence, ordinary regression results, and the exact
+operator inputs needed to resume. The full parser journey and user acceptance
+remain pending; the provider stack was not modified.
 
 **Files:** Create `apps/api/tests/full_stack/test_sandbox_analysis.py` and small log/parser/returned-code fixtures; extend `apps/web/tests/full-stack/` for the parser/resume journey and `docs/operations/opensandbox.md`. Register opt-in real-service marker/exclusions consistently if needed; do not add a custom qualification launcher/CI platform.
 
