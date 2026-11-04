@@ -1,18 +1,19 @@
 ---
 type: operations
-summary: Carried OpenSandbox development setup; provider owns 30-minute sandbox lifecycle.
-status: infrastructure-prepared-application-not-implemented
-date: 2026-11-03
+summary: OpenSandbox development setup, lifecycle ownership and blocked full-application verification.
+status: application-implemented-full-stack-verification-blocked
+date: 2026-11-04
 ---
 
 # OpenSandbox development setup
 
 The [revised 6B spec](../superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md)
 and [plan](../superpowers/plans/2026-10-28-phase6b-opensandbox-implementation.md)
-define the small client integration. This worktree carries operator setup,
-**not** the abandoned application implementation or its completion claims.
-No host provisioning, live provider run or new isolation qualification is
-claimed by the scope reset. Do not reuse the old branch's migrated database
+define the small client integration. Tasks 1–5 implement the client, registered
+analysis execution, checked publication and explicit resume. This is **not**
+full-application verification: the historical direct-client run below does not
+prove the registered API/worker/gateway journey. No new host provisioning or
+isolation qualification is claimed here. Do not reuse the old branch's migrated database
 or sandbox application volumes as a fresh `main` database.
 
 ## Rootful Docker/gVisor — first target
@@ -50,12 +51,12 @@ receive it. Keep the ordinary Docker runtime default; the TOML selects
    reference, not new qualification evidence. Build/preload the workload image
    from `deploy/sandbox/Dockerfile.python` with its `PYTHON_BASE_IMAGE` argument
    set to the recorded digest-pinned base; keep its resulting image identity in
-   protected worker configuration when implementing the client.
+   protected worker configuration.
 2. Copy `deploy/sandbox/config.example.toml` to a protected installation-specific
    path and replace `REPLACE_WITH_PINNED_EXECD_IMAGE`. Its maximum sandbox timeout
    is **1,800 seconds**, permitting the client's requested 30-minute lifetime.
    This maximum alone does not set a sandbox TTL: the application create request
-   must supply `1800` (planned work, not implemented here).
+   supplies `1800`.
 3. Provide the Compose variables outside Git: `OPENSHIP_SANDBOX_SERVER_IMAGE`,
    `OPENSHIP_SANDBOX_GATEWAY_IMAGE`, `OPENSHIP_SANDBOX_CONFIG`,
    `OPENSHIP_SANDBOX_API_KEY`, `OPENSHIP_SANDBOX_AUTH_MAP` and
@@ -103,8 +104,9 @@ scripts/openship-stack -e dev --sandbox stop
 ```
 
 The option starts the manager and authenticated gateway along with the existing
-development stack. It does not register/enable a generated-code capability in
-this fresh worktree. The manager refuses to start without an API key; missing
+development stack. Capability registration alone does not enable execution;
+the worker still needs its protected provider/runtime configuration and existing
+gateway policy. The manager refuses to start without an API key; missing
 images, configuration and authentication-map settings must also be supplied.
 Do not start stacks from different worktrees against the same project/database/
 volumes without an explicit operator decision.
@@ -160,9 +162,82 @@ OpenSandbox handles expiration/cleanup. Accepted reports remain in OpenShip
 storage regardless of provider disappearance. A lost/ambiguous response is an
 interrupted application step, not permission to resend code.
 
-The pre–Task 4 correction gate and full real parser journey remain in progress
-in the implementation plan; current tests cover generated-source handoff and
-conversation-scoped reuse. Run one reproducible real-service demonstration
-after the correction gate. A dedicated qualification
-launcher/runner/CI certification platform, security scans and production matrix
-are deferred. Optional host probes do not certify provider isolation.
+Task 5 is review-cleared, including duplicate resume idempotency and malformed
+persisted-operation projection. Its A/B resume contract and Task 4's digest-bound
+replay remain unchanged. Task 6's real parser/reuse/resume demonstration is still
+**blocked**, not passed. A dedicated qualification launcher/runner/CI certification
+platform, security scans and production matrix are deferred. Optional host probes
+do not certify provider isolation.
+
+## Task 6 prerequisite stop — 2026-11-04
+
+Candidate application revision: `763cdd0`. Read-only inspection found only the
+running `openship-phase6b-client` manager and authenticated gateway (loopback port
+18080). The manager alone mounts the Docker socket. Compose labels match this
+worktree, but that is not authorization to attach application services, use its
+volumes, extract credentials, or alter/stop it. No such action was performed.
+
+Neither the process environment nor repository/API `.env` files supplied
+`TEST_POSTGRES_URL`, the existing JetStream test settings (`TEST_NATS_URL`,
+`TEST_NATS_AUTH_FILE`, `TEST_NATS_SERVER_CONFIG`), OpenSandbox endpoint/key-file/image
+settings, or a configured full-stack application URL. Both `.env` files were
+absent. No operator-owned protected configuration granting safe reuse was
+supplied. Do not infer credentials from container inspection or invent database
+and broker targets. These are missing configuration prerequisites, not observed
+provider failures.
+
+Before resuming, an operator must provide authorized disposable PostgreSQL and
+authenticated JetStream configuration, protected worker provider/runtime settings,
+and either explicit safe provider-stack reuse authorization or an isolated
+provider deployment. Use a fresh database and artifact root/storage identity; do
+not attach this application to the running stack's volumes. Keep credentials out
+of reports, shell arguments and browser traces.
+
+The implemented worker settings are `SANDBOX_ENABLED`, `SANDBOX_ENDPOINT`,
+`SANDBOX_DEPLOYMENT_ID`, `SANDBOX_KEY_FILE`, `SANDBOX_IMAGE`,
+`SANDBOX_PROFILE_ID` and `SANDBOX_DEPENDENCY_IDENTITY`. The first supported
+profile is `python311` / `stdlib`. Use an installation-specific deployment ID;
+the key file belongs only in protected worker configuration, not task data or
+browser configuration. These are separate from the `OPENSHIP_LIVE_OPENSANDBOX_*`
+selectors used by the historical direct-client test.
+
+The planned `apps/api/tests/full_stack/test_sandbox_analysis.py` and browser
+parser/resume journey have **not been implemented or executed** at this stop.
+There is no configured real-application invocation or expected-output artifact
+to cite yet. Do not substitute the direct-client command above, a skipped test,
+or mocked browser coverage. When implemented, explicitly enabled real-service
+tests must fail on missing prerequisites rather than silently skip.
+
+Existing network-free regression commands (run from `apps/api` and `apps/web`,
+respectively):
+
+```sh
+uv run ruff check .
+uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'
+pnpm typecheck
+pnpm test:run
+pnpm build
+```
+
+Expected output is a clean lint/typecheck/build and passing ordinary suites;
+these commands intentionally exclude the real-service lanes. Exact observed
+counts, local output references and limitations are recorded in the
+[Task 6 report](../../.superpowers/sdd/2026-10-28-phase6b-opensandbox-implementation/task-6-report.md).
+They cannot establish full-stack success.
+
+### Demonstration and acceptance still required
+
+After prerequisites are supplied, implement and run the existing application and
+Playwright lanes, with clearly labeled deterministic generation/judge fixtures
+(not real-model evidence). Show upload → captured parser → validated
+`summary.json`/`report.txt` → evidence-linked answer; changed logs must reuse the
+compatible sandbox ID while using current inputs. Show provider expiry/absence
+replacement using a disposable fixture, leaving production lifetime at 1,800
+seconds. Demonstrate accepted/rejected returned source, explicit A/B resume,
+retained downloads after restart/provider disappearance, and a visible
+unavailable-provider failure without altering the protected provider stack.
+
+Present that runnable demonstration to the user for **accept / revise / reject**.
+No runnable full-stack demonstration is available at this prerequisite stop;
+**user acceptance is pending** and is separate from implementation and test
+results. Do not mark Task 6 or the overall Phase 6B acceptance gate complete.
