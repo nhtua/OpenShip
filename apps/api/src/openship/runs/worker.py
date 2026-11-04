@@ -614,6 +614,8 @@ class Worker:
             "execution_configuration": run.execution_configuration or "",
             "model_configuration": run.model_configuration or "",
         }
+        if run.analysis_state_json:
+            state.update(json.loads(run.analysis_state_json))
         supervisor_thread = threading.Thread(
             target=self._supervise_in_thread,
             args=(supervision, run.id, claim.fence),

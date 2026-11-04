@@ -104,6 +104,10 @@ export const conversationsApi = {
 
 // Durable run commands
 export const runsApi = {
+  resumeAnalysis: (
+    runId: string,
+    payload: import('@/types').ResumeAnalysisRequest,
+  ): Promise<{ data: Run }> => api.post(`/runs/${encodeURIComponent(runId)}/resume-analysis`, payload),
   submitTurn: (
     conversationId: string,
     request: TurnSubmitRequest,

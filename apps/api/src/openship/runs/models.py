@@ -68,6 +68,8 @@ class Run(Base):
     execution_deadline_at = Column(DateTime(timezone=True), nullable=True)
     command_digest = Column(String(64), nullable=True)
     tool_command_json = Column(Text, nullable=True)
+    # Ordinary fixed-analysis state, independent of the shared sandbox identity.
+    analysis_state_json = Column(Text, nullable=True)
     # Digest of the original user-visible submission semantics. Null means
     # this run predates tool-mode request pinning and must remain unknown.
     submission_digest = Column(String(64), nullable=True)

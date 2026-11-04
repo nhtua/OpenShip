@@ -633,6 +633,7 @@ onBeforeUnmount(() => {
           :can-resume-connector="canResumeConnector"
           :connector-action-busy="connectorActionBusy"
           @resume-connector="handleResumeConnector"
+          @analysis-resumed="run => { if (chat.currentConversation?.id === run.conversation_id) void chat.loadConversation(run.conversation_id) }"
           @dismiss-connector="handleDismissConnector"
           @setup-connector="handleSetupConnector"
           @resubmit-connector="handleResubmitConnector"

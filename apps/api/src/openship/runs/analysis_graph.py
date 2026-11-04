@@ -83,6 +83,21 @@ def resume_phase(journey: AnalysisJourney) -> str | None:
     return None
 
 
+def persist_analysis_state(context, claim, state, update):
+    """Commit refs/results at each phase boundary under the live run fence."""
+    keys = (
+        "journey_json", "tool_result", "analysis_summary", "prior_run_id",
+        "retained_output_ids", "retained_error_code",
+    )
+    saved = {key: state[key] for key in keys if key in state}
+    saved.update(update)
+    with context.session_factory() as db:
+        run = require_live_claim(db, claim, lock=True)
+        run.analysis_state_json = json.dumps(saved, sort_keys=True)
+        db.commit()
+    return update
+
+
 class AnalysisState(TypedDict):
     """Serializable journey and result; runtime authority stays injected."""
 
@@ -93,6 +108,9 @@ class AnalysisState(TypedDict):
     journey_json: str
     tool_result: dict[str, Any]
     analysis_summary: dict[str, str]
+    prior_run_id: str
+    retained_output_ids: list[str]
+    retained_error_code: str | None
 
 
 def _command_from(state: AnalysisState) -> tuple[CapabilityRef, dict, AnalysisArguments]:
@@ -445,6 +463,36 @@ def build_analysis_graph(
                     safe_message="This worker no longer owns the active run.",
                 )
             selected_refs = _selected_refs(db, run, validated)
+        saved = decode_journey(state.get("journey_json") or "")
+        if saved.initial_refs and selected_refs != saved.initial_refs:
+            raise ProviderError(
+                "configuration_error",
+                safe_message="The original analysis inputs have changed; choose current files explicitly.",
+            )
+        # Record original refs before model generation, including failures there.
+        root_run_id = saved.root_run_id or str(claim.run_id)
+        initial = AnalysisJourney(root_run_id=root_run_id, initial_refs=selected_refs)
+        persist_analysis_state(
+            context, claim, state, {"journey_json": encode_journey(initial)}
+        )
+        # Metadata alone is not availability. Refuse missing/pruned bytes before
+        # source generation, never regenerate earlier inputs to hide their loss.
+        with context.session_factory() as db:
+            for selected in selected_refs:
+                row = db.get(Artifact, selected.id)
+                try:
+                    if context.artifact_store is None:
+                        raise ArtifactStorageError("storage unavailable")
+                    with context.artifact_store.open_verified(row):
+                        pass
+                except ArtifactStorageError:
+                    raise ProviderError(
+                        "configuration_error",
+                        safe_message=(
+                            "An original analysis input is missing or cannot be verified. "
+                            "Select current files explicitly; preparation will not recreate it."
+                        ),
+                    ) from None
         generated_source = None
         if validated.source_prompt is not None:
             generated_source = _generate_source(
@@ -452,7 +500,7 @@ def build_analysis_graph(
             )
         input_ids = set(validated.input_ids.values())
         journey = AnalysisJourney(
-            root_run_id=str(claim.run_id),
+            root_run_id=root_run_id,
             initial_refs=(
                 tuple(ref for ref in selected_refs if ref.id in input_ids)
                 if generated_source is not None
@@ -461,7 +509,9 @@ def build_analysis_graph(
             generated_source=generated_source,
             completed_phases=(PREPARE,),
         )
-        return {"journey_json": encode_journey(journey)}
+        return persist_analysis_state(
+            context, claim, state, {"journey_json": encode_journey(journey)}
+        )
 
     def execute(state: AnalysisState) -> dict:
         claim, context, control, _recorder, _authorize_profile = _invocation_parts(factory(state))
@@ -505,7 +555,7 @@ def build_analysis_graph(
                 )
                 for item in published["artifacts"]
             )
-        return {
+        return persist_analysis_state(context, claim, state, {
             "journey_json": encode_journey(
                 AnalysisJourney(
                     root_run_id=journey.root_run_id,
@@ -516,7 +566,7 @@ def build_analysis_graph(
                 )
             ),
             "tool_result": published,
-        }
+        })
 
     def use_outputs(state: AnalysisState) -> dict:
         claim, context, _control, _recorder, _authorize_profile = _invocation_parts(factory(state))
@@ -590,16 +640,19 @@ def build_analysis_graph(
                 summaries[row.display_name or str(row.id)] = html.escape(data[
                     :_PREVIEW_BYTES
                 ].decode("utf-8", errors="replace"), quote=False)
-        return {
+        return persist_analysis_state(context, claim, state, {
             "analysis_summary": summaries,
             "journey_json": _advance(journey, phase=USE_OUTPUTS),
-        }
+        })
 
     builder = StateGraph(AnalysisState)
     builder.add_node(PREPARE, prepare)
     builder.add_node(EXECUTE, execute)
     builder.add_node(USE_OUTPUTS, use_outputs)
-    builder.set_entry_point(PREPARE)
+    builder.set_conditional_entry_point(
+        lambda state: resume_phase(decode_journey(state.get("journey_json") or "")) or END,
+        {PREPARE: PREPARE, EXECUTE: EXECUTE, USE_OUTPUTS: USE_OUTPUTS, END: END},
+    )
     builder.add_edge(PREPARE, EXECUTE)
     builder.add_edge(EXECUTE, USE_OUTPUTS)
     builder.add_edge(USE_OUTPUTS, END)

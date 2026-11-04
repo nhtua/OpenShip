@@ -164,7 +164,11 @@ def _message_to_summary(msg: Message) -> MessageSummary:
 
 def _run_to_summary(run: Run, attempts=(), operation_page=None, blocker=None) -> RunSummary:
     """Convert Run model to RunSummary schema: only the public projection."""
+    from ..runs.schemas import analysis_projection
+
+    analysis = analysis_projection(run)
     return RunSummary(
+        analysis=analysis,
         id=str(run.id),
         status=run.status,
         attempt=run.attempt,

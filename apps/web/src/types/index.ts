@@ -44,6 +44,7 @@ export interface Conversation {
 
 // Durable run types
 export interface Run {
+  analysis?: AnalysisResumeSummary | null
   id: string
   conversation_id: string
   status: 'created' | 'queued' | 'running' | 'waiting_connector' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'stale'
@@ -63,6 +64,7 @@ export interface Run {
 }
 
 export interface RunCard {
+  analysis?: AnalysisResumeSummary | null
   run_id: string
   kind: 'chat' | 'tool'
   graph_version: number
@@ -291,6 +293,7 @@ export interface Snapshot {
 }
 
 export interface SnapshotRun {
+  analysis?: AnalysisResumeSummary | null
   id: string
   status: Run['status']
   attempt: number
@@ -339,6 +342,17 @@ export interface ToolCommandRequest {
   capability: CapabilityRef
   arguments: Record<string, unknown>
   connector_selections?: ConnectorSelections
+}
+
+export interface AnalysisResumeSummary {
+  output_ids: string[]
+  prior_run_id?: string | null
+  retained_error_code?: string | null
+}
+
+export interface ResumeAnalysisRequest {
+  mode: 'last_step' | 'from_beginning'
+  client_request_id: string
 }
 
 export interface AwsBootstrapAuthInput {

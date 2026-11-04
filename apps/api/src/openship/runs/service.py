@@ -61,6 +61,7 @@ from ..workspace.lifecycle import (
     assert_active_conversation,
 )
 from .queue import fenced_update_run
+from .schemas import ResumeAnalysisRequest
 
 
 def require_owned_conversation(
@@ -1329,6 +1330,16 @@ def load_run_model_config(run: Run) -> RunModelConfig:
     A run from before profiles records nothing, and nothing is guessed for it.
     """
     return parse_run_model_config(run.model_configuration, run.id)
+
+
+def resume_analysis(
+    db: Session, *, principal_id: uuid.UUID, run_id: uuid.UUID,
+    command: ResumeAnalysisRequest,
+) -> Run:
+    """Explicit fixed-analysis admission; implementation kept out of chat service."""
+    from .resume import resume_analysis as admit_resume
+
+    return admit_resume(db, principal_id=principal_id, run_id=run_id, command=command)
 
 
 def parse_run_model_config(snapshot: str | None, run_id) -> RunModelConfig:

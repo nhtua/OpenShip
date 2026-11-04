@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Badge, Icon } from '@/components/ui'
+import RunResume from './RunResume.vue'
 import type {
   ProviderAttemptSummary,
   RunCard,
   RunModelSummary,
   UsageSummary,
+  Run,
 } from '@/types'
 
 interface Props {
@@ -21,6 +23,7 @@ const props = withDefaults(defineProps<Props>(), {
   connectorActionBusy: false,
 })
 const emit = defineEmits<{
+  'analysis-resumed': [run: Run]
   'resume-connector': []
   'dismiss-connector': []
   'setup-connector': []
@@ -249,6 +252,15 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
+    <RunResume
+      v-if="card.analysis && (finished || card.analysis.output_ids.length || card.analysis.retained_error_code)"
+      :key="card.run_id"
+      :run-id="card.run_id"
+      :analysis="card.analysis"
+      :can-resume="finished"
+      :error="card.error_message || card.error_code"
+      @resumed="emit('analysis-resumed', $event)"
+    />
     <section
       v-if="card.status === 'waiting_connector' && card.connector_blocker"
       data-testid="connector-blocker"

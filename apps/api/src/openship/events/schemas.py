@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from ..artifacts.contracts import ArtifactSummary
 from ..execution.projections import OperationSummary
 from ..runs.schemas import (
+    AnalysisResumeSummary,
     AttemptSummary,
     ConnectorBlockerSummary,
     ErrorSummary,
@@ -59,6 +60,7 @@ class RunSummary(BaseModel):
     operations: list[OperationSummary] = Field(default_factory=list)
     operations_next_cursor: str | None = None
     connector_blocker: ConnectorBlockerSummary | None = None
+    analysis: AnalysisResumeSummary | None = None
 
 
 class SnapshotResponse(BaseModel):
