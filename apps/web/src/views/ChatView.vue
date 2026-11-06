@@ -667,8 +667,10 @@ onBeforeUnmount(() => {
         :messages="chat.messages"
         :operations="conversationOperations"
         :is-streaming="chat.isStreaming"
+        :can-resume="Boolean(chat.currentConversation) && !chat.isStreaming && !activeRunId && !pendingSubmissionId"
         @download="handleDownloadArtifact"
         @cancel="handleCancelOperation"
+        @resumed="run => { if (chat.currentConversation?.id === run.conversation_id) void chat.loadConversation(run.conversation_id) }"
       />
       <ChatInput
         :disabled="conversationBusy"

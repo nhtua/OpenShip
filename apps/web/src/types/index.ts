@@ -523,6 +523,12 @@ export interface ToolOperationSummary {
     coverage?: Record<string, unknown>
     artifact?: { id: string; sha256: string; size_bytes: number; media_type: string }
     status?: 'ready'
+    // Added with the general Python execution result; absent elsewhere.
+    source?: { id: string; sha256: string; size_bytes: number; media_type: string }
+    outputs?: Record<string, { id: string; sha256: string; size_bytes: number; media_type: string }>
+    exit_code?: number
+    stdout?: string
+    stderr?: string
     role_arn?: string
     bucket_verified?: boolean
     checked_at?: string

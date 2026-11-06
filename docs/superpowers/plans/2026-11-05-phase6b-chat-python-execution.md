@@ -165,10 +165,29 @@ added; UI card work remains Task 6.
 
 **Interfaces:** `PythonOperation` receives a typed operation with authorized artifact summaries and emits download/continuation actions; fetch PNG/JPEG bytes using authenticated `artifactsApi.download`, display an object URL and revoke it on change/unmount.
 
-- [ ] Write tests `shows_progress_and_failures`, `previews_only_owned_png_or_jpeg_from_operation`, `revokes_replaced_and_unmounted_urls`, `ignores_late_response_after_conversation_change`, `downloads_retained_chart`, and `resume_disables_duplicate_submission`. Verify no model-provided external URL is rendered.
-- [ ] Run `cd apps/web && pnpm exec vitest run tests/PythonOperation.test.ts`; observe red.
-- [ ] Implement accessible progress, preview, download and explicit continuation using existing UI/store conventions. Display stdout for ordinary no-file Python runs; do not label them analysis.
-- [ ] Run the new test, existing `RunResume.test.ts`, `pnpm typecheck`, `pnpm test:run`, and `pnpm build`; record output and commit.
+- [x] Write `shows_progress_and_failures`, `previews_only_owned_png_or_jpeg_from_operation`, `revokes_replaced_and_unmounted_urls`, `ignores_late_response_after_conversation_change`, `downloads_retained_chart`, and `resume_disables_duplicate_submission`. Verify no model-provided external URL is rendered.
+- [x] Run `cd apps/web && pnpm exec vitest run tests/PythonOperation.test.ts`; observe red.
+- [x] Implement accessible progress, preview, download and explicit continuation using existing UI/store conventions. Display stdout for ordinary no-file Python runs; do not label them analysis.
+- [x] Run the new test, existing `RunResume.test.ts`, `pnpm typecheck`, `pnpm test:run`, and `pnpm build`; record output and commit.
+
+**Done — 2026-11-05:** Focused suite RED (missing module) then GREEN 7/7 (six
+criteria cases plus a ToolOperationCard delegation case). `PythonOperation.vue`
+renders status badge (Queued/Running/Completed/Failed/Cancelled/Interrupted),
+safe failure alert, stdout `<pre>` for succeeded fileless runs, previews only for
+PNG/JPEG artifacts that the operation's committed output references agree with
+(id + sha256 + size + media) and that are `ready` — fetched through authenticated
+`artifactsApi.download` into blob object URLs revoked on operation change and
+component unmount; late responses for a moved operation are never attached
+(generation + operation-identity guards); model words (stdout, URLs inside them)
+stay plain text with no anchors or external src. Download buttons emit the
+existing store download event; A/B continuation mirrors RunResume (`runsApi.resumeChatPython`,
+one request per mode, `client_request_id_conflict`/python refusal copy, buttons
+disabled after acceptance). `ToolOperationCard.vue` delegates `python_execute`
+operations to the card; `ChatStream` forwards `resumed` + `canResume`; `ChatView`
+enables resume when nothing is streaming/submitted and reloads the conversation
+on continuation. types/index.ts gained the python result shape (source/outputs/
+exit_code/stdout/stderr). Verification: focused vitest 7 passed; full frontend
+`vitest run` 357 passed (36 files); `pnpm typecheck` clean; `pnpm build` clean.
 
 ## Task 7: Real Task 6 journeys and acceptance
 
