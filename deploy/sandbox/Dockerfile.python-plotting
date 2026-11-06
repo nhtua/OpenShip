@@ -1,0 +1,25 @@
+# Operator-built plotting layer over the standard-library workload; the base
+# stays digest-pinned so the stdlib runtime identity is never rewritten:
+# podman build --build-arg PLOTTING_BASE_IMAGE=openship-python@sha256:<digest> \
+#   -f deploy/sandbox/Dockerfile.python-plotting -t openship-python-plot:local .
+ARG PLOTTING_BASE_IMAGE
+FROM ${PLOTTING_BASE_IMAGE}
+
+# Headless plotting only: pinned matplotlib with its pinned transitive numpy,
+# the Agg backend, and no GUI/window system packages.
+RUN python3 -m pip install --no-cache-dir \
+        "matplotlib==3.9.2" \
+        "numpy==2.1.0" \
+        "contourpy==1.3.3" \
+        "cycler==0.12.1" \
+        "fonttools==4.68.0" \
+        "kiwisolver==1.5.1" \
+        "pillow==13.0.0" \
+        "pyparsing==3.3.3" \
+        "python-dateutil==4.0.0" \
+        "tzdata==2026.6" \
+    && install -d --owner=openship --group=openship --mode=0700 /mpl
+
+ENV MPLBACKEND=Agg
+ENV MPLCONFIGDIR=/mpl
+WORKDIR /code

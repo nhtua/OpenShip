@@ -111,10 +111,19 @@ do not mark Task 3 complete.
 
 **Interfaces:** `validate_image(data: bytes, media_type: str) -> None` fully decodes one PNG/JPEG, requires its decoded format to match `image/png` or `image/jpeg`, and raises `OutputValidationFailed` on invalid image, dimensions >4096 or pixels >16,000,000; `PythonArguments.output_media` admits those image types along with text/JSON.
 
-- [ ] Write tests for valid PNG and JPEG (`.jpg`/`.jpeg`), malformed/truncated images of each type, media/format mismatch, `test_4097_dimension_or_16000001_pixels_rejected`, `test_decompression_bomb_rejected`, and `test_runtime_identity_changes_with_plotting_dependencies`. Verify image byte/aggregate limits still hold and BMP/SVG are rejected.
-- [ ] Run `cd apps/api && uv run pytest -q tests/sandboxes/test_png_outputs.py`; observe red.
-- [ ] Add a maintained pinned decoder to API dependencies, full bounded image verification, and an operator-built digest-pinned Matplotlib/headless runtime with pinned transitive dependencies. Do not overwrite an existing operator image or change the standard-library runtime identity.
-- [ ] Run PNG/JPEG and packaging tests, `uv run ruff check .`, and verify the recorded runtime's headless chart generation in an isolated sandbox; record image identity and output before committing.
+- [x] Write tests for valid PNG and JPEG (`.jpg`/`.jpeg`), malformed/truncated images of each type, media/format mismatch, `test_4097_dimension_or_16000001_pixels_rejected`, `test_decompression_bomb_rejected`, and `test_runtime_identity_changes_with_plotting_dependencies`. Verify image byte/aggregate limits still hold and BMP/SVG are rejected.
+- [x] Run `cd apps/api && uv run pytest -q tests/sandboxes/test_png_outputs.py`; observe red.
+- [x] Add a maintained pinned decoder to API dependencies, full bounded image verification, and an operator-built digest-pinned Matplotlib/headless runtime with pinned transitive dependencies. Do not overwrite an existing operator image or change the standard-library runtime identity.
+- [x] Run PNG/JPEG and packaging tests, `uv run ruff check .`, and verify the recorded runtime's headless chart generation in an isolated sandbox; record image identity and output before committing.
+
+**Done — 2026-11-05:** `validate_image` lives in `sandboxes/outputs.py` with Pillow
+pinned in the API manifest (`pillow>=11.3.0,<12.0.0`, lock resolved 11.3.0);
+declared geometry is checked before decode so a bomb never allocates pixels.
+Focused file went RED (missing module) then GREEN 16/16; combined sandbox/packaging
+lane passed 197 with Ruff clean. Plotting layer built as a separate digest-pinned
+Dockerfile (`Dockerfile.python-plotting`, full transitive closure pinned); the
+stdlib workload identity is untouched. Isolated headless verification produced
+byte-identical PNG/JPEG accepted by the API-side validator.
 
 ## Task 5: Explicit durable chat continuation
 

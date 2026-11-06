@@ -7,7 +7,9 @@ trusted expectation. It does not assess security or grant execution authority.
 
 import hashlib
 import json
+from io import BytesIO
 
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.openship.providers.contracts import ChatMessage, ModelRequest
@@ -20,6 +22,13 @@ from .contracts import ExecutionRequest, ExecutionResult, OutputSpec, ReviewDeci
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_TOTAL_OUTPUT_BYTES = 8 * 1024 * 1024
 _MAX_REVIEW_BYTES = 256 * 1024
+
+# Raster outputs are only retained after one full in-memory decode under
+# explicit dimensional and pixel bounds; the Pillow version pinned in the
+# API manifest keeps this decoder identity stable across installs.
+_IMAGE_FORMATS = {"image/png": "PNG", "image/jpeg": "JPEG"}
+_MAX_IMAGE_DIMENSION = 4096
+_MAX_IMAGE_PIXELS = 16_000_000
 
 
 class _Judgment(BaseModel):
@@ -104,6 +113,33 @@ class OutputValidationFailed(Exception):
         super().__init__(reason)
 
 
+def validate_image(data: bytes, media_type: str) -> None:
+    """Fully decode one declared PNG/JPEG and require format agreement."""
+    declared = _IMAGE_FORMATS.get(media_type)
+    if declared is None:
+        raise OutputValidationFailed("image media type is not PNG or JPEG")
+    if not data:
+        raise OutputValidationFailed("image output is empty")
+    try:
+        with Image.open(BytesIO(data)) as image:
+            if image.format != declared:
+                raise OutputValidationFailed(
+                    f"decoded image format is {image.format}, not {declared}"
+                )
+            width, height = image.size
+            # Check the declared geometry before decoding so an oversized
+            # payload never allocates its pixel buffer.
+            if width > _MAX_IMAGE_DIMENSION or height > _MAX_IMAGE_DIMENSION:
+                raise OutputValidationFailed("image side exceeds the dimension bound")
+            if width * height > _MAX_IMAGE_PIXELS:
+                raise OutputValidationFailed("decompressed pixels exceed the bound")
+            image.load()
+    except UnidentifiedImageError:
+        raise OutputValidationFailed("bytes are not a recognizable image") from None
+    except OSError as failure:
+        raise OutputValidationFailed("image is truncated or malformed") from failure
+
+
 def validate_outputs(request: ExecutionRequest, result: ExecutionResult) -> dict[str, bytes]:
     """Check transfer bounds and data content; source content belongs to review.
 
@@ -122,6 +158,15 @@ def validate_outputs(request: ExecutionRequest, result: ExecutionResult) -> dict
         if len(data) > _MAX_OUTPUT_BYTES:
             raise OutputValidationFailed(f"output {alias!r} exceeded its bound")
         if spec.kind == "source":
+            validated[alias] = data
+            continue
+        if spec.media_type in _IMAGE_FORMATS:
+            try:
+                validate_image(data, spec.media_type)
+            except OutputValidationFailed as failure:
+                raise OutputValidationFailed(
+                    f"output {alias!r} is not a validated image"
+                ) from failure
             validated[alias] = data
             continue
         if spec.media_type == "application/json":

@@ -1,5 +1,6 @@
 """Checks for the opt-in OpenSandbox manager deployment."""
 
+import json
 import os
 import subprocess
 import tomllib
@@ -48,6 +49,25 @@ def test_python_image_keeps_input_read_only_and_output_owned_by_workload():
     assert "--uid 1000" in dockerfile
     assert "/code /inputs" in dockerfile
     assert "/outputs" in dockerfile
+    assert "matplotlib" not in dockerfile
+
+
+def test_plotting_runtime_is_a_pinned_separate_layer():
+    dockerfile = (ROOT / "deploy/sandbox/Dockerfile.python-plotting").read_text()
+    assert "ARG PLOTTING_BASE_IMAGE" in dockerfile
+    for pin in ('"matplotlib==3.9.2"', '"numpy==2.1.0"', '"contourpy==1.3.3"',
+                '"cycler==0.12.1"', '"fonttools==4.68.0"', '"kiwisolver==1.5.1"',
+                '"pillow==13.0.0"', '"pyparsing==3.3.3"', '"python-dateutil==4.0.0"',
+                '"tzdata==2026.6"'):
+        assert pin in dockerfile
+    assert "MPLBACKEND=Agg" in dockerfile
+    config = json.loads((ROOT / "deploy/sandbox/images.json").read_text())
+    assert config["plotting_workload_dockerfile"] == "deploy/sandbox/Dockerfile.python-plotting"
+    assert config["plotting_dependency_pins"]["matplotlib"] == "3.9.2"
+    assert config["plotting_dependency_pins"]["numpy"] == "2.1.0"
+    assert config["plotting_profile_id"] == "python311-plot"
+    assert config["plotting_dependency_identity"] == "matplotlib-3.9.2-numpy-2.1.0"
+    assert config["python_base_image"].startswith("python:3.11-slim@sha256:")
 
 
 @pytest.mark.parametrize("engine", ["docker", "podman"])

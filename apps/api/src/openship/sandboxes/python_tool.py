@@ -62,7 +62,8 @@ class PythonArguments(BaseModel):
             raise ValueError("too many files")
         for alias in (*self.input_ids, *self.output_media):
             _alias(alias)
-        if any(media not in ("text/plain", "application/json") for media in self.output_media.values()):
+        if any(media not in ("text/plain", "application/json", "image/png", "image/jpeg")
+               for media in self.output_media.values()):
             raise ValueError("unsupported output media")
         if len(canonical_json(self.parameters)) > 16 * 1024:
             raise ValueError("parameters exceed limit")

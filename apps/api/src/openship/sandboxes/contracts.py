@@ -46,7 +46,7 @@ class InputFile(Contract):
 
 class OutputSpec(Contract):
     alias: str
-    media_type: Literal["text/plain", "application/json"]
+    media_type: Literal["text/plain", "application/json", "image/png", "image/jpeg"]
     kind: Literal["data", "source"]
     expectation: str | None = None
 

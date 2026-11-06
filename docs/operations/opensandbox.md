@@ -52,6 +52,25 @@ receive it. Keep the ordinary Docker runtime default; the TOML selects
    from `deploy/sandbox/Dockerfile.python` with its `PYTHON_BASE_IMAGE` argument
    set to the recorded digest-pinned base; keep its resulting image identity in
    protected worker configuration.
+
+## Plotting layer (optional, general Python execution)
+
+Chat-directed Python execution may request PNG/JPEG chart outputs. A maintained
+operator-built plotting layer installs pinned headless plotting packages on top
+of the digest-pinned standard workload **without changing the standard-library
+runtime identity** (`SANDBOX_PROFILE_ID`/`SANDBOX_DEPENDENCY_IDENTITY` stay
+`python311`/`stdlib` unless the plotting runtime is selected):
+
+```sh
+podman build --build-arg PLOTTING_BASE_IMAGE=openship-python@sha256:<workload-digest> \
+  -f deploy/sandbox/Dockerfile.python-plotting -t openship-python-plot:local .
+```
+
+Selecting it records the built image identity plus `plotting_profile_id`
+(`python311-plot`) and `plotting_dependency_identity`
+(`matplotlib-3.9.2-numpy-2.1.0`) from `images.json` in protected worker
+configuration; only `Agg` is installed, and the API-side verifier, not the
+runtime, decides whether an output is retained.
 2. Copy `deploy/sandbox/config.example.toml` to a protected installation-specific
    path and replace `REPLACE_WITH_PINNED_EXECD_IMAGE`. Its maximum sandbox timeout
    is **1,800 seconds**, permitting the client's requested 30-minute lifetime.
