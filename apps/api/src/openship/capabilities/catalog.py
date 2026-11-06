@@ -584,6 +584,32 @@ def _sandbox_manifest() -> CapabilityManifest:
     )
 
 
+def _download_manifest() -> CapabilityManifest:
+    from src.openship.capabilities.definitions import implementation_digest_for
+    from src.openship.tools.download.contracts import DownloadArguments, DownloadResult
+
+    fields = {
+        "schema_version": 1, "id": "download_file", "version": "1.0.0",
+        "implementation_digest": implementation_digest_for((
+            "src/openship/tools/download/contracts.py",
+            "src/openship/tools/download/tool.py",
+            "src/openship/tools/download/transport.py",
+            "src/openship/artifacts/filesystem.py",
+            "src/openship/capabilities/contracts.py",
+            "src/openship/execution/network.py",
+            "src/openship/execution/publication.py",
+            "src/openship/execution/gateway.py",
+        )),
+        "input_schema": DownloadArguments.model_json_schema(),
+        "output_schema": DownloadResult.model_json_schema(),
+        "effect": "read_only_external", "enablement_requirements": ("operator_enabled",),
+        "limits": {"timeout_seconds": 30, "max_model_result_bytes": 16 * 1024},
+        "outputs": (OutputPolicy(name="download", mutability="immutable").model_dump(mode="json"),),
+        "execution_kind": "maintained", "credential_binding_ref": None,
+    }
+    return CapabilityManifest(**fields, manifest_digest=canonical_digest(fields))
+
+
 def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
     from src.openship.capabilities.definitions import registered_tool_definitions
 
@@ -595,6 +621,7 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
         *_aws_discovery_manifests(),
         _s3_metadata_manifest(),
         _sandbox_manifest(),
+        _download_manifest(),
     )
     registered = tuple(entry.manifest for entry in registered_tool_definitions())
     return (*builtins, *registered)

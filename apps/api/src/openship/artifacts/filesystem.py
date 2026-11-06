@@ -102,6 +102,91 @@ class LocalArtifactStore:
             raise ArtifactStorageError("artifact storage root changed during access")
         return fd
 
+    def open_staged_verified(self, staged: StagedArtifact) -> BinaryIO:
+        """Open only the caller's verified staging file for content validation."""
+        self.verify()
+        parent_fd, leaf = self._open_parent(staged.relative_staging_key, create=False)
+        try:
+            fd = os.open(leaf, _FILE_FLAGS, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+        try:
+            self._verify_open_file(fd, staged.observed)
+            return os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+
+    async def stage_received(
+        self, artifact_id, receive, *, media_type, max_bytes,
+        project_id=None, conversation_id=None,
+    ) -> StagedArtifact:
+        """Stage an async producer whose digest and length are not known in advance."""
+        self.verify()
+        if media_type not in ("application/json", "text/plain"):
+            raise ArtifactStorageError("artifact media type is unsupported")
+        if not 1 <= max_bytes <= settings.artifact_upload_max_bytes:
+            raise ArtifactStorageError("artifact size limit is invalid")
+        staging_key = self._staging_key(artifact_id, project_id, conversation_id)
+        parent_fd, leaf = self._open_parent(staging_key, create=True)
+        fd = -1
+        created = False
+        digest = hashlib.sha256()
+        size = 0
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        try:
+            fd = os.open(
+                leaf, os.O_RDWR | os.O_CREAT | os.O_EXCL | _NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                0o600, dir_fd=parent_fd,
+            )
+            created = True
+
+            def write(chunk):
+                nonlocal size
+                if not isinstance(chunk, (bytes, bytearray, memoryview)):
+                    raise ArtifactStorageError("artifact stream contains a non-byte chunk")
+                data = bytes(chunk)
+                size += len(data)
+                if size > max_bytes:
+                    raise ArtifactStorageError("artifact exceeds its size limit")
+                try:
+                    decoded = decoder.decode(data, final=False)
+                except UnicodeDecodeError:
+                    raise ArtifactStorageError("artifact text must be valid UTF-8") from None
+                if "\x00" in decoded:
+                    raise ArtifactStorageError("artifact text must not contain NUL")
+                _write_all(fd, data)
+                digest.update(data)
+
+            await receive(write)
+            try:
+                decoder.decode(b"", final=True)
+            except UnicodeDecodeError:
+                raise ArtifactStorageError("artifact text must be valid UTF-8") from None
+            os.fsync(fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != size:
+                raise ArtifactStorageError("artifact staging file changed while writing")
+            if media_type == "application/json":
+                self._validate_json_fd(fd)
+            os.fsync(parent_fd)
+            observed = ArtifactRef(id=artifact_id, sha256=digest.hexdigest(),
+                                   size_bytes=size, media_type=media_type)
+            return StagedArtifact(artifact_id=artifact_id, relative_staging_key=staging_key,
+                                  observed=observed)
+        except BaseException:
+            if created:
+                try:
+                    os.unlink(leaf, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                except OSError:
+                    pass
+            raise
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            os.close(parent_fd)
+
     @staticmethod
     def _read_marker(root_fd: int) -> uuid.UUID:
         try:

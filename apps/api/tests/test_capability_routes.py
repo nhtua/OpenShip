@@ -64,6 +64,7 @@ def test_catalog_auth_and_secret_redaction(monkeypatch):
         "aws_read_catalog",
         "aws_read",
         "sandbox_analysis",
+        "download_file",
     }
     assert all(not item.available for item in summary)
     assert by_id["brave_web_search"].unavailable_reason == "runtime_unavailable"

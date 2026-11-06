@@ -328,6 +328,8 @@ class ToolGateway:
             max_output_bytes=(
                 min(4 * 1024 * 1024, settings.artifact_upload_max_bytes)
                 if definition.artifact_kind == "analysis_output"
+                else min(8 * 1024 * 1024, settings.artifact_upload_max_bytes)
+                if manifest.id == "download_file"
                 else min(
                     pinned_config.limits.max_observation_bytes,
                     (
@@ -379,6 +381,7 @@ class ToolGateway:
             session_factory=self._session_factory,
             operation_id=operation_id,
             claim=claim,
+            reserved_artifact_id=artifact_id,
             aws_access_factory=(
                 self._aws_access_factory(
                     broker=aws_broker,
@@ -474,6 +477,8 @@ class ToolGateway:
                 pass
             await runtime_context.close_runtime_accesses()
         if dispatch_failure is not None:
+            if manifest.id == "download_file" and artifact_id is not None:
+                self._remove_staging(store, artifact_id, context)
             return await self._fail_active(
                 claim, operation_id, attempt_id, dispatch_failure
             )
@@ -485,6 +490,24 @@ class ToolGateway:
                 attempt_id=attempt_id,
                 definition=definition,
                 result=observation,
+            )
+
+        if manifest.id == "download_file":
+            try:
+                artifact = self._artifact(artifact_id)
+                staged = observation.staged
+                if staged is None or staged.artifact_id != artifact_id:
+                    raise ToolPublicationError("invalid_tool_output")
+                store.publish_file(staged, artifact.relative_storage_key)
+            except Exception:  # noqa: BLE001 - safe failure, no provider details exposed.
+                self._remove_staging(store, artifact_id, context)
+                return await self._fail_active(
+                    claim, operation_id, attempt_id, "artifact_publication_failed"
+                )
+            return self._publish(
+                claim=claim, operation_id=operation_id, attempt_id=attempt_id,
+                staged=staged, observation=observation, store=store,
+                context=context, definition=definition,
             )
 
         if definition.artifact_kind == "analysis_output":
@@ -774,9 +797,9 @@ class ToolGateway:
                 raise
             except ToolPublicationError as refused:
                 db.rollback()
-                if refused.code == "disabled":
+                if refused.code in ("disabled", "invalid_tool_output"):
                     result = await self._finish_before_dispatch_async(
-                        claim, operation_id, "disabled"
+                        claim, operation_id, refused.code
                     )
                     return operation_id, result, None, None
                 return (

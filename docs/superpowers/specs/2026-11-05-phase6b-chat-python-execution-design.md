@@ -1,7 +1,7 @@
 ---
 type: spec
 summary: General Python execution and bounded URL downloads in agentic chat, demonstrated by an inline PNG chart.
-status: proposed-awaiting-user-review
+status: approved-awaiting-implementation
 date: 2026-11-05
 ---
 
@@ -15,10 +15,9 @@ OpenSandbox, and return a chart in chat. The execution tool must be **general
 Python execution**, not an analysis- or chart-specific capability. Charting is
 the demonstration, not a required workflow or tool output.
 
-The user approved this conversational direction, correcting the earlier
-analysis-specific proposal. This document is proposed for written review;
-implementation and demonstration acceptance have not been granted by that
-approval. No implementation plan or passing Task 6 evidence is implied.
+The user approved this written design on 2026-11-05, correcting the earlier
+analysis-specific proposal and requesting implementation. Demonstration
+acceptance and passing Task 6 evidence remain separate and pending.
 
 This extends the [approved Phase 6B scope](2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md).
 That scope deliberately limited output to text/JSON and the workload to the
@@ -192,7 +191,7 @@ silently replacing unchecked tests with the chart happy path.
 - [x] Inspect existing chat loop, sandbox contracts/source capture, and artifacts.
 - [x] Record the user's general-executor correction and architecture proposal.
 - [x] Draft scope, contracts, trust boundaries, compatibility, and acceptance.
-- [ ] User reviews and approves this written design.
+- [x] User reviews and approves this written design (2026-11-05).
 - [ ] Write/review the implementation plan and select execution method.
 - [ ] Implement with RED/GREEN evidence and run the real-service/browser journey.
 - [ ] Present the runnable demonstration for explicit accept/revise/reject.

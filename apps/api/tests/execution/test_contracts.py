@@ -50,6 +50,7 @@ def test_tool_ids_and_connector_kinds_are_independent():
         "aws_read_catalog",
         "aws_read",
         "sandbox_analysis",
+        "download_file",
     }
     analysis = manifests["sandbox_analysis"]
     assert analysis.effect == "read_only_external"

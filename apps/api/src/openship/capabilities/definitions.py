@@ -157,6 +157,7 @@ _BUILTIN_IDS = frozenset(
         "aws_read_catalog",
         "aws_read",
         "sandbox_analysis",
+        "download_file",
     }
 )
 _REGISTERED: dict[str, ToolDefinitionEntry] = {}
@@ -688,6 +689,25 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             error_mapper=_aws_error,
             safe_failure_code="aws_unavailable",
             model_selectable=False,
+        )
+    elif manifest.id == "download_file":
+        from src.openship.tools.download.contracts import (
+            DownloadArguments,
+            DownloadObservation,
+            DownloadResult,
+        )
+        from src.openship.tools.download.tool import download_file
+
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description="Download a public HTTPS CSV or JSON file as a conversation artifact.",
+            argument_model=DownloadArguments, result_model=DownloadResult,
+            handler=download_file, handler_result_model=DownloadObservation,
+            artifact_kind="upload", implementation_files=(
+                "src/openship/tools/download/contracts.py",
+                "src/openship/tools/download/tool.py",
+                "src/openship/tools/download/transport.py",
+            ),
         )
     elif manifest.id == "sandbox_analysis":
         # Late import: the analysis tool consults the installed catalog.

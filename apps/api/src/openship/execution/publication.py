@@ -404,6 +404,22 @@ def mark_tool_dispatching(
                     provenance=provenance,
                 )
             )
+        elif artifact_kind == "upload" and operation.capability_id == "download_file":
+            from src.openship.tools.download.tool import download_name
+            from src.openship.tools.download.transport import DownloadError
+
+            try:
+                display_name = download_name(json.loads(operation.arguments_json)["url"])
+            except (DownloadError, KeyError, ValueError):
+                raise ToolPublicationError("invalid_tool_output") from None
+            reserved.append(reserve_artifact(
+                db, conversation_id=operation.conversation_id, project_id=operation.project_id,
+                max_bytes=max_output_bytes, kind="upload", request_key=str(operation.id),
+                display_name=display_name,
+                media_type="application/json" if display_name.lower().endswith(".json") else "text/plain",
+                source="tool", originating_run_id=operation.run_id,
+                originating_operation_id=operation.id, provenance=provenance,
+            ))
         elif artifact_kind == "analysis_output":
             declared = json.loads(operation.arguments_json).get("output_media") or {}
             if (
@@ -668,6 +684,9 @@ def publish_tool_result(
     conversation, operation, attempt = _attempt_and_operation(db, claim, attempt_id)
     if operation.status != "running" or attempt.outcome != "started":
         raise ToolPublicationError("lease_lost")
+    if definition is not None and operation.capability_id == "download_file":
+        return publish_download_result(db, claim, conversation, operation, attempt,
+                                       observation, staged_outputs, definition)
     if definition is not None and definition.artifact_kind == "analysis_output":
         return publish_analysis_result(
             db, claim, attempt_id, conversation, operation, attempt, observation, staged_outputs, definition
@@ -845,6 +864,71 @@ def publish_tool_result(
         result=result_data,
         artifacts=(artifact_ref,),
     )
+
+
+def publish_download_result(db, claim, conversation, operation, attempt, observation,
+                            staged_outputs, definition):
+    """Publish the exact downloaded bytes and their bounded model-visible reference."""
+    from src.openship.tools.download.contracts import DownloadResult, validate_download
+    from src.openship.tools.download.tool import download_name
+
+    normalized = definition.validate_handler_result(operation, observation)
+    if len(staged_outputs) != 1:
+        raise ToolPublicationError("invalid_tool_output")
+    staged = staged_outputs[0]
+    artifact = db.query(Artifact).filter(Artifact.id == staged.artifact_id).with_for_update().first()
+    try:
+        name = download_name(json.loads(operation.arguments_json)["url"])
+        file_format = validate_download(name, normalized.content)
+    except (ValueError, KeyError):
+        raise ToolPublicationError("invalid_tool_output") from None
+    if (
+        artifact is None or artifact.status != "staging"
+        or artifact.originating_run_id != operation.run_id
+        or artifact.originating_operation_id != operation.id
+        or artifact.conversation_id != operation.conversation_id
+        or artifact.project_id != operation.project_id
+        or artifact.kind != "upload" or artifact.display_name != name
+        or normalized.name != name or normalized.format != file_format
+        or staged.observed.sha256 != hashlib.sha256(normalized.content).hexdigest()
+        or staged.observed.size_bytes != len(normalized.content)
+    ):
+        raise ToolPublicationError("artifact_publication_failed")
+    slot_id = _slot_id_for_operation(db, operation.id, claim)
+    ready = mark_artifact_ready(db, artifact.id, staged.observed)
+    ref = ArtifactRef(id=ready.id, sha256=ready.sha256,
+                      size_bytes=ready.size_bytes, media_type=ready.media_type)
+    sample = normalized.content[:4096].decode("utf-8", errors="replace")
+    data = DownloadResult(artifact=ref, name=name, format=file_format, sample=sample).model_dump(mode="json")
+    encoded = canonical_json(data)
+    if len(encoded) > int(definition.manifest.limits.get("max_model_result_bytes", 16384)):
+        raise ToolPublicationError("output_limit_exceeded")
+    now = _utc_now()
+    operation.status = "succeeded"
+    operation.error_code = None
+    operation.result_json = encoded.decode("utf-8")
+    operation.result_digest = hashlib.sha256(encoded).hexdigest()
+    operation.output_artifact_ids = json.dumps([str(ready.id)], separators=(",", ":"))
+    operation.finished_at = operation.updated_at = now
+    attempt.outcome = "succeeded"
+    attempt.error_code = None
+    attempt.response_digest = ref.sha256
+    attempt.finished_at = now
+    if not release_execution_slot(db, claim, slot_id):
+        raise ToolPublicationError("lease_lost")
+    _event(db, conversation, operation.run_id, "artifact.created", {
+        "schema_version": 1, "operation_id": str(operation.id), "artifact_id": str(ready.id),
+        "sha256": ready.sha256, "size_bytes": ready.size_bytes,
+        "media_type": ready.media_type, "name": ready.display_name,
+    })
+    _event(db, conversation, operation.run_id, "tool.completed", {
+        "schema_version": 1, "operation_id": str(operation.id), "attempt_id": str(attempt.id),
+        "capability_id": operation.capability_id, "status": "succeeded",
+        "artifact_ids": [str(ready.id)], "result_digest": operation.result_digest,
+    })
+    db.flush()
+    return PublishedToolResult(operation_id=operation.id, status="succeeded",
+                               result=data, artifacts=(ref,))
 
 
 def publish_analysis_result(

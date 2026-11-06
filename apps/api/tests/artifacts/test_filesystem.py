@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 import stat
@@ -43,6 +44,76 @@ def test_streamed_eight_megabyte_artifact_is_durable_and_verified(store):
     restarted = LocalArtifactStore(store.root, store.storage_id)
     restarted.verify()
     assert (store.root / key).stat().st_size == len(body)
+
+
+@pytest.mark.asyncio
+async def test_unknown_download_stream_is_staged_with_computed_digest(store):
+    artifact_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+
+    async def receive(write):
+        write(b"name,value\n")
+        write(b"a,1\n")
+
+    staged = await store.stage_received(
+        artifact_id, receive, media_type="text/plain", max_bytes=1024,
+        project_id=project_id, conversation_id=conversation_id,
+    )
+    body = b"name,value\na,1\n"
+    assert staged.observed == _expected(artifact_id, body)
+    key = _relative_key(project_id, conversation_id, artifact_id)
+    store.publish_file(staged, key)
+    with store.open_verified(SimpleNamespace(
+        relative_storage_key=key, size_bytes=len(body), sha256=hashlib.sha256(body).hexdigest()
+    )) as file:
+        assert file.read() == body
+
+
+@pytest.mark.asyncio
+async def test_failed_unknown_download_stream_removes_staging_file(store):
+    artifact_id = uuid.uuid4()
+
+    async def receive(write):
+        write(b"partial")
+        raise RuntimeError("failed")
+
+    with pytest.raises(RuntimeError):
+        await store.stage_received(artifact_id, receive, media_type="text/plain", max_bytes=1024)
+    assert not (store.root / ".staging" / str(artifact_id) / "content").exists()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_unknown_download_stream_removes_staging_file(store):
+    artifact_id = uuid.uuid4()
+    started = asyncio.Event()
+
+    async def receive(write):
+        write(b"partial")
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(store.stage_received(
+        artifact_id, receive, media_type="text/plain", max_bytes=1024
+    ))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not (store.root / ".staging" / str(artifact_id) / "content").exists()
+
+
+@pytest.mark.asyncio
+async def test_unknown_download_stream_enforces_reservation(store):
+    artifact_id = uuid.uuid4()
+
+    async def receive(write):
+        write(b"1234")
+        write(b"5")
+
+    with pytest.raises(ArtifactStorageError):
+        await store.stage_received(artifact_id, receive, media_type="text/plain", max_bytes=4)
+    assert not (store.root / ".staging" / str(artifact_id) / "content").exists()
 
 
 @pytest.mark.parametrize(
