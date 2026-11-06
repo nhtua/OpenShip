@@ -13,6 +13,18 @@ ROOT = Path(__file__).resolve().parents[3]
 HOST_FILES = ROOT / "scripts/bootstrap/roles/rootless_podman/files"
 
 
+def prepare_sandbox_files(root):
+    """Give the simulated Compose command the files its preflight requires."""
+    for name in (
+        "deploy/sandbox/config.local.toml",
+        "secrets/opensandbox-auth.map",
+        "secrets/openship-sandbox-key",
+    ):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("test-only\n")
+
+
 def test_sandbox_services_in_base_compose_are_private_and_opt_in():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     server = compose["services"]["opensandbox-server"]
@@ -88,6 +100,14 @@ def test_stack_selects_sandbox_profile_only_when_requested(tmp_path, engine):
     assert "docker-compose.sandbox.yml" not in log.read_text()
     assert "docker-compose.sandbox.rootless.yml" not in log.read_text()
     log.unlink()
+    missing = subprocess.run(
+        [str(stack), "-e", "dev", "--sandbox", "status"], env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert missing.returncode != 0
+    assert "run init-sandbox first" in missing.stderr
+    assert not log.exists()
+    prepare_sandbox_files(tmp_path)
     subprocess.run([str(stack), "-e", "dev", "--sandbox", "status"], env=env, check=True)
     assert "docker-compose.sandbox.yml" not in log.read_text()
     assert "--profile sandbox" in log.read_text()
@@ -111,6 +131,7 @@ def test_stack_defaults_to_docker_when_both_engines_exist(tmp_path):
     log = tmp_path / "calls"
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "OPENSHIP_TEST_LOG": str(log)}
     env.pop("CONTAINER_ENGINE", None)
+    prepare_sandbox_files(tmp_path)
     subprocess.run([str(stack), "-e", "dev", "--sandbox", "status"], env=env, check=True)
     assert log.read_text().splitlines() == ["docker"]
 

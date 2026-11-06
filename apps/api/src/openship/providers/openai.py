@@ -32,6 +32,11 @@ from src.openship.providers.contracts import (
     validate_request,
 )
 from src.openship.providers.errors import ProviderError
+from src.openship.providers.openai_schemas import (
+    normalize_arguments,
+    unique_json_object,
+    wire_schema,
+)
 from src.openship.providers.registry import register_adapter
 
 _UNAVAILABLE = "The model provider could not be reached."
@@ -89,7 +94,7 @@ def _normalize_arguments(schema: dict, arguments: dict) -> dict:
         return arguments
     properties = schema.get("properties", {})
     required = set(schema.get("required", ()))
-    if set(arguments) - set(properties):
+    if schema.get("additionalProperties", True) is False and set(arguments) - set(properties):
         raise ValueError("tool arguments contain undeclared properties")
     if required - set(arguments):
         raise ValueError("tool arguments omit required properties")
@@ -151,18 +156,19 @@ def _wire_messages(request: ModelRequest) -> list[dict]:
 
 def _wire_tools(request: ModelRequest) -> list[dict]:
     """Serialize the exact registered function IDs and strict wire schemas."""
-    return [
-        {
+    result = []
+    for tool in request.tools:
+        parameters, strict = wire_schema(tool.parameters)
+        result.append({
             "type": "function",
             "function": {
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": _strict_schema(tool.parameters),
-                "strict": True,
+                "parameters": parameters,
+                "strict": strict,
             },
-        }
-        for tool in request.tools
-    ]
+        })
+    return result
 
 
 def _invalid_tool_response(cause: BaseException | str) -> ProviderError:
@@ -432,10 +438,12 @@ class OpenAIAdapter:
                         arguments = json.loads(
                             fragments["arguments"],
                             parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+                            object_pairs_hook=unique_json_object,
                         )
                         if not isinstance(arguments, dict):
                             raise TypeError("tool arguments must be a JSON object")
-                        arguments = _normalize_arguments(definition.parameters, arguments)
+                        _, strict = wire_schema(definition.parameters)
+                        arguments = normalize_arguments(definition.parameters, arguments, strict=strict)
                         ready_calls.append(
                             ToolCall(
                                 provider_call_id=provider_call_id,
@@ -487,6 +495,11 @@ class OpenAIAdapter:
 
 def _build_adapter(profile) -> OpenAIAdapter:
     """The adapter for a pinned profile: the SDK is imported only here."""
+    if profile.api_version == "responses":
+        raise ProviderError(
+            "configuration_error",
+            safe_message="The OpenAI Responses adapter is not available in this build.",
+        )
     return OpenAIAdapter()
 
 

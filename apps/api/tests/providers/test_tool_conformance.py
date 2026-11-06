@@ -64,6 +64,20 @@ def _profile(**overrides):
 
 
 @pytest.mark.asyncio
+async def test_openai_rejects_duplicate_json_argument_keys():
+    case = adapter_case(
+        profile_kwargs={"capabilities": _profile().capabilities.model_dump()},
+        chunks=[sdk_tool_chunk(fragments=[{
+            "id": "call-1", "name": "brave_web_search",
+            "arguments": '{"query":"first","query":"second"}',
+        }], finish_reason="tool_calls")],
+    )
+    events, failure = await drain(case.adapter, _request(), case.profile, control())
+    assert failure is not None
+    assert not [event for event in events if event.type == "tool_call_ready"]
+
+
+@pytest.mark.asyncio
 async def test_openai_preserves_exact_names_ids_and_unicode_arguments():
     """Strict wire adaptation does not rename IDs or lose optional defaults."""
     definition = _definition()
