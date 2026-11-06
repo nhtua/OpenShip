@@ -137,6 +137,25 @@ gateway run as root and read them regardless; the app containers run as UID
 as the file owner. Under rootless Podman, keep the rootless overlay, which maps
 the manager to the invoking user.
 
+## Failure signatures on the dev stack
+
+- **Chat UI shows "The search service is temporarily unavailable." for a sandbox
+  tool call:** that string is the shared `provider_unavailable` vocabulary entry
+  (`execution/gateway.py` coerces unrecognized tool failures onto it), not a
+  search-tool complaint. The common cause is the worker having no workload image:
+  `SANDBOX_IMAGE` must name an image **built on the engine the sandbox server
+  uses** (rootful `/var/run/docker.sock` unless the rootless overlay selects
+  Podman), with `SANDBOX_PROFILE_ID`/`SANDBOX_DEPENDENCY_IDENTITY` matching the
+  `images.json` identity for that closure. Build the closures with the
+  Dockerfiles above before starting the profile.
+- **Worker logs `nats.errors.Error: nats: permissions violation for
+  subscription to "openship.<installation>.v1.control.<run>"`:** the worker's
+  NATS policy must allow subscribing to run control-notice subjects (the
+  cancel/fence wakeup channel in the messaging design). `scripts/init_messaging.py`
+  grants this since the fix; an installation whose messaging files predate it
+  needs the auth set regenerated (move the messaging directory aside, rerun
+  `init-messaging`) and the stack restarted.
+
 ## Start/stop the provider infrastructure
 
 After preparing configuration/images/secrets and the existing dev stack's
