@@ -2,7 +2,7 @@
 type: design
 summary: Add pinned OpenAI Responses support and preserve dynamic tool maps without regressing Luna.
 date: 2026-11-06
-status: draft-awaiting-review
+status: approved
 ---
 
 # OpenAI Responses and faithful tool schemas
@@ -16,8 +16,8 @@ authorization, execution, budget, cancellation, and artifact guarantees.
 
 The user approved the additive direction on 2026-11-06 after reviewing the
 [research and live-probe findings](../../reviews/2026-11-06-openai-model-protocol-research.md).
-That approves writing this specification, not implementation. This written
-specification requires review before the executable implementation plan.
+The user approved this written specification on 2026-11-06. Implementation
+follows a separately reviewed plan.
 
 ### Scope
 
@@ -337,6 +337,6 @@ not a silent repair of the previous rejected run.
 - [x] Verify small live tool/result round trips for all three models.
 - [x] Obtain approval for the additive direction.
 - [x] Write the specification and review its scope and consistency.
-- [ ] User reviews/approves this written specification.
+- [x] User reviews/approves this written specification.
 - [ ] Write/review implementation plan and select execution method.
 - [ ] Implement, qualify, and separately approve rollout.

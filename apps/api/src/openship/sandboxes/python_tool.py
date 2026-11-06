@@ -34,11 +34,39 @@ from src.openship.sandboxes.outputs import OutputValidationFailed, validate_outp
 class PythonArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    source: str | None = None
-    source_id: UUID | None = None
-    input_ids: dict[str, UUID] = Field(default_factory=dict)
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    output_media: dict[str, str] = Field(default_factory=dict)
+    source: str | None = Field(
+        default=None,
+        description=(
+            "Python 3 source to run in the sandbox. Write each declared output to "
+            "the file named exactly <alias> inside the directory given by the "
+            "OPENSHIP_OUTPUT_DIR environment variable; files written anywhere "
+            "else (for example /tmp) are never collected or published. Read "
+            "staged inputs from OPENSHIP_INPUT_DIR named by their alias."
+        ),
+    )
+    source_id: UUID | None = Field(
+        default=None,
+        description="Artifact reference whose text body is the Python source "
+        "(use instead of inline source).",
+    )
+    input_ids: dict[str, UUID] = Field(
+        default_factory=dict,
+        description="Alias -> conversation artifact reference; each input is "
+        "staged as the file OPENSHIP_INPUT_DIR/<alias>.",
+    )
+    parameters: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON parameters available to the program at the file path "
+        "named by the OPENSHIP_PARAMETERS environment variable.",
+    )
+    output_media: dict[str, str] = Field(
+        default_factory=dict,
+        description="Alias -> media type for every file this run must return "
+        "(text/plain, application/json, image/png, image/jpeg). To return a "
+        "chart or image, declare it here AND write the file to "
+        "OPENSHIP_OUTPUT_DIR/<alias>; undeclared files stay inside the sandbox "
+        "and expire.",
+    )
 
     @field_validator("source_id", mode="before")
     @classmethod

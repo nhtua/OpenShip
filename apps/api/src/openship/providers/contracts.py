@@ -40,6 +40,7 @@ _CAPABILITY_NAMES = (
 _OPTION_NAMES = (
     "output_limit_parameter",
     "tool_call_reasoning_effort",
+    "reasoning_effort",
     "token_counter_id",
     "server_side_fallback",
     "automatic_function_calling",
@@ -115,6 +116,66 @@ class ToolCallDelta(BaseModel):
     arguments_delta: str = Field(default="", max_length=65536)
 
 
+class ResponsesContinuation(BaseModel):
+    """Private, bounded provider output required for stateless continuation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal[1]
+    protocol: Literal["openai.responses"]
+    profile_revision: str = Field(min_length=1, max_length=128)
+    model: str = Field(min_length=1, max_length=128)
+    destination: str = Field(min_length=1, max_length=512)
+    items: tuple[dict[str, Any], ...] = Field(max_length=128, repr=False)
+
+    @field_validator("items")
+    @classmethod
+    def _validate_items(cls, items):
+        allowed = {
+            "function_call": {"type", "id", "call_id", "name", "arguments", "status"},
+            "message": {"type", "id", "role", "status", "content", "phase"},
+            "reasoning": {"type", "id", "summary", "encrypted_content", "status"},
+        }
+        for item in items:
+            fields = allowed.get(item.get("type"))
+            if fields is None or set(item) - fields:
+                raise ValueError("unsupported Responses continuation item")
+            if not isinstance(item.get("id"), str) or not item["id"]:
+                raise ValueError("continuation item lacks an id")
+            if item.get("type") == "function_call" and any(
+                not isinstance(item.get(field), str) or not item[field]
+                for field in ("call_id", "name", "arguments")
+            ):
+                raise ValueError("invalid Responses function call")
+            if item.get("type") == "reasoning" and item.get("summary") not in (None, []):
+                raise ValueError("reasoning summaries are not retained")
+            if (item.get("type") == "reasoning" and item.get("encrypted_content") is not None
+                    and not isinstance(item["encrypted_content"], str)):
+                raise ValueError("invalid encrypted reasoning")
+            if item.get("type") == "message":
+                if item.get("role") != "assistant":
+                    raise ValueError("invalid Responses message role")
+                content = item.get("content")
+                if not isinstance(content, list):
+                    raise ValueError("invalid Responses message content")
+                for part in content:
+                    if not isinstance(part, dict) or part.get("type") != "output_text":
+                        raise ValueError("unsupported Responses message content")
+                    if set(part) - {"type", "text", "annotations", "logprobs"}:
+                        raise ValueError("unsupported Responses message fields")
+                    if not isinstance(part.get("text"), str) or part.get("annotations") not in (None, []):
+                        raise ValueError("unsupported Responses message data")
+                    if part.get("logprobs") not in (None, []):
+                        raise ValueError("unsupported Responses logprobs")
+        try:
+            encoded = json.dumps(items, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError) as error:
+            raise ValueError("invalid continuation JSON") from error
+        if len(encoded) > 512 * 1024:
+            raise ValueError("continuation exceeds size limit")
+        return items
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -123,9 +184,18 @@ class ChatMessage(BaseModel):
     tool_calls: tuple[ToolCall, ...] | None = None
     name: str | None = Field(default=None, pattern=TOOL_ID_PATTERN, max_length=64)
     tool_call_id: str | None = Field(default=None, min_length=1, max_length=128)
+    continuation: ResponsesContinuation | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def _role_shape(self):
+        if self.continuation is not None and self.role != "assistant":
+            raise ValueError("only assistant messages may carry continuation")
+        if self.continuation is not None:
+            raw_calls = [(item["call_id"], item["name"]) for item in self.continuation.items
+                         if item["type"] == "function_call"]
+            calls = [(call.provider_call_id, call.name) for call in (self.tool_calls or ())]
+            if raw_calls != calls:
+                raise ValueError("continuation calls do not match assistant tool calls")
         if self.role == "assistant":
             if self.name is not None or self.tool_call_id is not None:
                 raise ValueError("assistant messages cannot carry tool-result fields")
@@ -192,8 +262,9 @@ class AdapterOptions(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     adapter: Literal[ADAPTER_NAMES]
-    output_limit_parameter: Literal["max_tokens", "max_completion_tokens"] | None = None
+    output_limit_parameter: Literal["max_tokens", "max_completion_tokens", "max_output_tokens"] | None = None
     tool_call_reasoning_effort: Literal["none"] | None = None
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None
     token_counter_id: str | None = Field(default=None, min_length=1, max_length=128)
     server_side_fallback: bool | None = None
     automatic_function_calling: bool | None = None
@@ -223,7 +294,7 @@ class AdapterOptions(BaseModel):
             )
         allowed = set(required) | {"token_counter_id"}
         if self.adapter == "openai":
-            allowed.add("tool_call_reasoning_effort")
+            allowed.update({"tool_call_reasoning_effort", "reasoning_effort"})
         unexpected = sorted(present - allowed)
         if unexpected:
             raise ValueError(
@@ -262,6 +333,20 @@ class _ProfileBase(BaseModel):
         fail at request time - so the declaration is refused here, and the
         adapter still refuses a counter it does not implement.
         """
+        if self.adapter != self.adapter_options.adapter:
+            raise ValueError("profile and adapter options must name the same adapter")
+        if self.adapter == "openai":
+            options = self.adapter_options
+            if self.api_version == "responses":
+                if options.output_limit_parameter != "max_output_tokens" or options.reasoning_effort is None or options.tool_call_reasoning_effort is not None:
+                    raise ValueError("Responses requires max_output_tokens and reasoning_effort")
+                if self.model == "gpt-6.1-sol" and options.reasoning_effort == "none":
+                    raise ValueError("gpt-6.1-sol does not support reasoning effort none")
+            elif self.api_version == "chat-completions":
+                if options.output_limit_parameter == "max_output_tokens" or options.reasoning_effort is not None:
+                    raise ValueError("Chat Completions requires chat-specific options")
+            else:
+                raise ValueError("unsupported OpenAI API version")
         if self.capabilities.token_counting and self.adapter_options.token_counter_id is None:
             raise ValueError(
                 f"profile {self.id!r} claims token_counting but names no "
@@ -307,12 +392,15 @@ class ProviderEvent(BaseModel):
         "usage_update",
         "tool_call_delta",
         "tool_call_ready",
+        "continuation",
+        "activity",
         "stream_finished",
     ]
     text: str | None = None
     usage: TokenUsage | None = None
     tool_call_delta: ToolCallDelta | None = None
     tool_call: ToolCall | None = None
+    continuation: ResponsesContinuation | None = Field(default=None, repr=False)
     reason: Literal["stop", "length", "refusal", "tool_calls"] | None = None
     actual_model: str | None = None
 
@@ -323,6 +411,8 @@ class ProviderEvent(BaseModel):
             "usage_update": ("usage",),
             "tool_call_delta": ("tool_call_delta",),
             "tool_call_ready": ("tool_call",),
+            "continuation": ("continuation",),
+            "activity": (),
             "stream_finished": ("reason",),
         }[self.type]
         present = {
@@ -332,6 +422,7 @@ class ProviderEvent(BaseModel):
                 "usage",
                 "tool_call_delta",
                 "tool_call",
+                "continuation",
                 "reason",
                 "actual_model",
             )
@@ -345,6 +436,8 @@ class ProviderEvent(BaseModel):
             "usage_update": {"usage"},
             "tool_call_delta": {"tool_call_delta"},
             "tool_call_ready": {"tool_call"},
+            "continuation": {"continuation"},
+            "activity": set(),
             "stream_finished": {"reason", "actual_model"},
         }[self.type]
         unexpected = present - allowed
@@ -405,6 +498,7 @@ class ProviderTurnResult(BaseModel):
 
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
+    continuation: ResponsesContinuation | None = Field(default=None, repr=False)
     usage: TokenUsage | None = None
     actual_model: str | None = None
     selected_profile_id: str = Field(min_length=1)
@@ -478,6 +572,8 @@ def pin_profile(profile, *, defaults: RunLimits | None = None) -> PinnedProvider
         )
 
     canonical = declared.model_dump(mode="json")
+    if declared.adapter == "openai" and declared.api_version == "chat-completions":
+        canonical["adapter_options"].pop("reasoning_effort", None)
     canonical["limits"] = limits.model_dump(mode="json")
     digest = hashlib.sha256(
         json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")

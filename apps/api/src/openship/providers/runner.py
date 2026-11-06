@@ -54,13 +54,14 @@ class _Observed:
         self.parts: list[str] = []
         self.tool_calls = []
         self.saw_tool_fragments = False
+        self.continuation = None
         self.usage: TokenUsage | None = None
         self.actual_model: str | None = None
         self.reason: str | None = None
 
     def produced(self) -> bool:
         """Whether an answer had already begun."""
-        return bool(self.parts or self.tool_calls or self.saw_tool_fragments)
+        return bool(self.parts or self.tool_calls or self.saw_tool_fragments or self.continuation)
 
 
 def _context_bytes(request: ModelRequest) -> int:
@@ -181,6 +182,10 @@ async def _drain(stream, observed: _Observed) -> None:
             observed.saw_tool_fragments = True
         elif event.type == "tool_call_ready":
             observed.tool_calls.append(event.tool_call)
+        elif event.type == "continuation":
+            observed.continuation = event.continuation
+        elif event.type == "activity":
+            observed.saw_tool_fragments = True
         else:
             observed.reason = event.reason
             observed.actual_model = event.actual_model
@@ -453,6 +458,7 @@ async def run_model_turn(
         return ProviderTurnResult(
             text=text,
             tool_calls=tuple(observed.tool_calls),
+            continuation=observed.continuation,
             usage=observed.usage,
             actual_model=observed.actual_model,
             selected_profile_id=profile.id,

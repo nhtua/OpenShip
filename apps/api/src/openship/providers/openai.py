@@ -496,10 +496,9 @@ class OpenAIAdapter:
 def _build_adapter(profile) -> OpenAIAdapter:
     """The adapter for a pinned profile: the SDK is imported only here."""
     if profile.api_version == "responses":
-        raise ProviderError(
-            "configuration_error",
-            safe_message="The OpenAI Responses adapter is not available in this build.",
-        )
+        from .openai_responses import OpenAIResponsesAdapter
+
+        return OpenAIResponsesAdapter()
     return OpenAIAdapter()
 
 
