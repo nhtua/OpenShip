@@ -1,6 +1,6 @@
 ---
 type: spec
-summary: General Python execution and bounded URL downloads in agentic chat, demonstrated by an inline PNG chart.
+summary: General Python execution and bounded URL downloads in agentic chat, with PNG/JPEG artifact previews.
 status: approved-awaiting-implementation
 date: 2026-11-05
 ---
@@ -21,7 +21,7 @@ acceptance and passing Task 6 evidence remain separate and pending.
 
 This extends the [approved Phase 6B scope](2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md).
 That scope deliberately limited output to text/JSON and the workload to the
-standard library. This proposal adds a plotting runtime, PNG outputs/previews,
+standard library. This proposal adds a plotting runtime, PNG/JPEG outputs/previews,
 URL downloading, and model-selected Python execution. Preserve the existing
 analysis capability, persisted runs, and explicit resume behavior; do not rename
 old contracts in place or treat their earlier verification as evidence for the
@@ -112,11 +112,12 @@ headless rendering backend. No pandas or runtime package installation is
 required initially. The new runtime/dependency identity changes the existing
 compatibility key; it must not silently reuse a standard-library-only runtime.
 
-Add declared `image/png` alongside existing text/JSON outputs. Validate complete
-PNG content with a maintained decoder under explicit limits: at most 4096 pixels
+Add declared `image/png` and `image/jpeg` alongside existing text/JSON outputs.
+Validate complete PNG/JPEG content with a maintained decoder under explicit limits: at most 4096 pixels
 per dimension and 16 million pixels total, in addition to the existing byte
 limits. Reject truncated/malformed images and decompression bombs; magic bytes
-or a `.png` suffix alone do not qualify. Do not enable SVG, HTML, archives, or
+or a `.png`, `.jpg`, or `.jpeg` suffix alone do not qualify; decoded format must
+match the declared media type. Do not enable BMP, SVG, HTML, archives, or
 arbitrary binary previews. Preserve existing returned-source expectation checks;
 accepted source remains inert outside a separately authorized sandbox request.
 
@@ -128,7 +129,7 @@ or claimed.
 
 ## Chat presentation, failure, and durability
 
-Show download/execution progress using existing operation cards. Render a PNG
+Show download/execution progress using existing operation cards. Render a PNG/JPEG
 preview from an owned artifact referenced by the run result, using authenticated
 artifact retrieval and a managed object URL, not a model-written external image
 URL or active HTML. Include a download action and accessible label. Revoke
@@ -164,7 +165,7 @@ than introduce a general workflow engine.
    while reusing the compatible sandbox. Also test a non-analysis Python task
    without files, proving the tool is not chart-specific.
 6. Verify blocked URL targets/redirects, download bounds, malformed/oversized
-   PNGs, failed commands, provider unavailability, and explicit continuation
+   PNGs/JPEGs, failed commands, provider unavailability, and explicit continuation
    without duplicate committed execution. Verify retained downloads after
    restart/provider absence, plus existing analysis A/B resume regressions.
 

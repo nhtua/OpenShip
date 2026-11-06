@@ -4,7 +4,7 @@
 
 **Goal:** Let chat select a secure URL download and general Python execution, then display a retained chart from a real OpenSandbox journey.
 
-**Architecture:** Add two versioned capabilities to the existing authorized chat loop and gateway, retaining immutable artifacts across calls. Reuse provider execution and conversation-scoped sandbox handles; add additive chat continuation, PNG validation, and authenticated preview without changing the old analysis contract.
+**Architecture:** Add two versioned capabilities to the existing authorized chat loop and gateway, retaining immutable artifacts across calls. Reuse provider execution and conversation-scoped sandbox handles; add additive chat continuation, PNG/JPEG validation, and authenticated preview without changing the old analysis contract.
 
 **Tech Stack:** Python 3.11, FastAPI, SQLAlchemy/PostgreSQL, NATS JetStream, httpx, OpenSandbox, pinned Matplotlib, Pillow, Vue/TypeScript, pytest and Playwright.
 
@@ -16,7 +16,7 @@
 - General Python: source ≤256 KiB; ≤8 inputs, 8 MiB each/16 MiB total; ≤8 outputs, 4 MiB each/8 MiB total; combined stdout/stderr ≤256 KiB; parameters ≤16 KiB. Allow no files or outputs.
 - Provider request: 1 CPU, 512 MiB, 30-second command timeout, 1,800-second sandbox lifetime. Reuse only compatible conversation-scoped handles, fresh directories, no automatic command retries, renewal or deletion.
 - Operator selects the pinned Python/Matplotlib image and dependency identity. No model-selected images, host execution, runtime installs, or credentials in sandbox. Preserve existing analysis contracts and A/B resume.
-- PNG: fully decode with a maintained decoder, ≤4096 pixels per dimension and ≤16 million pixels; no SVG/HTML/archive or arbitrary binary previews.
+- PNG/JPEG: fully decode with a maintained decoder, match declared media type, ≤4096 pixels per dimension and ≤16 million pixels; no BMP/SVG/HTML/archive or arbitrary binary previews.
 - No database transaction over provider/network waits. Retain exact authorized refs, enforce existing policy, claims, quotas, attempt budgets and idempotency. No silent refetch on continuation.
 - Use isolated test database, broker namespace/credentials and artifact storage. Do not reset existing volumes or disrupt running services. Record actual evidence and user acceptance separately.
 - Commit task-scoped changes only using the repository's `git-workflow` skill and scanned message files; preserve existing uncommitted changes.
@@ -26,7 +26,7 @@
 1. DNS changes between validation and connection or a redirect to private IP: Task 1 tests the connected peer and blocks each hop.
 2. A model fabricates an artifact ID from another run or conversation: Task 2 rejects it and accepts only pinned earlier same-run outputs or explicitly selected artifacts.
 3. Crash after source capture or command dispatch: Tasks 3 and 5 assert reuse of captured refs and no automatic repeat of uncertain commands.
-4. Tiny compressed PNG with excessive decoded dimensions or a truncated tail: Task 4 rejects both before publication.
+4. Tiny compressed PNG/JPEG with excessive decoded dimensions or a truncated tail: Task 4 rejects both before publication.
 5. User switches conversations or a preview unmounts while a blob request is pending: Task 6 revokes URLs and prevents stale/cross-conversation rendering.
 
 ## File and responsibility map
@@ -36,7 +36,7 @@
 - `apps/api/src/openship/execution/{gateway,admission,publication}.py`, `capabilities/{catalog,definitions}.py`: versioned capability registration, admitted artifacts, fenced publication.
 - `apps/api/src/openship/runs/{agent_graph,resume,routes,schemas,service}.py`: same-run reference handoff and explicit continuation through existing run/outbox infrastructure.
 - `deploy/sandbox/`, API dependency locks and settings: pinned plotting image and decoder/runtime identity.
-- `apps/web/src/components/chat/`, `services/api.ts`, `types/index.ts`: operation status, authenticated PNG preview and continuation controls.
+- `apps/web/src/components/chat/`, `services/api.ts`, `types/index.ts`: operation status, authenticated PNG/JPEG preview and continuation controls.
 - `apps/api/tests/{tools,sandboxes,integration,full_stack}/`, `apps/web/tests/`: security, contract, durability and real browser evidence.
 
 ## Task 1: Bounded HTTPS download capability
@@ -64,9 +64,16 @@ certification. Real-service application acceptance remains in Task 7.
 - [x] Cover private redirects/DNS, byte limits, deadline/redirect bounds, accepted/rejected formats, safe errors, TLS/proxy settings, exact publication and failed cleanup in `tests/tools/test_download*.py` and staging tests. Compressed responses are refused rather than decompressed.
 - [x] Run the initial download and gateway tests red for missing capability, stream staging and cancellation before implementing each.
 - [x] Implement pinned DNS connections, verified TLS, per-hop redirect validation, bounded direct staging and fenced publication without a transaction over the download.
-- [ ] Commit only this task's files and record the task-done test run.
+- [x] Committed as `b6cf1b5`; task-done focused run: 98 passed, 2 warnings.
 
 ## Task 2: Authorized same-run artifact handoff
+
+**In progress — 2026-11-05:** Added an admission helper to accept selected refs
+or exact digest-matching committed outputs of the same run. Gateway-level tests
+exercise same-run download handoff and reject an unselected artifact before
+provider execution. Unreviewed same-run outputs cannot be used as source files;
+explicitly selected sources remain allowed. Additional cross-run, replay and
+real-service checks remain open.
 
 **Files:** Modify `runs/agent_graph.py`, `execution/{gateway,admission}.py`, relevant contracts; test `apps/api/tests/integration/test_chat_artifact_handoff.py` and `tests/test_agent_graph.py`.
 
@@ -79,6 +86,16 @@ certification. Real-service application acceptance remains in Task 7.
 
 ## Task 3: General Python tool and source capture
 
+**In progress — 2026-11-05:** `PythonArguments`/`PythonResult` contracts accept
+stdout-only tasks, enforce exactly one bounded source, and reject caller-selected
+images/unsafe aliases. The registered capability captures operation-scoped `.py`
+source and executes via the gateway/client. HTTP-boundary-stub tests cover
+stdout-only execution and replay, selected inputs/declared output, and same-run
+download handoff; a lost command reply is not redispatched. The affected focused
+lane passed 226 tests, and Ruff passed. These use a stubbed provider HTTP boundary;
+real-provider execution, cancellation, full regressions and review remain open;
+do not mark Task 3 complete.
+
 **Files:** Create `sandboxes/python_tool.py`, `tests/sandboxes/test_python_tool.py`; modify `sandboxes/{client,contracts,tool}.py`, `capabilities/{catalog,definitions}.py`, `execution/publication.py` and `runs/analysis_graph.py` only where shared source capture is extracted.
 
 **Interfaces:** `PythonArguments(source: str | None, source_id: UUID | None, input_ids: dict[str, UUID], parameters: dict, output_media: dict[str, str])` → `PythonResult(source: ArtifactRef, outputs: dict[str, ArtifactRef], exit_code: int, stdout: str, stderr: str)`; `async python_execute(arguments, invocation, control) -> PythonObservation`. Exactly one source form; empty inputs/outputs are valid.
@@ -88,16 +105,16 @@ certification. Real-service application acceptance remains in Task 7.
 - [ ] Implement a new versioned `python_execute` capability; reuse existing client, pointer, claim and staged artifact services. Capture source under a stable operation identity before dispatch; retain bounded diagnostics and explicit exit status. Keep `sandbox_analysis` behavior and persisted versions unchanged.
 - [ ] Run the new tests plus `uv run pytest -q tests/sandboxes/ tests/integration/test_analysis_results.py`; record output and commit.
 
-## Task 4: Plotting runtime and verified PNG output
+## Task 4: Plotting runtime and verified PNG/JPEG outputs
 
 **Files:** Modify `deploy/sandbox/Dockerfile.python`, `deploy/sandbox/images.json`, `sandboxes/{contracts,outputs,python_tool}.py`, API dependency manifest/lock, and `docs/operations/opensandbox.md`; test `tests/sandboxes/test_png_outputs.py` and packaging tests.
 
-**Interfaces:** `validate_png(data: bytes) -> None` fully decodes one PNG and raises `OutputValidationFailed` on invalid image, dimensions >4096 or pixels >16,000,000; `PythonArguments.output_media` admits `image/png` along with text/JSON.
+**Interfaces:** `validate_image(data: bytes, media_type: str) -> None` fully decodes one PNG/JPEG, requires its decoded format to match `image/png` or `image/jpeg`, and raises `OutputValidationFailed` on invalid image, dimensions >4096 or pixels >16,000,000; `PythonArguments.output_media` admits those image types along with text/JSON.
 
-- [ ] Write `test_valid_png_accepted`, `test_truncated_png_rejected`, `test_4097_dimension_or_16000001_pixels_rejected`, `test_decompression_bomb_rejected`, and `test_runtime_identity_changes_with_plotting_dependencies`. Verify image byte/aggregate limits still hold and SVG is rejected.
+- [ ] Write tests for valid PNG and JPEG (`.jpg`/`.jpeg`), malformed/truncated images of each type, media/format mismatch, `test_4097_dimension_or_16000001_pixels_rejected`, `test_decompression_bomb_rejected`, and `test_runtime_identity_changes_with_plotting_dependencies`. Verify image byte/aggregate limits still hold and BMP/SVG are rejected.
 - [ ] Run `cd apps/api && uv run pytest -q tests/sandboxes/test_png_outputs.py`; observe red.
 - [ ] Add a maintained pinned decoder to API dependencies, full bounded image verification, and an operator-built digest-pinned Matplotlib/headless runtime with pinned transitive dependencies. Do not overwrite an existing operator image or change the standard-library runtime identity.
-- [ ] Run PNG and packaging tests, `uv run ruff check .`, and verify the recorded runtime's headless chart generation in an isolated sandbox; record image identity and output before committing.
+- [ ] Run PNG/JPEG and packaging tests, `uv run ruff check .`, and verify the recorded runtime's headless chart generation in an isolated sandbox; record image identity and output before committing.
 
 ## Task 5: Explicit durable chat continuation
 
@@ -114,9 +131,9 @@ certification. Real-service application acceptance remains in Task 7.
 
 **Files:** Create `apps/web/src/components/chat/PythonOperation.vue` and `apps/web/tests/PythonOperation.test.ts`; modify `ToolOperationCard.vue`, chat run/continuation components, `services/api.ts` and `types/index.ts`.
 
-**Interfaces:** `PythonOperation` receives a typed operation with authorized artifact summaries and emits download/continuation actions; fetch PNG bytes using authenticated `artifactsApi.download`, display an object URL and revoke it on change/unmount.
+**Interfaces:** `PythonOperation` receives a typed operation with authorized artifact summaries and emits download/continuation actions; fetch PNG/JPEG bytes using authenticated `artifactsApi.download`, display an object URL and revoke it on change/unmount.
 
-- [ ] Write tests `shows_progress_and_failures`, `previews_only_owned_png_from_operation`, `revokes_replaced_and_unmounted_urls`, `ignores_late_response_after_conversation_change`, `downloads_retained_chart`, and `resume_disables_duplicate_submission`. Verify no model-provided external URL is rendered.
+- [ ] Write tests `shows_progress_and_failures`, `previews_only_owned_png_or_jpeg_from_operation`, `revokes_replaced_and_unmounted_urls`, `ignores_late_response_after_conversation_change`, `downloads_retained_chart`, and `resume_disables_duplicate_submission`. Verify no model-provided external URL is rendered.
 - [ ] Run `cd apps/web && pnpm exec vitest run tests/PythonOperation.test.ts`; observe red.
 - [ ] Implement accessible progress, preview, download and explicit continuation using existing UI/store conventions. Display stdout for ordinary no-file Python runs; do not label them analysis.
 - [ ] Run the new test, existing `RunResume.test.ts`, `pnpm typecheck`, `pnpm test:run`, and `pnpm build`; record output and commit.

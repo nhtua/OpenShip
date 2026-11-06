@@ -1067,7 +1067,7 @@ class ToolGateway:
         if (
             not isinstance(outputs, dict)
             or len(rows) != len(outputs)
-            or not rows
+            or (not rows and self._operation_for_validation(operation_id).capability_id != "python_execute")
             or any(len(data) > 4 * 1024 * 1024 for data in outputs.values())
             or sum(len(data) for data in outputs.values()) > 8 * 1024 * 1024
         ):

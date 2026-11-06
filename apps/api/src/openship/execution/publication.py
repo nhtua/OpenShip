@@ -423,7 +423,7 @@ def mark_tool_dispatching(
         elif artifact_kind == "analysis_output":
             declared = json.loads(operation.arguments_json).get("output_media") or {}
             if (
-                not declared
+                (not declared and operation.capability_id != "python_execute")
                 or len(declared) > 8
                 or any(
                     not alias or media not in ("text/plain", "application/json")
@@ -687,6 +687,9 @@ def publish_tool_result(
     if definition is not None and operation.capability_id == "download_file":
         return publish_download_result(db, claim, conversation, operation, attempt,
                                        observation, staged_outputs, definition)
+    if definition is not None and operation.capability_id == "python_execute":
+        return publish_python_result(db, claim, conversation, operation, attempt,
+                                     observation, staged_outputs, definition)
     if definition is not None and definition.artifact_kind == "analysis_output":
         return publish_analysis_result(
             db, claim, attempt_id, conversation, operation, attempt, observation, staged_outputs, definition
@@ -864,6 +867,87 @@ def publish_tool_result(
         result=result_data,
         artifacts=(artifact_ref,),
     )
+
+
+def publish_python_result(db, claim, conversation, operation, attempt, observation,
+                          staged_outputs, definition):
+    """Atomically publish declared Python outputs and the captured source ref."""
+    from src.openship.sandboxes.python_tool import PythonArguments, PythonResult
+
+    normalized = definition.validate_handler_result(operation, observation)
+    arguments = PythonArguments.model_validate_json(operation.arguments_json)
+    source = db.query(Artifact).filter(Artifact.id == normalized.source.id).with_for_update().first()
+    if (source is None or source.status != "ready" or source.project_id != operation.project_id
+            or source.conversation_id != operation.conversation_id
+            or source.sha256 != normalized.source.sha256
+            or source.size_bytes != normalized.source.size_bytes
+            or source.media_type != normalized.source.media_type):
+        raise ToolPublicationError("artifact_publication_failed")
+    if arguments.source is not None:
+        if (source.originating_operation_id != operation.id or source.originating_run_id != operation.run_id
+                or source.sha256 != hashlib.sha256(arguments.source.encode("utf-8")).hexdigest()):
+            raise ToolPublicationError("invalid_tool_output")
+    else:
+        refs = json.loads(operation.input_artifact_refs or "[]")
+        if (arguments.source_id != source.id
+                or normalized.source.model_dump(mode="json") not in refs):
+            raise ToolPublicationError("invalid_tool_output")
+    if len(staged_outputs) != len(normalized.outputs):
+        raise ToolPublicationError("invalid_tool_output")
+    slot_id = _slot_id_for_operation(db, operation.id, claim)
+    output_refs = {}
+    ready_rows = []
+    for staged in staged_outputs:
+        row = db.query(Artifact).filter(Artifact.id == staged.artifact_id).with_for_update().first()
+        data = normalized.outputs.get(row.display_name) if row else None
+        if (row is None or row.status != "staging" or row.kind != "analysis_output"
+                or row.originating_run_id != operation.run_id or row.originating_operation_id != operation.id
+                or row.project_id != operation.project_id or row.conversation_id != operation.conversation_id
+                or arguments.output_media.get(row.display_name) != row.media_type
+                or data is None or staged.observed.sha256 != hashlib.sha256(data).hexdigest()
+                or staged.observed.size_bytes != len(data)):
+            raise ToolPublicationError("artifact_publication_failed")
+        ready = mark_artifact_ready(db, row.id, staged.observed)
+        ready_rows.append(ready)
+        output_refs[ready.display_name] = ArtifactRef(
+            id=ready.id, sha256=ready.sha256, size_bytes=ready.size_bytes, media_type=ready.media_type,
+        )
+    if set(output_refs) != set(arguments.output_media):
+        raise ToolPublicationError("invalid_tool_output")
+    result_data = PythonResult(source=normalized.source, outputs=output_refs,
+                               exit_code=normalized.exit_code, stdout=normalized.stdout,
+                               stderr=normalized.stderr).model_dump(mode="json")
+    result_bytes = canonical_json(result_data)
+    if len(result_bytes) > int(definition.manifest.limits.get("max_model_result_bytes", 262144)):
+        raise ToolPublicationError("output_limit_exceeded")
+    now = _utc_now()
+    operation.status = "succeeded"
+    operation.error_code = None
+    operation.result_json = result_bytes.decode("utf-8")
+    operation.result_digest = hashlib.sha256(result_bytes).hexdigest()
+    ids = [source.id, *(row.id for row in ready_rows)]
+    operation.output_artifact_ids = json.dumps([str(item) for item in ids], separators=(",", ":"))
+    operation.finished_at = operation.updated_at = now
+    attempt.outcome = "succeeded"
+    attempt.error_code = None
+    attempt.response_digest = operation.result_digest
+    attempt.finished_at = now
+    if not release_execution_slot(db, claim, slot_id):
+        raise ToolPublicationError("lease_lost")
+    for row in ready_rows:
+        _event(db, conversation, operation.run_id, "artifact.created", {
+            "schema_version": 1, "operation_id": str(operation.id), "artifact_id": str(row.id),
+            "sha256": row.sha256, "size_bytes": row.size_bytes, "media_type": row.media_type,
+            "name": row.display_name,
+        })
+    _event(db, conversation, operation.run_id, "tool.completed", {
+        "schema_version": 1, "operation_id": str(operation.id), "attempt_id": str(attempt.id),
+        "capability_id": operation.capability_id, "status": "succeeded",
+        "artifact_ids": [str(item) for item in ids], "result_digest": operation.result_digest,
+    })
+    db.flush()
+    return PublishedToolResult(operation_id=operation.id, status="succeeded", result=result_data,
+                               artifacts=(normalized.source, *(output_refs[key] for key in sorted(output_refs))))
 
 
 def publish_download_result(db, claim, conversation, operation, attempt, observation,

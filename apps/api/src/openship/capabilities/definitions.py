@@ -158,6 +158,7 @@ _BUILTIN_IDS = frozenset(
         "aws_read",
         "sandbox_analysis",
         "download_file",
+        "python_execute",
     }
 )
 _REGISTERED: dict[str, ToolDefinitionEntry] = {}
@@ -689,6 +690,30 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             error_mapper=_aws_error,
             safe_failure_code="aws_unavailable",
             model_selectable=False,
+        )
+    elif manifest.id == "python_execute":
+        from src.openship.sandboxes.python_tool import (
+            PythonArguments,
+            PythonObservation,
+            PythonResult,
+            python_execute,
+            validate_python_observation,
+        )
+
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=("Execute Python in the configured sandbox. Supply Python source or an "
+                         "authorized source artifact, selected input artifacts and declared outputs. "
+                         "Read from OPENSHIP_INPUT_DIR and write to OPENSHIP_OUTPUT_DIR; "
+                         "parameters are in OPENSHIP_PARAMETERS. No network or host access."),
+            argument_model=PythonArguments, result_model=PythonResult,
+            handler=python_execute, handler_result_model=PythonObservation,
+            output_validator=validate_python_observation,
+            input_artifact_ids=lambda args: (
+                *((args.source_id,) if args.source_id is not None else ()),
+                *sorted(args.input_ids.values()),
+            ),
+            artifact_kind="analysis_output", safe_failure_code="provider_unavailable",
         )
     elif manifest.id == "download_file":
         from src.openship.tools.download.contracts import (

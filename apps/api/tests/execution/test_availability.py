@@ -53,7 +53,7 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
     db.commit()
 
     rows = db.query(ToolAvailability).all()
-    assert len(rows) == 11
+    assert len(rows) == 12
     assert all(row.worker_id == "availability-worker" for row in rows)
     assert all(not hasattr(row, "credential_binding_ref") for row in rows)
     fresh = read_tool_availability(db, now=now)
@@ -69,6 +69,7 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
         "aws_read": (False, "disabled"),
         "sandbox_analysis": (False, "disabled"),
         "download_file": (False, "disabled"),
+        "python_execute": (False, "disabled"),
     }
     expired = read_tool_availability(db, now=now + timedelta(seconds=31))
     assert expired == {
@@ -83,5 +84,6 @@ def test_runtime_availability_upserts_safe_observations_and_expires_them(monkeyp
         "aws_read": (False, "runtime_unavailable"),
         "sandbox_analysis": (False, "runtime_unavailable"),
         "download_file": (False, "runtime_unavailable"),
+        "python_execute": (False, "runtime_unavailable"),
     }
     db.close()

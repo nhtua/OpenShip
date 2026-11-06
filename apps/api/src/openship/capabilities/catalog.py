@@ -610,6 +610,29 @@ def _download_manifest() -> CapabilityManifest:
     return CapabilityManifest(**fields, manifest_digest=canonical_digest(fields))
 
 
+def _python_manifest() -> CapabilityManifest:
+    from src.openship.capabilities.definitions import implementation_digest_for
+    from src.openship.sandboxes.python_tool import PythonArguments, PythonResult
+
+    fields = {
+        "schema_version": 1, "id": "python_execute", "version": "1.0.0",
+        "implementation_digest": implementation_digest_for((
+            "src/openship/sandboxes/python_tool.py", "src/openship/sandboxes/client.py",
+            "src/openship/sandboxes/contracts.py", "src/openship/sandboxes/tool.py",
+            "src/openship/sandboxes/sessions.py", "src/openship/sandboxes/outputs.py",
+            "src/openship/execution/admission.py", "src/openship/execution/gateway.py",
+            "src/openship/execution/publication.py", "src/openship/artifacts/filesystem.py",
+        )),
+        "input_schema": PythonArguments.model_json_schema(),
+        "output_schema": PythonResult.model_json_schema(),
+        "effect": "read_only_external", "enablement_requirements": ("operator_enabled", "sandbox_runtime"),
+        "limits": {"timeout_seconds": 30, "max_model_result_bytes": 256 * 1024},
+        "outputs": (OutputPolicy(name="python-output", mutability="immutable").model_dump(mode="json"),),
+        "execution_kind": "maintained", "credential_binding_ref": None,
+    }
+    return CapabilityManifest(**fields, manifest_digest=canonical_digest(fields))
+
+
 def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
     from src.openship.capabilities.definitions import registered_tool_definitions
 
@@ -622,6 +645,7 @@ def list_capability_manifests() -> tuple[CapabilityManifestLike, ...]:
         _s3_metadata_manifest(),
         _sandbox_manifest(),
         _download_manifest(),
+        _python_manifest(),
     )
     registered = tuple(entry.manifest for entry in registered_tool_definitions())
     return (*builtins, *registered)
