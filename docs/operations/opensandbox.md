@@ -108,6 +108,35 @@ Nginx plain-string map keys are case-insensitive; use the anchored regex above.
 Remote exposure/TLS/production qualification is not delivered by this local
 development setup. Upstream advisory findings remain deferred, not fixed.
 
+## Scripted dev preparation (`init-sandbox`)
+
+For the dev stack, `scripts/openship-stack -e dev init-sandbox` prepares all of
+the provider material above in one idempotent step:
+
+- Renders `deploy/sandbox/config.example.toml` to `deploy/sandbox/config.local.toml`
+  with the digest-pinned execd image from `deploy/sandbox/images.json`
+  (the rendered file is gitignored and only written when absent).
+- Generates `secrets/openship-sandbox-key` and `secrets/opensandbox-auth.map`
+  (mode 0600, owning user only) **only when both are absent**; a half pair is
+  reported and never rotated. Existing files are kept, so re-running is safe.
+
+`scripts/openship-stack -e dev --sandbox <command>` then fails with
+"run init-sandbox first" if any of those files is missing and otherwise exports
+`OPENSHIP_SANDBOX_CONFIG`, `OPENSHIP_SANDBOX_AUTH_MAP` and
+`OPENSHIP_SANDBOX_API_KEY` (read from the protected key file per invocation,
+never stored in `.env`) into every Compose invocation selecting the sandbox
+profile. Without them, the Compose sentinel fallbacks
+`.openship/sandbox/config-required.toml` and `auth-required.map` would make
+the engine create root-owned placeholder **directories** and fail with a
+confusing bind-mount error rather than a clear one.
+
+UID interaction: rootful Compose bind mounts keep numeric ownership, so these
+files are created as the invoking user (UID 1000). The manager and Nginx
+gateway run as root and read them regardless; the app containers run as UID
+1000 and read `./secrets` mounts (`SANDBOX_KEY_FILE=/run/secrets/openship-sandbox-key`)
+as the file owner. Under rootless Podman, keep the rootless overlay, which maps
+the manager to the invoking user.
+
 ## Start/stop the provider infrastructure
 
 After preparing configuration/images/secrets and the existing dev stack's

@@ -48,6 +48,7 @@ Example: scripts/openship-stack -e dev start
 Commands:
   init-messaging [--tls-cert FILE --tls-key FILE --tls-ca FILE]
   init-artifacts
+  init-sandbox
   up-dependencies [--only SERVICE[,SERVICE...]]  local only
     SERVICES: postgres, nats, nats-nui
   bootstrap --check|--apply
@@ -67,7 +68,9 @@ reload; --reload is a compatibility alias. prod uses the protected .env.prod
 and production manifest.
 --sandbox selects the optional OpenSandbox infrastructure profile for dev only;
 use it consistently with start, stop and status. This does not implement or
-enable generated-code execution in OpenShip.
+enable generated-code execution in OpenShip. init-sandbox prepares the
+provider config, gateway API key and Nginx auth map under protected paths;
+--sandbox start then wires them into the Compose services automatically.
 USAGE
 }
 
@@ -185,12 +188,25 @@ compose() {
       ;;
   esac
   if ((SANDBOX)); then
+    ensure_sandbox_files || return 2
     args+=(--profile sandbox)
     if [[ "$CONTAINER_ENGINE" == podman ]]; then
       args+=(-f docker-compose.sandbox.rootless.yml)
     fi
   fi
-  (cd "$ROOT" && OPENSHIP_MESSAGING_DIR="$(compose_secret_dir)" "$CONTAINER_ENGINE" compose "${args[@]}" "$@")
+  (
+    cd "$ROOT"
+    if ((SANDBOX)); then
+      # Keep the gateway key out of .env and Git: read the protected file per
+      # invocation. Rootful Compose bind mounts keep numeric ownership, so the
+      # UID 1000 files created by init-sandbox stay readable in-container.
+      export OPENSHIP_SANDBOX_CONFIG="$ROOT/deploy/sandbox/config.local.toml"
+      export OPENSHIP_SANDBOX_AUTH_MAP="$ROOT/secrets/opensandbox-auth.map"
+      export OPENSHIP_SANDBOX_API_KEY="$(< "$ROOT/secrets/openship-sandbox-key")"
+    fi
+    OPENSHIP_MESSAGING_DIR="$(compose_secret_dir)" \
+      "$CONTAINER_ENGINE" compose "${args[@]}" "$@"
+  )
 }
 
 local_cli() {
@@ -264,6 +280,29 @@ initialize_dev_messaging_if_missing() {
 initialize_dev_artifacts() {
   compose run --build --rm --no-deps --entrypoint uv worker \
     run python -m src.openship.artifacts.maintenance init
+}
+
+ensure_sandbox_files() {
+  local sandbox_file
+  for sandbox_file in \
+    "$ROOT/deploy/sandbox/config.local.toml" \
+    "$ROOT/secrets/opensandbox-auth.map" \
+    "$ROOT/secrets/openship-sandbox-key"; do
+    [[ -f "$sandbox_file" ]] || {
+      echo "missing sandbox provider file: $sandbox_file (run init-sandbox first)" >&2
+      return 2
+    }
+  done
+}
+
+initialize_dev_sandbox() {
+  ensure_messaging_files
+  python3 "$ROOT/scripts/init_sandbox.py" \
+    --config-template "$ROOT/deploy/sandbox/config.example.toml" \
+    --config-output "$ROOT/deploy/sandbox/config.local.toml" \
+    --images-json "$ROOT/deploy/sandbox/images.json" \
+    --key-file "$ROOT/secrets/openship-sandbox-key" \
+    --auth-map-file "$ROOT/secrets/opensandbox-auth.map"
 }
 
 prepare_nui_context() {
@@ -673,6 +712,11 @@ case "$COMMAND" in
           run python -m src.openship.artifacts.maintenance init
         ;;
     esac
+    ;;
+  init-sandbox)
+    [[ "$ENVIRONMENT" == dev ]] || { echo "init-sandbox is supported only for the dev stack" >&2; exit 2; }
+    (($# == 0)) || { echo "usage: init-sandbox" >&2; exit 2; }
+    initialize_dev_sandbox
     ;;
   up-dependencies)
     [[ "$ENVIRONMENT" == local ]] || { echo "up-dependencies is local-only" >&2; exit 2; }
