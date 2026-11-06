@@ -169,6 +169,13 @@ class ResumeAnalysisRequest(BaseModel):
     client_request_id: uuid.UUID
 
 
+class ResumeChatPythonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["last_step", "from_beginning"]
+    client_request_id: uuid.UUID
+
+
 class ConnectorResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

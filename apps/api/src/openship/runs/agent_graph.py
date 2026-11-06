@@ -32,7 +32,7 @@ from ..providers.contracts import (
 from ..providers.errors import ProviderError
 from ..providers.runner import authorize_current_profile, run_model_turn
 from .service import parse_run_model_config
-from .transcript import append_transcript
+from .transcript import append_transcript, read_transcript
 
 
 class AgentState(TypedDict):
@@ -172,6 +172,12 @@ def build_agent_graph(
             state.get("model_configuration"), state["run_id"]
         )
         messages = _messages(state)
+        # A resumed run carries its recorded transcript; continuing means
+        # replaying the recorded turns' committed results, not re-deriving
+        # them from conversation history alone. A fresh run has none.
+        with invocation.session_factory() as transcript_db:
+            for entry in read_transcript(transcript_db, invocation.claim.run_id):
+                messages.append(entry.message)
         gateway = (
             selected_gateway_factory()
             if callable(selected_gateway_factory)

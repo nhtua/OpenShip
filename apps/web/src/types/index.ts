@@ -355,6 +355,11 @@ export interface ResumeAnalysisRequest {
   client_request_id: string
 }
 
+export interface ResumeChatPythonRequest {
+  mode: 'last_step' | 'from_beginning'
+  client_request_id: string
+}
+
 export interface AwsBootstrapAuthInput {
   access_key_id: string
   secret_access_key: string

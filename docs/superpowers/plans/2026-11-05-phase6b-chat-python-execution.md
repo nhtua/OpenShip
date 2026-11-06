@@ -68,12 +68,16 @@ certification. Real-service application acceptance remains in Task 7.
 
 ## Task 2: Authorized same-run artifact handoff
 
-**In progress — 2026-11-05:** Added an admission helper to accept selected refs
-or exact digest-matching committed outputs of the same run. Gateway-level tests
-exercise same-run download handoff and reject an unselected artifact before
-provider execution. Unreviewed same-run outputs cannot be used as source files;
-explicitly selected sources remain allowed. Additional cross-run, replay and
-real-service checks remain open.
+**Done — 2026-11-05:** `resolve_chat_inputs` authorizes submission-pinned refs or
+exact digest-matching committed outputs of this exact live claim, under the
+existing ownership/lease checks. Handoff coverage now: pinned download ref for the
+next call (bytes verified against the committed reference through the store),
+tampered artifact/result/failed-producer refusals, other-conversation and
+other-run origin refusals, replay preserving the operation identity (one
+operation row for the logical call) and its self-consistent result digest, and
+a forged model-supplied input ID stopped before the provider (sandbox created
+count stays 0 and no command dispatched). Focused handoff file GREEN 9/9;
+agent-loop/handoff/python/tools lane 161 passed.
 
 **Files:** Modify `runs/agent_graph.py`, `execution/{gateway,admission}.py`, relevant contracts; test `apps/api/tests/integration/test_chat_artifact_handoff.py` and `tests/test_agent_graph.py`.
 
@@ -131,10 +135,29 @@ byte-identical PNG/JPEG accepted by the API-side validator.
 
 **Interfaces:** Add authenticated `POST /api/runs/{run_id}/resume-chat-python` with `{mode: 'last_step' | 'from_beginning', client_request_id: UUID}`; return the new or idempotently existing `Run`. Last-step consumes recorded transcript, committed tool results and exact source/input refs; from-beginning uses captured initial refs in a new root and never silently refetches.
 
-- [ ] Write `test_last_step_reuses_download_and_source`, `test_duplicate_resume_is_one_run`, `test_restart_does_not_redispatch_uncertain_command`, `test_from_beginning_uses_original_captured_bytes`, and `test_missing_input_is_actionable`. Verify policy/fence/ownership rejection and no speculative sandbox replacement.
-- [ ] Run `cd apps/api && uv run pytest -q tests/integration/test_chat_python_resume.py`; observe red.
-- [ ] Implement additive continuation through existing run submission/outbox and transcript/operation records, with persisted operation identity and no hidden URL refetch or source regeneration. Keep analysis A/B behavior unchanged.
-- [ ] Run the new tests and `uv run pytest -q tests/sandboxes/test_analysis_resume.py tests/integration/test_analysis_resume.py`; record output and commit.
+- [x] Write `test_last_step_reuses_download_and_source`, `test_duplicate_resume_is_one_run`, `test_restart_does_not_redispatch_uncertain_command`, `test_from_beginning_uses_original_captured_bytes`, and `test_missing_input_is_actionable`. Verify policy/fence/ownership rejection and no speculative sandbox replacement.
+- [x] Run `cd apps/api && uv run pytest -q tests/integration/test_chat_python_resume.py`; observe red.
+- [x] Implement additive continuation through existing run submission/outbox and transcript/operation records, with persisted operation identity and no hidden URL refetch or source regeneration. Keep analysis A/B behavior unchanged.
+- [x] Run the new tests and `uv run pytest -q tests/sandboxes/test_analysis_resume.py tests/integration/test_analysis_resume.py`; record output and commit.
+
+**Done — 2026-11-05:** `resume_chat_python` admits one continuation through the
+ordinary queue/outbox (`Run`+`RunJob`+`enqueue_run`+`append_event`), request
+identity binding run+mode (`client_request_id_conflict` on a cross-mode reuse),
+last-step copying recorded transcript rows and committed operation rows so the
+ordinary replay reuses committed digests, and re-selecting the exact committed
+output refs as the continuation's pinned inputs (only exact committed refs
+carry authority; the python source capture is never re-selected). Rejections
+verified: foreign principal 404 `run_not_found`, active run 409
+`run_already_active`, uncertain sandbox handle 409
+`chat_python_execution_interrupted` with one command and one handle only,
+missing/changed selected input 409 `chat_python_inputs_unavailable` with an
+actionable message, no python authority 409 `chat_python_state_unavailable`.
+Focused file RED (lookup/authority failures) then GREEN 9/9 after
+fixing lane fixtures; combined resume/analysis group 51 passed; affected
+integration/sandbox/execution lanes 440 passed (122 deselected); full network-free
+regression 1561 passed (131 deselected). Analysis A/B behavior unchanged.
+Frontend client surface (`ResumeChatPythonRequest` type + `runsApi.resumeChatPython`)
+added; UI card work remains Task 6.
 
 ## Task 6: Chat operation presentation
 

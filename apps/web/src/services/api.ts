@@ -108,6 +108,10 @@ export const runsApi = {
     runId: string,
     payload: import('@/types').ResumeAnalysisRequest,
   ): Promise<{ data: Run }> => api.post(`/runs/${encodeURIComponent(runId)}/resume-analysis`, payload),
+  resumeChatPython: (
+    runId: string,
+    payload: import('@/types').ResumeChatPythonRequest,
+  ): Promise<{ data: Run }> => api.post(`/runs/${encodeURIComponent(runId)}/resume-chat-python`, payload),
   submitTurn: (
     conversationId: string,
     request: TurnSubmitRequest,

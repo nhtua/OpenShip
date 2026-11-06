@@ -61,7 +61,7 @@ from ..workspace.lifecycle import (
     assert_active_conversation,
 )
 from .queue import fenced_update_run
-from .schemas import ResumeAnalysisRequest
+from .schemas import ResumeAnalysisRequest, ResumeChatPythonRequest
 
 
 def require_owned_conversation(
@@ -1338,6 +1338,16 @@ def resume_analysis(
 ) -> Run:
     """Explicit fixed-analysis admission; implementation kept out of chat service."""
     from .resume import resume_analysis as admit_resume
+
+    return admit_resume(db, principal_id=principal_id, run_id=run_id, command=command)
+
+
+def resume_chat_python(
+    db: Session, *, principal_id: uuid.UUID, run_id: uuid.UUID,
+    command: ResumeChatPythonRequest,
+) -> Run:
+    """Explicit python-chat continuation; implementation kept out of chat service."""
+    from .resume import resume_chat_python as admit_resume
 
     return admit_resume(db, principal_id=principal_id, run_id=run_id, command=command)
 
