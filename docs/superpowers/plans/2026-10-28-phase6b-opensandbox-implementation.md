@@ -202,7 +202,19 @@ Correction execution order (TDD, each test must be observed failing first):
 
 ### Task 6: One real parser demonstration and existing regressions
 
-**Status: BLOCKED / NOT COMPLETE (2026-11-04).** The safe read-only prerequisite
+**Preparation update — 2026-11-05:** The user has started the dev application,
+PostgreSQL, NATS, and OpenSandbox services and authorized their use for Task 6.
+The earlier provider-reuse authorization blocker is superseded; disposable
+database, isolated broker/artifact configuration, and service compatibility
+still need verification. The user now requests natural-language URL download
+→ generated Python → general sandbox execution → inline chart, explicitly not
+an analysis-specific executor. The proposed
+[scope extension](../specs/2026-11-05-phase6b-chat-python-execution-design.md)
+awaits written review and a follow-up implementation plan. No new journey has
+been run and no Task 6 acceptance item is complete. Preserve the original
+criteria below and map them into that plan alongside the new scenario.
+
+**Historical prerequisite stop — 2026-11-04 (NOT COMPLETE):** The safe read-only prerequisite
 check found no authorized disposable PostgreSQL/JetStream targets, application
 stack configuration, or explicit permission/configuration for this worktree to
 reuse the existing provider deployment. No real journey test or application
