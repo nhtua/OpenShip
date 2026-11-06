@@ -80,9 +80,13 @@ def validate_artifact_name(name: str) -> str:
         raise _error(422, "invalid_artifact_name", "Artifact name is invalid") from exc
 
 
-def _validate_media_type(media_type: str) -> str:
+def _validate_media_type(media_type: str, *, allow_images: bool = False) -> str:
     normalized = media_type.split(";", 1)[0].strip().lower()
-    if normalized not in ("application/json", "text/plain"):
+    allowed = ["application/json", "text/plain"]
+    if allow_images:
+        # Tool-owned reservations may hold validated PNG/JPEG outputs.
+        allowed += ["image/jpeg", "image/png"]
+    if normalized not in allowed:
         raise _error(415, "unsupported_artifact_type", "Only plain text and JSON artifacts are supported")
     return normalized
 
@@ -196,7 +200,7 @@ def reserve_artifact(
             ) from None
         normalized_key = f"{operation_part}:{alias_part}"
     display_name = validate_artifact_name(display_name)
-    media_type = _validate_media_type(media_type)
+    media_type = _validate_media_type(media_type, allow_images=source == "tool")
     if expected_sha256 is not None and not _SHA256.fullmatch(expected_sha256):
         raise _error(422, "invalid_artifact_digest", "Artifact digest is invalid")
     _lock_scopes(db, conversation_id, project_id)

@@ -110,12 +110,55 @@ def append_transcript(
     entries = tuple(_decode(row) for row in rows)
     calls = _call_map(entries)
 
+    def _same_record(entry: RunTranscriptEntry) -> bool:
+        # Replay equivalence: a resumed run re-emits a recorded model decision
+        # with provider call ids it mints afresh, and its tool results reuse
+        # the committed payloads; only those internal identities may differ.
+        # An identical repeat (same provider call ids) is a duplicate, not a
+        # replay, and stays rejected.
+        if entry.message.role != message.role or entry.model_turn_ordinal != model_turn_ordinal:
+            return False
+        if entry.message.role == "assistant" and message.role == "assistant":
+            recorded_calls = entry.message.tool_calls or ()
+            fresh_calls = message.tool_calls or ()
+            if recorded_calls or fresh_calls:
+                if len(recorded_calls) != len(fresh_calls) or not fresh_calls:
+                    return False
+                if entry.message.content != message.content:
+                    return False
+                return all(
+                    recorded.name == call.name
+                    and recorded.arguments == call.arguments
+                    and recorded.provider_call_id != call.provider_call_id
+                    for recorded, call in zip(recorded_calls, fresh_calls)
+                )
+            return entry.message.model_dump(mode="json") == message.model_dump(mode="json")
+        if entry.message.role == "tool" and message.role == "tool":
+            if entry.message.name != message.name:
+                return False
+            if entry.message.tool_call_id == message.tool_call_id:
+                return False
+            try:
+                left = json.loads(entry.message.content or "")
+                right = json.loads(message.content or "")
+            except (ValueError, TypeError):
+                return False
+            if not isinstance(left, dict) or not isinstance(right, dict):
+                return False
+            left.pop("operation_id", None)
+            right.pop("operation_id", None)
+            return left == right
+        return entry.message.model_dump(mode="json") == message.model_dump(mode="json")
+
     logical_ids: tuple[str, ...] = ()
     logical_call_id = None
     if message.role == "assistant" and any(
         entry.model_turn_ordinal == model_turn_ordinal and entry.message.role == "assistant"
         for entry in entries
     ):
+        for entry in entries:
+            if entry.message.role == "assistant" and _same_record(entry):
+                return entry
         raise ProviderError(
             "invalid_request",
             safe_message="This model turn already has an assistant response.",
@@ -142,8 +185,17 @@ def append_transcript(
         key = (model_turn_ordinal, message.tool_call_id or "")
         previous = calls.get(key)
         if previous is None or previous[1] != message.name:
+            # A replay renames the provider call under the resumed run, so the
+            # saved call is not keyed by this ID; accept the recorded result
+            # only when it is the equivalent saved result for this turn.
+            for entry in entries:
+                if entry.message.role == "tool" and _same_record(entry):
+                    return entry
             raise ProviderError("invalid_request", safe_message="The tool result has no matching saved tool call.")
         if previous[2]:
+            for entry in entries:
+                if entry.message.role == "tool" and _same_record(entry):
+                    return entry
             raise ProviderError("invalid_request", safe_message="This tool call already has a result.")
         logical_call_id = previous[0]
 

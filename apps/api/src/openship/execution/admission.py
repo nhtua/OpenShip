@@ -182,7 +182,10 @@ def admit_operation(
     ):
         raise _refused(404, "operation_not_found", "The requested operation is not available")
 
-    effective_inputs = list(inputs)
+    # Chat tool calls take authority from the artifacts they reference, not
+    # from the whole pinned selection, so a resumed run's re-pinned committed
+    # outputs cannot change the digest of a recorded step.
+    effective_inputs = list(inputs) if not is_chat_tool else []
     candidate_arguments = None
     try:
         candidate_definition = get_tool_definition_by_id(ref.id)

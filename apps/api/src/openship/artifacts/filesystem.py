@@ -330,8 +330,11 @@ class LocalArtifactStore:
         self.verify()
         if expected.id != artifact_id:
             raise ArtifactStorageError("artifact ID does not match the expected reference")
-        if expected.media_type not in ("application/json", "text/plain"):
+        if expected.media_type not in ("application/json", "text/plain", "image/jpeg", "image/png"):
             raise ArtifactStorageError("artifact media type is unsupported")
+        # Image media is validated upstream (decode + format agreement); the
+        # store verifies size and digest for binary payloads, not text shape.
+        is_image = expected.media_type in ("image/jpeg", "image/png")
         if expected.size_bytes > settings.artifact_upload_max_bytes:
             raise ArtifactStorageError("artifact exceeds the configured size limit")
         staging_key = self._staging_key(artifact_id, project_id, conversation_id)
@@ -357,18 +360,20 @@ class LocalArtifactStore:
                     size += len(data)
                     if size > expected.size_bytes or size > settings.artifact_upload_max_bytes:
                         raise ArtifactStorageError("artifact exceeds its declared size")
-                    try:
-                        decoded = decoder.decode(data, final=False)
-                    except UnicodeDecodeError as exc:
-                        raise ArtifactStorageError("artifact text must be valid UTF-8") from exc
-                    if "\x00" in decoded:
-                        raise ArtifactStorageError("artifact text must not contain NUL")
+                    if not is_image:
+                        try:
+                            decoded = decoder.decode(data, final=False)
+                        except UnicodeDecodeError as exc:
+                            raise ArtifactStorageError("artifact text must be valid UTF-8") from exc
+                        if "\x00" in decoded:
+                            raise ArtifactStorageError("artifact text must not contain NUL")
                     _write_all(fd, data)
                     digest.update(data)
-                try:
-                    decoder.decode(b"", final=True)
-                except UnicodeDecodeError as exc:
-                    raise ArtifactStorageError("artifact text must be valid UTF-8") from exc
+                if not is_image:
+                    try:
+                        decoder.decode(b"", final=True)
+                    except UnicodeDecodeError as exc:
+                        raise ArtifactStorageError("artifact text must be valid UTF-8") from exc
                 if size != expected.size_bytes or digest.hexdigest() != expected.sha256:
                     raise ArtifactStorageError("artifact size or digest does not match the expected reference")
                 os.fsync(fd)

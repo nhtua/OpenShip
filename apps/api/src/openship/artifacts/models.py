@@ -55,7 +55,9 @@ class Artifact(Base):
             name="ck_artifacts_kind",
         ),
         CheckConstraint(
-            "media_type IN ('application/json', 'text/plain')", name="ck_artifacts_media_type"
+            "media_type IN ('application/json', 'text/plain') "
+            "OR (source = 'tool' AND media_type IN ('image/jpeg', 'image/png'))",
+            name="ck_artifacts_media_type",
         ),
         CheckConstraint("size_bytes >= 0 AND reserved_bytes >= 0", name="ck_artifacts_size"),
         CheckConstraint(

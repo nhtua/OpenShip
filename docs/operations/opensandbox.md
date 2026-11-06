@@ -1,8 +1,8 @@
 ---
 type: operations
-summary: OpenSandbox development setup, lifecycle ownership and blocked full-application verification.
-status: application-implemented-full-stack-verification-blocked
-date: 2026-11-04
+summary: OpenSandbox development setup, lifecycle ownership, and the verified chat-directed Python journey (analysis-parser journeys still pending).
+status: chat-python-journey-verified-analysis-journeys-pending
+date: 2026-11-06
 ---
 
 # OpenSandbox development setup
@@ -260,3 +260,98 @@ Present that runnable demonstration to the user for **accept / revise / reject**
 No runnable full-stack demonstration is available at this prerequisite stop;
 **user acceptance is pending** and is separate from implementation and test
 results. Do not mark Task 6 or the overall Phase 6B acceptance gate complete.
+
+## Real chat-directed Python journey — 2026-11-06
+
+The chat-directed journey (URL → bounded download → model-written Python → PNG
+artifact → durable resume) now runs end-to-end against real services. This
+covers the chat Python execution lane; the fixed-analysis parser journeys from
+Task 6 above remain pending and are not claimed here.
+
+Disposable services used for the lane (the running dev stack was used for the
+browser qualification only; no dev-stack volume, database or artifact root was
+modified):
+
+- PostgreSQL: dedicated lane container `openship-p6b-pg-lane` (postgres:15) on
+  host port 5444, one fresh database per run, dropped afterwards.
+- Artifact store: fresh temporary root and storage identity per run
+  (`ARTIFACT_STORAGE_ID` = random UUID, maintenance CLI `init`).
+- OpenSandbox: the authorized dev-stack provider (gateway on `127.0.0.1:18080`,
+  loopback overlay), preflight-probed before use (403 unauthenticated / 404
+  authenticated).
+- Model/download bodies: deterministic scripted fixtures only; the OpenSandbox
+  transport is never stubbed (observations come from a logging wrapper around
+  the client's own http session).
+
+Commands (from `apps/api`; credentials via files/env only, never arguments):
+
+```sh
+# provider started with the sandbox profile + loopback overlay
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml \
+  -f docker-compose.sandbox.rootless.yml \
+  OPENSHIP_SANDBOX_CONFIG=./deploy/sandbox/config.local.toml \
+  OPENSHIP_SANDBOX_AUTH_MAP=./secrets/opensandbox-auth.map \
+  OPENSHIP_SANDBOX_API_KEY="$(cat secrets/openship-sandbox-key)" \
+  start opensandbox-server opensandbox-gateway
+
+# full-stack journey: API + durable worker + Playwright browser qualification
+TEST_POSTGRES_URL="postgresql+psycopg://openship:<lane-pass>@127.0.0.1:5444/lane" \
+  uv run pytest -q tests/full_stack/test_sandbox_python_chat.py
+# observed: 1 passed in 29.55s; browser step "1 passed (6.9s)"
+
+# live client journeys against the same provider
+OPENSHIP_LIVE_OPENSANDBOX=1 \
+OPENSHIP_LIVE_OPENSANDBOX_ENDPOINT=http://127.0.0.1:18080 \
+OPENSHIP_LIVE_OPENSANDBOX_KEY_FILE=../../secrets/openship-sandbox-key \
+OPENSHIP_LIVE_OPENSANDBOX_IMAGE=openship-python-plot:phase6b-task4 \
+OPENSHIP_LIVE_OPENSANDBOX_PLOT_IMAGE=openship-python-plot:phase6b-task4 \
+  uv run pytest -q tests/live/test_opensandbox.py
+```
+
+Recorded evidence:
+
+- Image identities: `openship-python-plot:phase6b-task4` with
+  `SANDBOX_PROFILE_ID=python311-plot`,
+  `SANDBOX_DEPENDENCY_IDENTITY=matplotlib-3.9.2-numpy-2.1.0` (from
+  `deploy/sandbox/images.json`).
+- One sandbox create per chat turn (observed sandbox id e.g.
+  `f8721c8f-fda3-4d40-9cca-7642425558d8`) and exactly one `/command` per
+  execution in a fresh directory `/outputs/{operation_id}-{uuid}` with
+  `argv ["python", ".../main.py"]`.
+- Downloaded CSV digest `07a0fbf747e205f87f9c78a62e3aea1f9366428b194373cd216eb2a349e0ea97`
+  (55 bytes); chart PNG retrieved through `/api/artifacts/{id}/content`
+  (`\x89PNG\r\n\x1a\n` magic) and previewed in the browser via an authenticated
+  blob fetch.
+- Resume replay: the continuation re-emits the recorded decisions under fresh
+  provider call ids and reuses the committed operations — the download log and
+  sandbox call log keep the same counts (no refetch, no re-executed command);
+  the same `client_request_id` returns the same continuation run.
+- Restart durability: after stopping and restarting API + worker, the
+  conversation snapshot and the chart artifact content are restored from the
+  artifact store.
+
+Reconciliation with the original Task 6 criteria
+(`2026-10-28-phase6b-opensandbox-implementation.md`):
+
+- Real registered API/worker/gateway + PostgreSQL + artifact store + OpenSandbox
+  exercised in one journey: **met** by the chart journey above.
+- Sandbox ID reuse for a compatible second request with changed inputs, and
+  provider expiry/absence replacement via a disposable fixture: **carried by the
+  existing live lane** (expiry fixture verified; changed-input reuse journeys
+  still need the stdlib image tag, recorded as remaining above).
+- Upload → captured parser → `summary.json`/`report.txt` analysis outputs:
+  **not met** — the chat scenario replaces the analysis-specific executor by
+  design; the parser fixtures have not been run and stay pending.
+- Accepted/rejected returned source, explicit A/B resume, retained downloads
+  after restart/provider disappearance, visible unavailable-provider failure:
+  chat continuation and idempotent resume **met**; from-beginning (B) and the
+  analysis A/B pair **pending**; restart retention **met**; provider-failure
+  display **pending**.
+- Unit transport stub as substitute: **not used** — the sandbox transport is
+  real in every lane.
+
+Limitations: the scripted model fixture and canned download body are
+deterministic fixtures, not real-model evidence (no real-model demonstration is
+claimed); the analysis-parser journeys (upload → captured parser →
+`summary.json`/`report.txt`) and their Task 6 acceptance remain pending; host
+probes are not isolation certification.

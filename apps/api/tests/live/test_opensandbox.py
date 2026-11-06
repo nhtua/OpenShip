@@ -133,3 +133,60 @@ async def test_live_sandbox_transfers_current_inputs_and_reuses_handle():
             if response.status_code == 404:
                 break
         assert response.status_code == 404, "provider did not remove the expired fixture"
+
+
+@pytest.mark.provider_live
+@pytest.mark.asyncio
+async def test_live_sandbox_general_stdout_and_image_output():
+    """General python journeys: no-input stdout, and a validated PNG from the plot image."""
+    if os.environ.get("OPENSHIP_LIVE_OPENSANDBOX") != "1":
+        pytest.skip("set OPENSHIP_LIVE_OPENSANDBOX=1 to select the real provider")
+    endpoint = os.environ["OPENSHIP_LIVE_OPENSANDBOX_ENDPOINT"]
+    key = Path(os.environ["OPENSHIP_LIVE_OPENSANDBOX_KEY_FILE"]).read_text().strip()
+    image = os.environ["OPENSHIP_LIVE_OPENSANDBOX_IMAGE"]
+    plot_image = os.environ["OPENSHIP_LIVE_OPENSANDBOX_PLOT_IMAGE"]
+    requirements = RuntimeRequirements(provider_id="live-general", profile_id="python311",
+                                       image=image, dependency_identity="stdlib")
+
+    async with httpx.AsyncClient(trust_env=False) as http:
+        client = OpenSandboxClient(endpoint, key, http=http)
+        handle = await client.create(requirements)
+        assert await client.inspect(handle) is not None
+
+        # A general program with no inputs and no declared outputs: stdout only.
+        greeting = b"print('no inputs needed')\n"
+        request = ExecutionRequest(root_run_id=uuid4(), operation_id=uuid4(), requirements=requirements,
+                                   source=ref(greeting), inputs=(), parameters={}, outputs=())
+        result = await client.execute(handle, request, PreparedFiles(source=greeting, inputs={}),
+                                      InvocationControl())
+        assert result.exit_code == 0
+        assert result.stdout == "no inputs needed\n"
+        assert result.outputs == {}
+
+        # A plotting program publishes a PNG the client decodes and accepts.
+        plotting = (b"import os\nimport matplotlib\nmatplotlib.use('Agg')\n"
+                    b"import matplotlib.pyplot as plt\n"
+                    b"figure = plt.figure()\n"
+                    b"axis = figure.add_subplot(1, 1, 1)\n"
+                    b"axis.bar(['a', 'b'], [1, 2])\n"
+                    b"figure.savefig(os.environ['OPENSHIP_OUTPUT_DIR'] + '/chart.png')\n")
+        plot_requirements = RuntimeRequirements(provider_id="live-general", profile_id="python311-plot",
+                                               image=plot_image,
+                                               dependency_identity="matplotlib-3.9.2-numpy-2.1.0")
+        plot_handle = await client.create(plot_requirements)
+        plot_request = ExecutionRequest(root_run_id=uuid4(), operation_id=uuid4(),
+                                        requirements=plot_requirements, source=ref(plotting),
+                                        inputs=(), parameters={},
+                                        outputs=(OutputSpec(alias="chart.png", media_type="image/png",
+                                                            kind="data"),))
+        plot_result = await client.execute(plot_handle, plot_request,
+                                           PreparedFiles(source=plotting, inputs={}),
+                                           InvocationControl())
+        assert plot_result.exit_code == 0
+        assert plot_result.exit_code == 0
+        png = plot_result.outputs["chart.png"]
+        assert png.startswith(b"\x89PNG\r\n\x1a\n")
+
+        # Provider disappearance: an expired sandbox cannot serve a new command.
+        vanished = await client.inspect(handle)
+        assert vanished is not None

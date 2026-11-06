@@ -111,7 +111,7 @@ datefmt = %H:%M:%S
         check=False,
     )
     assert current.returncode == 0, current.stderr
-    assert re.search(r"phase6b028\s*\(head\)", current.stdout), current.stdout
+    assert re.search(r"phase6b030\s*\(head\)", current.stdout), current.stdout
     assert not re.search(r"phase6b02[1-5]\w*\s*\(head\)", current.stdout), current.stdout
 
     engine = create_engine(lane_url, pool_size=8, max_overflow=4)

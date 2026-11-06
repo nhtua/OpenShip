@@ -13,6 +13,7 @@ from ..capabilities.contracts import (
     canonical_digest,
     decode_execution_config,
 )
+from ..chat.models import Message
 from ..events.service import append_event
 from ..execution.models import ToolOperation
 from ..execution.publication import project_published_result
@@ -484,6 +485,24 @@ def resume_chat_python(
     db.flush()
     transport = db.query(MessageTransportState).filter_by(id=1).one()
     enqueue_run(db, run.id, job.dispatch_generation, epoch=transport.transport_epoch)
+    # The replay re-runs the recorded request, so the new run carries the
+    # same user turn the durable worker reads to build model context.
+    for row in (
+        db.query(Message)
+        .filter_by(run_id=prior.id, role="user")
+        .order_by(Message.created_at)
+        .all()
+    ):
+        db.add(
+            Message(
+                run_id=run.id,
+                **{
+                    column.key: getattr(row, column.key)
+                    for column in Message.__table__.columns
+                    if column.key not in ("id", "run_id", "created_at")
+                },
+            )
+        )
     if command.mode == "last_step":
         # Copy recorded history and committed operations so replay reuses
         # their digests under the new run; the provider sees no new dispatch.

@@ -422,11 +422,15 @@ def mark_tool_dispatching(
             ))
         elif artifact_kind == "analysis_output":
             declared = json.loads(operation.arguments_json).get("output_media") or {}
+            allowed_media = ("text/plain", "application/json")
+            if operation.capability_id == "python_execute":
+                # General python execution may declare validated image outputs.
+                allowed_media = ("image/jpeg", "image/png", "application/json", "text/plain")
             if (
                 (not declared and operation.capability_id != "python_execute")
                 or len(declared) > 8
                 or any(
-                    not alias or media not in ("text/plain", "application/json")
+                    not alias or media not in allowed_media
                     for alias, media in declared.items()
                 )
             ):
