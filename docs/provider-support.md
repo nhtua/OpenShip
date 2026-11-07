@@ -33,6 +33,9 @@ listed below; no tuple is marked `accepted` until a person reviews the evidence.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `openai` · Chat Completions, fixture tuple | `openai` | `chat-completions` | *not stated* | *not observed* | `openai` 3.24.0 | streaming and usage reporting; other capabilities depend on the exact declared profile | shared conformance, OpenAI adapter tests and tool-call contract fixtures pass | no model tuple claimed | n/a | `fixture-tested` |
 | `openai` · Chat Completions · GPT-6 Luna tool use | `openai` | `chat-completions` | `gpt-6-luna` | `gpt-6-luna` | `openai` 3.24.0 | streaming, usage reporting, one function call per response with parallel calls disabled; no token counting, structured output or attachments | OpenAI adapter/tool contract tests pass; opt-in model → Brave call → final-answer smoke passed | `tests/live/test_tool_provider_smoke.py`, one declared destination, no fallback, two model requests and one bounded Brave invocation; 2026-10-20 UTC | pending | `live-qualified` |
+| `openai` · Responses · GPT-6.1 Sol tool use | `openai` | `responses` | `gpt-6.1-sol` | `gpt-6.1-sol` | `openai` 3.24.0 | streaming, usage reporting (including cached-input and reasoning counts), one function call per response with parallel calls disabled, pinned reasoning effort `low` (`none` is refused for this model at this endpoint); encrypted reasoning stays in a bounded private continuation replayed statelessly; no token counting, structured output or attachments | Responses adapter/continuation and durable-continuation tests pass; opt-in Responses qualification passed | `tests/live/test_responses_qualification.py`, one text turn and one tool-call→local-result→continued-turn journey at `api.openai.com`, `store=False` and no provider-stored state asserted; 2026-11-06 UTC | pending | `live-qualified` |
+| `openai` · Responses · GPT-6.1 Terra tool use | `openai` | `responses` | `gpt-6.1-terra` | `gpt-6.1-terra` | `openai` 3.24.0 | as above with pinned reasoning effort `low` | as above | as above; 2026-11-06 UTC | pending | `live-qualified` |
+| `openai` · Responses · GPT-6 Luna tool use | `openai` | `responses` | `gpt-6-luna` | `gpt-6-luna` | `openai` 3.24.0 | as above with pinned reasoning effort `low` | as above | as above; 2026-11-06 UTC | pending | `live-qualified` |
 | `brave_web_search` · Brave Search API | maintained OpenShip capability | `GET /res/v1/web/search` | n/a | n/a | none (`httpx` transport) | one fixed query, at most one normalized result, fixed HTTPS destination, immutable result artifact in full-stack lane | contract and provider conformance pass; live bounded request passed | `tests/live/test_search_tools.py`; 2026-10-20 UTC; manifest `93b2e49bdd5962ca6af25b6e05f9ced5e2c73843d87bdbf837f83700eaa00414`; implementation `9baf5986aa371c037dedc4cb9b4076926b3c7cb3235a7e5a83c0df7bf90ccf8d` | pending | `live-qualified` |
 | `tavily_web_search` · Tavily Search API | maintained OpenShip capability | `POST /search` | n/a | n/a | none (`httpx` transport) | one fixed query, at most one normalized result, fixed HTTPS destination, immutable result artifact in full-stack lane | contract and provider conformance pass; live bounded request passed | `tests/live/test_search_tools.py`; 2026-10-20 UTC; manifest `03f92df233d262242ac1006b920a5b8c095ad28ed76464d44cdfb77c3e80d2ac`; implementation `65869a7bf59c926c190aaf69ea31f7cf603d35ad1d539a9a309e1a3169f62ca0` | pending | `live-qualified` |
 | `anthropic` · Messages | `anthropic` | `messages` | *not stated* | *not observed* | `anthropic` 1.13.0 (the version this environment resolves) | streaming, usage reporting (per-field counts; this API reports no total), token counting through the provider's own counter; no tool calls, no structured output, no attachments | 10 of the 11 conformance cases (the eleventh is a shape only Chat Completions produces) + 20 adapter cases green (`tests/providers/test_conformance.py`, `tests/providers/test_anthropic.py`) | pending — no credential configured | pending | `fixture-tested` |
@@ -84,9 +87,15 @@ accepted. The supplied OpenAI example uses `gpt-6-luna`; it names no real key.
 `adapter_options` is discriminated by adapter, and the contract refuses a
 profile that omits or invents one: `openai` needs `output_limit_parameter`
 (because some models reject `max_tokens`) and may declare
-`tool_call_reasoning_effort: "none"` for models that require it on function
-calls. The option is sent only when the request carries tools. GPT-6 Luna's
-Chat Completions function calls require this setting ([model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna)).
+`tool_call_reasoning_effort: "none"` for Chat Completions models that require
+it on function calls. For `api_version: "responses"` the shape is different
+and required: `output_limit_parameter` must be `max_output_tokens` and
+`reasoning_effort` must be one of `none`, `low`, `medium`, `high` or `xhigh`
+(`none` is refused for `gpt-6.1-sol`, whose Chat Completions function calls
+are refused at this endpoint anyway), and `tool_call_reasoning_effort` must
+not appear. The pinned API version selects the adapter; no request is routed
+between the two shapes on its own. GPT-6 Luna's Chat Completions function
+calls require this setting ([model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna)).
 `anthropic` needs
 `server_side_fallback`, `google` needs `native_api_version` and
 `automatic_function_calling`, and `openai_compatible` needs
@@ -109,6 +118,7 @@ Chat Completions function calls require this setting ([model documentation](http
 | `OPENSHIP_LIVE_SEARCH_TOOL_ID` | exactly one explicitly selected Brave or Tavily qualification | n/a |
 | `OPENSHIP_LIVE_TOOL_PROFILE_ID` | the explicitly selected OpenAI tool-capable profile qualification | n/a |
 | `OPENSHIP_LIVE_PROFILE_ID` | the legacy text-only provider smoke test | n/a |
+| `OPENSHIP_LIVE_QUALIFICATION=responses-tool-call` | selects the Responses text-and-tool-call qualification; `OPENSHIP_LIVE_PROFILE_ID` names the pinned Responses profile it qualifies | n/a |
 
 A credential is named by reference and its value is read in exactly one place.
 That is what lets a catalog, an event, a checkpoint, a log line, and a
@@ -228,6 +238,30 @@ An unexpected tool request on that final attempt is rejected before gateway
 dispatch with `tool_limit_exceeded`, and is recorded as a failure rather than
 a timeout. The independent tool-admission call-count guard remains enforced.
 
+A pinned `api_version: "responses"` profile is served by a separate Responses
+adapter: `store=False`, `parallel_tool_calls=False`, an explicit `reasoning.effort`
+from the pinned option, and `include=["reasoning.encrypted_content"]`. Every
+completed model turn persists a bounded private continuation (at most 128
+items and 512 KiB per turn, counted against `max_context_bytes`) under the
+run's transcript fence; resuming a tool call replays that saved provider
+items plus the local tool result, never a provider-stored
+`previous_response_id`, and a continuation whose profile revision, model, or
+destination no longer matches the pinned run is refused before any request.
+Encrypted reasoning stays inside that private record: it never reaches
+published events, logs, or browser projections. Tool schemas that strict mode
+cannot express (dynamic-map `additionalProperties`) send `strict=False` while
+the canonical server-side validation of arguments stays authoritative.
+
+The Terra docs-vs-observed gap is recorded, not relied on: model
+documentation pins Terra to Responses, and a live Chat Completions turn with
+`reasoning_effort: none` also answered at this endpoint on 2026-11-06
+([research notes](reviews/2026-11-06-openai-model-protocol-research.md)); the product
+follows the documented Responses shape. Sol refuses Chat Completions function
+calls at this endpoint and refuses `none`, so Responses is its only qualified
+shape. Rolling out is an operator decision: a run's pinned model snapshot
+never migrates between API versions, and switching an installation's profiles
+means editing `.env` and restarting services, which needs explicit permission.
+
 ## Credential rotation and revocation
 
 Because a credential is read where a client is built, rotating a value needs
@@ -284,7 +318,20 @@ cd apps/api && OPENSHIP_LIVE_SEARCH_TOOL_ID=tavily_web_search \
 cd apps/api && OPENSHIP_LIVE_TOOL_PROFILE_ID=primary \
   OPENSHIP_LIVE_SEARCH_TOOL_ID=brave_web_search \
   uv run pytest tests/live/test_tool_provider_smoke.py -m provider_live -q
+
+cd apps/api && OPENSHIP_LIVE_QUALIFICATION=responses-tool-call \
+  OPENSHIP_LIVE_PROFILE_ID=sol-responses \
+  MODEL_PROFILES_JSON='[ ...one or more pinned api_version "responses" profiles... ]' \
+  uv run pytest tests/live/test_responses_qualification.py -m provider_live -q
 ```
+
+The Responses lane re-declares its profile from `MODEL_PROFILES_JSON` because
+the shared test installation otherwise declares only synthetic profiles; the
+credential binding still resolves from the environment. On 2026-11-06 the
+lane passed for `sol-responses`, `terra-responses` and `luna-responses`
+(two model requests each: one text turn and one
+tool-call→local-result→continued-turn journey), and a selected lane missing
+its profile prerequisite failed rather than skipping.
 
 Run without a credential configured, it fails with the reason the
 installation cannot serve that profile rather than skipping — which is the
