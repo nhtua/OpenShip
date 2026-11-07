@@ -1,200 +1,140 @@
 # OpenShip
 
-OpenShip is a self-hosted DevOps co-pilot accessed through a browser. Describe an outcome in conversation, follow durable runs and their results, and retain control over authorized work. Reusable workflows, tools, connectors, and isolated execution extend the same conversational harness as development progresses.
+**A self-hosted DevOps co-pilot in your browser.** Chat with a configured model,
+search for information, inspect AWS resources, and work with files in one
+project workspace. Follow progress as work runs and return to conversations
+without losing their history or results.
 
-## Where to Start
+OpenShip is under active development. You host the application and its state;
+model providers and integrations receive the context needed for their requests.
 
-- Read the [delivery roadmap](docs/roadmap.md) for delivered milestones and proposed next steps.
-- Read the [harness architecture](docs/architects.md) for the current design direction and component boundaries.
-- Run the API server, runtime worker, and web client below. Both backend processes share `apps/api`; the browser client lives in `apps/web`.
+## Features available today
 
-The [ideas collection](docs/ideas.md) preserves proposals and historical context. Entries marked **Stale** are superseded; use the architecture and roadmap to resolve conflicts.
+- **Project-based chat:** authenticated workspaces, streaming responses,
+  conversation history, and project/conversation archiving.
+- **Durable runs:** live progress, cancellation, and recovery of recorded state
+  after reconnects or restarts, backed by PostgreSQL and NATS JetStream.
+- **Model profiles:** choose explicitly configured providers and models. See the
+  [provider support matrix](docs/provider-support.md) for capabilities and tested combinations.
+- **Search and Connectors:** managed Brave/Tavily credentials, project defaults,
+  and operator-controlled tool availability.
+- **Read-only AWS tools:** role-based discovery and bounded resource reads.
+- **Conversation files:** upload, preview, download, and delete retained artifacts.
+- **Python execution (opt-in):** chat-directed Python in OpenSandbox with retained
+  outputs, including charts when a plotting image is configured. This is an
+  experimental lane; see [setup and limitations](docs/operations/opensandbox.md).
 
-## Current Status
+See the [roadmap](docs/roadmap.md) for delivery status and future features,
+including reusable workflows, approvals, event-driven automation, and
+infrastructure changes. Those are not all available today.
 
-**Roadmap Phases 1–5 are complete**, as confirmed by the project owner on 2026-10-25: authenticated project chat, durable runs/events, explicit model profiles, trusted tools and persistent artifacts, managed Connectors, and AWS basic-role discovery and bounded reads. Qualification claims remain scoped by the [provider support matrix](docs/provider-support.md) and phase-specific evidence.
+## Quick start
 
-**Phase 6A messaging is in progress on [PR #31](https://github.com/nhtua/OpenShip/pull/31).** The durable outbox/relay, JetStream run worker, API event fanout, read-only run/event cutover preview, resumable DB apply/verify, gate open/close controls, rollback preview/apply, and local/dev/prod deployment definitions are implemented. Native and Compose hot-reload workflows are documented. Full PostgreSQL/JetStream qualification, actual Compose builds and restart checks, and recovery exercises remain open. Do not run a production cutover yet. Read the [source review](docs/reviews/2026-10-25-phase6a-messaging-review.md), [design](docs/superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](docs/superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](docs/operations/messaging.md). Sandbox execution and mutable logical files remain Phase 6B.
+Use the Compose development stack for your first checkout. It runs the app and
+its dependencies with source hot reload; you do not need to install PostgreSQL,
+Node.js, or the Python application dependencies on your host.
 
-## How It Works
+### 1. Prepare your machine
 
-1. The **web client** provides the conversational workspace and sends authenticated HTTP commands to the API.
-2. The **API server** validates commands, enforces project access, and persists conversations and durable run commands in PostgreSQL.
-3. The **runtime worker** claims queued runs, invokes the pinned model profile or an admitted maintained tool, and persists operation and artifact results using the shared LangGraph runtime and durable state.
-4. The client receives progress through **Server-Sent Events** and reconstructs state after reconnecting.
+On **Arch Linux and derivatives**, use the Ansible bootstrap to install and
+configure Docker, Compose, and gVisor sandbox dependencies, as your normal user:
 
-The target architecture extends these same contracts for workflow revisions, capability discovery, policy checks, artifacts, and a separate sandbox execution worker. The current chat runtime worker is not that future sandbox worker. Ordinary chat does not require a saved workflow template.
+```bash
+./scripts/bootstrap/bootstrap.sh arch-docker --verify
+```
 
-OpenShip follows the **co-pilot** principle: engineers delegate scoped authority and retain control at critical decisions. Self-hosting keeps application state in your infrastructure; configured model providers and external integrations receive the context sent to them.
+Review the [bootstrap guide](scripts/bootstrap/README.md) first: this uses sudo,
+may upgrade host packages, and requires an existing AUR helper for gVisor.
+For other Linux distributions, install Python 3, Docker with Compose **2.24+**,
+and the sandbox runtime dependencies yourself; other Ansible targets are not yet
+provided. See [host setup and engine alternatives](docs/development.md#host-setup).
 
-## Quick Start with Docker Compose or Podman
+### 2. Configure your installation
 
 From the repository root:
 
 ```bash
 cp .env.example .env
-# Set a strong JWT_SECRET and a unique stable ARTIFACT_STORAGE_ID.
-# Optional: set CONTAINER_ENGINE=podman in .env to use Podman Compose.
-# Configure managed Connectors and tool availability after startup if needed.
-scripts/openship-stack --environment dev start
 ```
 
-`dev start` creates missing protected NATS credentials and initializes or verifies the artifact volume; configure `ARTIFACT_STORAGE_ID` in the root `.env` first. The stack then starts PostgreSQL, migrations, NATS JetStream, NATS NUI, a one-shot messaging bootstrap, the API server, runtime worker, outbox relay, and web client in the separate `openship-dev` Compose project. The dev stack uses source-mounted Vite and Uvicorn reload by default. On an inactive messaging installation, the first `scripts/openship-stack -e dev start` prints a read-only cutover preview and its Cutover ID, then exits. Confirm that exact preview with `scripts/openship-stack -e dev start --cutover <ID from preview>`, then run plain `start` again to verify relay catch-up and open dev gates. Containers reach PostgreSQL and NATS over the private Compose network using the `postgres` and `nats` service names. The API and web client publish on `DEV_BIND_ADDRESS` (default `0.0.0.0`) so developers can open the stack from another device on their LAN; set it to `127.0.0.1` for workstation-only access. Open the web client at [http://localhost:5173](http://localhost:5173). NATS NUI is available at [http://localhost:31312](http://localhost:31312), bound to loopback, with a preloaded dev connection profile. The API and worker share the persistent `artifactdata` volume; search keys are passed only to the worker. See [provider setup](docs/provider-support.md) before sending a chat message and the [artifact storage runbook](docs/operations/artifact-storage.md) for backup and restore. The wrapper uses Docker by default and reads `CONTAINER_ENGINE=docker|podman` from `.env`; a non-empty shell environment value takes precedence. Podman requires a configured Compose provider. The optional `--reload` flag remains accepted for compatibility. The tools below are for running processes directly.
+**Edit `.env` before continuing.** The stack does not choose or generate these values:
 
-For the full [messaging deployment runbook](docs/operations/messaging.md), see
-the native startup, Docker/Podman selection, hot-reload, and queue cutover
-steps. The separate production manifest is not a production cutover
-qualification.
+| Settings | What you need to supply |
+| --- | --- |
+| `JWT_SECRET` | A long random signing secret; replace the example. |
+| `ARTIFACT_STORAGE_ID` | A new UUID for this installation. Keep it unchanged across restarts and restores. |
+| `MODEL_PROFILES_JSON`, `MODEL_DEFAULT_PROFILE_ID` | A model/endpoint you can access and its matching default profile ID. Review the supplied examples using the [provider guide](docs/provider-support.md). |
+| `OPENAI_API_KEY` (or your profile's credential binding) | Your model provider key. The supplied profiles use `OPENAI_API_KEY`. |
+| `OPENSHIP_SANDBOX_SERVER_IMAGE`, `OPENSHIP_SANDBOX_GATEWAY_IMAGE` | The pinned provider images from [`deploy/sandbox/images.json`](deploy/sandbox/images.json). |
+| `SANDBOX_ENABLED`, `SANDBOX_IMAGE` | Set `true` and the workload image you build with the [sandbox image setup](docs/development.md#sandbox-images-for-dev). Leave the standard `python311` / `stdlib` identity for that image. |
 
-Managed Connector keyrings are initialized once on the host and mounted
-read-only into the API and worker; `dev start` does not generate them. See the
-[managed Connector operations runbook](docs/operations/managed-connectors.md)
-for key setup, rotation, and the configured operator username.
+For global tool management, set `CONNECTOR_OPERATOR_USERNAME` to the account you
+will register. Search/AWS Connectors also need a stable `CONNECTOR_INSTALLATION_ID`
+UUID and [one-time keyring setup](docs/development.md#optional-connector-setup).
+These are optional for plain chat; the stack does not create Connector keyrings.
 
-## Local Development
+Set `DEV_BIND_ADDRESS=127.0.0.1` for workstation-only access; the example otherwise
+exposes the development UI and API to your LAN. Keep `.env` and generated secrets
+out of Git.
 
-### Prerequisites
+### 3. Initialize once, then start
 
-- Python 3.11+ with [uv](https://docs.astral.sh/uv/) package manager
-- Node.js 22.12+ with [pnpm](https://pnpm.io/installation)
-- PostgreSQL 15+ running locally
-- The pinned NATS server from `deploy/versions.env`, or Docker/Podman Compose for a local NATS dependency
-
-### Database Setup
-
-Create the OpenShip database:
+Complete the [sandbox image setup](docs/development.md#sandbox-images-for-dev)
+before the first start, then run:
 
 ```bash
-createdb -U postgres openship
+./scripts/openship-stack -e dev init-messaging
+./scripts/openship-stack -e dev init-sandbox
+./scripts/openship-stack -e dev init-artifacts
+./scripts/openship-stack -e dev --sandbox start
 ```
 
-### API Server and Runtime Worker (FastAPI / LangGraph)
+On first startup, the command may stop and print a **Cutover ID**. Review the
+preview, ensure no other API/worker/relay processes use this database, then run
+these commands with that ID:
 
 ```bash
-cd apps/api
-uv sync --extra dev
-cp .env.example .env  # Configure DATABASE_URL, ARTIFACT_STORAGE_ID, model profiles, and credential bindings
-uv run alembic upgrade head
-# From the repository root, generate protected NATS role credentials and start
-# either a local NATS server or the Compose-managed NATS dependency.
-cd ../..
-scripts/openship-stack --environment local init-messaging
-scripts/openship-stack --environment local init-artifacts
-scripts/openship-stack --environment local up-dependencies --only nats,nats-nui
-scripts/openship-stack --environment local bootstrap --apply
-cd apps/api
-NATS_AUTH_FILE=../../.openship/messaging/local/api.json uv run uvicorn src.openship.main:app --reload --host 0.0.0.0 --port 8000
+./scripts/openship-stack -e dev --sandbox start --cutover <printed-cutover-id>
+./scripts/openship-stack -e dev --sandbox start
 ```
 
-API docs available at [http://localhost:8000/docs](http://localhost:8000/docs).
-The local dependency command starts NATS NUI at
-[`http://localhost:31311`](http://localhost:31311) for JetStream inspection.
-It imports a local connection profile for `nats://nats:4222`; click Connect
-once in NUI. Startup stages the protected host profile into the NUI data volume
-so the unprivileged NUI process can read it. The profile uses unrestricted
-local operator credentials and is stored in that volume.
+Open **[http://localhost:5173](http://localhost:5173)**, sign up, and start a chat.
+For tools, configure Connectors and enable installed tools in **Global Settings**.
+API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs).
 
-Run the chat worker and outbox relay in separate terminals from `apps/api`,
-setting the role credential file generated by `init-messaging`:
+For later sessions:
 
 ```bash
-NATS_AUTH_FILE=../../.openship/messaging/local/worker.json uv run python -m src.openship.runs.worker
-NATS_AUTH_FILE=../../.openship/messaging/local/relay.json uv run python -m src.openship.messaging.relay
+./scripts/openship-stack -e dev --sandbox start
+./scripts/openship-stack -e dev --sandbox status
+./scripts/openship-stack -e dev --sandbox stop
 ```
 
-The API terminal uses `NATS_AUTH_FILE=../../.openship/messaging/local/api.json`.
-Keep `NATS_SERVERS=nats://127.0.0.1:4222` in the API environment. The complete
-native reload commands, Compose reload stack, and production configuration
-requirements are documented in the [messaging runbook](docs/operations/messaging.md).
+This is a development setup, not a production deployment or security
+qualification. For startup failures and migration/recovery procedures, use the
+[messaging runbook](docs/operations/messaging.md) and
+[sandbox troubleshooting guide](docs/operations/opensandbox.md#failure-signatures-on-the-dev-stack).
 
-Chat uses explicitly declared model profiles and durable run commands. Configure
-`MODEL_PROFILES_JSON` and `MODEL_DEFAULT_PROFILE_ID` in `.env`; credentials are
-read from the bindings each profile names. See [provider setup](docs/provider-support.md).
-The worker generates the conversation title from the first model response.
-Enable installed tools in Global Settings and configure their Connectors on the
-Connectors page. Search can be attached explicitly from the chat composer or
-used by an enabled model profile. `TOOL_ENABLED_IDS` remains an optional
-deployment ceiling for existing installations; see the [tool availability
-runbook](docs/operations/tool-availability.md) before changing it. The
-Conversation files panel lists exact saved artifact versions for reading,
-download, and deletion. The browser never accepts provider credentials; see the
-[artifact storage runbook](docs/operations/artifact-storage.md) for workspace
-retention and recovery.
+## Documentation
 
-### Web Client (Vue.js)
-
-```bash
-cd apps/web
-pnpm install
-pnpm dev
-```
-
-Frontend available at [http://localhost:5173](http://localhost:5173) (proxies API to :8000).
-
-### Running Tests
-
-```bash
-# Backend
-cd apps/api && uv run pytest tests/ -v -m "not postgres and not provider_live and not full_stack and not jetstream"
-
-# Frontend
-cd apps/web && pnpm exec vitest run
-```
-
-PostgreSQL integration tests require `TEST_POSTGRES_URL`; full-stack tests use synthetic search transports and require the same disposable database; live-provider tests are opt-in. See [Phase 4 acceptance](docs/testing/phase4-acceptance.md) and [provider support](docs/provider-support.md) for qualification details.
+- [Development guide](docs/development.md) — custom/native setup, engine alternatives, tests, and pre-commit hooks.
+- [Architecture](docs/architects.md) — how the web client, API, workers, and durable state fit together.
+- [Roadmap](docs/roadmap.md) — delivered milestones and planned capabilities.
+- [Provider support](docs/provider-support.md) — model configuration and qualification evidence.
+- [Connector operations](docs/operations/managed-connectors.md) and [tool availability](docs/operations/tool-availability.md) — credentials and tool controls.
+- [Artifact storage](docs/operations/artifact-storage.md) — retention, backup, and restore.
+- [Messaging operations](docs/operations/messaging.md) and [OpenSandbox](docs/operations/opensandbox.md) — detailed deployment and recovery.
 
 ## Contributing
 
-OpenShip is in its early days and we'd love your help shaping its future. Here's how to get involved:
+Issues, feedback, documentation improvements, and pull requests are welcome.
+Start with the [development guide](docs/development.md); discuss new capabilities
+against the [roadmap](docs/roadmap.md) and [ideas collection](docs/ideas.md).
 
-- **⭐ Star the repo** — Let us know you're following the development
-- **💬 Share feedback** — Join discussions on the project's design and features
-- **🐛 Report issues** — Found a bug or have an improvement suggestion? Open an issue
-- **📝 Contribute ideas** — Add your thoughts to [`docs/ideas.md`](docs/ideas.md)
-- **🔨 Submit pull requests** — Help build features, fix bugs, or improve documentation
-
-All contributions are welcome, no matter your experience level. We're building this together.
-
-### Pre-commit Hooks
-
-We use pre-commit hooks to enforce code quality before commits are created. The hooks run `ruff` linting, `pytest` (backend), and `pnpm typecheck` + `pnpm test:run` (frontend) on every commit.
-
-To install:
-
-```bash
-# From repo root
-pip install pre-commit
-pre-commit install
-```
-
-To run hooks manually on all files:
-
-```bash
-pre-commit run --all-files
-```
-
-**Note:** For new worktrees, always run `pre-commit install` after creating the worktree to ensure hooks are active.
-
-## Repository Layout
-
-```text
-openship/
-├── apps/
-│   ├── api/                # API server and durable runtime worker
-│   └── web/                # Vue / TypeScript browser client
-├── poc/
-│   ├── agent/              # Experimental workflow CLI
-│   └── mockup/             # Vue UI/UX demonstrations
-├── docs/                   # Architecture, roadmap, ideas, and design records
-├── docker-compose.yml      # PostgreSQL, migrations, API, worker, and web
-├── .pre-commit-config.yaml
-└── README.md
-```
-
-## Historical Prototypes
-
-The [agent CLI](poc/agent/README.md) and [UI mockups](poc/mockup/README.md) are proof-of-concept experiments. They were never graduated into the application. Their examples demonstrate earlier approaches, not the supported server/worker/client entry point. See [poc/README.md](poc/README.md) for how to explore them.
+Application code lives in [`apps/api`](apps/api) (FastAPI/LangGraph) and
+[`apps/web`](apps/web) (Vue/TypeScript). The experiments under [`poc/`](poc/README.md)
+are historical prototypes, not the supported application entry point.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
