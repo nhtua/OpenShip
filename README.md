@@ -1,5 +1,11 @@
 # OpenShip
 
+[![Backend CI](https://img.shields.io/github/actions/workflow/status/nhtua/OpenShip/python-ci.yml?branch=main&style=flat&label=backend%20CI)](https://github.com/nhtua/OpenShip/actions/workflows/python-ci.yml)
+[![Frontend CI](https://img.shields.io/github/actions/workflow/status/nhtua/OpenShip/frontend-ci.yml?branch=main&style=flat&label=frontend%20CI)](https://github.com/nhtua/OpenShip/actions/workflows/frontend-ci.yml)
+[![License](https://img.shields.io/github/license/nhtua/OpenShip?style=flat)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/nhtua/OpenShip?style=flat)](https://github.com/nhtua/OpenShip/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/nhtua/OpenShip/main?style=flat)](https://github.com/nhtua/OpenShip/commits/main/)
+
 **A self-hosted DevOps co-pilot in your browser.** Chat with a configured model,
 search for information, inspect AWS resources, and work with files in one
 project workspace. Follow progress as work runs and return to conversations
