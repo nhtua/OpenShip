@@ -1,3 +1,10 @@
+---
+type: plan
+summary: Support durable Sol and Terra tool calls via OpenAI Responses, while preserving Luna and fixing Python dictionary arguments.
+date: 2026-11-06
+status: done
+---
+
 # OpenAI Responses Tool Calling Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Do not delegate unless the user explicitly requests it.

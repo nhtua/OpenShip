@@ -1,3 +1,10 @@
+---
+type: plan
+summary: Let chat select a secure URL download and general Python execution, then display a retained chart from a real OpenSandbox journey.
+date: 2026-11-05
+status: done
+---
+
 # Chat Python Execution Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for native execution, or superpowers:subagent-driven-development if the user explicitly chooses delegation. Track each checkbox and record verified evidence in the active plan. Never dispatch agents without user authorization.

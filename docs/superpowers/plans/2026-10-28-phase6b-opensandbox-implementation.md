@@ -1,3 +1,10 @@
+---
+type: plan
+summary: Implement the Phase 6B OpenSandbox client: provider lifecycle, bounded execution, verified retained outputs, and explicit workflow resume.
+date: 2026-10-28
+status: done
+---
+
 # Phase 6B OpenSandbox Client Implementation Plan
 
 > **For agentic workers:** Use `superpowers:executing-plans` for native execution, or `superpowers:subagent-driven-development` if the user chooses delegation. Follow `git-workflow` for verified commits. Steps use unchecked checkboxes; carried setup and old test results do not complete implementation tasks.
