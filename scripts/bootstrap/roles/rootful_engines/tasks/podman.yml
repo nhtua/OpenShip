@@ -1,0 +1,52 @@
+---
+- name: Create system Podman service configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /etc/openship/containers
+    - /etc/systemd/system/podman.service.d
+
+- name: Inspect running rootful Podman API services
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ item }}"]
+  loop: [podman.service, openship-sandbox-podman.service]
+  register: openship_system_podman_active
+  changed_when: false
+  failed_when: openship_system_podman_active.rc not in [0, 3, 4]
+  check_mode: false
+
+- name: Install system-scoped Podman profiles and sandbox units
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - {src: podman-rootful.conf, dest: /etc/openship/containers/podman-rootful.conf}
+    - {src: podman-runtime.conf, dest: /etc/systemd/system/podman.service.d/90-openship-runtime.conf}
+    - {src: openship-sandbox-podman.service, dest: /etc/systemd/system/openship-sandbox-podman.service}
+    - {src: openship-sandbox-podman.socket, dest: /etc/systemd/system/openship-sandbox-podman.socket}
+  register: openship_system_podman_files
+
+- name: Refresh system units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart active Podman API processes after profile changes
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    state: restarted
+  loop: "{{ openship_system_podman_active.results }}"
+  when: openship_system_podman_files.changed and item.rc == 0
+
+- name: Start and enable separate rootful Podman API sockets
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [podman.socket, openship-sandbox-podman.socket]

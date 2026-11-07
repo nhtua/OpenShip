@@ -156,6 +156,9 @@ _BUILTIN_IDS = frozenset(
         "aws_s3_bucket_metadata",
         "aws_read_catalog",
         "aws_read",
+        "sandbox_analysis",
+        "download_file",
+        "python_execute",
     }
 )
 _REGISTERED: dict[str, ToolDefinitionEntry] = {}
@@ -686,6 +689,84 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
             artifact_name="s3-bucket-metadata.json",
             error_mapper=_aws_error,
             safe_failure_code="aws_unavailable",
+            model_selectable=False,
+        )
+    elif manifest.id == "python_execute":
+        from src.openship.sandboxes.python_tool import (
+            PythonArguments,
+            PythonObservation,
+            PythonResult,
+            python_execute,
+            validate_python_observation,
+        )
+
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=("Execute Python in the configured sandbox. Supply Python source or an "
+                         "authorized source artifact, selected input artifacts and declared outputs. "
+                         "Read from OPENSHIP_INPUT_DIR and write to OPENSHIP_OUTPUT_DIR; "
+                         "parameters are in OPENSHIP_PARAMETERS. No network or host access."),
+            argument_model=PythonArguments, result_model=PythonResult,
+            handler=python_execute, handler_result_model=PythonObservation,
+            output_validator=validate_python_observation,
+            input_artifact_ids=lambda args: (
+                *((args.source_id,) if args.source_id is not None else ()),
+                *sorted(args.input_ids.values()),
+            ),
+            artifact_kind="analysis_output", safe_failure_code="provider_unavailable",
+        )
+    elif manifest.id == "download_file":
+        from src.openship.tools.download.contracts import (
+            DownloadArguments,
+            DownloadObservation,
+            DownloadResult,
+        )
+        from src.openship.tools.download.tool import download_file
+
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description="Download a public HTTPS CSV or JSON file as a conversation artifact.",
+            argument_model=DownloadArguments, result_model=DownloadResult,
+            handler=download_file, handler_result_model=DownloadObservation,
+            artifact_kind="upload", implementation_files=(
+                "src/openship/tools/download/contracts.py",
+                "src/openship/tools/download/tool.py",
+                "src/openship/tools/download/transport.py",
+            ),
+        )
+    elif manifest.id == "sandbox_analysis":
+        # Late import: the analysis tool consults the installed catalog.
+        from src.openship.sandboxes.tool import (
+            AnalysisArguments,
+            AnalysisObservation,
+            AnalysisResult,
+            analysis_error,
+            analysis_evidence,
+            analysis_execute,
+            validate_analysis_observation,
+        )
+
+        entry = ToolDefinitionEntry(
+            manifest=manifest,
+            description=(
+                "Run one prepared analysis program over selected conversation "
+                "files inside the installed sandbox. OpenShip prepares the "
+                "current bytes and keeps only the declared, validated data "
+                "outputs; the sandbox owns its own lifecycle."
+            ),
+            argument_model=AnalysisArguments,
+            result_model=AnalysisResult,
+            handler=analysis_execute,
+            handler_result_model=AnalysisObservation,
+            output_validator=validate_analysis_observation,
+            input_artifact_ids=lambda arguments: (
+                *((arguments.source_id,) if arguments.source_id is not None else ()),
+                *sorted(arguments.input_ids.values()),
+            ),
+            evidence_projector=analysis_evidence,
+            artifact_kind="analysis_output",
+            error_mapper=analysis_error,
+            safe_failure_code="provider_unavailable",
             model_selectable=False,
         )
     else:

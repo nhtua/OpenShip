@@ -122,7 +122,14 @@ class ConnectorBlockerSummary(BaseModel):
     connector_id: uuid.UUID
 
 
+class AnalysisResumeSummary(BaseModel):
+    output_ids: list[uuid.UUID] = Field(default_factory=list)
+    prior_run_id: uuid.UUID | None = None
+    retained_error_code: str | None = None
+
+
 class RunResponse(BaseModel):
+    analysis: AnalysisResumeSummary | None = None
     id: uuid.UUID
     conversation_id: uuid.UUID
     status: str
@@ -153,6 +160,20 @@ class RunResponse(BaseModel):
 
 class RunCancelRequest(BaseModel):
     pass
+
+
+class ResumeAnalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["last_step", "from_beginning"]
+    client_request_id: uuid.UUID
+
+
+class ResumeChatPythonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["last_step", "from_beginning"]
+    client_request_id: uuid.UUID
 
 
 class ConnectorResumeRequest(BaseModel):
@@ -300,6 +321,7 @@ def project_run_response(
 ) -> RunResponse:
     """The public shape of a run: only what a browser is allowed to see."""
     return RunResponse(
+        analysis=analysis_projection(run),
         id=run.id,
         conversation_id=run.conversation_id,
         status=run.status,
@@ -329,3 +351,23 @@ def project_run_response(
             else None
         ),
     )
+
+
+def analysis_projection(run: Run) -> AnalysisResumeSummary | None:
+    """Only retained result identities, not internal checkpoint or source data."""
+    try:
+        command = json.loads(run.tool_command_json or "{}")
+        if run.kind != "tool" or command["capability"]["id"] != "sandbox_analysis":
+            return None
+        saved = json.loads(run.analysis_state_json or "{}")
+        journey = json.loads(saved.get("journey_json") or "{}")
+        return AnalysisResumeSummary(
+            output_ids=list(dict.fromkeys(
+                [uuid.UUID(item["id"]) for item in journey.get("outputs", [])]
+                + [uuid.UUID(item) for item in saved.get("retained_output_ids", [])]
+            )),
+            prior_run_id=saved.get("prior_run_id"),
+            retained_error_code=saved.get("retained_error_code"),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None

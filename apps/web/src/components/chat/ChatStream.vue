@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ChatMessage, ToolOperationSummary } from '@/types'
+import type { ChatMessage, Run, ToolOperationSummary } from '@/types'
 import { buildConversationTimeline } from '@/lib/chatTimeline'
 import AgentMessage from './AgentMessage.vue'
 import UserMessage from './UserMessage.vue'
@@ -10,10 +10,12 @@ const props = withDefaults(defineProps<{
   messages: ChatMessage[]
   operations?: ToolOperationSummary[]
   isStreaming: boolean
-}>(), { operations: () => [] })
+  canResume?: boolean
+}>(), { operations: () => [], canResume: false })
 const emit = defineEmits<{
   download: [artifactId: string, name: string]
   cancel: [runId: string]
+  resumed: [run: Run]
 }>()
 
 /**
@@ -102,8 +104,10 @@ onBeforeUnmount(() => {
         <ToolOperationCard
           v-else-if="entry.kind === 'tool'"
           :operation="entry.operation"
+          :can-resume="canResume"
           @download="(artifactId, name) => emit('download', artifactId, name)"
           @cancel="emit('cancel', $event)"
+          @resumed="emit('resumed', $event)"
           @layout-change="maybeFollowScroll"
         />
       </template>

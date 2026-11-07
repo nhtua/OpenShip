@@ -1,0 +1,15 @@
+---
+- name: Prepare separate rootful Docker and Podman engines on Arch Linux
+  hosts: all
+  gather_facts: true
+  become: false
+  pre_tasks:
+    - name: Require the ordinary developer account on Arch Linux
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - ansible_facts.os_family == 'Archlinux'
+          - ansible_facts.user_uid != 0
+        fail_msg: Run as the developer account; Ansible uses become for system configuration.
+  roles:
+    - rootful_engines

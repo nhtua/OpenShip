@@ -1,0 +1,14 @@
+# Applied after docker-compose.sandbox.yml for rootless Podman development.
+services:
+  opensandbox-server:
+    runtime: runc
+    # UID 0 in the rootless user namespace maps to the host's invoking user.
+    # The manager needs that identity to access the user-owned engine socket.
+    user: "0:0"
+    security_opt:
+      - label=disable
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      # Short syntax is required for target-based merging in podman-compose 1.6.
+      - ${OPENSHIP_SANDBOX_ENGINE_SOCKET:-${XDG_RUNTIME_DIR:?Set XDG_RUNTIME_DIR for rootless Podman}/openship-sandbox/podman.sock}:/var/run/docker.sock

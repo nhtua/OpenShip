@@ -1,0 +1,127 @@
+---
+- name: Set the target user's runtime directory for user services
+  ansible.builtin.set_fact:
+    openship_systemd_environment:
+      XDG_RUNTIME_DIR: "{{ openship_user_runtime_dir }}"
+
+- name: Configure the rootless user environment
+  environment: "{{ openship_systemd_environment }}"
+  block:
+    - name: Check the user systemd session
+      ansible.builtin.command:
+        argv: [systemctl, --user, show, --property=Version, --value]
+      changed_when: false
+      check_mode: false
+
+    - name: Read subordinate user and group allocations
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - [getsubids, "{{ ansible_facts.user_id }}"]
+        - [getsubids, -g, "{{ ansible_facts.user_id }}"]
+      register: openship_subids
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require administrator-assigned subordinate IDs
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.rc == 0
+          - item.stdout | length > 0
+        fail_msg: Allocate non-overlapping subordinate UID/GID ranges with usermod, then log in again.
+      loop: "{{ openship_subids.results }}"
+      loop_control:
+        label: "{{ item.cmd | join(' ') }}"
+
+    - name: Inspect the active sandbox service
+      ansible.builtin.command:
+        argv: [systemctl, --user, is-active, openship-sandbox-engine.service]
+      register: openship_sandbox_service
+      changed_when: false
+      failed_when: openship_sandbox_service.rc not in [0, 3, 4]
+      check_mode: false
+
+    - name: Inspect the active sandbox socket
+      ansible.builtin.command:
+        argv: [systemctl, --user, is-active, openship-sandbox-engine.socket]
+      register: openship_sandbox_socket
+      changed_when: false
+      failed_when: openship_sandbox_socket.rc not in [0, 3, 4]
+      check_mode: false
+
+    - name: Inspect the installed socket unit before replacing it
+      ansible.builtin.stat:
+        path: "{{ openship_user_config_dir }}/systemd/user/openship-sandbox-engine.socket"
+        checksum_algorithm: sha256
+      register: openship_socket_file
+
+    - name: Preserve socket inodes mounted by running manager containers
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            ansible_check_mode or openship_sandbox_socket.rc != 0 or
+            openship_socket_file.stat.checksum | default('') ==
+            lookup('file', role_path + '/files/openship-sandbox-engine.socket', rstrip=false) | hash('sha256')
+        fail_msg: >-
+          The active sandbox socket unit has changed. Stop the manager container
+          and sandbox service/socket, apply this playbook, then recreate the
+          manager container so it mounts the new socket inode.
+
+    - name: Create managed user configuration directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      loop:
+        - "{{ openship_user_config_dir }}/containers/containers.conf.d"
+        - "{{ openship_user_config_dir }}/systemd/user"
+
+    - name: Install the runsc profile while preserving the main containers.conf
+      ansible.builtin.copy:
+        src: containers.rootless.conf
+        dest: "{{ openship_user_config_dir }}/containers/containers.conf.d/90-openship-sandbox.conf"
+        mode: '0600'
+      notify: Restart active sandbox API
+
+    - name: Install dedicated sandbox user units
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ openship_user_config_dir }}/systemd/user/{{ item }}"
+        mode: '0644'
+      loop: [openship-sandbox-engine.service, openship-sandbox-engine.socket]
+      notify:
+        - Reload user units
+        - Restart active sandbox API
+
+    - name: Apply changed user units before socket activation
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable only the dedicated sandbox socket
+      ansible.builtin.systemd_service:
+        scope: user
+        name: openship-sandbox-engine.socket
+        enabled: true
+        state: started
+
+    - name: Verify the ordinary CLI default without using podman.socket
+      ansible.builtin.command:
+        argv: [podman, '--remote=false', info, --format, '{{ "{{.Host.Security.Rootless}} {{.Host.OCIRuntime.Name}}" }}']
+      register: openship_cli_info
+      changed_when: false
+      failed_when: openship_cli_info.rc != 0 or openship_cli_info.stdout != 'true runc'
+      when: not ansible_check_mode
+
+    - name: Verify the dedicated rootless sandbox API default
+      ansible.builtin.command:
+        argv: [podman, --remote, --url, "{{ openship_sandbox_endpoint }}", info, --format, '{{ "{{.Host.Security.Rootless}} {{.Host.OCIRuntime.Name}}" }}']
+      register: openship_api_info
+      changed_when: false
+      failed_when: openship_api_info.rc != 0 or openship_api_info.stdout != 'true runsc'
+      when: not ansible_check_mode
+
+    - name: Verify actual sandbox runtime with a trusted preloaded image
+      ansible.builtin.include_tasks: verify.yml
+      when: (openship_verify | bool) and not ansible_check_mode

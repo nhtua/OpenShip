@@ -1,0 +1,207 @@
+---
+- name: Inspect installed Docker dependencies
+  ansible.builtin.command:
+    argv: "{{ ['pacman', '-Qq'] + openship_docker_packages }}"
+  register: openship_docker_installed
+  changed_when: false
+  failed_when: openship_docker_installed.rc not in [0, 1]
+  check_mode: false
+
+- name: Inspect installed rootless launcher and gVisor packages
+  ansible.builtin.command:
+    argv: "{{ ['pacman', '-Qq'] + openship_docker_aur_packages }}"
+  register: openship_docker_gvisor
+  changed_when: false
+  failed_when: openship_docker_gvisor.rc not in [0, 1]
+  check_mode: false
+
+- name: Locate the operator-provided AUR helper when gVisor is missing
+  ansible.builtin.shell: command -v yay
+  changed_when: false
+  check_mode: false
+  when:
+    - not (openship_configure_only | bool)
+    - openship_docker_gvisor.rc != 0
+
+- name: Check separate AUR package authorization
+  ansible.builtin.command:
+    argv: [sudo, -n, pacman, --version]
+  register: openship_docker_aur_sudo
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not (openship_configure_only | bool)
+    - openship_docker_gvisor.rc != 0
+
+- name: Require authorization for an operator-approved AUR build
+  ansible.builtin.assert:
+    quiet: true
+    that: openship_docker_aur_sudo.rc == 0
+    fail_msg: Install gvisor-bin and docker-rootless-extras interactively with yay, then rerun. No sudo policy is changed.
+  when:
+    - not (openship_configure_only | bool)
+    - openship_docker_gvisor.rc != 0
+
+- name: Upgrade the complete Arch system before installing missing packages
+  community.general.pacman:
+    update_cache: true
+    upgrade: true
+  become: true
+  when:
+    - not (openship_configure_only | bool)
+    - openship_docker_installed.rc != 0 or openship_docker_gvisor.rc != 0
+
+- name: Install Docker Engine, Compose and build support
+  community.general.pacman:
+    name: "{{ openship_docker_packages }}"
+    state: present
+  become: true
+  when:
+    - not (openship_configure_only | bool)
+    - openship_docker_installed.rc != 0
+
+- name: Install gVisor using the existing AUR helper
+  ansible.builtin.command:
+    argv: "{{ ['yay', '-S', '--needed', '--noconfirm', '--sudoflags=-n'] + openship_docker_aur_packages }}"
+  when:
+    - not (openship_configure_only | bool)
+    - openship_docker_gvisor.rc != 0
+
+- name: Require preinstalled packages for configure-only mode
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - openship_docker_installed.rc == 0
+      - openship_docker_gvisor.rc == 0
+    fail_msg: Install the declared Docker/rootless/gVisor dependencies or omit --configure-only.
+  when: openship_configure_only | bool
+
+- name: Configure the rootless Docker engine as the connected user
+  when: not ansible_check_mode or (openship_docker_installed.rc == 0 and openship_docker_gvisor.rc == 0)
+  environment:
+    XDG_RUNTIME_DIR: "{{ openship_user_runtime_dir }}"
+  block:
+    - name: Require a working user systemd session
+      ansible.builtin.command:
+        argv: [systemctl, --user, show, --property=Version, --value]
+      changed_when: false
+      check_mode: false
+
+    - name: Verify the rootless launcher and runsc binaries
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: [/usr/bin/dockerd-rootless.sh, /usr/bin/runsc, /usr/bin/newuidmap, /usr/bin/newgidmap]
+      register: openship_docker_binaries
+
+    - name: Require installed rootless components
+      ansible.builtin.assert:
+        quiet: true
+        that: item.stat.exists and item.stat.executable
+        fail_msg: Install the rootless Docker prerequisites before configuration.
+      loop: "{{ openship_docker_binaries.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Read assigned subordinate UID and GID ranges
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - [getsubids, "{{ ansible_facts.user_id }}"]
+        - [getsubids, -g, "{{ ansible_facts.user_id }}"]
+      register: openship_docker_subids
+      changed_when: false
+      check_mode: false
+
+    - name: Require at least 65536 assigned subordinate IDs
+      ansible.builtin.assert:
+        quiet: true
+        that: item.stdout.split() | length >= 4 and (item.stdout.split()[3] | int) >= 65536
+        fail_msg: Have an administrator allocate subordinate UID/GID ranges before running rootless Docker.
+      loop: "{{ openship_docker_subids.results }}"
+      loop_control:
+        label: "{{ item.cmd | join(' ') }}"
+
+    - name: Create rootless Docker user directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      loop:
+        - "{{ openship_user_config_dir }}/openship/docker"
+        - "{{ openship_user_config_dir }}/systemd/user"
+        - "{{ openship_user_data_dir }}/openship/docker"
+
+    - name: Inspect existing dedicated Docker configuration
+      ansible.builtin.stat:
+        path: "{{ openship_user_config_dir }}/openship/docker/daemon.json"
+      register: openship_docker_config_stat
+
+    - name: Read existing dedicated Docker configuration
+      ansible.builtin.slurp:
+        src: "{{ openship_user_config_dir }}/openship/docker/daemon.json"
+      register: openship_docker_config_read
+      when: openship_docker_config_stat.stat.exists
+      no_log: true
+
+    - name: Decode existing Docker settings
+      ansible.builtin.set_fact:
+        openship_docker_existing: >-
+          {{ (openship_docker_config_read.content | b64decode | from_json)
+             if openship_docker_config_stat.stat.exists else {} }}
+      no_log: true
+
+    - name: Preserve other settings and replace only the runsc runtime entry
+      ansible.builtin.set_fact:
+        openship_docker_config: >-
+          {{ openship_docker_existing | combine({'default-runtime': 'runc',
+             'hosts': [openship_docker_endpoint],
+             'data-root': openship_user_data_dir + '/openship/docker',
+             'exec-root': openship_user_runtime_dir + '/openship-docker/exec',
+             'pidfile': openship_user_runtime_dir + '/openship-docker/docker.pid',
+             'exec-opts': ['native.cgroupdriver=systemd'],
+             'runtimes': (openship_docker_existing.get('runtimes', {}) |
+               combine({'runsc': {'path': '/usr/bin/runsc', 'runtimeArgs': []}}))}) }}
+      no_log: true
+
+    - name: Validate and install the dedicated rootless Docker configuration
+      ansible.builtin.copy:
+        content: "{{ openship_docker_config | to_nice_json }}\n"
+        dest: "{{ openship_user_config_dir }}/openship/docker/daemon.json"
+        mode: '0600'
+        backup: true
+        validate: /usr/bin/dockerd --validate --config-file %s
+      diff: false
+      no_log: true
+      register: openship_docker_config_write
+
+    - name: Install the user-owned rootless Docker service
+      ansible.builtin.template:
+        src: openship-docker.service.j2
+        dest: "{{ openship_user_config_dir }}/systemd/user/openship-docker.service"
+        mode: '0644'
+      register: openship_docker_unit
+
+    - name: Start or restart only the dedicated rootless Docker service
+      ansible.builtin.systemd_service:
+        name: openship-docker.service
+        scope: user
+        daemon_reload: true
+        enabled: true
+        state: "{{ 'restarted' if (openship_docker_unit.changed or openship_docker_config_write.changed) else 'started' }}"
+
+- name: Verify a trusted rootless runsc container and actual process cgroup settings
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/verify_runsc.py --host {{ openship_docker_endpoint | quote }} --image {{ openship_docker_probe_image | quote }}"
+    executable: /usr/bin/python3
+  register: openship_docker_probe
+  when:
+    - openship_verify | bool
+    - not ansible_check_mode
+
+- name: Report the trusted probe receipt
+  ansible.builtin.debug:
+    msg: "{{ openship_docker_probe.stdout | from_json }}"
+  when:
+    - openship_verify | bool
+    - not ansible_check_mode

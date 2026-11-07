@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { Badge, Button } from '@/components/ui'
-import type { SearchResultItem, ToolOperationSummary } from '@/types'
+import type { Run, SearchResultItem, ToolOperationSummary } from '@/types'
 import S3StorageObservation from './S3StorageObservation.vue'
 import S3MetadataObservation from './S3MetadataObservation.vue'
 import AwsConnectionCheck from './AwsConnectionCheck.vue'
 import AwsReadObservation from './AwsReadObservation.vue'
 import AwsReadCatalogObservation from './AwsReadCatalogObservation.vue'
+import PythonOperation from './PythonOperation.vue'
 
-const props = defineProps<{ operation: ToolOperationSummary }>()
+const props = withDefaults(defineProps<{
+  operation: ToolOperationSummary
+  canResume?: boolean
+}>(), { canResume: false })
 const emit = defineEmits<{
   download: [artifactId: string, name: string]
   cancel: [runId: string]
+  resumed: [run: Run]
   'layout-change': []
 }>()
 
@@ -22,6 +27,7 @@ const isMetadataObservation = computed(() => props.operation.capability_id === '
 const isConnectionCheck = computed(() => props.operation.capability_id === 'aws_check_connection')
 const isAwsRead = computed(() => props.operation.capability_id === 'aws_read')
 const isAwsReadCatalog = computed(() => props.operation.capability_id === 'aws_read_catalog')
+const isPython = computed(() => props.operation.capability_id === 'python_execute')
 
 function toolLabel(id: string): string {
   if (id === 'brave_web_search') return 'Brave Search'
@@ -124,7 +130,15 @@ function toggleSnippets() {
     :data-operation-id="operation.id"
     data-testid="tool-operation-card"
   >
-    <div class="flex min-w-0 items-center gap-2 px-3 py-2">
+    <PythonOperation
+      v-if="isPython"
+      :operation="operation"
+      :can-resume="canResume"
+      @download="(artifactId, name) => emit('download', artifactId, name)"
+      @cancel="emit('cancel', $event)"
+      @resumed="emit('resumed', $event)"
+    />
+    <div v-else class="flex min-w-0 items-center gap-2 px-3 py-2">
       <button
         type="button"
         class="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -157,11 +171,11 @@ function toggleSnippets() {
       </Button>
     </div>
 
-    <p v-if="operation.error" class="px-3 pb-2 text-xs text-destructive" role="alert">
+    <p v-if="operation.error && !isPython" class="px-3 pb-2 text-xs text-destructive" role="alert">
       {{ operation.error.message }}
     </p>
 
-    <div v-if="expanded" class="border-t border-border px-3 py-3">
+    <div v-if="expanded && !isPython" class="border-t border-border px-3 py-3">
       <div v-if="!isStorageObservation && !isAwsRead && !isAwsReadCatalog" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <span>{{ observedAt || 'Search details' }}</span>
         <span v-if="operation.result?.truncated">More results are available from the search service.</span>

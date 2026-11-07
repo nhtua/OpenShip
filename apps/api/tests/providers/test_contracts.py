@@ -9,6 +9,138 @@ import json
 from decimal import Decimal
 
 import pytest
+
+
+def test_openai_responses_profile_requires_pinned_effort():
+    from .conftest import qualified_profile
+
+    profile = qualified_profile(api_version="responses", adapter_options={
+        "adapter": "openai", "output_limit_parameter": "max_output_tokens",
+        "reasoning_effort": "low",
+    })
+    assert profile.adapter_options.reasoning_effort == "low"
+
+
+def test_responses_profile_never_uses_chat_completions_adapter():
+    from src.openship.providers.openai import _build_adapter
+    from src.openship.providers.openai_responses import OpenAIResponsesAdapter
+
+    from .conftest import qualified_profile
+
+    profile = qualified_profile(api_version="responses", adapter_options={
+        "adapter": "openai", "output_limit_parameter": "max_output_tokens",
+        "reasoning_effort": "low",
+    })
+    assert type(_build_adapter(profile)) is OpenAIResponsesAdapter
+
+
+def test_response_continuation_rejects_unknown_items():
+    from pydantic import ValidationError
+
+    from src.openship.providers.contracts import ResponsesContinuation
+
+    with pytest.raises(ValidationError):
+        ResponsesContinuation(
+            version=1, protocol="openai.responses", profile_revision="a" * 64,
+            model="gpt-6.1-sol", destination="api.openai.com/v1",
+            items=[{"type": "unrecognized_action"}],
+        )
+
+
+def test_response_continuation_rejects_undeclared_private_fields():
+    from pydantic import ValidationError
+
+    from src.openship.providers.contracts import ResponsesContinuation
+
+    with pytest.raises(ValidationError):
+        ResponsesContinuation(
+            version=1, protocol="openai.responses", profile_revision="a" * 64,
+            model="gpt-6.1-sol", destination="api.openai.com/v1",
+            items=[{"type": "reasoning", "id": "rs_1", "headers": {"authorization": "secret"}}],
+        )
+
+
+def test_response_continuation_rejects_nested_untrusted_fields():
+    from pydantic import ValidationError
+
+    from src.openship.providers.contracts import ResponsesContinuation
+
+    with pytest.raises(ValidationError):
+        ResponsesContinuation(
+            version=1, protocol="openai.responses", profile_revision="a" * 64,
+            model="gpt-6.1-sol", destination="api.openai.com/v1",
+            items=[{"type": "message", "id": "m1", "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok", "headers": {"secret": "x"}}]}],
+        )
+
+
+@pytest.mark.parametrize("item", [
+    {"type": "function_call", "id": "fc_1", "name": "python_execute", "arguments": "{}"},
+    {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "python_execute", "arguments": {}},
+    {"type": "message", "id": "m1", "role": "user", "content": []},
+    {"type": "reasoning", "id": "rs_1", "encrypted_content": {"secret": "x"}},
+])
+def test_response_continuation_rejects_malformed_replay_items(item):
+    from pydantic import ValidationError
+
+    from src.openship.providers.contracts import ResponsesContinuation
+
+    with pytest.raises(ValidationError):
+        ResponsesContinuation(
+            version=1, protocol="openai.responses", profile_revision="a" * 64,
+            model="gpt-6.1-sol", destination="api.openai.com/v1", items=[item],
+        )
+
+
+def test_assistant_message_roundtrips_private_continuation():
+    from src.openship.providers.contracts import ChatMessage, ResponsesContinuation
+
+    continuation = ResponsesContinuation(
+        version=1, protocol="openai.responses", profile_revision="a" * 64,
+        model="gpt-6.1-sol", destination="api.openai.com/v1",
+        items=[{"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque-value"}],
+    )
+    message = ChatMessage(role="assistant", content="", continuation=continuation)
+    assert ChatMessage.model_validate_json(message.model_dump_json()).continuation == continuation
+    assert "opaque-value" not in repr(message)
+
+
+def test_assistant_continuation_call_id_must_match_normalized_call():
+    from src.openship.providers.contracts import (
+        ChatMessage,
+        ResponsesContinuation,
+        ToolCall,
+    )
+
+    state = ResponsesContinuation(version=1, protocol="openai.responses", profile_revision="a" * 64,
+        model="gpt-6.1-sol", destination="api.openai.com/v1",
+        items=[{"type": "function_call", "id": "fc_1", "call_id": "call-other",
+                "name": "lookup", "arguments": "{}"}])
+    with pytest.raises(ValueError):
+        ChatMessage(role="assistant", content="", continuation=state,
+                    tool_calls=(ToolCall(provider_call_id="call-1", name="lookup", arguments={}),))
+
+
+@pytest.mark.asyncio
+async def test_runner_tracks_private_continuation_without_treating_it_as_finish():
+    from src.openship.providers.contracts import ProviderEvent, ResponsesContinuation
+    from src.openship.providers.runner import _drain, _Observed
+
+    state = ResponsesContinuation(
+        version=1, protocol="openai.responses", profile_revision="a" * 64,
+        model="gpt-6.1-sol", destination="api.openai.com/v1",
+        items=[{"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"}],
+    )
+
+    async def stream():
+        yield ProviderEvent(type="continuation", continuation=state)
+        yield ProviderEvent(type="stream_finished", reason="tool_calls")
+
+    observed = _Observed()
+    await _drain(stream(), observed)
+    assert observed.continuation == state
+    assert observed.produced()
+    assert observed.reason == "tool_calls"
 from pydantic import ValidationError
 
 from src.openship.providers.contracts import (

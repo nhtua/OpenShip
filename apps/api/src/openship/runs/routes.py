@@ -24,6 +24,8 @@ from .models import ProviderAttempt
 from .schemas import (
     ConnectorDismissRequest,
     ConnectorResumeRequest,
+    ResumeAnalysisRequest,
+    ResumeChatPythonRequest,
     RunResponse,
     TurnSubmitRequest,
     project_run_response,
@@ -32,6 +34,46 @@ from .service import get_run, request_cancel, submit_tool_run, submit_turn
 
 logger = logging.getLogger("runs.routes")
 router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+
+@router.post("/{run_id}/resume-analysis", status_code=202, response_model=RunResponse)
+async def resume_analysis_run(
+    run_id: uuid.UUID, req: ResumeAnalysisRequest,
+    db: Session = Depends(get_db), user: User = Depends(require_jwt),
+):
+    from .resume import resume_analysis
+
+    try:
+        run = resume_analysis(db, principal_id=user.id, run_id=run_id, command=req)
+        db.commit()
+        db.refresh(run)
+        return project_run_response(run)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail={"error": {"code": "run_admission_conflict", "message": "Another command was admitted concurrently; retry with the same request ID."}}) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/{run_id}/resume-chat-python", status_code=202, response_model=RunResponse)
+async def resume_chat_python_run(
+    run_id: uuid.UUID, req: ResumeChatPythonRequest,
+    db: Session = Depends(get_db), user: User = Depends(require_jwt),
+):
+    from .resume import resume_chat_python
+
+    try:
+        run = resume_chat_python(db, principal_id=user.id, run_id=run_id, command=req)
+        db.commit()
+        db.refresh(run)
+        return project_run_response(run)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail={"error": {"code": "run_admission_conflict", "message": "Another command was admitted concurrently; retry with the same request ID."}}) from exc
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get("/{run_id}", response_model=RunResponse)

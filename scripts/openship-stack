@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ENVIRONMENT=""
 RELOAD=0
+SANDBOX=0
 
 load_container_engine() {
   local dotenv_file line value=""
@@ -41,12 +42,13 @@ load_container_engine() {
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/openship-stack (-e|--environment) local|dev|prod [--reload] COMMAND [ARGS]
+Usage: scripts/openship-stack (-e|--environment) local|dev|prod [--reload] [--sandbox] COMMAND [ARGS]
 Example: scripts/openship-stack -e dev start
 
 Commands:
   init-messaging [--tls-cert FILE --tls-key FILE --tls-ca FILE]
   init-artifacts
+  init-sandbox
   up-dependencies [--only SERVICE[,SERVICE...]]  local only
     SERVICES: postgres, nats, nats-nui
   bootstrap --check|--apply
@@ -64,6 +66,11 @@ dev always uses docker or podman compose with docker-compose.yml and
 docker-compose.dev.yml plus docker-compose.dev-ports.yml for Vite/Uvicorn
 reload; --reload is a compatibility alias. prod uses the protected .env.prod
 and production manifest.
+--sandbox selects the optional OpenSandbox infrastructure profile for dev only;
+use it consistently with start, stop and status. This does not implement or
+enable generated-code execution in OpenShip. init-sandbox prepares the
+provider config, gateway API key and Nginx auth map under protected paths;
+--sandbox start then wires them into the Compose services automatically.
 USAGE
 }
 
@@ -76,6 +83,10 @@ while (($#)); do
       ;;
     --reload)
       RELOAD=1
+      shift
+      ;;
+    --sandbox)
+      SANDBOX=1
       shift
       ;;
     --help|-h)
@@ -99,6 +110,10 @@ if [[ "$ENVIRONMENT" == prod && -n "${OPENSHIP_SECRETS_DIR:-}" ]]; then
 fi
 if ((RELOAD)) && [[ "$ENVIRONMENT" != dev ]]; then
   echo "--reload is supported only for the dev Compose stack" >&2
+  exit 2
+fi
+if ((SANDBOX)) && [[ "$ENVIRONMENT" != dev ]]; then
+  echo "--sandbox is supported only for the dev stack" >&2
   exit 2
 fi
 
@@ -172,7 +187,26 @@ compose() {
       args=(-p "${COMPOSE_PROJECT_NAME:-openship}" --env-file .env.prod -f docker-compose.prod.yml)
       ;;
   esac
-  (cd "$ROOT" && OPENSHIP_MESSAGING_DIR="$(compose_secret_dir)" "$CONTAINER_ENGINE" compose "${args[@]}" "$@")
+  if ((SANDBOX)); then
+    ensure_sandbox_files || return 2
+    args+=(--profile sandbox)
+    if [[ "$CONTAINER_ENGINE" == podman ]]; then
+      args+=(-f docker-compose.sandbox.rootless.yml)
+    fi
+  fi
+  (
+    cd "$ROOT"
+    if ((SANDBOX)); then
+      # Keep the gateway key out of .env and Git: read the protected file per
+      # invocation. Rootful Compose bind mounts keep numeric ownership, so the
+      # UID 1000 files created by init-sandbox stay readable in-container.
+      export OPENSHIP_SANDBOX_CONFIG="$ROOT/deploy/sandbox/config.local.toml"
+      export OPENSHIP_SANDBOX_AUTH_MAP="$ROOT/secrets/opensandbox-auth.map"
+      export OPENSHIP_SANDBOX_API_KEY="$(< "$ROOT/secrets/openship-sandbox-key")"
+    fi
+    OPENSHIP_MESSAGING_DIR="$(compose_secret_dir)" \
+      "$CONTAINER_ENGINE" compose "${args[@]}" "$@"
+  )
 }
 
 local_cli() {
@@ -246,6 +280,29 @@ initialize_dev_messaging_if_missing() {
 initialize_dev_artifacts() {
   compose run --build --rm --no-deps --entrypoint uv worker \
     run python -m src.openship.artifacts.maintenance init
+}
+
+ensure_sandbox_files() {
+  local sandbox_file
+  for sandbox_file in \
+    "$ROOT/deploy/sandbox/config.local.toml" \
+    "$ROOT/secrets/opensandbox-auth.map" \
+    "$ROOT/secrets/openship-sandbox-key"; do
+    [[ -f "$sandbox_file" ]] || {
+      echo "missing sandbox provider file: $sandbox_file (run init-sandbox first)" >&2
+      return 2
+    }
+  done
+}
+
+initialize_dev_sandbox() {
+  ensure_messaging_files
+  python3 "$ROOT/scripts/init_sandbox.py" \
+    --config-template "$ROOT/deploy/sandbox/config.example.toml" \
+    --config-output "$ROOT/deploy/sandbox/config.local.toml" \
+    --images-json "$ROOT/deploy/sandbox/images.json" \
+    --key-file "$ROOT/secrets/openship-sandbox-key" \
+    --auth-map-file "$ROOT/secrets/opensandbox-auth.map"
 }
 
 prepare_nui_context() {
@@ -656,6 +713,11 @@ case "$COMMAND" in
         ;;
     esac
     ;;
+  init-sandbox)
+    [[ "$ENVIRONMENT" == dev ]] || { echo "init-sandbox is supported only for the dev stack" >&2; exit 2; }
+    (($# == 0)) || { echo "usage: init-sandbox" >&2; exit 2; }
+    initialize_dev_sandbox
+    ;;
   up-dependencies)
     [[ "$ENVIRONMENT" == local ]] || { echo "up-dependencies is local-only" >&2; exit 2; }
     ensure_messaging_files
@@ -732,6 +794,9 @@ case "$COMMAND" in
         ;;
       dev)
         start_dev_stack "$@"
+        if ((SANDBOX)); then
+          compose up -d opensandbox-server opensandbox-gateway
+        fi
         ;;
       prod)
         ensure_messaging_files

@@ -1,0 +1,10 @@
+[Unit]
+Description=OpenShip rootful sandbox Podman socket
+
+[Socket]
+ListenStream=/run/openship-sandbox/podman.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

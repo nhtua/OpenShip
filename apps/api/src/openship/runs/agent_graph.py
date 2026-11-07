@@ -27,12 +27,13 @@ from ..execution.errors import CapabilityError
 from ..providers.contracts import (
     ChatMessage,
     ModelRequest,
+    ProviderTurnResult,
     ToolDefinition,
 )
 from ..providers.errors import ProviderError
 from ..providers.runner import authorize_current_profile, run_model_turn
 from .service import parse_run_model_config
-from .transcript import append_transcript
+from .transcript import append_transcript, read_transcript
 
 
 class AgentState(TypedDict):
@@ -172,6 +173,31 @@ def build_agent_graph(
             state.get("model_configuration"), state["run_id"]
         )
         messages = _messages(state)
+        # A resumed run carries its recorded transcript; continuing means
+        # replaying the recorded turns' committed results, not re-deriving
+        # them from conversation history alone. A fresh run has none.
+        with invocation.session_factory() as transcript_db:
+            recorded = read_transcript(transcript_db, invocation.claim.run_id)
+            for entry in recorded:
+                messages.append(entry.message)
+        pending_assistant = None
+        if recorded:
+            last = recorded[-1].message
+            if last.continuation is not None:
+                from ..providers.configuration import destination_label
+
+                continuation = last.continuation
+                profile = model_config.primary
+                if (continuation.profile_revision != profile.profile_revision
+                        or continuation.model != profile.model
+                        or continuation.destination != destination_label(profile.endpoint)):
+                    raise ProviderError("unsupported_capability")
+            if last.role == "assistant" and last.continuation is not None and last.tool_calls:
+                pending_assistant = last
+            if last.role == "assistant" and last.continuation is not None and not last.tool_calls:
+                if not last.content.strip():
+                    raise ProviderError("invalid_response")
+                return {"assistant_response": last.content, "usage": None, "finish_reason": "stop"}
         gateway = (
             selected_gateway_factory()
             if callable(selected_gateway_factory)
@@ -179,7 +205,10 @@ def build_agent_graph(
         )
         usage = None
 
-        for model_turn_ordinal in range(execution.loop_limits.max_model_turns):
+        responses_history = any(entry.message.continuation is not None for entry in recorded)
+        starting_turn = (recorded[-1].model_turn_ordinal + (0 if pending_assistant else 1)
+                         if responses_history else 0)
+        for model_turn_ordinal in range(starting_turn, execution.loop_limits.max_model_turns):
             invocation.control.raise_if_stopped()
             with invocation.session_factory() as db:
                 policy = read_effective_tool_policy(db)
@@ -198,6 +227,30 @@ def build_agent_graph(
                 }
                 enabled_ids = policy.effective_ids - changed_ids
             definitions = _available_tools(execution, enabled_ids)
+            if pending_assistant is not None:
+                from ..providers.openai_schemas import (
+                    normalize_arguments,
+                    unique_json_object,
+                    wire_schema,
+                )
+
+                call = pending_assistant.tool_calls[0]
+                definition = next((tool for tool in definitions if tool.name == call.name), None)
+                saved = [item for item in pending_assistant.continuation.items if item["type"] == "function_call"]
+                if definition is None or len(saved) != 1:
+                    raise ProviderError("unsupported_capability")
+                try:
+                    raw = json.loads(saved[0]["arguments"], object_pairs_hook=unique_json_object,
+                                     parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+                    if not isinstance(raw, dict):
+                        raise TypeError("invalid saved call")
+                    _, strict = wire_schema(definition.parameters)
+                    left = normalize_arguments(definition.parameters, raw, strict=strict)
+                    right = normalize_arguments(definition.parameters, call.arguments, strict=strict)
+                    if left != right:
+                        raise ValueError("saved call does not match continuation")
+                except (KeyError, TypeError, ValueError) as invalid:
+                    raise ProviderError("invalid_response", cause=invalid) from invalid
             request = ModelRequest(
                 messages=tuple(messages),
                 tools=definitions,
@@ -206,8 +259,14 @@ def build_agent_graph(
                     execution.loop_limits.max_output_tokens_per_request,
                 ),
             )
-            result = asyncio.run(
-                run_model_turn(
+            if pending_assistant is not None:
+                result = ProviderTurnResult(
+                    selected_profile_id=model_config.primary.id, finish_reason="tool_calls",
+                    text=pending_assistant.content, tool_calls=pending_assistant.tool_calls,
+                    continuation=pending_assistant.continuation,
+                )
+            else:
+                result = asyncio.run(run_model_turn(
                     request,
                     model_config,
                     invocation.control,
@@ -217,8 +276,7 @@ def build_agent_graph(
                     ),
                     budget=invocation.budget,
                     model_turn_ordinal=model_turn_ordinal,
-                )
-            )
+                ))
             usage = result.usage.model_dump(mode="json") if result.usage else None
 
             if result.tool_calls:
@@ -231,9 +289,12 @@ def build_agent_graph(
                     role="assistant",
                     content=result.text,
                     tool_calls=result.tool_calls,
+                    continuation=result.continuation,
                 )
-                _append_transcript(invocation, model_turn_ordinal, assistant)
-                messages.append(assistant)
+                if pending_assistant is None:
+                    _append_transcript(invocation, model_turn_ordinal, assistant)
+                    messages.append(assistant)
+                pending_assistant = None
                 call = result.tool_calls[0]
                 logical_call_id = f"model:{model_turn_ordinal}:call:0"
                 invocation.budget.admit_tool(logical_call_id)
@@ -302,7 +363,7 @@ def build_agent_graph(
                 continue
 
             if result.completed:
-                assistant = ChatMessage(role="assistant", content=result.text)
+                assistant = ChatMessage(role="assistant", content=result.text, continuation=result.continuation)
                 _append_transcript(invocation, model_turn_ordinal, assistant)
                 return {
                     "assistant_response": result.text,

@@ -51,11 +51,13 @@ class Artifact(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('search_result', 'upload', 'cloud_observation')",
+            "kind IN ('search_result', 'upload', 'cloud_observation', 'analysis_output')",
             name="ck_artifacts_kind",
         ),
         CheckConstraint(
-            "media_type IN ('application/json', 'text/plain')", name="ck_artifacts_media_type"
+            "media_type IN ('application/json', 'text/plain') "
+            "OR (source = 'tool' AND media_type IN ('image/jpeg', 'image/png'))",
+            name="ck_artifacts_media_type",
         ),
         CheckConstraint("size_bytes >= 0 AND reserved_bytes >= 0", name="ck_artifacts_size"),
         CheckConstraint(

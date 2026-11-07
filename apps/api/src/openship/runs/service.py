@@ -61,6 +61,7 @@ from ..workspace.lifecycle import (
     assert_active_conversation,
 )
 from .queue import fenced_update_run
+from .schemas import ResumeAnalysisRequest, ResumeChatPythonRequest
 
 
 def require_owned_conversation(
@@ -1242,6 +1243,32 @@ def submit_tool_run(
             ),
         )
         graph_version = 1
+
+    model_configuration = None
+    model_selection = None
+    if command.capability.id == "sandbox_analysis":
+        pinned_model = _resolve_selection(None, None)
+        bounded_limits = pinned_model.limits.model_copy(
+            update={
+                "max_attempts": min(
+                    pinned_model.limits.max_attempts,
+                    execution.loop_limits.max_generation_attempts,
+                ),
+                "max_output_tokens": min(
+                    pinned_model.limits.max_output_tokens,
+                    execution.loop_limits.max_output_tokens_per_request,
+                ),
+            }
+        )
+        pinned_model = pinned_model.model_copy(update={"limits": bounded_limits})
+        model_configuration = pinned_model.model_dump_json()
+        model_selection = json.dumps(
+            {
+                "profile_id": pinned_model.primary.id,
+                "fallback_profile_ids": [item.id for item in pinned_model.fallbacks],
+            },
+            sort_keys=True,
+        )
     run = Run(
         conversation_id=conversation.id,
         project_id=conversation.project_id,
@@ -1262,8 +1289,8 @@ def submit_tool_run(
         status="queued",
         attempt=0,
         fence=0,
-        model_selection=None,
-        model_configuration=None,
+        model_selection=model_selection,
+        model_configuration=model_configuration,
     )
     db.add(run)
     db.flush()
@@ -1303,6 +1330,26 @@ def load_run_model_config(run: Run) -> RunModelConfig:
     A run from before profiles records nothing, and nothing is guessed for it.
     """
     return parse_run_model_config(run.model_configuration, run.id)
+
+
+def resume_analysis(
+    db: Session, *, principal_id: uuid.UUID, run_id: uuid.UUID,
+    command: ResumeAnalysisRequest,
+) -> Run:
+    """Explicit fixed-analysis admission; implementation kept out of chat service."""
+    from .resume import resume_analysis as admit_resume
+
+    return admit_resume(db, principal_id=principal_id, run_id=run_id, command=command)
+
+
+def resume_chat_python(
+    db: Session, *, principal_id: uuid.UUID, run_id: uuid.UUID,
+    command: ResumeChatPythonRequest,
+) -> Run:
+    """Explicit python-chat continuation; implementation kept out of chat service."""
+    from .resume import resume_chat_python as admit_resume
+
+    return admit_resume(db, principal_id=principal_id, run_id=run_id, command=command)
 
 
 def parse_run_model_config(snapshot: str | None, run_id) -> RunModelConfig:

@@ -50,6 +50,9 @@ Thumbs.db
 .worktrees/
 /apps/api/var/artifacts/
 
+# Rendered installation-specific sandbox config (the tracked template stays)
+deploy/sandbox/config.local.toml
+
 # Logs
 *.log
 logs/

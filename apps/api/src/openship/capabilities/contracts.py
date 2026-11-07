@@ -395,9 +395,11 @@ class ToolInvocationContext:
         "artifact_store",
         "authorization",
         "aws_access_factory",
+        "claim",
         "credential_resolver",
         "execution",
         "operation_id",
+        "reserved_artifact_id",
         "session_factory",
     )
 
@@ -410,6 +412,8 @@ class ToolInvocationContext:
         session_factory=None,
         operation_id=None,
         aws_access_factory=None,
+        claim=None,
+        reserved_artifact_id=None,
     ):
         self.authorization = authorization
         self.execution = execution
@@ -418,6 +422,8 @@ class ToolInvocationContext:
         self.session_factory = session_factory
         self.operation_id = operation_id
         self.aws_access_factory = aws_access_factory
+        self.claim = claim
+        self.reserved_artifact_id = reserved_artifact_id
         self._aws_accesses = []
 
     async def close_runtime_accesses(self) -> None:

@@ -1,0 +1,115 @@
+---
+- name: Validate selected engines
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - openship_rootful_engines | length > 0
+      - openship_rootful_engines | difference(['docker', 'podman']) | length == 0
+
+- name: Inspect official engine packages
+  ansible.builtin.command:
+    argv: "{{ ['pacman', '-Qq'] + openship_rootful_packages }}"
+  register: openship_rootful_installed
+  changed_when: false
+  failed_when: openship_rootful_installed.rc not in [0, 1]
+  check_mode: false
+
+- name: Inspect the gVisor package
+  ansible.builtin.command:
+    argv: [pacman, -Qq, gvisor-bin]
+  register: openship_rootful_gvisor
+  changed_when: false
+  failed_when: openship_rootful_gvisor.rc not in [0, 1]
+  check_mode: false
+
+- name: Require preinstalled dependencies in configure-only mode
+  ansible.builtin.assert:
+    quiet: true
+    that: openship_rootful_installed.rc == 0 and openship_rootful_gvisor.rc == 0
+    fail_msg: Install the engine packages and gvisor-bin, or omit --configure-only.
+  when: openship_configure_only | bool
+
+- name: Require an existing AUR helper when gVisor is missing
+  ansible.builtin.shell: command -v yay
+  changed_when: false
+  check_mode: false
+  when: not (openship_configure_only | bool) and openship_rootful_gvisor.rc != 0
+
+- name: Check AUR package authorization before changes
+  ansible.builtin.command:
+    argv: [sudo, -n, pacman, --version]
+  register: openship_rootful_aur_sudo
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: not (openship_configure_only | bool) and openship_rootful_gvisor.rc != 0
+
+- name: Require separate authorization for the AUR helper
+  ansible.builtin.assert:
+    quiet: true
+    that: openship_rootful_aur_sudo.rc == 0
+    fail_msg: Install gvisor-bin interactively with yay -S gvisor-bin, then rerun. No sudo policy is changed.
+  when: not (openship_configure_only | bool) and openship_rootful_gvisor.rc != 0
+
+- name: Upgrade Arch before installing missing dependencies
+  community.general.pacman:
+    update_cache: true
+    upgrade: true
+  become: true
+  when:
+    - not (openship_configure_only | bool)
+    - openship_rootful_installed.rc != 0 or openship_rootful_gvisor.rc != 0
+
+- name: Install official engine packages
+  community.general.pacman:
+    name: "{{ openship_rootful_packages }}"
+    state: present
+  become: true
+  when: not (openship_configure_only | bool) and openship_rootful_installed.rc != 0
+
+- name: Install gVisor with the existing AUR helper
+  ansible.builtin.command:
+    argv: [yay, -S, --needed, --noconfirm, --sudoflags=-n, gvisor-bin]
+  when: not (openship_configure_only | bool) and openship_rootful_gvisor.rc != 0
+
+- name: Configure rootful engine services
+  become: true
+  when: not ansible_check_mode or (openship_rootful_installed.rc == 0 and openship_rootful_gvisor.rc == 0)
+  block:
+    - name: Confirm runsc is executable
+      ansible.builtin.command:
+        argv: [/usr/bin/runsc, --version]
+      changed_when: false
+      check_mode: false
+
+    - name: Configure Docker
+      ansible.builtin.include_tasks: docker.yml
+      when: "'docker' in openship_rootful_engines"
+
+    - name: Configure Podman
+      ansible.builtin.include_tasks: podman.yml
+      when: "'podman' in openship_rootful_engines"
+
+    - name: Run trusted non-root workload probes on rootful engines
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../roles/docker_engine/files/verify_runsc.py
+          --engine {{ item.engine }} --mode rootful --host {{ item.endpoint | quote }}
+          --image {{ openship_rootful_probe_image | quote }}
+        executable: /usr/bin/python3
+      loop:
+        - {engine: docker, endpoint: 'unix:///var/run/docker.sock'}
+        - {engine: podman, endpoint: 'unix:///run/openship-sandbox/podman.sock'}
+      when:
+        - openship_verify | bool
+        - not ansible_check_mode
+        - item.engine in openship_rootful_engines
+      register: openship_rootful_probe
+
+    - name: Report verified runtime, resource settings, non-root identity and cleanup
+      ansible.builtin.debug:
+        msg: "{{ item.stdout | from_json }}"
+      loop: "{{ openship_rootful_probe.results | default([]) }}"
+      when: not (item.skipped | default(false))
+      loop_control:
+        label: "{{ item.item.engine }}"

@@ -59,6 +59,7 @@ def role_permissions(role: str) -> dict | None:
             "subscribe": {
                 "allow": [
                     "openship.*.v1.command.>",
+                    "openship.*.v1.control.>",
                     "openship.*.v1.rpc.worker.health",
                     "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.OS_RUNS.run-v1",
                     "_INBOX.>",

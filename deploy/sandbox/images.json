@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "purpose": "Deployment pin reference carried from 0a1fc6b; not new qualification evidence",
+  "release": "release-1.2.0",
+  "upstream_revision": "62a64f0b48cdd6b410f36e53c74dc7559c87719a",
+  "server_image": "opensandbox/server@sha256:25bebdcf1cf7724eb923faecbdbbf82d4038c6ab35c736151574726d14006f30",
+  "execd_image": "opensandbox/execd@sha256:c75836c46ef4302afccec182d5d7339eb2f905f51e3d73b7aa17bb76c832526c",
+  "gateway_image": "nginx@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949",
+  "python_base_image": "python:3.11-slim@sha256:6d10e720318bd84cc3d88af92bb5a47189222e17620a2fd214da6445e4afb679",
+  "workload_dockerfile": "deploy/sandbox/Dockerfile.python",
+  "plotting_workload_dockerfile": "deploy/sandbox/Dockerfile.python-plotting",
+  "plotting_dependency_pins": {
+    "matplotlib": "3.9.2",
+    "numpy": "2.1.0",
+    "contourpy": "1.3.3",
+    "cycler": "0.12.1",
+    "fonttools": "4.68.0",
+    "kiwisolver": "1.5.1",
+    "pillow": "13.0.0",
+    "pyparsing": "3.3.3",
+    "python-dateutil": "4.0.0",
+    "tzdata": "2026.6"
+  },
+  "plotting_profile_id": "python311-plot",
+  "plotting_dependency_identity": "matplotlib-3.9.2-numpy-2.1.0",
+  "plotting_build_record": {
+    "built_at": "2026-11-05",
+    "base_image": "openship-python:phase6b-qualified@sha256:c3a1aae6caee0d8d5b1ac002193399e11b6d1b7d5fdd7f0929b5ba7e0ec7477c",
+    "image_tag": "openship-python-plot:phase6b-task4",
+    "manifest_digest": "sha256:d0f3f70dc230161eb1788bdef1a143bdbea58e3f82568f598fe86d3c3f746876",
+    "headless_chart_evidence": {
+      "backend": "Agg",
+      "png_sha256": "d40bf7120d79953eaae8f42df342d579ac5a42a561998bed5400a6ae3d3b5fe8",
+      "jpeg_sha256": "330cf11ce57a420c147d7e1682348f00ced34756ff0e138f95dd305eeefb858d"
+    }
+  },
+  "sandbox_lifetime_seconds": 1800,
+  "limitations": [
+    "The workload image must be built/preloaded for the selected engine; an old local image digest is not a portable registry image",
+    "Keep authenticated Nginx ingress for the recorded release's single-tenant proxy authentication gap",
+    "Existing upstream advisory findings are deferred, not cleared; historical evidence remains on the abandoned branch",
+    "Direct-client live provider verification is documented separately; OpenShip generated execution is not yet wired"
+  ]
+}

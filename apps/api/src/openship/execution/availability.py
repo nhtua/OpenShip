@@ -36,6 +36,23 @@ class ToolAvailabilityObservation:
     observed_at: datetime
 
 
+def sandbox_runtime_ready() -> bool:
+    """Whether the opt-in sandbox profile is fully provisioned, secrets-free."""
+    from src.openship.config import settings
+
+    if not (
+        settings.sandbox_enabled
+        and settings.sandbox_endpoint.strip()
+        and settings.sandbox_image.strip()
+    ):
+        return False
+    key_file = settings.sandbox_key_file
+    try:
+        return bool(key_file.read_text(encoding="utf-8").strip())
+    except OSError:
+        return False
+
+
 def observe_tool_availability(
     *,
     enabled_ids: frozenset[str],
@@ -52,7 +69,10 @@ def observe_tool_availability(
             getattr(manifest, "credential_binding_ref", None)
             or legacy_credential_binding(manifest.id)
         ) is None:
-            if "conversation_workspace" in manifest.enablement_requirements:
+            if "sandbox_runtime" in manifest.enablement_requirements:
+                available = sandbox_runtime_ready()
+                reason = None if available else "runtime_unavailable"
+            elif "conversation_workspace" in manifest.enablement_requirements:
                 try:
                     configured_store().verify()
                     available, reason = True, None

@@ -1,0 +1,10 @@
+# Host-client tests only: expose the authenticated gateway on loopback.
+services:
+  opensandbox-gateway:
+    ports:
+      - "127.0.0.1:${OPENSHIP_SANDBOX_TEST_PORT:-18080}:8080"
+    networks:
+      - sandbox-test-ingress
+
+networks:
+  sandbox-test-ingress: {}

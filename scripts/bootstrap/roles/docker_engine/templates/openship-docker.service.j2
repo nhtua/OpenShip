@@ -1,0 +1,26 @@
+[Unit]
+Description=OpenShip rootless Docker Engine
+Documentation=https://docs.docker.com/engine/security/rootless/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=%t/openship-docker/rootlesskit
+ExecStart=/usr/bin/dockerd-rootless.sh --config-file="{{ openship_user_config_dir }}/openship/docker/daemon.json"
+ExecReload=/bin/kill -s HUP $MAINPID
+RuntimeDirectory=openship-docker
+RuntimeDirectoryMode=0700
+TimeoutStartSec=120
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=infinity
+TasksMax=infinity
+Delegate=yes
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

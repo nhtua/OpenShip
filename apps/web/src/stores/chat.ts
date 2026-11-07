@@ -678,6 +678,7 @@ export const useChatStore = defineStore('chat', () => {
       if (!card || card.run_id !== runId) return
       card.status = cardStatus(run.status)
       card.connector_blocker = run.connector_blocker ?? null
+      card.analysis = run.analysis ?? null
       // A run read is authoritative for what it was pinned to and what it
       // asked. Null stays null: a run from before profiles exists, and
       // nothing here guesses a provider, a model, or a count for it.
@@ -713,6 +714,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function runSummaryCard(run: SnapshotRun): RunCard {
     return {
+      analysis: run.analysis ?? null,
       run_id: run.id,
       kind: run.kind ?? 'chat',
       graph_version: run.graph_version ?? 1,

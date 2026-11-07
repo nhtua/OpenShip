@@ -2,7 +2,7 @@
 type: roadmap
 summary: Cumulative delivery phases that establish shared foundations with one working use case before expanding capabilities and deployment scale.
 status: proposed
-date: 2026-10-25
+date: 2026-11-03
 ---
 
 # OpenShip Delivery Roadmap
@@ -11,7 +11,7 @@ Build OpenShip through **small, end-to-end milestones**, rather than finishing e
 
 This roadmap is based on the [OpenShip Harness Architecture](./architects.md) in PR #18, at architecture revision `9fe9f37`, and was reviewed after delivery of Phases 1–3.
 
-**Delivery baseline (2026-10-25):** The user confirmed **Phases 1–5 complete**. Their phase descriptions and overview rows below are preserved as historical scope; earlier candidate/qualification records remain evidence for their recorded revisions. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **Phases 6–21 remain pending delivery work.** The two-role direction described in Phase 10B was agreed with the user on 2026-10-21; that design decision does not imply implementation or acceptance of the increment.
+**Delivery baseline:** The user confirmed **Phases 1–5 complete** and **6A implemented**, merged in PR #31 at `5fe6e03`. Earlier descriptions/qualification records retain their historical evidence scope, not new deployment guarantees. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **6B and Phases 7–21 remain pending delivery work.** The Phase 10B two-role direction is an agreed design, not implementation or acceptance.
 
 **Accepted forward architecture change:** NATS with JetStream is the main internal message broker. [Architecture §5](./architects.md#nats-messaging-foundation) defines routing, request/reply, and durable delivery. Phase **6A** introduces that transport and concurrent chat/SSE delivery; **6B** retains the generated-code/artifact milestone. This change applies from Phase 6 onward and does not rewrite or reopen Phases 1–5. Broker selection is accepted; implementation details and phase acceptance still require their normal review.
 
@@ -278,11 +278,11 @@ historical data migrations remain part of the application.
 
 **Build on:** The delivered Phases 1–5, preserving their HTTP commands, conversation history, pinned models/connectors, cancellation, ownership/fences, checkpoints, and event identities. The [accepted NATS direction](./ideas.md#nats-messaging-foundation) changes internal transport; it does not introduce a second runtime or permission path. Phase IDs 7–21 stay stable, and all later execution/event work builds on 6A.
 
-**Acceptance units:** Qualify and accept **6A** before extending the runtime in **6B**. Each is a usable increment with its own evidence and user decision.
+**Acceptance units:** **6B** builds on merged **6A** and carries forward applicable regressions. Each is a usable increment with its own evidence and user decision; the 6B scope reset does not reopen 6A deployment qualification.
 
 ##### 6A — NATS Foundation and Concurrent Chat
 
-**Status:** Implementation in progress on [PR #31](https://github.com/nhtua/OpenShip/pull/31). The transactional outbox/relay, JetStream run consumer, API event fanout, read-only run/event cutover preview, resumable DB apply/verify, gate open/close controls, resumable rollback preview/apply, and local/dev/prod deployment definitions are implemented. Full PostgreSQL/JetStream qualification, Compose builds/cold starts and reload checks, and recovery/capacity exercises remain. The user confirmed 6A numbering and a drained maintenance cutover on 2026-10-25; production cutover is not authorized. Kubernetes and ECS are outside this migration. See the [source review](./reviews/2026-10-25-phase6a-messaging-review.md), [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](./superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](./operations/messaging.md).
+**Status:** Implemented and merged in [PR #31](https://github.com/nhtua/OpenShip/pull/31) at `5fe6e03`, as confirmed by the user. Earlier plans/runbooks retain their evidence scope; this status does not claim production cutover or every qualification scenario passed. Kubernetes/ECS are outside this migration. See the [source review](./reviews/2026-10-25-phase6a-messaging-review.md), [migration design](./superpowers/specs/2026-10-25-phase6a-nats-messaging-design.md), [implementation plan](./superpowers/plans/2026-10-25-phase6a-nats-messaging.md) and [deployment runbook](./operations/messaging.md).
 
 **Build**
 
@@ -305,34 +305,35 @@ historical data migrations remain part of the application.
 - Wrong-project messages/reply subjects, stale fences, expired credentials, and altered execution identities cannot grant authority. Secrets do not enter general event broadcasts or failure records.
 - Broker outage retains accepted work in the outbox or reports admission unavailable explicitly. Recovery, storage-full behavior, consumer cleanup, backup/restore, and upgrade/cutover/rollback follow the declared profile. No normal dispatch/SSE table-polling loop remains.
 
-**Not yet:** External triggers, new model capabilities, generated-code execution, or a guarantee of exactly-once model/cloud effects. This documentation decision does not itself implement 6A.
+**Not yet:** External triggers, new model capabilities, generated-code execution, or a guarantee of exactly-once model/cloud effects.
 
 ##### 6B — Generated Code and Controlled Artifacts
 
-**Build on:** Accepted 6A messaging and Phase 4's artifact IDs/storage/transfer, gateway, and trusted runtime. This increment owns sandbox driver installation and qualification (including gVisor where selected), image build/reproducibility, the authenticated execution protocol, limits, isolation tests, and cleanup. NATS carries trusted control messages; sandboxes receive neither application database access nor general broker credentials. Extend logical mutable files and immutable captured versions through the existing artifact contract.
+**Status:** Scope reset approved 2026-11-03; application implementation starts again from `main`. The previous implementation through `0a1fc6b` is abandoned, not a foundation to finish. Retain only selected bootstrap/deployment support and the revised [spec](./superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md)/[plan](./superpowers/plans/2026-10-28-phase6b-opensandbox-implementation.md); all implementation tracking restarts unchecked.
+
+**Build on:** Merged 6A and existing gateway/run/artifact contracts. OpenShip prepares source and selected input files, sends authenticated OpenSandbox requests, validates returned data and saves accepted results in workflow state. OpenSandbox owns sandbox lifecycle, isolation, resource enforcement, expiration, cleanup and deletion. Rootful Docker/gVisor is the first provider deployment; only manager infrastructure mounts the engine socket.
 
 **Build**
 
-- Generated-code artifacts with digest, runtime, inputs, dependencies, and limits.
-- Logical file identities/current heads with expected-base edit checks and immutable version capture. Each step output declares whether it is a mutable logical file or an immutable artifact; edits create a new captured version and never rewrite an already referenced artifact.
-- Credential-free, network-denied execution by default.
-- Immutable output artifacts, metadata, authorized downloads, and safe previews.
-- First supported runtime, followed by others as separate increments.
+- Generate/capture Python source, selected text/JSON inputs and bounded parameters using existing immutable artifacts.
+- Request a **30-minute (1,800-second)** sandbox lifetime. Keep one **project/conversation-scoped reusable sandbox pointer** for this slice; reuse compatible live sandboxes with a fresh directory per execution, replace on changed runtime requirements or expiry/absence only when execution is requested. Future workflow identity must separate workflows within a conversation. No OpenShip cleanup/reconciliation controller or deletion-gated capacity reservation.
+- Accept bounded declared text/JSON outputs; expected code/script outputs remain inert text and require an LLM expectation check before workflow use. Security scanning is deferred, not certified by the judge.
+- Save accepted output refs and use them in the next step. Offer **A: rerun the interrupted step using saved prior outputs**, or **B: rerun from the beginning as a new root run**. Neither restart nor broker redelivery silently reruns sandbox code.
+- Preserve credential-free execution, existing authorization/quotas/fencing, authorized downloads and escaped previews. Provider configuration owns network/runtime controls.
 
-Start with one credential-free Python program and a prebuilt dependency set; qualify additional runtimes or dependency profiles separately.
+Start with one credential-free Python standard-library profile and a fixed analysis journey in the existing runtime, not Phase 7's saved-workflow engine. Mutable logical files/editor/history, additional runtimes, dedicated qualification infrastructure, provider security certification and production/load matrices are deferred.
 
-**User demonstration:** Upload deployment logs and ask for a generated parser that produces a summary and report.
+**User demonstration:** Upload deployment logs, generate/run a parser, validate and retain `summary.json`/`report.txt`, and use them in the answer. Show compatible sandbox reuse and both explicit resume choices.
 
 **Exit gates**
 
-- The inspected code digest matches the executed artifact.
-- Only selected inputs are accessible.
-- Successful outputs remain available after sandbox destruction.
-- Infinite loops and excessive output terminate within configured limits.
-- Unsafe previews or filenames cannot execute browser code or escape artifact storage.
-- Changing code, dependencies, or selected inputs invalidates the admitted execution bundle. Output quotas and cleanup apply on failure as well as success.
+- Exact selected source/input bytes are transferred for each request, without using residual sandbox inputs.
+- Create requests ask for 1,800 seconds; compatible requests reuse only the same workflow's handle. OpenShip does not delete, renew or reconcile sandboxes.
+- Accepted outputs survive provider expiration and application restart; unsupported/oversized outputs and rejected/unavailable code review cannot advance the workflow.
+- A uses saved completed-step outputs without rerunning their sandboxes; B reruns from initial refs under a new root. Repeated resume commands are idempotent, and restart/redelivery does not execute code automatically.
+- Provider failure/cancellation produces visible bounded failure; unsafe previews cannot execute browser code or escape storage. Existing applicable tests and one real-service demonstration pass, followed by user acceptance.
 
-**Not yet:** Generated code receiving cloud credentials or unrestricted internet access.
+**Not yet:** Generated code receiving cloud credentials or unrestricted internet access; OpenShip-owned sandbox lifecycle; a general workflow authoring system; provider isolation/security certification or the dedicated qualification platform.
 
 ### Wave C — Repeatable, Reviewed Workflows
 
@@ -889,4 +890,4 @@ These distinctions should remain explicit throughout implementation:
 
 NATS with JetStream is the selected internal messaging foundation from Phase 6A. Stronger isolation providers, additional external broker adapters, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
 
-**Next commitment:** Finish Phase 6A broker/PostgreSQL and deployment qualification, rehearse migration and recovery, then present the evidence for user acceptance. Preserve completed Phases 1–5, sandbox/mutable-file scope in 6B, and the Phase 10B maintenance-authority boundary.
+**Next commitment:** Deliver the small Phase 6B prepare → OpenSandbox request → validate/save → continue journey, with 30-minute provider-owned lifetime, project/conversation-scoped reuse for this slice, and explicit A/B resume. Preserve Phases 1–6A and existing application controls; do not reintroduce lifecycle management, mutable-file scope or a qualification platform as prerequisites. The Phase 10B maintenance-authority boundary remains unchanged.

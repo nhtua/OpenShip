@@ -300,6 +300,187 @@ def _agent_case(
     return graph, state, model_transport, selected_gateway, run_id
 
 
+def test_continuation_is_persisted_before_tool_execution(monkeypatch):
+    from src.openship.providers.contracts import (
+        ProviderTurnResult,
+        ResponsesContinuation,
+        ToolCall,
+    )
+    from src.openship.runs import agent_graph
+
+    graph, state, _, gateway, run_id = _agent_case(monkeypatch, [])
+    continuation = ResponsesContinuation(
+        version=1, protocol="openai.responses", profile_revision="revision",
+        model="fixture-model", destination="fixture.provider.test/v1",
+        items=[{"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"},
+               {"type": "function_call", "id": "fc_1", "call_id": "call-1",
+                "name": "brave_web_search", "arguments": '{"query":"first"}'}],
+    )
+    turns = iter([
+        ProviderTurnResult(selected_profile_id="fixture-profile", finish_reason="tool_calls",
+                           tool_calls=(ToolCall(provider_call_id="call-1", name="brave_web_search",
+                                                arguments={"query": "first"}),), continuation=continuation),
+        ProviderTurnResult(selected_profile_id="fixture-profile", finish_reason="stop", text="done"),
+    ])
+
+    async def fake_turn(*args, **kwargs):
+        return next(turns)
+
+    def verify_saved(_request):
+        with TestSessionLocal() as db:
+            row = db.query(RunTranscriptRecord).filter_by(run_id=run_id, ordinal=0).one()
+            assert json.loads(row.message_json)["continuation"]["items"][0]["encrypted_content"] == "opaque"
+
+    gateway.after_execute = verify_saved
+    monkeypatch.setattr(agent_graph, "run_model_turn", fake_turn)
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+    assert result["assistant_response"] == "done"
+
+
+def test_saved_responses_final_answer_is_reused_without_model_request(monkeypatch):
+    from src.openship.providers.contracts import ChatMessage, ResponsesContinuation
+
+    graph, state, transport, _, run_id = _agent_case(monkeypatch, [])
+    pinned = RunModelConfig.model_validate_json(state["model_configuration"]).primary
+    continuation = ResponsesContinuation(
+        version=1, protocol="openai.responses", profile_revision=pinned.profile_revision,
+        model=pinned.model, destination="fixture.provider.test/v1",
+        items=[{"type": "message", "id": "m1", "role": "assistant", "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "saved", "annotations": []}]}],
+    )
+    with TestSessionLocal() as db:
+        db.add(RunTranscriptRecord(run_id=run_id, ordinal=0, model_turn_ordinal=0,
+                                   message_json=ChatMessage(role="assistant", content="saved",
+                                                            continuation=continuation).model_dump_json()))
+        db.commit()
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+    assert result["assistant_response"] == "saved"
+    assert transport.requests == 0
+
+
+def test_saved_responses_tool_result_continues_at_next_turn(monkeypatch):
+    from src.openship.providers.contracts import (
+        ChatMessage,
+        ProviderTurnResult,
+        ResponsesContinuation,
+        ToolCall,
+    )
+    from src.openship.runs import agent_graph
+
+    graph, state, _, gateway, run_id = _agent_case(monkeypatch, [])
+    pinned = RunModelConfig.model_validate_json(state["model_configuration"]).primary
+    item = {"type": "function_call", "id": "fc_1", "call_id": "call-1", "name": "brave_web_search",
+            "arguments": '{"query":"first"}'}
+    continuation = ResponsesContinuation(version=1, protocol="openai.responses",
+                                         profile_revision=pinned.profile_revision, model=pinned.model,
+                                         destination="fixture.provider.test/v1", items=[item])
+    assistant = ChatMessage(role="assistant", content="", continuation=continuation,
+                            tool_calls=(ToolCall(provider_call_id="call-1", name="brave_web_search",
+                                                 arguments={"query": "first"}),))
+    tool = ChatMessage(role="tool", name="brave_web_search", tool_call_id="call-1", content="{}")
+    with TestSessionLocal() as db:
+        for ordinal, message in enumerate((assistant, tool)):
+            db.add(RunTranscriptRecord(run_id=run_id, ordinal=ordinal, model_turn_ordinal=0,
+                                       message_json=message.model_dump_json()))
+        db.commit()
+    seen = []
+
+    async def fake_turn(*args, **kwargs):
+        seen.append(kwargs["model_turn_ordinal"])
+        return ProviderTurnResult(selected_profile_id="fixture-profile", finish_reason="stop", text="done")
+
+    monkeypatch.setattr(agent_graph, "run_model_turn", fake_turn)
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+    assert result["assistant_response"] == "done"
+    assert seen == [1]
+    assert not gateway.calls
+
+
+def test_saved_responses_unresolved_call_is_recovered_before_model_request(monkeypatch):
+    from src.openship.providers.contracts import (
+        ChatMessage,
+        ProviderTurnResult,
+        ResponsesContinuation,
+        ToolCall,
+    )
+    from src.openship.runs import agent_graph
+
+    graph, state, transport, gateway, run_id = _agent_case(monkeypatch, [])
+    pinned = RunModelConfig.model_validate_json(state["model_configuration"]).primary
+    continuation = ResponsesContinuation(version=1, protocol="openai.responses",
+        profile_revision=pinned.profile_revision, model=pinned.model, destination="fixture.provider.test/v1",
+        items=[{"type": "function_call", "id": "fc_1", "call_id": "call-1", "name": "brave_web_search",
+                "arguments": '{"query":"first"}'}])
+    assistant = ChatMessage(role="assistant", content="", continuation=continuation,
+        tool_calls=(ToolCall(provider_call_id="call-1", name="brave_web_search", arguments={"query": "first"}),))
+    with TestSessionLocal() as db:
+        db.add(RunTranscriptRecord(run_id=run_id, ordinal=0, model_turn_ordinal=0,
+                                   message_json=assistant.model_dump_json(),
+                                   logical_call_ids_json='["model:0:call:0"]'))
+        db.commit()
+    async def fake_turn(*args, **kwargs):
+        assert len(gateway.calls) == 1
+        assert kwargs["model_turn_ordinal"] == 1
+        return ProviderTurnResult(selected_profile_id="fixture-profile", finish_reason="stop", text="done")
+
+    monkeypatch.setattr(agent_graph, "run_model_turn", fake_turn)
+    result = graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+    assert result["assistant_response"] == "done"
+    assert transport.requests == 0
+    assert [call["logical_call_id"] for call in gateway.calls] == ["model:0:call:0"]
+
+
+def test_saved_responses_call_with_wrong_provenance_is_not_executed(monkeypatch):
+    from src.openship.providers.contracts import (
+        ChatMessage,
+        ResponsesContinuation,
+        ToolCall,
+    )
+    from src.openship.providers.errors import ProviderError
+
+    graph, state, _, gateway, run_id = _agent_case(monkeypatch, [])
+    continuation = ResponsesContinuation(version=1, protocol="openai.responses", profile_revision="wrong",
+        model="fixture-model", destination="fixture.provider.test/v1",
+        items=[{"type": "function_call", "id": "fc_1", "call_id": "call-1", "name": "brave_web_search",
+                "arguments": '{"query":"first"}'}])
+    assistant = ChatMessage(role="assistant", content="", continuation=continuation,
+        tool_calls=(ToolCall(provider_call_id="call-1", name="brave_web_search", arguments={"query": "first"}),))
+    with TestSessionLocal() as db:
+        db.add(RunTranscriptRecord(run_id=run_id, ordinal=0, model_turn_ordinal=0,
+                                   message_json=assistant.model_dump_json(),
+                                   logical_call_ids_json='["model:0:call:0"]'))
+        db.commit()
+    with pytest.raises(ProviderError):
+        graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+    assert not gateway.calls
+
+
+def test_saved_responses_call_with_mismatched_arguments_is_not_executed(monkeypatch):
+    from src.openship.providers.contracts import (
+        ChatMessage,
+        ResponsesContinuation,
+        ToolCall,
+    )
+    from src.openship.providers.errors import ProviderError
+
+    graph, state, _, gateway, run_id = _agent_case(monkeypatch, [])
+    pinned = RunModelConfig.model_validate_json(state["model_configuration"]).primary
+    continuation = ResponsesContinuation(version=1, protocol="openai.responses",
+        profile_revision=pinned.profile_revision, model=pinned.model, destination="fixture.provider.test/v1",
+        items=[{"type": "function_call", "id": "fc_1", "call_id": "call-1", "name": "brave_web_search",
+                "arguments": '{"query":"first"}'}])
+    assistant = ChatMessage(role="assistant", content="", continuation=continuation,
+        tool_calls=(ToolCall(provider_call_id="call-1", name="brave_web_search", arguments={"query": "other"}),))
+    with TestSessionLocal() as db:
+        db.add(RunTranscriptRecord(run_id=run_id, ordinal=0, model_turn_ordinal=0,
+                                   message_json=assistant.model_dump_json(),
+                                   logical_call_ids_json='["model:0:call:0"]'))
+        db.commit()
+    with pytest.raises(ProviderError):
+        graph.invoke(state, config={"configurable": {"thread_id": str(run_id)}})
+    assert not gateway.calls
+
+
 def test_chat_v2_runs_two_sequential_tool_calls_and_publishes_only_final_text(monkeypatch):
     execution = _execution()
     run_id, user_id, project_id, conversation_id, lease_until = _running_chat_tool_run(execution)

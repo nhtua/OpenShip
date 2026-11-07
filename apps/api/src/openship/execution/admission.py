@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -77,6 +78,57 @@ def _input_refs(inputs: tuple[ArtifactRef, ...]) -> tuple[dict, ...]:
         raise _refused(422, "invalid_tool_inputs", "Tool inputs are invalid") from exc
 
 
+def resolve_chat_inputs(
+    db: Session, *, claim: Claim, requested_ids: tuple[uuid.UUID, ...],
+    selected: tuple[ArtifactRef, ...],
+) -> tuple[ArtifactRef, ...]:
+    """Authorize submission-pinned inputs or committed outputs of this exact run."""
+    run = require_live_claim(db, claim, lock=True)
+    selected_by_id = {item.id: item for item in selected}
+    result = []
+    for artifact_id in requested_ids:
+        row = db.query(Artifact).filter(
+            Artifact.id == artifact_id, Artifact.project_id == run.project_id,
+            Artifact.conversation_id == run.conversation_id, Artifact.status == "ready",
+        ).with_for_update().first()
+        if row is None:
+            raise _refused(409, "tool_input_unavailable", "A selected tool input is no longer available")
+        actual = ArtifactRef(id=row.id, sha256=row.sha256, size_bytes=row.size_bytes,
+                             media_type=row.media_type)
+        pinned = selected_by_id.get(artifact_id)
+        if pinned is not None:
+            authorized = pinned == actual
+        else:
+            producer = db.query(ToolOperation).filter(
+                ToolOperation.id == row.originating_operation_id,
+                ToolOperation.run_id == run.id, ToolOperation.status == "succeeded",
+                ToolOperation.project_id == run.project_id,
+                ToolOperation.conversation_id == run.conversation_id,
+            ).first()
+            try:
+                output_ids = json.loads(producer.output_artifact_ids) if producer else []
+                result_data = json.loads(producer.result_json) if producer else {}
+                candidates = []
+                if isinstance(result_data, dict):
+                    candidates.append(result_data.get("artifact"))
+                    outputs = result_data.get("outputs")
+                    if isinstance(outputs, dict):
+                        candidates.extend(outputs.values())
+                authorized = (
+                    row.originating_run_id == run.id and isinstance(output_ids, list)
+                    and str(artifact_id) in output_ids
+                    and hashlib.sha256(producer.result_json.encode("utf-8")).hexdigest()
+                    == producer.result_digest
+                    and actual.model_dump(mode="json") in candidates
+                )
+            except (TypeError, ValueError):
+                authorized = False
+        if not authorized:
+            raise _refused(409, "tool_input_unavailable", "A selected tool input is no longer available")
+        result.append(actual)
+    return tuple(result)
+
+
 def admit_operation(
     db: Session,
     claim: Claim,
@@ -130,13 +182,29 @@ def admit_operation(
     ):
         raise _refused(404, "operation_not_found", "The requested operation is not available")
 
-    effective_inputs = list(inputs)
+    # Chat tool calls take authority from the artifacts they reference, not
+    # from the whole pinned selection, so a resumed run's re-pinned committed
+    # outputs cannot change the digest of a recorded step.
+    effective_inputs = list(inputs) if not is_chat_tool else []
+    candidate_arguments = None
     try:
         candidate_definition = get_tool_definition_by_id(ref.id)
         candidate_arguments = candidate_definition.validate_arguments(arguments)
         referenced_artifacts = candidate_definition.input_artifact_ids(candidate_arguments)
     except (LookupError, TypeError, ValueError):
         referenced_artifacts = ()
+    if is_chat_tool and ref.id == "python_execute":
+        # Only the pinned submission refs and committed earlier same-run
+        # outputs carry authority; never trust caller-supplied ``inputs``.
+        source_id = getattr(candidate_arguments, "source_id", None)
+        if source_id is not None and source_id not in {item.id for item in pinned.selected_artifacts}:
+            # Unreviewed tool output is data, not executable authority. The
+            # user must explicitly select a source in a new run.
+            raise _refused(409, "tool_input_unavailable", "Select the source file explicitly before execution")
+        effective_inputs = list(resolve_chat_inputs(
+            db, claim=claim, requested_ids=tuple(referenced_artifacts),
+            selected=tuple(pinned.selected_artifacts),
+        ))
     for referenced_artifact_id in referenced_artifacts:
         try:
             already_selected = any(
