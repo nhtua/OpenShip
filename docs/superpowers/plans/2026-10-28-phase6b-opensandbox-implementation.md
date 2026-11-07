@@ -235,11 +235,11 @@ remain pending; the provider stack was not modified.
 
 **Interfaces:** Exercise the real registered API/worker/gateway, PostgreSQL, JetStream, artifact store and configured OpenSandbox endpoint, reusing Task 1A's verified Docker/provider setup. Task 1A's direct-client smoke is a prerequisite, not a substitute for this full application journey. Generation/judge may use clearly labeled deterministic provider fixtures; real-model evidence is separate. Unit transport stubs cannot satisfy this task.
 
-- [ ] Write the real-service journey: upload logs, generate/capture parser, execute, validate and use `summary.json`/`report.txt`; make a second compatible request with changed logs and prove ID reuse and current inputs. Test real expiry/absence replacement using a disposable provider fixture or a previously expired ID; production requests remain 1,800 seconds.
-- [ ] Run it red before final wiring; complete only integration gaps required by the approved spec. Demonstrate accepted/rejected returned source, explicit A/B resume, retained downloads after restart/provider disappearance and a visible unavailable-provider failure. No provider hardening or cleanup controller may be introduced to pass the test.
-- [ ] Run existing ordinary backend/frontend checks plus affected PostgreSQL/JetStream/browser tests. Record exact commands, candidate revision, expected output refs and limitations in the operator guide. Real tests require an explicitly configured service and must execute rather than silently skip; no dedicated protected runner is a completion prerequisite.
-- [ ] Present the runnable demonstration for user accept/revise/reject. Keep implementation, test results and user acceptance distinct; do not inherit old progress.
-- [ ] Commit verified evidence/documentation with a scanned message file.
+- [x] Write the real-service journey: upload logs, generate/capture parser, execute, validate and use `summary.json`/`report.txt`; make a second compatible request with changed logs and prove ID reuse and current inputs. Test real expiry/absence replacement using a disposable provider fixture or a previously expired ID; production requests remain 1,800 seconds.
+- [x] Run it red before final wiring; complete only integration gaps required by the approved spec. Demonstrate accepted/rejected returned source, explicit A/B resume, retained downloads after restart/provider disappearance and a visible unavailable-provider failure. No provider hardening or cleanup controller may be introduced to pass the test.
+- [x] Run existing ordinary backend/frontend checks plus affected PostgreSQL/JetStream/browser tests. Record exact commands, candidate revision, expected output refs and limitations in the operator guide. Real tests require an explicitly configured service and must execute rather than silently skip; no dedicated protected runner is a completion prerequisite.
+- [x] Present the runnable demonstration for user accept/revise/reject. Keep implementation, test results and user acceptance distinct; do not inherit old progress.
+- [x] Commit verified evidence/documentation with a scanned message file.
 
 ## Verification and scope stop
 
@@ -260,11 +260,11 @@ its exact configured application-journey invocation and marker selection while
 preserving existing service-independent CI. Use current repository PostgreSQL,
 JetStream and full-stack runners rather than a new qualification platform.
 
-- [ ] All seven deliverables (Tasks 1, 1A and 2–6) verified against the approved spec; the original Task 1 goal includes Task 1A's execution and real-provider gate.
-- [ ] OpenSandbox manager/gateway available through base Compose with rootful Docker/gVisor defaults, manager-only socket access and recorded worktree-local live-client evidence.
-- [ ] One real parser/reuse/resume demonstration and affected existing regressions recorded.
-- [ ] No application lifecycle controller, per-step delete or physical deletion gate introduced.
-- [ ] User acceptance recorded separately from passing tests.
+- [x] All seven deliverables (Tasks 1, 1A and 2–6) verified against the approved spec; the original Task 1 goal includes Task 1A's execution and real-provider gate.
+- [x] OpenSandbox manager/gateway available through base Compose with rootful Docker/gVisor defaults, manager-only socket access and recorded worktree-local live-client evidence.
+- [x] One real parser/reuse/resume demonstration and affected existing regressions recorded.
+- [x] No application lifecycle controller, per-step delete or physical deletion gate introduced.
+- [x] User acceptance recorded separately from passing tests.
 
 **Stop if scope expands:** AWS credentials/CLI, another runtime, mutable-file
 management, provider repairs, stronger isolation certification or production

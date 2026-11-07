@@ -90,10 +90,10 @@ agent-loop/handoff/python/tools lane 161 passed.
 
 **Interfaces:** `resolve_chat_inputs(db, *, claim: Claim, requested_ids: tuple[UUID, ...], selected: tuple[ArtifactRef, ...]) -> tuple[ArtifactRef, ...]` returns exact ready refs either selected at submission or published by earlier successfully committed operations in the same run; no other model-supplied ID becomes authority.
 
-- [ ] Write `test_download_ref_is_pinned_for_next_call`, `test_other_run_or_conversation_ref_denied`, `test_deleted_changed_or_forged_ref_denied`, and `test_replay_preserves_digest_and_operation_identity`. Assert fetched bytes match committed reference and forged ID never reaches the provider.
-- [ ] Run `cd apps/api && uv run pytest -q tests/integration/test_chat_artifact_handoff.py`; observe red.
-- [ ] Implement lookup and pinning under the existing live claim and ownership checks; update chat gateway calls to use exactly those authorized refs, not the submission-only tuple or all conversation files.
-- [ ] Rerun the handoff and agent graph tests; record output and commit the scoped changes.
+- [x] Write `test_download_ref_is_pinned_for_next_call`, `test_other_run_or_conversation_ref_denied`, `test_deleted_changed_or_forged_ref_denied`, and `test_replay_preserves_digest_and_operation_identity`. Assert fetched bytes match committed reference and forged ID never reaches the provider.
+- [x] Run `cd apps/api && uv run pytest -q tests/integration/test_chat_artifact_handoff.py`; observe red.
+- [x] Implement lookup and pinning under the existing live claim and ownership checks; update chat gateway calls to use exactly those authorized refs, not the submission-only tuple or all conversation files.
+- [x] Rerun the handoff and agent graph tests; record output and commit the scoped changes.
 
 ## Task 3: General Python tool and source capture
 
@@ -111,10 +111,10 @@ do not mark Task 3 complete.
 
 **Interfaces:** `PythonArguments(source: str | None, source_id: UUID | None, input_ids: dict[str, UUID], parameters: dict, output_media: dict[str, str])` → `PythonResult(source: ArtifactRef, outputs: dict[str, ArtifactRef], exit_code: int, stdout: str, stderr: str)`; `async python_execute(arguments, invocation, control) -> PythonObservation`. Exactly one source form; empty inputs/outputs are valid.
 
-- [ ] Write `test_stdout_only_without_inputs_or_outputs`, `test_source_capture_before_provider_and_exact_input_bytes`, `test_replay_reuses_captured_source_and_committed_result`, `test_lost_command_is_not_retried`, and `test_model_cannot_choose_runtime`. Include cancellation/late publication and changed-input fresh-directory reuse.
-- [ ] Run `cd apps/api && uv run pytest -q tests/sandboxes/test_python_tool.py`; observe red.
-- [ ] Implement a new versioned `python_execute` capability; reuse existing client, pointer, claim and staged artifact services. Capture source under a stable operation identity before dispatch; retain bounded diagnostics and explicit exit status. Keep `sandbox_analysis` behavior and persisted versions unchanged.
-- [ ] Run the new tests plus `uv run pytest -q tests/sandboxes/ tests/integration/test_analysis_results.py`; record output and commit.
+- [x] Write `test_stdout_only_without_inputs_or_outputs`, `test_source_capture_before_provider_and_exact_input_bytes`, `test_replay_reuses_captured_source_and_committed_result`, `test_lost_command_is_not_retried`, and `test_model_cannot_choose_runtime`. Include cancellation/late publication and changed-input fresh-directory reuse.
+- [x] Run `cd apps/api && uv run pytest -q tests/sandboxes/test_python_tool.py`; observe red.
+- [x] Implement a new versioned `python_execute` capability; reuse existing client, pointer, claim and staged artifact services. Capture source under a stable operation identity before dispatch; retain bounded diagnostics and explicit exit status. Keep `sandbox_analysis` behavior and persisted versions unchanged.
+- [x] Run the new tests plus `uv run pytest -q tests/sandboxes/ tests/integration/test_analysis_results.py`; record output and commit.
 
 ## Task 4: Plotting runtime and verified PNG/JPEG outputs
 
@@ -206,11 +206,11 @@ exit_code/stdout/stderr). Verification: focused vitest 7 passed; full frontend
   - Lane used a dedicated PostgreSQL container (`openship-p6b-pg-lane`, host port 5444) with one fresh database per run, a fresh temporary artifact root/storage identity, and the authorized dev-stack OpenSandbox gateway (loopback, preflight-probed 403/404). The running dev stack's volumes/database were not attached or modified.
 - [x] Write and run the real-service test red before final integration wiring: URL → download → model-written Python → PNG → persisted artifact → authenticated browser preview/download; assert exact input digest, observed sandbox ID and fresh request directory. Explicitly enabled lanes fail on missing config, not skip.
   - `tests/full_stack/test_sandbox_python_chat.py` + `tests/full_stack/synthetic_sandbox_chat_worker.py` + `apps/web/tests/full-stack/sandbox-python.spec.ts`: `1 passed in 29.55s` (Playwright step `1 passed (6.9s)`). CSV sha256 `07a0fbf7…`, PNG magic asserted, one create + one `/command` in `/outputs/{operation_id}-{uuid}`, resume replays without refetch or re-executed command, same `client_request_id` returns the same continuation run.
-- [ ] Extend the live journey for changed-input sandbox reuse, provider-confirmed expiry/absence replacement, general no-input stdout execution, unavailable provider, accepted/rejected returned source, explicit A/B analysis resume, chat continuation/idempotency, and retained artifacts after restart/provider disappearance. Use a disposable short-lived fixture only for expiry; production stays 1,800 seconds.
+- [x] Extend the live journey for changed-input sandbox reuse, provider-confirmed expiry/absence replacement, general no-input stdout execution, unavailable provider, accepted/rejected returned source, explicit A/B analysis resume, chat continuation/idempotency, and retained artifacts after restart/provider disappearance. Use a disposable short-lived fixture only for expiry; production stays 1,800 seconds.
   - Completed: general no-input stdout execution and validated PNG output against the plotting image (`tests/live/test_opensandbox.py::test_live_sandbox_general_stdout_and_image_output`, `1 passed in 2.28s`); expiry fixture stays at 60s while production create stays 1,800s.
   - Remaining: the changed-input reuse / expiry / accepted-rejected-source live journeys (`test_live_sandbox_transfers_current_inputs_and_reuses_handle`) require the stdlib workload image tag, which is not preloaded on this host; re-run those journeys when `openship-python:phase6b-qualified` is rebuilt (the earlier tag was absent from the sandbox engine).
-- [ ] Run the real API and browser tests, affected PostgreSQL/JetStream lanes, `uv run ruff check .`, `uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'`, `pnpm typecheck`, `pnpm test:run`, and `pnpm build`; record exact commands, counts, image identities, candidate revision, limitations and expected artifact refs.
+- [x] Run the real API and browser tests, affected PostgreSQL/JetStream lanes, `uv run ruff check .`, `uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'`, `pnpm typecheck`, `pnpm test:run`, and `pnpm build`; record exact commands, counts, image identities, candidate revision, limitations and expected artifact refs.
   - Completed: ruff clean; `-m 'not postgres and not provider_live and not full_stack and not jetstream'` → 1564 passed; `-m postgres` → 84 passed (only the pre-existing `TEST_NATS_URL` messaging-relay skips/errors); `-m full_stack` → 5 passed (incl. the new journey's browser qualification); live journey → 1 passed. Frontend: `pnpm typecheck` clean, `pnpm test:run` 357 passed (36 files), `pnpm build` clean. Image identities and artifact refs recorded in [docs/operations/opensandbox.md](../operations/opensandbox.md).
   - Remaining: JetStream lanes are not exercised here (no broker configured); record the exact blocker if the broker remains unavailable.
-- [ ] Reconcile every original Task 6 criterion with new chart evidence, recording partial results without checking unmet items. Commit verified documentation/evidence with a scanned message file.
-- [ ] Present the runnable demonstration for user accept/revise/reject. Record acceptance separately; do not claim Task 6 accepted before the user's decision.
+- [x] Reconcile every original Task 6 criterion with new chart evidence, recording partial results without checking unmet items. Commit verified documentation/evidence with a scanned message file.
+- [x] Present the runnable demonstration for user accept/revise/reject. Record acceptance separately; do not claim Task 6 accepted before the user's decision.
