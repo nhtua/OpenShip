@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 from pathlib import Path
 
 
@@ -111,6 +112,11 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
             "done\n"
             'if [ -n "${FAKE_SUB_OVERRIDE:-}" ]; then sub="$FAKE_SUB_OVERRIDE"; fi\n'
             'case "$sub" in\n'
+            '  info)\n'
+            '    if [ -n "${FAKE_INFO_JSON:-}" ]; then printf \'%s\\n\' "$FAKE_INFO_JSON"; '
+            f'elif [ "{name}" = podman ]; then printf \'%s\\n\' \'{{"host":{{"arch":"amd64","os":"linux"}}}}\'; '
+            'else printf \'%s\\n\' \'{"Architecture":"amd64","OSType":"linux"}\'; fi\n'
+            '    exit "${FAKE_INFO_RC:-0}";;\n'
             "  inspect)\n"
             '    if [ -n "${FAKE_INSPECT_JSON:-}" ]; then printf \'%s\\n\' "$FAKE_INSPECT_JSON"; '
             "else printf '%s\\n' '[{\"Id\": \"IMAGEID-FROMCANNED\", \"Machine\": \"x86_64\"}]'; fi\n"
@@ -129,7 +135,10 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
         )
         script.chmod(0o755)
     monkeypatch.setitem(os.environ, "PATH", f"{bin_dir}:{os.environ['PATH']}")
-    monkeypatch.setitem(os.environ, "OPENSHIP_SANDBOX_ENGINE_SOCKET", "/run/fixtures/openship.sock")
+    socket_path = tmp_path / "manager.sock"
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.bind(str(socket_path))
+    monkeypatch.setitem(os.environ, "OPENSHIP_SANDBOX_ENGINE_SOCKET", str(socket_path))
     return {
         "root": root,
         "sandbox": sandbox,

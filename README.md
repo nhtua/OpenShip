@@ -72,7 +72,7 @@ cp .env.example .env
 | `MODEL_PROFILES_JSON`, `MODEL_DEFAULT_PROFILE_ID` | A model/endpoint you can access and its matching default profile ID. Review the supplied examples using the [provider guide](docs/provider-support.md). |
 | `OPENAI_API_KEY` (or your profile's credential binding) | Your model provider key. The supplied profiles use `OPENAI_API_KEY`. |
 | `OPENSHIP_SANDBOX_SERVER_IMAGE`, `OPENSHIP_SANDBOX_GATEWAY_IMAGE` | The pinned provider images from [`deploy/sandbox/images.json`](deploy/sandbox/images.json). |
-| `SANDBOX_ENABLED`, `SANDBOX_IMAGE` | Set `true` and the workload image you build with the [sandbox image setup](docs/development.md#sandbox-images-for-dev). Leave the standard `python311` / `stdlib` identity for that image. |
+| `SANDBOX_ENABLED`, `SANDBOX_IMAGE`, `SANDBOX_PROFILE_ID`, `SANDBOX_DEPENDENCY_IDENTITY` | Set `true`, build a managed profile with the [sandbox image setup](docs/development.md#sandbox-images-for-dev), then paste the three `SANDBOX_*` assignments it prints. The legacy `python311` / `stdlib` identity only applies to the older `Dockerfile.python` build. |
 
 For global tool management, set `CONNECTOR_OPERATOR_USERNAME` to the account you
 will register. Search/AWS Connectors also need a stable `CONNECTOR_INSTALLATION_ID`

@@ -120,3 +120,15 @@ def test_unsupported_platform_and_missing_image_fail_before_build(tmp_path, monk
     assert engine.inspect_image("IMAGEID-FROMCANNED")["Id"] == "IMAGEID-FROMCANNED"
     invoked = [part for line in catalog["log"].read_text().splitlines() for part in line.split()]
     assert "build" not in invoked
+
+
+@pytest.mark.parametrize("info", [
+    '{"Architecture":"arm64","OSType":"linux"}',
+    '{"Architecture":"amd64","OSType":"windows"}',
+    '{"host":{"arch":"amd64","os":"linux"}}',
+])
+def test_engine_info_rejects_wrong_platform_or_engine(tmp_path, monkeypatch, info):
+    build_catalog(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_INFO_JSON", info)
+    with pytest.raises(ImageError):
+        Engine("docker", "/run/fixtures/openship.sock", PLATFORM).info()

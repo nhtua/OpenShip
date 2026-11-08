@@ -55,9 +55,22 @@ class Engine:
             raise ImageError(f"engine executable is not usable: {self.cli}") from exc
 
     def info(self) -> subprocess.CompletedProcess:
-        res = self._run(["info"])
+        try:
+            res = self._run(["info", "--format", "{{json .}}"], timeout=15)
+        except subprocess.TimeoutExpired as exc:
+            raise ImageError("selected engine did not answer info; check the socket and daemon") from exc
         if res.returncode != 0:
-            raise ImageError(f"engine not reachable at {self.endpoint}: {res.stderr.strip()[:200]}")
+            raise ImageError("selected engine is not reachable; check OPENSHIP_SANDBOX_ENGINE_SOCKET")
+        try:
+            data = json.loads(res.stdout)
+            if self.cli == "podman":
+                arch, operating_system = data["host"]["arch"], data["host"]["os"]
+            else:
+                arch, operating_system = data["Architecture"], data["OSType"]
+            if arch not in ("x86_64", "amd64") or operating_system != "linux":
+                raise ImageError("selected engine must serve linux/amd64")
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ImageError("selected engine metadata does not match the requested Docker/Podman engine") from exc
         return res
 
     def inspect_image(self, reference: str) -> dict | None:
@@ -80,13 +93,13 @@ class Engine:
         return entry
 
     def build(self, dockerfile, context, tag: str, build_args: dict, labels: dict) -> str:
-        args = ["build", "-f", str(dockerfile), "-t", tag]
+        args = ["build", "--platform", self.platform, "-f", str(dockerfile), "-t", tag]
         args += [element for key, value in build_args.items() for element in ("--build-arg", f"{key}={value}")]
         args += [element for key, value in labels.items() for element in ("--label", f"{key}={value}")]
         args.append(str(context))
         res = self._run(args)
         if res.returncode != 0:
-            raise ImageError(f"image build for tag {tag} failed: {res.stderr.strip()[:200]}")
+            raise ImageError(f"image build for tag {tag} failed (exit {res.returncode}); no local success record was saved")
         inspected = self.inspect_image(tag)
         if inspected is None:
             raise ImageError(f"built image for tag {tag} is not in the selected engine's store")

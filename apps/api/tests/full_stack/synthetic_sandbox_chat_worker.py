@@ -105,6 +105,8 @@ class _LoggingSandboxClient(sandbox_tool.OpenSandboxClient):
                                 "kind": "create",
                                 "sandbox_id": data["id"],
                                 "image": kwargs.get("json", {}).get("image", {}).get("uri"),
+                                "profile_id": os.environ.get("SANDBOX_PROFILE_ID"),
+                                "dependency_identity": os.environ.get("SANDBOX_DEPENDENCY_IDENTITY"),
                             },
                         )
                     return response

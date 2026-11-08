@@ -606,7 +606,8 @@ When a workflow is created or updated, the agent parses the markdown definition 
 
 ### Phase 6C — Agreed Image Scope
 
-**Agreed 2026-11-07; implementation pending.** Add four prebuilt sandbox images:
+**Agreed 2026-11-07; implementation and local image validation complete, with
+dev-stack recreation and user acceptance pending.** Add four prebuilt sandbox images:
 `logs-data` (tabular analysis, charting, metadata extraction and log clustering),
 `iac-validation` (schema/IaC checks and diagrams), `standard` (Python 3.12+,
 Node.js and symbolic math), and `devops-shell` (Bash, Git, AWS/Azure/Google

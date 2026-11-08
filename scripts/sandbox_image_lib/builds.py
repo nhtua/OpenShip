@@ -12,10 +12,11 @@ import json
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
-from .catalog import ImageError, _declared_paths, _inventory
+from .catalog import ImageError, _declared_paths, _inventory, safe_input
 
 RECORD_FIELDS = (
     "schema_version",
@@ -31,7 +32,7 @@ RECORD_FIELDS = (
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _engine_key(engine) -> str:
@@ -39,7 +40,23 @@ def _engine_key(engine) -> str:
 
 
 def _record_dir(root: Path, engine) -> Path:
-    return root / ".openship" / "sandbox" / "images" / _engine_key(engine) / engine.platform.replace("/", "-")
+    directory = root / ".openship" / "sandbox" / "images" / _engine_key(engine) / engine.platform.replace("/", "-")
+    current = root
+    for part in directory.relative_to(root).parts:
+        current = current / part
+        if current.is_symlink():
+            raise ImageError("local build state path is unsafe")
+    return directory
+
+
+@contextmanager
+def _build_lock(root, engine, name):
+    directory = _record_dir(root, engine)
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(directory / f".{name}.build.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
 
 
 def _read_record(root: Path, engine, name: str) -> dict | None:
@@ -51,11 +68,18 @@ def _read_record(root: Path, engine, name: str) -> dict | None:
         return None
     try:
         record = json.loads(record_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or not all(key in record for key in RECORD_FIELDS):
+        return None
+    if any(not isinstance(record[key], str) for key in RECORD_FIELDS if key != "schema_version"):
+        return None
+    try:
+        datetime.fromisoformat(record["built_at"])
     except ValueError:
         return None
-    if not all(key in record for key in RECORD_FIELDS):
-        return None
-    if record["schema_version"] != 1 or record["engine_identity"] != engine.identity:
+    if (record["schema_version"] != 1 or record["engine_identity"] != engine.identity
+            or record["profile_id"] != name or record["platform"] != engine.platform):
         return None
     return record
 
@@ -65,26 +89,22 @@ def _write_record(root: Path, engine, name: str, payload: dict) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     if directory.is_symlink():
         raise ImageError("local build state path is unsafe")
-    lock_path = directory / f".{name}.lock"
-    with open(lock_path, "w") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            temporary = directory / f".{name}.json.tmp.{os.getpid()}"
-            temporary.write_text(json.dumps(payload, indent=2, sort_keys=True))
-            os.replace(temporary, directory / f"{name}.json")
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as temporary:
+        json.dump(payload, temporary, indent=2, sort_keys=True)
+    os.replace(temporary.name, directory / f"{name}.json")
 
 
-def _stage(root: Path, rels) -> Path:
+@contextmanager
+def _stage(root: Path, rels):
     """Copy only the declared inputs into a throwaway build context."""
-    context = Path(tempfile.mkdtemp(prefix="openship-build-context-"))
-    for rel in rels:
-        source = root / rel
-        target = context / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(source.read_bytes())
-    return context
+    with tempfile.TemporaryDirectory(prefix="openship-build-context-") as temporary:
+        context = Path(temporary)
+        for rel in rels:
+            source = safe_input(root, rel)
+            target = context / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+        yield context
 
 
 def inspect_status(root: Path, recipe, engine) -> dict:
@@ -94,6 +114,7 @@ def inspect_status(root: Path, recipe, engine) -> dict:
         status = "missing"
     elif (
         record["fingerprint"] == recipe.fingerprint
+        and record["dependency_identity"] == recipe.dependency_identity
         and record["image_tag"] == recipe.image_tag
         and inspected is not None
         and inspected["Id"] == record["image_id"]
@@ -102,6 +123,9 @@ def inspect_status(root: Path, recipe, engine) -> dict:
     else:
         status = "stale"
     smoke = record.get("smoke") if record and isinstance(record.get("smoke"), dict) else None
+    if smoke and (status != "matching" or smoke.get("image_id") != inspected["Id"]
+                  or smoke.get("fingerprint") != recipe.fingerprint or smoke.get("status") not in ("passed", "failed")):
+        smoke = None
     return {
         "status": status,
         "image_id": inspected["Id"] if inspected else None,
@@ -124,6 +148,7 @@ def _tool_build_args(root: Path, recipe, entry) -> dict:
             archived = tools_doc["tools"][name][recipe.platform]
             args[f"{name.upper()}_URL"] = archived["url"]
             args[f"{name.upper()}_SHA256"] = archived["sha256"]
+            args[f"{name.upper()}_VERSION"] = archived["version"]
         except (KeyError, ValueError, TypeError):
             raise ImageError(f"tool {name} has no archive entry for {recipe.platform}")
     return args
@@ -137,6 +162,11 @@ def _profile_rels(root: Path, recipe) -> tuple:
 
 
 def ensure_base(root: Path, recipe, engine) -> None:
+    with _build_lock(root, engine, "base"):
+        _ensure_base(root, recipe, engine)
+
+
+def _ensure_base(root: Path, recipe, engine) -> None:
     record = _read_record(root, engine, "base")
     inspected = engine.inspect_image(recipe.base_tag)
     if (
@@ -157,14 +187,14 @@ def ensure_base(root: Path, recipe, engine) -> None:
         value = pins.get(key)
         if value is not None:
             build_args[key.upper()] = value
-    context = _stage(root, base_rels)
-    image_id = engine.build(
-        context / _inventory(root)["managed_base"]["dockerfile"],
-        context,
-        recipe.base_tag,
-        build_args,
-        {"openship.role": "base"},
-    )
+    with _stage(root, base_rels) as context:
+        image_id = engine.build(
+            context / _inventory(root)["managed_base"]["dockerfile"],
+            context,
+            recipe.base_tag,
+            build_args,
+            {"openship.role": "base"},
+        )
     _write_record(
         root,
         engine,
@@ -184,22 +214,31 @@ def ensure_base(root: Path, recipe, engine) -> None:
 
 
 def ensure_image(root: Path, recipe, engine) -> dict:
+    with _build_lock(root, engine, recipe.profile.id):
+        return _ensure_image(root, recipe, engine)
+
+
+def _ensure_image(root: Path, recipe, engine) -> dict:
     status = inspect_status(root, recipe, engine)
     if status["status"] == "matching":
         return {"status": "matching", "image_id": status["image_id"], "smoke": status["smoke"]}
     ensure_base(root, recipe, engine)
     _base_rels, profile_rels = _profile_rels(root, recipe)
-    context = _stage(root, profile_rels)
     entry = _inventory(root)["managed_profiles"][recipe.profile.id]
     build_args = {"WORKLOAD_BASE_IMAGE": recipe.base_tag}
+    pins = json.loads((root / _inventory(root)["managed_base"]["pins"]).read_text())
+    snapshot = pins.get("debian_snapshot")
+    if snapshot:
+        build_args["DEBIAN_SNAPSHOT"] = snapshot
     build_args.update(_tool_build_args(root, recipe, entry))
-    image_id = engine.build(
-        context / entry["dockerfile"],
-        context,
-        recipe.image_tag,
-        build_args,
-        {"openship.profile": recipe.profile.id, "openship.fingerprint": recipe.fingerprint},
-    )
+    with _stage(root, profile_rels) as context:
+        image_id = engine.build(
+            context / entry["dockerfile"],
+            context,
+            recipe.image_tag,
+            build_args,
+            {"openship.profile": recipe.profile.id, "openship.fingerprint": recipe.fingerprint},
+        )
     try:
         run = engine.smoke(image_id)
         smoke_status = "passed" if run.returncode == 0 else "failed"
@@ -226,6 +265,11 @@ def ensure_image(root: Path, recipe, engine) -> dict:
 
 
 def run_smoke(root: Path, recipe, engine) -> dict:
+    with _build_lock(root, engine, recipe.profile.id):
+        return _run_smoke(root, recipe, engine)
+
+
+def _run_smoke(root: Path, recipe, engine) -> dict:
     status = inspect_status(root, recipe, engine)
     if status["status"] != "matching":
         raise ImageError(

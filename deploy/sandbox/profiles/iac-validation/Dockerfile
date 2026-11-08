@@ -2,6 +2,7 @@ ARG WORKLOAD_BASE_IMAGE
 FROM ${WORKLOAD_BASE_IMAGE}
 ARG TFLINT_URL
 ARG TFLINT_SHA256
+ARG DEBIAN_SNAPSHOT
 COPY deploy/sandbox/profiles/iac-validation/os-packages.lock /tmp/os-packages.lock
 COPY deploy/sandbox/profiles/iac-validation/install.sh /tmp/install.sh
 COPY deploy/sandbox/profiles/iac-validation/requirements.lock /tmp/requirements.lock

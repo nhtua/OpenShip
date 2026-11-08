@@ -46,6 +46,22 @@ def _inventory(root: Path) -> dict:
         raise ImageError("unreadable deploy/sandbox/images.json") from exc
 
 
+def safe_input(root: Path, relative: str) -> Path:
+    """Only regular, non-secret recipe files beneath deploy/sandbox may be sent."""
+    if (not isinstance(relative, str) or not relative.startswith("deploy/sandbox/")
+            or any(part in ("", ".", "..", "secrets", ".env", ".openship", "config.local.toml")
+                   for part in relative.split("/"))):
+        raise ImageError("declared input is outside the permitted sandbox recipe tree")
+    path = root
+    for component in relative.split("/"):
+        path = path / component
+        if path.is_symlink():
+            raise ImageError(f"symlinked build input cannot be staged safely: {relative}")
+    if not path.is_file():
+        raise ImageError(f"declared build input is missing: {relative}")
+    return path
+
+
 def _declared_paths(images: dict, base_entry: dict, entry: dict) -> tuple:
     """Relative paths of every declared build input, base first."""
 
@@ -68,7 +84,7 @@ def _declared_paths(images: dict, base_entry: dict, entry: dict) -> tuple:
         entry,
         ("dockerfile", "requirements_in", "requirements_lock", "os_packages_lock", "smoke", "install_helper"),
     )
-    return base_rels, profile_rels + list(entry.get("extra_inputs", []))
+    return base_rels, list(dict.fromkeys(profile_rels + list(entry.get("extra_inputs", []))))
 
 
 def load_profile(root: Path, profile_id: str) -> ProfileSpec:
@@ -110,16 +126,12 @@ def resolve_recipe(root: Path, profile_id: str, platform: str) -> Recipe:
 
     hashed = {}
     for rel in base_rels + profile_rels:
-        path = root / rel
-        if path.is_symlink():
-            raise ImageError(f"symlinked build input cannot be staged safely: {rel}")
-        if not path.is_file():
-            raise ImageError(f"declared build input is missing: {rel}")
+        path = safe_input(root, rel)
         hashed[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
 
     tool_names = entry.get("tools", [])
     if tool_names:
-        tools_path = root / "deploy/sandbox/tools.lock.json"
+        tools_path = safe_input(root, "deploy/sandbox/tools.lock.json")
         if tools_path.is_symlink() or not tools_path.is_file():
             raise ImageError("declared tool manifest is missing or unsafe")
         try:

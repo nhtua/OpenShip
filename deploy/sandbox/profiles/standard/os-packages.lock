@@ -1,6 +1,6 @@
 # exact OS packages required from the Debian 13 (trixie) snapshot for the standard profile
 # all already present in the digest-pinned python:3.12-slim base at the recorded
-# snapshot (deploy/sandbox/pins.json debian_snapshot 2026-11-05T17:07:19Z); no apt installs
+# upstream base (fixed by python_base_image digest in pins.json); no apt installs
 bash 5.2.37-2+b10
 coreutils 9.7-3
 gzip 1.13-1+deb13u1

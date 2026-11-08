@@ -53,7 +53,8 @@ Commands:
     SERVICES: postgres, nats, nats-nui
   bootstrap --check|--apply
   doctor
-  start [--cutover UUID] | stop | status
+  start [--cutover UUID] [--build-sandbox] | stop | status
+  sandbox-images list|build PROFILE|build --all|smoke PROFILE  dev only
   startup preview|apply [--cutover-id UUID --dev-confirmed --writers-stopped]
   cutover preview|apply|verify [options]
   rollback preview|apply [options]
@@ -71,6 +72,8 @@ use it consistently with start, stop and status. This does not implement or
 enable generated-code execution in OpenShip. init-sandbox prepares the
 provider config, gateway API key and Nginx auth map under protected paths;
 --sandbox start then wires them into the Compose services automatically.
+Normal sandbox start preflights/reuses the selected managed image, without building.
+start --build-sandbox requires dev and --sandbox and builds only the selected profile.
 USAGE
 }
 
@@ -121,6 +124,21 @@ COMMAND="${1:-}"
 shift || true
 [[ -n "$COMMAND" ]] || { usage >&2; exit 2; }
 load_container_engine
+
+if [[ "$COMMAND" == sandbox-images ]]; then
+  [[ "$ENVIRONMENT" == dev ]] || { echo "sandbox-images is dev-only" >&2; exit 2; }
+  case "${1:-}" in
+    list|build|smoke) ;;
+    *) echo "usage: scripts/openship-stack -e dev sandbox-images list|build PROFILE|build --all|smoke PROFILE" >&2; exit 2 ;;
+  esac
+  exec python3 "$ROOT/scripts/sandbox_images.py" --root "$ROOT" --engine "$CONTAINER_ENGINE" "$@"
+fi
+for option in "$@"; do
+  if [[ "$option" == --build-sandbox ]] && [[ "$COMMAND" != start || "$ENVIRONMENT" != dev || "$SANDBOX" != 1 ]]; then
+    echo "--build-sandbox requires dev --sandbox start" >&2
+    exit 2
+  fi
+done
 
 secret_dir() {
   if [[ -n "${OPENSHIP_SECRETS_DIR:-}" ]]; then
@@ -533,9 +551,14 @@ finish_dev_cutover() {
 }
 
 start_dev_stack() {
-  local confirm_cutover_id="" status cutover_id close_failed
+  local confirm_cutover_id="" status cutover_id close_failed build_sandbox=0
   while (($#)); do
     case "$1" in
+      --build-sandbox)
+        ((build_sandbox == 0)) || { echo "--build-sandbox may be provided once" >&2; return 2; }
+        build_sandbox=1
+        shift
+        ;;
       --cutover)
         [[ -z "$confirm_cutover_id" ]] || { echo "--cutover may be provided once" >&2; return 2; }
         (($# >= 2)) || { echo "--cutover requires the Cutover ID printed by the first dev start" >&2; return 2; }
@@ -551,6 +574,11 @@ start_dev_stack() {
   done
 
   [[ -f "$ROOT/.env" ]] || { echo "copy .env.example to .env first" >&2; return 2; }
+  if ((SANDBOX)); then
+    local image_args=(preflight)
+    if ((build_sandbox)); then image_args+=(--build); fi
+    python3 "$ROOT/scripts/sandbox_images.py" --root "$ROOT" --engine "$CONTAINER_ENGINE" "${image_args[@]}" || return $?
+  fi
   initialize_dev_messaging_if_missing
   initialize_dev_artifacts
   prepare_nui_context dev

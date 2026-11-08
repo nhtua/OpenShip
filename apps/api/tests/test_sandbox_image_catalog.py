@@ -160,3 +160,30 @@ def test_logs_data_packaging_and_lock_are_isolated_from_standard(tmp_path):
         lock.write("\n# fixture change\n")
     assert resolve_recipe(root, "logs-data", PLATFORM).fingerprint != logs.fingerprint
     assert resolve_recipe(root, "standard", PLATFORM).fingerprint == standard.fingerprint
+
+
+@pytest.mark.parametrize("rel", ["../private", "secrets/key", "deploy/sandbox/config.local.toml"])
+def test_declared_extras_cannot_stage_protected_or_traversing_inputs(tmp_path, monkeypatch, rel):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    root = catalog["root"]
+    source = root / rel
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("fixture-protected\n")
+    catalog["images"]["managed_profiles"]["logs-data"]["extra_inputs"] = [rel]
+    (root / "deploy/sandbox/images.json").write_text(json.dumps(catalog["images"]))
+    with pytest.raises(ImageError):
+        resolve_recipe(root, "logs-data", PLATFORM)
+    assert not catalog["log"].exists()
+
+
+def test_symlinked_ancestor_is_not_a_declared_build_input(tmp_path, monkeypatch):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    root = catalog["root"]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("fixture-only")
+    (root / "deploy/sandbox/profiles/logs-data/escape").symlink_to(outside, target_is_directory=True)
+    catalog["images"]["managed_profiles"]["logs-data"]["extra_inputs"] = ["deploy/sandbox/profiles/logs-data/escape/secret"]
+    (root / "deploy/sandbox/images.json").write_text(json.dumps(catalog["images"]))
+    with pytest.raises(ImageError):
+        resolve_recipe(root, "logs-data", PLATFORM)

@@ -93,6 +93,13 @@ def test_failed_build_never_commits_a_record(tmp_path, monkeypatch):
     assert not list((catalog["root"] / ".openship").rglob("logs-data.json"))
 
 
+def test_build_passes_the_debian_snapshot_declared_in_pins(tmp_path, monkeypatch):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    recipe = resolve_recipe(catalog["root"], "standard", PLATFORM)
+    ensure_image(catalog["root"], recipe, _engine())
+    assert "--build-arg DEBIAN_SNAPSHOT=2026-11-01T00:00:00Z" in catalog["log"].read_text()
+
+
 def test_concurrent_same_profile_builds_leave_one_valid_record(tmp_path, monkeypatch):
     catalog = build_catalog(tmp_path, monkeypatch)
     recipe = resolve_recipe(catalog["root"], "logs-data", PLATFORM)
@@ -210,3 +217,39 @@ def test_build_does_not_regenerate_locks(tmp_path, monkeypatch):
     recipe = resolve_recipe(root, "standard", PLATFORM)
     ensure_image(root, recipe, _engine())
     assert standard_lock.read_text() == generated
+
+
+def test_smoke_evidence_must_bind_current_image_and_recipe(tmp_path, monkeypatch):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    recipe = resolve_recipe(catalog["root"], "logs-data", PLATFORM)
+    ensure_image(catalog["root"], recipe, _engine())
+    path = next((catalog["root"] / ".openship").rglob("logs-data.json"))
+    record = json.loads(path.read_text())
+    record["smoke"]["image_id"] = "an-older-image"
+    path.write_text(json.dumps(record))
+    assert inspect_status(catalog["root"], recipe, _engine())["smoke"] is None
+
+
+def test_retagged_image_is_stale_even_when_the_recipe_is_unchanged(tmp_path, monkeypatch):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    recipe = resolve_recipe(catalog["root"], "logs-data", PLATFORM)
+    ensure_image(catalog["root"], recipe, _engine())
+    path = next((catalog["root"] / ".openship").rglob("logs-data.json"))
+    record = json.loads(path.read_text())
+    record["image_id"] = "sha256:" + "0" * 64
+    path.write_text(json.dumps(record))
+    status = inspect_status(catalog["root"], recipe, _engine())
+    assert status["status"] == "stale"
+    assert status["smoke"] is None
+
+
+def test_symlinked_state_ancestor_is_never_written(tmp_path, monkeypatch):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    root = catalog["root"]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (root / ".openship").symlink_to(elsewhere, target_is_directory=True)
+    recipe = resolve_recipe(root, "logs-data", PLATFORM)
+    with pytest.raises(ImageError):
+        ensure_image(root, recipe, _engine())
+    assert not list(elsewhere.iterdir())

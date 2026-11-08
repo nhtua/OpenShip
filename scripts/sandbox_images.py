@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Managed sandbox image commands: list, build, smoke and internal preflight.
-
-Progress and errors go to stderr; stdout carries only safe profile, build,
-status and runtime-setting output. Invalid input exits 2, a failed operation
-exits 1 and successful operations exit 0.
-"""
+"""Explicit image management; stdout contains safe status/runtime assignments only."""
 
 import os
 import sys
@@ -17,135 +12,107 @@ from sandbox_image_lib.builds import (
     runtime_values,
 )
 from sandbox_image_lib.catalog import ImageError, _inventory, resolve_recipe
+from sandbox_image_lib.config import (
+    MANAGED,
+    read_settings,
+    resolve_endpoint,
+    validate_selection,
+)
 from sandbox_image_lib.engine import Engine
 
 PLATFORM = "linux/amd64"
-
-USAGE = (
-    "usage: sandbox_images.py [--root PATH] --engine docker|podman "
-    "list | build PROFILE|--all | smoke PROFILE | preflight [--build]"
-)
-
-
-def _managed_profile_ids(root: Path) -> list:
-    images = _inventory(root)
-    return sorted(images.get("managed_profiles", {}))
+USAGE = "usage: sandbox_images.py [--root PATH] --engine docker|podman list | build PROFILE|--all | smoke PROFILE | preflight [--build]"
 
 
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     root = Path(__file__).resolve().parents[1]
-    engine_cli = None
-    while args and args[0].startswith("--") and args[0] not in ("list", "build", "smoke", "preflight"):
+    cli = None
+    while args and args[0].startswith("--"):
         token = args.pop(0)
-        if token == "--root":
-            if not args:
-                print(USAGE, file=sys.stderr)
-                return 2
-            root = Path(args.pop(0))
-        elif token.startswith("--root="):
-            root = Path(token.split("=", 1)[1])
-        elif token == "--engine":
-            if not args:
-                print(USAGE, file=sys.stderr)
-                return 2
-            engine_cli = args.pop(0)
-        elif token.startswith("--engine="):
-            engine_cli = token.split("=", 1)[1]
-        else:
+        if token not in ("--root", "--engine") or not args:
             print(USAGE, file=sys.stderr)
             return 2
-    if engine_cli not in ("docker", "podman") or not args:
+        value = args.pop(0)
+        if token == "--root":
+            root = Path(value)
+        else:
+            cli = value
+    if cli not in ("docker", "podman") or not args:
         print(USAGE, file=sys.stderr)
         return 2
     command, args = args[0], args[1:]
-
-    socket = os.environ.get("OPENSHIP_SANDBOX_ENGINE_SOCKET")
-    if not socket:
-        if engine_cli == "podman":
-            xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-            socket = f"{xdg_runtime}/openship-sandbox/podman.sock" if xdg_runtime else None
-        else:
-            socket = "/var/run/docker.sock"
-    if not socket:
-        print("no engine socket: set OPENSHIP_SANDBOX_ENGINE_SOCKET or XDG_RUNTIME_DIR", file=sys.stderr)
-        return 2
-
-    known = _managed_profile_ids(root)
-
-    def unknown_profile_note(profile_id: str) -> None:
-        print(f"unknown sandbox profile: {profile_id} (known: {' '.join(known)})", file=sys.stderr)
-
-    try:
-        engine = Engine(engine_cli, socket, PLATFORM)
-        if command == "list":
-            for profile_id in known:
-                try:
-                    recipe = resolve_recipe(root, profile_id, PLATFORM)
-                    status = inspect_status(root, recipe, engine)
-                    print(
-                        f"{profile_id} platform={recipe.platform} fingerprint={recipe.fingerprint} "
-                        f"status={status['status']} built_at={status['built_at'] or '-'} "
-                        f"smoke={status['smoke'] or 'none'}"
-                    )
-                except ImageError as exc:
-                    print(f"{profile_id} error: {exc}")
-            return 0
-        if command == "build":
-            if args == ["--all"]:
-                profile_ids = known
-            elif len(args) == 1:
-                if args[0] not in known:
-                    unknown_profile_note(args[0])
-                    return 2
-                profile_ids = [args[0]]
-            else:
-                print(USAGE, file=sys.stderr)
-                return 2
-            failed = False
-            for profile_id in profile_ids:
-                recipe = resolve_recipe(root, profile_id, PLATFORM)
-                result = ensure_image(root, recipe, engine)
-                print(f"profile {profile_id}: {result['status']} image_id={result['image_id']} smoke={result['smoke']}")
-                for key, value in runtime_values(recipe).items():
-                    print(f"{key}={value}")
-                failed = failed or result["smoke"] != "passed"
-            return 1 if failed else 0
-        if command == "smoke":
-            if len(args) != 1:
-                print(USAGE, file=sys.stderr)
-                return 2
-            if args[0] not in known:
-                unknown_profile_note(args[0])
-                return 2
-            recipe = resolve_recipe(root, args[0], PLATFORM)
-            outcome = run_smoke(root, recipe, engine)
-            print(f"profile {recipe.profile.id} smoke={outcome['status']} image_id={outcome['image_id']}")
-            return 0 if outcome["status"] == "passed" else 1
-        if command == "preflight":
-            build_opt_in = args == ["--build"] or args == []
-            if args not in ([], ["--build"]):
-                print(USAGE, file=sys.stderr)
-                return 2
-            selected = os.environ.get("SANDBOX_PROFILE_ID")
-            if selected not in known:
-                print(f"preflight needs SANDBOX_PROFILE_ID naming a managed profile ({' '.join(known)})", file=sys.stderr)
-                return 2
-            recipe = resolve_recipe(root, selected, PLATFORM)
-            status = inspect_status(root, recipe, engine)
-            if build_opt_in and status["status"] != "matching":
-                result = ensure_image(root, recipe, engine)
-                return 0 if result["smoke"] == "passed" else 1
-            if status["status"] != "matching":
-                print(
-                    f"selected image for {selected} is {status['status']}; run "
-                    f"sandbox-images build {selected} or start --build-sandbox",
-                    file=sys.stderr,
-                )
-                return 1
-            return 0
+    valid = ((command == "list" and not args)
+             or (command in ("build", "smoke") and len(args) == 1)
+             or (command == "preflight" and args in ([], ["--build"])))
+    if not valid:
         print(USAGE, file=sys.stderr)
         return 2
+    try:
+        known = sorted(_inventory(root).get("managed_profiles", {}))
+        if (command in ("build", "smoke") and not (command == "build" and args == ["--all"])
+                and args[0] not in known):
+            print(f"unknown sandbox profile: {args[0]} (known: {' '.join(known)})", file=sys.stderr)
+            return 2
+        settings = read_settings(root, os.environ)
+        if command == "preflight":
+            build_requested = args == ["--build"]
+            enabled = settings["SANDBOX_ENABLED"].lower() in ("1", "true", "yes", "on")
+            selected = settings["SANDBOX_PROFILE_ID"]
+            if not build_requested and (not enabled or selected not in MANAGED):
+                return 0
+            if selected not in known:
+                raise ImageError("--build-sandbox requires an explicitly selected managed SANDBOX_PROFILE_ID")
+            if build_requested and not enabled:
+                # Parse the managed literals, without enabling the actual environment.
+                settings = read_settings(root, {**os.environ, "SANDBOX_ENABLED": "true"})
+            recipe = resolve_recipe(root, selected, PLATFORM)
+            validate_selection(recipe, settings)
+        endpoint = resolve_endpoint(cli, settings)
+    except (ImageError, OSError) as exc:
+        print(f"sandbox-images: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        engine = Engine(cli, endpoint, PLATFORM)
+        engine.info()
+        if command == "preflight":
+            status = inspect_status(root, recipe, engine)
+            if build_requested:
+                result = ensure_image(root, recipe, engine)
+                if result["smoke"] != "passed":
+                    raise ImageError(f"smoke failed for {selected}; run sandbox-images smoke {selected}")
+            elif status["status"] != "matching" or status["smoke"] != "passed":
+                raise ImageError(f"selected image for {selected} is missing/stale or has no passed smoke; "
+                                 f"run sandbox-images build {selected}, then sandbox-images smoke {selected}")
+            return 0
+        if command == "list":
+            failed = False
+            for name in known:
+                try:
+                    recipe = resolve_recipe(root, name, PLATFORM)
+                    status = inspect_status(root, recipe, engine)
+                    print(f"{name} platform={recipe.platform} fingerprint={recipe.fingerprint} "
+                          f"status={status['status']} image_id={status['image_id'] or '-'} "
+                          f"built_at={status['built_at'] or '-'} smoke={status['smoke'] or 'none'}")
+                except ImageError as exc:
+                    print(f"{name}: {exc}", file=sys.stderr)
+                    failed = True
+            return int(failed)
+        if command == "build":
+            failed = False
+            for name in known if args == ["--all"] else args:
+                recipe = resolve_recipe(root, name, PLATFORM)
+                result = ensure_image(root, recipe, engine)
+                print(f"profile {name}: {result['status']} image_id={result['image_id']} smoke={result['smoke']}")
+                for key, value in runtime_values(recipe).items():
+                    print(f"{key}={value}")
+                failed |= result["smoke"] != "passed"
+            return int(failed)
+        recipe = resolve_recipe(root, args[0], PLATFORM)
+        result = run_smoke(root, recipe, engine)
+        print(f"profile {recipe.profile.id} smoke={result['status']} image_id={result['image_id']}")
+        return int(result["status"] != "passed")
     except ImageError as exc:
         print(f"sandbox-images: {exc}", file=sys.stderr)
         return 1

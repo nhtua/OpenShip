@@ -42,6 +42,21 @@
     "install_helper": "deploy/sandbox/install_pinned.py"
   },
   "managed_profiles": {
+    "devops-shell": {
+      "dockerfile": "deploy/sandbox/profiles/devops-shell/Dockerfile",
+      "requirements_in": "deploy/sandbox/profiles/devops-shell/requirements.in",
+      "requirements_lock": "deploy/sandbox/profiles/devops-shell/requirements.lock",
+      "os_packages_lock": "deploy/sandbox/profiles/devops-shell/os-packages.lock",
+      "smoke": "deploy/sandbox/profiles/devops-shell/smoke.py",
+      "install_helper": "deploy/sandbox/profiles/devops-shell/install.py",
+      "extra_inputs": [
+        "deploy/sandbox/profiles/devops-shell/azure-cli.in",
+        "deploy/sandbox/profiles/devops-shell/azure-cli.lock",
+        "deploy/sandbox/profiles/devops-shell/az",
+        "deploy/sandbox/build-requirements.lock"
+      ],
+      "tools": ["aws", "gcloud", "terraform", "terragrunt"]
+    },
     "iac-validation": {
       "dockerfile": "deploy/sandbox/profiles/iac-validation/Dockerfile",
       "requirements_in": "deploy/sandbox/profiles/iac-validation/requirements.in",

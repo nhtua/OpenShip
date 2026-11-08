@@ -11,7 +11,7 @@ Build OpenShip through **small, end-to-end milestones**, rather than finishing e
 
 This roadmap is based on the [OpenShip Harness Architecture](./architects.md) in PR #18, at architecture revision `9fe9f37`, and was reviewed after delivery of Phases 1–3.
 
-**Delivery baseline:** The user confirmed **Phases 1–5 complete**, **6A implemented** (PR #31 at `5fe6e03`), and **6B complete** (PR #32 at `60f0917`). Earlier descriptions/qualification records retain their historical evidence scope, not new deployment guarantees; the 6B operations record still distinguishes the verified chat-directed Python journey from pending analysis-specific journeys. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **6C's design is approved, with implementation plan review pending; Phases 7–21 remain pending delivery work.** The Phase 10B two-role direction is an agreed design, not implementation or acceptance.
+**Delivery baseline:** The user confirmed **Phases 1–5 complete**, **6A implemented** (PR #31 at `5fe6e03`), and **6B complete** (PR #32 at `60f0917`). Earlier descriptions/qualification records retain their historical evidence scope, not new deployment guarantees; the 6B operations record still distinguishes the verified chat-directed Python journey from pending analysis-specific journeys. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **6C's implementation and local image validation are complete; dev-stack recreation, the live `logs-data` chart journey and user acceptance remain pending; Phases 7–21 remain pending delivery work.** The Phase 10B two-role direction is an agreed design, not implementation or acceptance.
 
 **Accepted forward architecture change:** NATS with JetStream is the main internal message broker. [Architecture §5](./architects.md#nats-messaging-foundation) defines routing, request/reply, and durable delivery. Phase **6A** introduces that transport and concurrent chat/SSE delivery; **6B** retains the generated-code/artifact milestone. This change applies from Phase 6 onward and does not rewrite or reopen Phases 1–5. Broker selection is accepted; implementation details and phase acceptance still require their normal review.
 
@@ -337,7 +337,7 @@ Start with one credential-free Python standard-library profile and a fixed analy
 
 ##### 6C — Prebuilt Sandbox Images
 
-**Status:** Design approved 2026-11-07; implementation plan review and execution-method selection pending. See the [6C design](./superpowers/specs/2026-11-07-phase6c-sandbox-images-design.md) and [implementation plan](./superpowers/plans/2026-11-07-phase6c-sandbox-images.md). Implementation/builds have not started.
+**Status:** Implementation and local image validation complete 2026-11-07. Four images build on the normal Docker daemon and pass offline `runsc` smoke within unchanged limits; the developer stack has **not** been restarted, and live chat/user acceptance remains pending. See the [6C design](./superpowers/specs/2026-11-07-phase6c-sandbox-images-design.md), [implementation plan](./superpowers/plans/2026-11-07-phase6c-sandbox-images.md), and [local image validation record](./operations/opensandbox.md#local-image-validation-record-2026-11-07).
 
 **Build on:** 6B's workload Dockerfiles, deployment image inventory, operator-selected runtime identity and existing Python execution path. Preserve the legacy standard-library and plotting images and their identities.
 

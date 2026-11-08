@@ -1,6 +1,6 @@
 set -eu
 rm -f /etc/apt/sources.list.d/debian.sources
-echo 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261101T000000Z trixie main' > /etc/apt/sources.list
+echo "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} trixie main" > /etc/apt/sources.list
 apt-get update -qq
 grep -v '^#' /tmp/os-packages.lock | xargs apt-get install -y --no-install-recommends
 rm -rf /var/lib/apt/lists/*
