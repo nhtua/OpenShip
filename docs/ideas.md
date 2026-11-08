@@ -2,7 +2,7 @@
 type: story
 summary: Collected ideas, features, and design principles for OpenShip as a co-pilot for DevOps and platform engineers.
 status: in-progress
-date: 2026-10-25
+date: 2026-11-07
 ---
 
 # OpenShip — Ideas
@@ -603,6 +603,27 @@ When a workflow is created or updated, the agent parses the markdown definition 
 - Explicit recompilation requested by user.
 
 ## Sandbox Building
+
+### Phase 6C — Agreed Image Scope
+
+**Agreed 2026-11-07; implementation pending.** Add four prebuilt sandbox images:
+`logs-data` (tabular analysis, charting, metadata extraction and log clustering),
+`iac-validation` (schema/IaC checks and diagrams), `standard` (Python 3.12+,
+Node.js and symbolic math), and `devops-shell` (Bash, Git, AWS/Azure/Google
+Cloud CLIs, Terraform and Terragrunt). Dependencies are installed at build time;
+existing runtime networking, mounting and credential behavior stays unchanged.
+See [roadmap Phase 6C](./roadmap.md#6c--prebuilt-sandbox-images) and its
+[design](./superpowers/specs/2026-11-07-phase6c-sandbox-images-design.md).
+
+**Future proposal, not implemented or rejected:** Execute DevOps commands
+against a repository checked out for a workflow, with an isolated working
+directory and suitable review/results UX. Directory staging versus controlled
+mounting, network access and scoped cloud credentials need their own design and
+authorization work. Installing the CLI binaries in 6C does not enable those
+capabilities or authorize cloud actions. Connect future planning/apply work to
+roadmap Phases 16–17 rather than bypassing their controls.
+
+### Historical Sandbox Proposal
 
 > **Status: Stale — shared workspaces, automatic secrets, and runtime installation.** Use isolated per-run workspaces, selected artifact transfer, prebuilt profiles, and scoped credentials. Generated code starts without secrets or network access; artifacts persist separately from Git. See [architecture §12](./architects.md).
 

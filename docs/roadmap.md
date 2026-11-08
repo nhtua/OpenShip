@@ -2,7 +2,7 @@
 type: roadmap
 summary: Cumulative delivery phases that establish shared foundations with one working use case before expanding capabilities and deployment scale.
 status: proposed
-date: 2026-11-03
+date: 2026-11-07
 ---
 
 # OpenShip Delivery Roadmap
@@ -11,7 +11,7 @@ Build OpenShip through **small, end-to-end milestones**, rather than finishing e
 
 This roadmap is based on the [OpenShip Harness Architecture](./architects.md) in PR #18, at architecture revision `9fe9f37`, and was reviewed after delivery of Phases 1–3.
 
-**Delivery baseline:** The user confirmed **Phases 1–5 complete** and **6A implemented**, merged in PR #31 at `5fe6e03`. Earlier descriptions/qualification records retain their historical evidence scope, not new deployment guarantees. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **6B and Phases 7–21 remain pending delivery work.** The Phase 10B two-role direction is an agreed design, not implementation or acceptance.
+**Delivery baseline:** The user confirmed **Phases 1–5 complete**, **6A implemented** (PR #31 at `5fe6e03`), and **6B complete** (PR #32 at `60f0917`). Earlier descriptions/qualification records retain their historical evidence scope, not new deployment guarantees; the 6B operations record still distinguishes the verified chat-directed Python journey from pending analysis-specific journeys. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **6C has agreed scope, with implementation pending; Phases 7–21 remain pending delivery work.** The Phase 10B two-role direction is an agreed design, not implementation or acceptance.
 
 **Accepted forward architecture change:** NATS with JetStream is the main internal message broker. [Architecture §5](./architects.md#nats-messaging-foundation) defines routing, request/reply, and durable delivery. Phase **6A** introduces that transport and concurrent chat/SSE delivery; **6B** retains the generated-code/artifact milestone. This change applies from Phase 6 onward and does not rewrite or reopen Phases 1–5. Broker selection is accepted; implementation details and phase acceptance still require their normal review.
 
@@ -92,7 +92,7 @@ Keep the phase IDs stable for references. Phases 4 onward are dependency-ordered
 | 3 | The same workspace works across model providers — complete | 2 | S per adapter |
 | 4 | Trusted search and persistent conversation files — implemented | 3 | M per increment |
 | 5 | OpenShip inspects one real cloud environment safely | 4 | S–M |
-| 6 | NATS carries concurrent chat/events, then generated code produces controlled artifacts | 5; 6B builds on 6A | M per increment |
+| 6 | NATS carries concurrent chat/events, generated code produces controlled artifacts, then prebuilt images expand offline tooling | 5; 6B builds on 6A; 6C builds on 6B | M per increment |
 | 7 | A saved, typed workflow can be run repeatedly | 4, 6 | M per increment |
 | 8 | Workflows wait for input or approval across restarts | 7 | S–M |
 | 9 | Conversation becomes a reviewed, reusable workflow | 5, 7, 8 | M |
@@ -274,11 +274,11 @@ historical data migrations remain part of the application.
 
 #### Phase 6 — NATS Messaging and Controlled Execution
 
-**Milestones:** **6A:** "Several conversations progress through NATS without dispatch/event polling, and worker responses reach the correct client." **6B:** "OpenShip can write and run a small analysis program, then show me its outputs."
+**Milestones:** **6A:** "Several conversations progress through NATS without dispatch/event polling, and worker responses reach the correct client." **6B:** "OpenShip can write and run a small analysis program, then show me its outputs." **6C:** "I can build and select a prebuilt sandbox image with the libraries and CLI tools my offline task needs."
 
 **Build on:** The delivered Phases 1–5, preserving their HTTP commands, conversation history, pinned models/connectors, cancellation, ownership/fences, checkpoints, and event identities. The [accepted NATS direction](./ideas.md#nats-messaging-foundation) changes internal transport; it does not introduce a second runtime or permission path. Phase IDs 7–21 stay stable, and all later execution/event work builds on 6A.
 
-**Acceptance units:** **6B** builds on merged **6A** and carries forward applicable regressions. Each is a usable increment with its own evidence and user decision; the 6B scope reset does not reopen 6A deployment qualification.
+**Acceptance units:** **6B** builds on merged **6A** and carries forward applicable regressions. **6C** extends 6B's image packaging without changing execution authority or interfaces. Each is a usable increment with its own evidence and user decision; neither image expansion nor the 6B scope reset reopens 6A deployment qualification.
 
 ##### 6A — NATS Foundation and Concurrent Chat
 
@@ -309,7 +309,7 @@ historical data migrations remain part of the application.
 
 ##### 6B — Generated Code and Controlled Artifacts
 
-**Status:** Scope reset approved 2026-11-03; application implementation starts again from `main`. The previous implementation through `0a1fc6b` is abandoned, not a foundation to finish. Retain only selected bootstrap/deployment support and the revised [spec](./superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md)/[plan](./superpowers/plans/2026-10-28-phase6b-opensandbox-implementation.md); all implementation tracking restarts unchecked.
+**Status:** Complete as confirmed by the user on 2026-11-07; implemented and merged in [PR #32](https://github.com/nhtua/OpenShip/pull/32) at `60f0917`. The [operations record](./operations/opensandbox.md#real-chat-directed-python-journey--2026-11-06) documents the verified chat-directed Python journey and remaining analysis-specific qualification work; this delivery status does not claim those pending checks passed. The implementation followed the revised [spec](./superpowers/specs/2026-10-28-phase6b-sandbox-and-controlled-artifacts-design.md)/[plan](./superpowers/plans/2026-10-28-phase6b-opensandbox-implementation.md). The earlier implementation through `0a1fc6b` remains abandoned historical reference.
 
 **Build on:** Merged 6A and existing gateway/run/artifact contracts. OpenShip prepares source and selected input files, sends authenticated OpenSandbox requests, validates returned data and saves accepted results in workflow state. OpenSandbox owns sandbox lifecycle, isolation, resource enforcement, expiration, cleanup and deletion. Rootful Docker/gVisor is the first provider deployment; only manager infrastructure mounts the engine socket.
 
@@ -334,6 +334,29 @@ Start with one credential-free Python standard-library profile and a fixed analy
 - Provider failure/cancellation produces visible bounded failure; unsafe previews cannot execute browser code or escape storage. Existing applicable tests and one real-service demonstration pass, followed by user acceptance.
 
 **Not yet:** Generated code receiving cloud credentials or unrestricted internet access; OpenShip-owned sandbox lifecycle; a general workflow authoring system; provider isolation/security certification or the dedicated qualification platform.
+
+##### 6C — Prebuilt Sandbox Images
+
+**Status:** Scope agreed 2026-11-07; design review and implementation pending. See the [6C design](./superpowers/specs/2026-11-07-phase6c-sandbox-images-design.md).
+
+**Build on:** 6B's workload Dockerfiles, deployment image inventory, operator-selected runtime identity and existing Python execution path. Preserve the legacy standard-library and plotting images and their identities.
+
+**Build**
+
+- Add four version-pinned images/profiles: **`logs-data`** (CSV/JSON, Pandas, NumPy, Matplotlib, regex, pygrok, Drain3), **`iac-validation`** (jsonschema, PyYAML, Checkov, TFLint, Graphviz), **`standard`** (Python 3.12+, Node.js, SymPy and standard utilities), and **`devops-shell`** (Bash, Git, AWS CLI, Azure CLI, Google Cloud CLI, Terraform and Terragrunt).
+- Preinstall dependencies at image-build time; retain credential-free, offline execution. Include Python 3.12+ in each new image for compatibility with the existing Python entrypoint. CLI tools may be invoked from Python; packaging does not add a shell execution API.
+- Document image contents, exact dependency/runtime identities, build/preload commands, current operator selection, and dev-stack rebuild/restart instructions. Test imports and representative local operations with runtime networking disabled.
+
+**User demonstration:** Build/preload all four images on the selected sandbox engine, run their offline smoke checks, select `logs-data` using existing deployment settings, recreate the relevant dev-stack services, and produce a retained chart through the existing Python tool.
+
+**Exit gates**
+
+- All four images build with recorded base digests, dependency pins and resulting image identities; offline smoke checks pass as the unprivileged workload user.
+- Analysis parses/clusters sample logs, processes tabular data and renders a headless chart; validation checks sample schemas/configuration and renders a Graphviz diagram; standard execution exercises Python, Node.js and SymPy; DevOps CLIs report their versions and Terraform formats local configuration without cloud access.
+- Packaging/configuration regressions pass; legacy profile identities remain unchanged. No mount, network, credential, lifecycle, execution API or UI behavior changes are introduced.
+- Operator instructions distinguish image builds from service recreation and list limitations such as absent provider/module/plugin bundles. Live dev-stack testing and user acceptance are recorded separately from image smoke checks.
+
+**Deferred, not rejected:** Repository checkout and directory mounting/staging, writable workflow workspaces, per-task profile selection, a first-class shell tool, network-enabled execution, scoped cloud credentials, connected Terraform planning/apply, and their approval/UI flows. These remain future design options subject to the relevant authorization and execution controls; installing their binaries does not enable them in 6C.
 
 ### Wave C — Repeatable, Reviewed Workflows
 
