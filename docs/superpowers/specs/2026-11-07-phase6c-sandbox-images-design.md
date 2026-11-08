@@ -1,7 +1,7 @@
 ---
 type: spec
 summary: Four prebuilt offline sandbox images extending Phase 6B without changing execution, mounts, networking or credential authority.
-status: scope-agreed-design-awaiting-review
+status: approved-awaiting-plan-review
 date: 2026-11-07
 ---
 
@@ -22,8 +22,10 @@ Directory mounting, network access and connected infrastructure execution are
 their later addition. The image contents must not be confused with execution
 permissions or a new shell tool.
 
-This document awaits review. No new image build, runtime verification or
-dev-stack acceptance is claimed by its existence.
+The user approved this written design on 2026-11-07. The
+[implementation plan](../plans/2026-11-07-phase6c-sandbox-images.md) awaits
+review and execution-method selection. No new image build, runtime
+verification or dev-stack acceptance is claimed by these documents.
 
 ## Existing foundation
 
@@ -303,6 +305,6 @@ No blanket prohibition or implicit authorization is introduced here.
 - [x] Local builds, dependency pinning and opt-in build-on-start approach
   approved in conversation; incorporated into this written design.
 - [x] Design self-reviewed for scope, identity compatibility and evidence claims.
-- [ ] User reviews this written design.
+- [x] User reviews this written design; approved 2026-11-07.
 - [ ] Implementation plan reviewed and execution method selected.
 - [ ] Images implemented, built and verified; dev-stack handoff delivered.
