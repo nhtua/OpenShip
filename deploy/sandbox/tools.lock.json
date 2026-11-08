@@ -1,6 +1,14 @@
 {
   "schema_version": 1,
   "tools": {
+    "tflint": {
+      "linux/amd64": {
+        "version": "0.65.0",
+        "url": "https://github.com/terraform-linters/tflint/releases/download/v0.65.0/tflint_linux_amd64.zip",
+        "sha256": "d4c545ed2e29d6338604b586f34f544f380f70f243aa72f7b484713835eaec61",
+        "provenance": "Upstream GitHub v0.65.0 checksums.txt, fetched 2026-11-07; bundled Terraform language ruleset only"
+      }
+    },
     "node": {
       "linux/amd64": {
         "version": "22.23.4",

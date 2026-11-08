@@ -147,3 +147,16 @@ def test_profile_spec_matches_inventory_and_keeps_legacy_keys(tmp_path, monkeypa
     assert spec.extra_inputs == ()
     assert catalog["images"]["managed_profiles"]["standard"]["tools"] == ["node"]
     assert catalog["images"]["workload_dockerfile"] == "deploy/sandbox/Dockerfile.python"
+
+
+def test_logs_data_packaging_and_lock_are_isolated_from_standard(tmp_path):
+    import shutil
+
+    root = tmp_path / "repo"
+    shutil.copytree(ROOT / "deploy/sandbox", root / "deploy/sandbox")
+    standard = resolve_recipe(root, "standard", PLATFORM)
+    logs = resolve_recipe(root, "logs-data", PLATFORM)
+    with logs.profile.requirements_lock.open("a") as lock:
+        lock.write("\n# fixture change\n")
+    assert resolve_recipe(root, "logs-data", PLATFORM).fingerprint != logs.fingerprint
+    assert resolve_recipe(root, "standard", PLATFORM).fingerprint == standard.fingerprint

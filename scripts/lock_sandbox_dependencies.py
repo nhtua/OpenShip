@@ -1,138 +1,91 @@
 #!/usr/bin/env python3
-"""Explicit maintainer lock regeneration for one managed sandbox profile.
+"""Explicit, atomic lock regeneration using the pinned uv resolver.
 
-Image builds and stack start never call this; they consume the committed
-lock. This command resolves the direct requirements of a profile into a
-complete hash-locked closure: every entry pins an exact wheel URL and its
-published sha256 digest, so installation verifies content before extracting
-anything. Existing pins are kept unless --upgrade-package names them.
-
-usage: lock_sandbox_dependencies.py [--root PATH] PROFILE [--upgrade-package NAME]...
+Build/start never invoke this command. Resolution runs for Linux x86_64 and
+Python 3.12, with only the committed build prerequisites available to sdists.
 """
 
+import argparse
 import json
+import os
+import platform
 import re
+import shutil
 import subprocess
 import sys
-import urllib.request
+import tempfile
 from pathlib import Path
 
-USAGE = "usage: lock_sandbox_dependencies.py [--root PATH] PROFILE [--upgrade-package NAME]..."
 
-LOCK_PAT = re.compile(r"^# (?P<name>[A-Za-z0-9_.-]+)==(?P<version>\S+)")
-
-
-class LockError(Exception):
-    """A safe maintainer-facing failure naming a package or profile."""
-
-
-def _wheel_entry(index: dict, name: str) -> dict:
-    """Pick the installable wheel for the linux/amd64 cp312 build platform."""
-
-    universal = None
-    platform = None
-    for published in index.get("urls") or []:
-        if published.get("packagetype") != "bdist_wheel":
-            continue
-        filename = published.get("filename", "")
-        if filename.endswith("-py3-none-any.whl"):
-            universal = published
-            break
-        if "cp312-cp312-manylinux2014_x86_64" in filename and platform is None:
-            platform = published
-    chosen = universal or platform
-    if chosen is None:
-        raise LockError(f"no linux/amd64 cp312 wheel published for {name}")
-    digests = chosen.get("digests", {})
-    if "sha256" not in digests or not chosen.get("url", "").startswith("https://"):
-        raise LockError(f"published wheel for {name} carries no usable sha256 digest")
-    return {"version": (index.get("info") or {}).get("version", ""), "url": chosen["url"], "sha256": digests["sha256"]}
-
-
-def fetch_package_index(name: str, version: str | None = None) -> dict:
-    """Resolve one package to {version,url,sha256} from the package index."""
-
-    target = f"https://pypi.org/pypi/{name}/{version}/json" if version else f"https://pypi.org/pypi/{name}/json"
-    try:
-        with urllib.request.urlopen(target, timeout=30) as response:
-            index = json.loads(response.read())
-    except (OSError, ValueError) as exc:
-        raise LockError(f"package index unavailable for {name}: {exc}") from exc
-    return _wheel_entry(index, name)
+def _run(args, **kwargs):
+    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
 
 
 def main(argv=None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    root = Path(__file__).resolve().parents[1]
-    profile_id = None
-    upgrades = set()
-    while args:
-        token = args.pop(0)
-        if token == "--root":
-            if not args:
-                print(USAGE, file=sys.stderr)
-                return 2
-            root = Path(args.pop(0))
-        elif token == "--upgrade-package":
-            if not args:
-                print(USAGE, file=sys.stderr)
-                return 2
-            upgrades.add(args.pop(0))
-        elif token.startswith("-") or profile_id is not None:
-            print(USAGE, file=sys.stderr)
-            return 2
-        else:
-            profile_id = token
-    if profile_id is None:
-        print(USAGE, file=sys.stderr)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("profile")
+    parser.add_argument("--upgrade-package", action="append", default=[])
+    args = parser.parse_args(argv)
+    sandbox = args.root.resolve() / "deploy/sandbox"
+    if not re.fullmatch(r"[a-z][a-z0-9-]*", args.profile):
         return 2
-
-    profile = root / "deploy/sandbox/profiles" / profile_id
-    requirements_in = profile / "requirements.in"
-    if not requirements_in.is_file():
-        print(f"unknown sandbox profile: {profile_id}", file=sys.stderr)
+    directory = sandbox / "profiles" / args.profile
+    if not (directory / "requirements.in").is_file():
+        print(f"unknown sandbox profile: {args.profile}", file=sys.stderr)
         return 2
-
-    existing = {}
-    lock_path = profile / "requirements.lock"
-    if lock_path.is_file():
-        for line in lock_path.read_text().splitlines():
-            match = LOCK_PAT.match(line)
-            if match:
-                existing[match["name"]] = match["version"]
-
-    names = []
-    for line in requirements_in.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            names.append(line.split("==", 1)[0])
-
     try:
-        uv_probe = subprocess.run(["uv", "--version"], capture_output=True, text=True, timeout=30, check=False)
-        uv_line = "uv " + uv_probe.stdout.split()[1]
-    except (OSError, IndexError):
-        print("uv resolver tool not available on this host", file=sys.stderr)
+        pins = json.loads((sandbox / "pins.json").read_text())
+        version = _run(["uv", "--version"]).stdout.split()[1]
+        if version != pins["uv_version"]:
+            print(f"lock generation requires uv {pins['uv_version']}", file=sys.stderr)
+            return 1
+        if platform.system() != "Linux" or platform.machine() not in ("x86_64", "amd64"):
+            print("lock generation requires linux/amd64", file=sys.stderr)
+            return 1
+        locks = ["requirements"] + (["azure-cli"] if (directory / "azure-cli.in").is_file() else [])
+        generated = {}
+        with tempfile.TemporaryDirectory(prefix="openship-lock-") as temporary:
+            work = Path(temporary)
+            python = work / "venv/bin/python"
+            _run(["uv", "venv", str(work / "venv"), "--python", pins["python_version"]])
+            _run([
+                "uv", "pip", "sync", "--python", str(python), "--require-hashes",
+                str(sandbox / "build-requirements.lock"),
+            ])
+            for name in locks:
+                source = f"{name}.in"
+                output = f"{name}.lock"
+                shutil.copyfile(directory / source, work / source)
+                if (directory / output).exists():
+                    old = (directory / output).read_text()
+                    # Migrate the early URL-lock format without silently upgrading pins.
+                    if "# hash-locked by scripts/lock_sandbox_dependencies.py" in old:
+                        old = "\n".join(re.findall(r"^# ([\w.-]+==\S+)$", old, re.MULTILINE)) + "\n"
+                    (work / output).write_text(old)
+                command = [
+                    "uv", "pip", "compile", source, "--generate-hashes", "--no-build-isolation",
+                    "--python", str(python), "--python-platform", "x86_64-manylinux_2_28",
+                    "--output-file", output,
+                    "--custom-compile-command",
+                    (f"uv {version}: python3 scripts/lock_sandbox_dependencies.py {args.profile}"
+                     " (pip compile --generate-hashes --no-build-isolation; Python 3.12 linux/amd64)"),
+                ]
+                for package in args.upgrade_package:
+                    command += ["--upgrade-package", package]
+                _run(command, cwd=work)
+                generated[output] = (work / output).read_bytes()
+        for output, content in generated.items():
+            target = directory / output
+            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as staged:
+                staged.write(content)
+            os.replace(staged.name, target)
+        return 0
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print("lock generation failed; existing locks unchanged", file=sys.stderr)
+        if isinstance(exc, subprocess.CalledProcessError):
+            print(exc.stderr, file=sys.stderr)
         return 1
-
-    lines = [
-        f"# hash-locked by scripts/lock_sandbox_dependencies.py {profile_id}",
-        f"# resolver: {uv_line} (uv venv --python 3.12 / uv pip install -r requirements.in / uv pip freeze)",
-        "# install with: uv pip sync --python <profile python> requirements.lock (hash-verified)",
-    ]
-    try:
-        for name in sorted(set(names)):
-            version = existing.get(name) if name not in upgrades else None
-            entry = fetch_package_index(name, version) if version else fetch_package_index(name)
-            if not entry["version"]:
-                raise LockError(f"package index returned no version for {name}")
-            lines.append(f"# {name}=={entry['version']}")
-            lines.append(f"{name} @ {entry['url']}#sha256={entry['sha256']}")
-    except LockError as exc:
-        print(f"lock_sandbox_dependencies: {exc}", file=sys.stderr)
-        return 1
-
-    lock_path.write_text("\n".join(lines) + "\n")
-    return 0
 
 
 if __name__ == "__main__":

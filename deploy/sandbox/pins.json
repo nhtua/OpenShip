@@ -5,7 +5,6 @@
   "python_base_recorded": "pulled on the podman manager socket 2026-11-07; local image ID 78976a69c067520ef8be34cde307ef9f6fea6dcefa50edb57039773d241ca0db",
   "python_version": "3.12",
   "uv_version": "0.12.23",
-  "uv_image": "uv:0.12.23-linux-x86_64@sha256:9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6",
   "uv_url": "https://github.com/astral-sh/uv/releases/download/0.12.23/uv-x86_64-unknown-linux-gnu.tar.gz",
   "uv_sha256": "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6",
   "uv_provenance": "GitHub release 0.12.23 published checksum file uv-x86_64-unknown-linux-gnu.tar.gz.sha256, fetched 2026-11-07; uv_version matches the host resolver tool (uv 0.12.23, 46b84fd0b 2026-10-03)",

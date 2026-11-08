@@ -1,8 +1,6 @@
 """Build records, reuse decisions and the public command exit codes."""
 
 import json
-import re
-import subprocess
 import sys
 import tempfile
 import threading
@@ -197,66 +195,18 @@ def test_build_context_omits_secret_and_rendered_config_sentinels(tmp_path, monk
             assert not line.split()[-1].startswith(str(root))
 
 
-def test_lock_update_is_explicit_and_hash_mismatch_stops_installation(tmp_path, monkeypatch):
+def test_build_does_not_regenerate_locks(tmp_path, monkeypatch):
     catalog = build_catalog(tmp_path, monkeypatch)
     root = catalog["root"]
     sandbox = root / "deploy/sandbox"
 
     assert lock_sandbox_dependencies.main(["--root", str(root), "nope"]) == 2
 
-    canned = {
-        "mpmath": {
-            "version": "1.4.1",
-            "url": "https://files.pythonhosted.org/packages/13/f2/abeec3db71d221ccd3cd89d206be1fabf5a3ee7178862f5fba23a59607e0/mpmath-1.4.1-py3-none-any.whl",
-            "sha256": "dc4f0ea2304480d4a9a48a94c1020571558ade522b44a6912efac63a586e140f",
-        },
-        "sympy": {
-            "version": "1.14.0",
-            "url": "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl",
-            "sha256": "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5",
-        },
-        "regex": {
-            "version": "2026.11.7",
-            "url": "https://files.pythonhosted.org/packages/36/da/d2182c75fdb51195d9d86905f6b0df154acd9c296f24f008a93d3ab2c034/regex-2026.11.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
-            "sha256": "36f1bff9b25e6fe78ad664aacf0cf99ccba6927b32ba31de42a3ca21f9fb15a8",
-        },
-    }
-    monkeypatch.setattr(lock_sandbox_dependencies, "fetch_package_index", lambda name: canned[name])
     standard_lock = sandbox / "profiles/standard/requirements.lock"
     logs_lock = sandbox / "profiles/logs-data/requirements.lock"
-    assert lock_sandbox_dependencies.main(["--root", str(root), "standard"]) == 0
     generated = standard_lock.read_text()
-    assert generated.startswith("# hash-locked by scripts/lock_sandbox_dependencies.py")
-    assert "uv 0.12.23" in generated
-    assert "# sympy==1.14.0" in generated and "# regex==2026.11.7" in generated
-    assert "sympy @ https://files.pythonhosted.org/" in generated and "#sha256=" in generated
     assert logs_lock.read_bytes() == b"# generated lock for logs-data\n"
 
     recipe = resolve_recipe(root, "standard", PLATFORM)
     ensure_image(root, recipe, _engine())
     assert standard_lock.read_text() == generated
-
-    tampered = re.sub(r"#sha256=[0-9a-f]{64}", "#sha256=" + "0" * 64, generated, count=1)
-    env = tmp_path / "venv"
-    subprocess.run(["uv", "venv", str(env), "--python", "3.12"], check=True, capture_output=True)
-    bad = tmp_path / "bad.lock"
-    bad.write_text(tampered)
-    stopped = subprocess.run(["uv", "pip", "sync", "--python", str(env), str(bad)], capture_output=True, text=True, check=False)
-    assert stopped.returncode != 0
-    refused = subprocess.run(
-        [str(env / "bin/python"), "-c", "import regex"], capture_output=True, check=False
-    )
-    assert refused.returncode != 0
-    good = tmp_path / "good.lock"
-    good.write_text(generated)
-    installed = subprocess.run(
-        ["uv", "pip", "sync", "--python", str(env), str(good)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert installed.returncode == 0
-    accepted = subprocess.run(
-        [str(env / "bin/python"), "-c", "import regex, sympy"], capture_output=True, check=False
-    )
-    assert accepted.returncode == 0

@@ -42,6 +42,26 @@
     "install_helper": "deploy/sandbox/install_pinned.py"
   },
   "managed_profiles": {
+    "iac-validation": {
+      "dockerfile": "deploy/sandbox/profiles/iac-validation/Dockerfile",
+      "requirements_in": "deploy/sandbox/profiles/iac-validation/requirements.in",
+      "requirements_lock": "deploy/sandbox/profiles/iac-validation/requirements.lock",
+      "os_packages_lock": "deploy/sandbox/profiles/iac-validation/os-packages.lock",
+      "smoke": "deploy/sandbox/profiles/iac-validation/smoke.py",
+      "install_helper": "deploy/sandbox/profiles/iac-validation/install.sh",
+      "extra_inputs": [],
+      "tools": ["tflint"]
+    },
+    "logs-data": {
+      "dockerfile": "deploy/sandbox/profiles/logs-data/Dockerfile",
+      "requirements_in": "deploy/sandbox/profiles/logs-data/requirements.in",
+      "requirements_lock": "deploy/sandbox/profiles/logs-data/requirements.lock",
+      "os_packages_lock": "deploy/sandbox/profiles/logs-data/os-packages.lock",
+      "smoke": "deploy/sandbox/profiles/logs-data/smoke.py",
+      "install_helper": "deploy/sandbox/profiles/logs-data/install.sh",
+      "extra_inputs": [],
+      "tools": []
+    },
     "standard": {
       "dockerfile": "deploy/sandbox/profiles/standard/Dockerfile",
       "requirements_in": "deploy/sandbox/profiles/standard/requirements.in",

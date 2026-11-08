@@ -1,6 +1,3 @@
-# Build prerequisites installed into the managed base layer.
-# None required on the 2026-11-05 Debian 13 (trixie) snapshot: uv installs
-# from its digest-pinned release archive and Python comes from the digest-pinned
-# base image. If a future prerequisite needs a source build, list it here and
-# pin it in build-requirements.lock; automatic build-isolation downloads stay
-# disabled so an unaccounted build dependency fails the build instead of resolving.
+# Explicit PEP 517 prerequisites for legacy source-only pygrok and Drain3.
+setuptools
+wheel

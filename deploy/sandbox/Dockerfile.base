@@ -21,8 +21,12 @@ RUN groupadd --gid 1000 openship \
 COPY deploy/sandbox/install_pinned.py /tmp/install_pinned.py
 RUN install -d --mode=0755 /opt/uv \
     && python3 /tmp/install_pinned.py "$UV_URL" "$UV_SHA256" /opt/uv \
-    && rm -f /tmp/install_pinned.py
+    && rm -f /tmp/install_pinned.py /tmp/openship-pinned-archive.bin
 
 ENV PATH="/opt/uv/uv-x86_64-unknown-linux-gnu:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1
+COPY deploy/sandbox/build-requirements.lock /tmp/build-requirements.lock
+RUN uv pip install --python /usr/local/bin/python3 --require-hashes --no-deps \
+        --only-binary :all: --link-mode=copy -r /tmp/build-requirements.lock \
+    && rm -f /tmp/build-requirements.lock
 WORKDIR /code

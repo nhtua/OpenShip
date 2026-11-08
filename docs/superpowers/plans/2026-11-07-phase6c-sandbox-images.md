@@ -2,7 +2,7 @@
 type: plan
 summary: Build four locally maintained sandbox images with locked dependencies, offline smoke checks and opt-in stack build integration.
 date: 2026-11-07
-status: awaiting-review-and-execution-selection
+status: in-progress
 ---
 
 # Phase 6C Sandbox Images Implementation Plan
@@ -86,6 +86,8 @@ Use a small `ImageError` exception in `catalog.py` for safe operator-facing fail
 
 ## Task 1: Deterministic Catalog, Engine Adapter and Local Build Commands
 
+Progress: committed `9a7b3e7`; 17 targeted tests passed. Final hardening/review remains part of the branch-wide gate.
+
 **Files:** Create `scripts/sandbox_images.py`, `scripts/sandbox_image_lib/{__init__,catalog,engine,builds}.py`; create the corresponding catalog/engine/commands tests above. Existing release inventory stays readable; managed entries are added as profiles land.
 
 **Interfaces:** Consumes existing inventory and explicit CLI/socket selection. Produces the `ProfileSpec`, `Recipe`, `ImageError`, `Engine` and `builds.*` seams above. Tests use complete temporary catalogs and trusted fixture recipes; they do not need cloud credentials or live containers.
@@ -112,6 +114,8 @@ Use a small `ImageError` exception in `catalog.py` for safe operator-facing fail
 
 ## Task 2: Pinned Shared Base and Standard Profile
 
+Progress: initial commit `d464114`; corrected during Task 3. Actual uv resolves complete closures, hash verification is mandatory, and the uv release archive SHA is not presented as an OCI digest. Existing Docker daemon build and offline runsc smoke passed for standard (image ID `sha256:9282fddc6fda633e77adb076e13b27a75b5ac728e2add4f15c7d6251220f7f4a`, Python 3.12.16). Historical Podman evidence is not the active qualification.
+
 **Files:** Create `deploy/sandbox/{pins.json,tools.lock.json,Dockerfile.base,build-requirements.in,build-requirements.lock}`; create `profiles/standard/{Dockerfile,requirements.in,requirements.lock,os-packages.lock,smoke.py}`; create `scripts/lock_sandbox_dependencies.py`; extend inventory and catalog/command tests.
 
 **Interfaces:** Consumes Task 1 catalog/build CLI. Produces the shared base, lock-generation command and buildable `standard` profile. The new `managed_base` inventory entry points to `pins.json`; `managed_profiles.standard` lists its recipe/lock/smoke files. Register later profiles only when their files exist.
@@ -134,6 +138,8 @@ Use a small `ImageError` exception in `catalog.py` for safe operator-facing fail
 
 ## Task 3: Logs and Data Analysis Profile
 
+Progress: Docker build and offline runsc smoke passed (image ID `sha256:b00de5136b81416603dec0d93913d4d9abd39a1578d76b39e674347e1c0a8a65`): CSV groups api=5/worker=7, two Drain3 clusters, decoded Agg PNG. 38 targeted tests passed. pygrok 1.0.0 emits an upstream invalid-escape SyntaxWarning under Python 3.12; functional checks pass. No stack restart or chat demonstration performed.
+
 **Files:** Create `deploy/sandbox/profiles/logs-data/{Dockerfile,requirements.in,requirements.lock,os-packages.lock,smoke.py}`; extend `images.json` and catalog/command tests.
 
 **Interfaces:** Consumes Tasks 1–2 base/build/lock interfaces. Produces `managed_profiles.logs-data`; packaged Pandas, NumPy, Matplotlib, regex, pygrok and Drain3 with their complete closure.
@@ -146,6 +152,8 @@ Use a small `ImageError` exception in `catalog.py` for safe operator-facing fail
 - [ ] **6. Commit** the verified profile and record exact build/smoke evidence; do not claim the chat journey has run yet.
 
 ## Task 4: IaC and Schema Validation Profile
+
+Progress: Docker build and separate runsc smoke passed for image `sha256:ba0afd5350a87f7d0764c5d3a28e07d4dd5465964f916156c29346ae0489a9e9`, recipe `ae1496c82d849fb224a057c7f1ce4d262d658b5940d4a68d36e2fd2478bb9840`. Checkov 3.4.3 and bundled TFLint 0.65.0 distinguish the invalid/corrected Terraform fixtures; JSON Schema accepts/rejects, YAML loads, Graphviz PNG decodes. Debian graphviz=2.42.4-3 is from the signed 20261101T000000Z snapshot. Limits unchanged. 39 targeted tests passed; branch-wide unit gate remains in progress.
 
 **Files:** Create `deploy/sandbox/profiles/iac-validation/{Dockerfile,requirements.in,requirements.lock,os-packages.lock,smoke.py}`; extend inventory/tool manifest and catalog/command tests.
 

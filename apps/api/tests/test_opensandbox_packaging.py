@@ -238,7 +238,7 @@ def test_standard_smoke_requires_python_312_node_and_sympy(tmp_path):
     assert pins["python_version"] == "3.12"
     smoke = ROOT / "deploy/sandbox/profiles/standard/smoke.py"
     lock_text = (ROOT / "deploy/sandbox/profiles/standard/requirements.lock").read_text()
-    assert re.search(r"@ https://files\.pythonhosted\.org/.*#sha256=[0-9a-f]{64}", lock_text)
+    assert re.search(r"--hash=sha256:[0-9a-f]{64}", lock_text)
 
     def workload_env(name, lock_body):
         env = tmp_path / name
@@ -260,7 +260,7 @@ def test_standard_smoke_requires_python_312_node_and_sympy(tmp_path):
     assert passed.returncode == 0, passed.stderr
     assert "42" in passed.stdout
 
-    partial = "\n".join(ln for ln in lock_text.splitlines() if not ln.startswith("sympy @"))
+    partial = re.sub(r"^sympy[^\n]*\n(?:[ \t]+[^\n]*\n)*", "", lock_text, flags=re.MULTILINE)
     without_sympy = workload_env("partial", partial + "\n")
     missing = subprocess.run(
         [str(without_sympy / "bin/python"), str(smoke)], capture_output=True, text=True, check=False

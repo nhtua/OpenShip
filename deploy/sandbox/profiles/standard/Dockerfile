@@ -14,7 +14,8 @@ COPY deploy/sandbox/profiles/standard/requirements.lock /tmp/requirements.lock
 
 RUN sh /tmp/install.sh \
     && install -d --owner=openship --group=openship --mode=0700 /opt/openship/tmp \
-    && uv pip sync --python /usr/local/bin/python3 --link-mode=copy /tmp/requirements.lock \
+    && uv pip install --python /usr/local/bin/python3 --link-mode=copy \
+        --require-hashes --no-deps --no-build-isolation -r /tmp/requirements.lock \
     && rm -f /tmp/install.sh /tmp/requirements.lock
 
 ENV HOME=/opt/openship/tmp \
