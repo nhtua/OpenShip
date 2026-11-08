@@ -11,11 +11,10 @@ repos:
 
       - id: pytest
         name: Run Tests
-        entry: bash -c "cd poc/agent && uv run pytest tests/ -q"
+        entry: bash -c "cd poc/agent && uv run --extra dev python -m pytest tests/ -q"
         language: system
-        types: [python]
         pass_filenames: false
-        always_run: true
+        files: ^(poc/agent/|\.pre-commit-config\.yaml$)
 
       # The API's own validation, gated on the API changing so a frontend
       # commit never pays for it. The unit lane is the whole suite minus the
