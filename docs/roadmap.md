@@ -345,6 +345,7 @@ Start with one credential-free Python standard-library profile and a fixed analy
 
 - Add four version-pinned images/profiles: **`logs-data`** (CSV/JSON, Pandas, NumPy, Matplotlib, regex, pygrok, Drain3), **`iac-validation`** (jsonschema, PyYAML, Checkov, TFLint, Graphviz), **`standard`** (Python 3.12+, Node.js, SymPy and standard utilities), and **`devops-shell`** (Bash, Git, AWS CLI, Azure CLI, Google Cloud CLI, Terraform and Terragrunt).
 - Preinstall dependencies at image-build time; retain credential-free, offline execution. Include Python 3.12+ in each new image for compatibility with the existing Python entrypoint. CLI tools may be invoked from Python; packaging does not add a shell execution API.
+- Use a shared base Dockerfile plus one per profile, hash-verified Python locks, pinned CLI archives and OS repository snapshots. Build locally without a registry account through `sandbox-images list|build|smoke` in `scripts/openship-stack`; normal sandbox startup only checks the selected managed image, while explicit `start --build-sandbox` may build it if missing/stale. Reuse matching images; do not upgrade dependencies implicitly or build from an agent tool invocation.
 - Document image contents, exact dependency/runtime identities, build/preload commands, current operator selection, and dev-stack rebuild/restart instructions. Test imports and representative local operations with runtime networking disabled.
 
 **User demonstration:** Build/preload all four images on the selected sandbox engine, run their offline smoke checks, select `logs-data` using existing deployment settings, recreate the relevant dev-stack services, and produce a retained chart through the existing Python tool.
@@ -352,6 +353,7 @@ Start with one credential-free Python standard-library profile and a fixed analy
 **Exit gates**
 
 - All four images build with recorded base digests, dependency pins and resulting image identities; offline smoke checks pass as the unprivileged workload user.
+- Local build commands use the sandbox manager's actual engine/socket, record build-input fingerprints separately from local image IDs, and need no registry login. Normal startup never builds; opt-in startup builds only the selected profile and stops on build failure or an inconsistent runtime selection.
 - Analysis parses/clusters sample logs, processes tabular data and renders a headless chart; validation checks sample schemas/configuration and renders a Graphviz diagram; standard execution exercises Python, Node.js and SymPy; DevOps CLIs report their versions and Terraform formats local configuration without cloud access.
 - Packaging/configuration regressions pass; legacy profile identities remain unchanged. No mount, network, credential, lifecycle, execution API or UI behavior changes are introduced.
 - Operator instructions distinguish image builds from service recreation and list limitations such as absent provider/module/plugin bundles. Live dev-stack testing and user acceptance are recorded separately from image smoke checks.

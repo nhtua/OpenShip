@@ -612,6 +612,10 @@ When a workflow is created or updated, the agent parses the markdown definition 
 Node.js and symbolic math), and `devops-shell` (Bash, Git, AWS/Azure/Google
 Cloud CLIs, Terraform and Terragrunt). Dependencies are installed at build time;
 existing runtime networking, mounting and credential behavior stays unchanged.
+Use a shared base plus per-profile Dockerfiles and locked dependencies. Build
+locally through `scripts/openship-stack` without requiring a registry account;
+provide explicit list/build/smoke commands and opt-in build-on-start. Normal
+startup checks/reuses images without building or upgrading dependencies.
 See [roadmap Phase 6C](./roadmap.md#6c--prebuilt-sandbox-images) and its
 [design](./superpowers/specs/2026-11-07-phase6c-sandbox-images-design.md).
 
