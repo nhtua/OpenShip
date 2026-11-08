@@ -72,6 +72,9 @@ jobs:
       - uses: astral-sh/setup-uv@v2
         with:
           enable-cache: true
+          # Lock regeneration requires the resolver pinned in
+          # deploy/sandbox/pins.json; keep this in step with uv_version.
+          version: "0.12.23"
       - run: cd apps/api && uv sync --extra dev
       - run: cd apps/api && uv run pytest -p scripts.pytest_shard -q -o faulthandler_timeout=60 -m "not postgres and not provider_live and not full_stack and not jetstream"
 
