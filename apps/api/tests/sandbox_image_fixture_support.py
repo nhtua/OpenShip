@@ -23,6 +23,7 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
         return path
 
     write("Dockerfile.base", "FROM digest-pinned base\n")
+    write("install_pinned.py", "# pinned shared installer\n")
     write("build-requirements.in", "# build prerequisites\n")
     write("build-requirements.lock", "# generated\n")
     write(
@@ -32,6 +33,7 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
                 "python_base_image": "python:3.12-slim@sha256:" + "a" * 64,
                 "uv_image": "uv@sha256:" + "b" * 64,
                 "python_version": "3.12",
+                "uv_version": "0.12.23",
                 "supported_platforms": ["linux/amd64"],
                 "debian_snapshot": "2026-11-01T00:00:00Z",
             }
@@ -39,7 +41,8 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
     )
     for profile_id in ("logs-data", "standard"):
         write(f"profiles/{profile_id}/Dockerfile", f"FROM WORKLOAD_BASE_IMAGE\n# {profile_id}\n")
-        write(f"profiles/{profile_id}/requirements.in", "# direct requirements\n")
+        write(f"profiles/{profile_id}/install.sh", "# pinned tool installation helper\n")
+        write(f"profiles/{profile_id}/requirements.in", "sympy\nregex\nmpmath\n")
         write(
             f"profiles/{profile_id}/requirements.lock",
             f"# generated lock for {profile_id}\n",
@@ -73,6 +76,7 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
             "pins": "deploy/sandbox/pins.json",
             "build_requirements_in": "deploy/sandbox/build-requirements.in",
             "build_requirements_lock": "deploy/sandbox/build-requirements.lock",
+            "install_helper": "deploy/sandbox/install_pinned.py",
         },
         "managed_profiles": {
             profile_id: {
@@ -81,6 +85,7 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
                 "requirements_lock": f"deploy/sandbox/profiles/{profile_id}/requirements.lock",
                 "os_packages_lock": f"deploy/sandbox/profiles/{profile_id}/os-packages.lock",
                 "smoke": f"deploy/sandbox/profiles/{profile_id}/smoke.py",
+                "install_helper": f"deploy/sandbox/profiles/{profile_id}/install.sh",
                 "extra_inputs": [],
                 "tools": ["node"] if profile_id == "standard" else [],
             }
@@ -110,7 +115,12 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
             '    if [ -n "${FAKE_INSPECT_JSON:-}" ]; then printf \'%s\\n\' "$FAKE_INSPECT_JSON"; '
             "else printf '%s\\n' '[{\"Id\": \"IMAGEID-FROMCANNED\", \"Machine\": \"x86_64\"}]'; fi\n"
             "    exit 0;;\n"
-            "  build) exit \"${FAKE_BUILD_RC:-0}\";;\n"
+            "  build)\n"
+            "    last=''\n"
+            '    for arg in "$@"; do last="$arg"; done\n'
+            '    if [ -d "$last" ]; then find "$last" -type f | sed "s|$last/||" '
+            f'>> "{log}"; fi\n'
+            "    exit \"${FAKE_BUILD_RC:-0}\";;\n"
             "  run)\n"
             '    sleep "${FAKE_RUN_SLEEP:-0}"\n'
             "    exit \"${FAKE_RUN_RC:-0}\";;\n"

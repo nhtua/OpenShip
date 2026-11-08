@@ -23,6 +23,7 @@ class ProfileSpec:
     requirements_lock: Path
     os_packages_lock: Path
     smoke: Path
+    install_helper: Path
     extra_inputs: tuple
 
 
@@ -59,10 +60,13 @@ def _declared_paths(images: dict, base_entry: dict, entry: dict) -> tuple:
             found.append(rel)
         return found
 
-    base_rels = relative(base_entry, ("dockerfile", "pins", "build_requirements_in", "build_requirements_lock"))
+    base_rels = relative(
+        base_entry,
+        ("dockerfile", "pins", "build_requirements_in", "build_requirements_lock", "install_helper"),
+    )
     profile_rels = relative(
         entry,
-        ("dockerfile", "requirements_in", "requirements_lock", "os_packages_lock", "smoke"),
+        ("dockerfile", "requirements_in", "requirements_lock", "os_packages_lock", "smoke", "install_helper"),
     )
     return base_rels, profile_rels + list(entry.get("extra_inputs", []))
 
@@ -78,6 +82,7 @@ def load_profile(root: Path, profile_id: str) -> ProfileSpec:
         requirements_lock=root / entry["requirements_lock"],
         os_packages_lock=root / entry["os_packages_lock"],
         smoke=root / entry["smoke"],
+        install_helper=root / entry["install_helper"],
         extra_inputs=tuple(root / rel for rel in entry.get("extra_inputs", [])),
     )
 

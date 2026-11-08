@@ -116,6 +116,27 @@ def test_shared_tool_manifest_projects_per_profile(tmp_path, monkeypatch):
     assert resolve_recipe(root, "logs-data", PLATFORM).fingerprint == logs_before.fingerprint
 
 
+def test_base_update_invalidates_each_registered_profile(tmp_path, monkeypatch):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    root = catalog["root"]
+    logs_before = resolve_recipe(root, "logs-data", PLATFORM)
+    standard_before = resolve_recipe(root, "standard", PLATFORM)
+    base_rel = "deploy/sandbox/Dockerfile.base"
+    original = (root / base_rel).read_bytes()
+    (root / base_rel).write_text("FROM changed base\n")
+    try:
+        assert resolve_recipe(root, "logs-data", PLATFORM).fingerprint != logs_before.fingerprint
+        assert resolve_recipe(root, "standard", PLATFORM).fingerprint != standard_before.fingerprint
+    finally:
+        (root / base_rel).write_bytes(original)
+    installer = root / "deploy/sandbox/install_pinned.py"
+    installer.write_text("# changed shared installer\n")
+    try:
+        assert resolve_recipe(root, "logs-data", PLATFORM).fingerprint != logs_before.fingerprint
+    finally:
+        installer.unlink()
+
+
 def test_profile_spec_matches_inventory_and_keeps_legacy_keys(tmp_path, monkeypatch):
     catalog = build_catalog(tmp_path, monkeypatch)
     root = catalog["root"]

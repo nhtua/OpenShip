@@ -1,0 +1,9 @@
+# hash-locked by scripts/lock_sandbox_dependencies.py standard
+# resolver: uv 0.12.23 (uv venv --python 3.12 / uv pip install -r requirements.in / uv pip freeze)
+# install with: uv pip sync --python <profile python> requirements.lock (hash-verified)
+# mpmath==1.4.1
+mpmath @ https://files.pythonhosted.org/packages/13/f2/abeec3db71d221ccd3cd89d206be1fabf5a3ee7178862f5fba23a59607e0/mpmath-1.4.1-py3-none-any.whl#sha256=dc4f0ea2304480d4a9a48a94c1020571558ade522b44a6912efac63a586e140f
+# regex==2026.11.7
+regex @ https://files.pythonhosted.org/packages/36/da/d2182c75fdb51195d9d86905f6b0df154acd9c296f24f008a93d3ab2c034/regex-2026.11.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl#sha256=36f1bff9b25e6fe78ad664aacf0cf99ccba6927b32ba31de42a3ca21f9fb15a8
+# sympy==1.14.0
+sympy @ https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl#sha256=e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5

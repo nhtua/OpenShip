@@ -34,8 +34,9 @@ def test_each_engine_operation_targets_the_explicit_socket(tmp_path, monkeypatch
         )
         engine.smoke("IMAGEID-FROMCANNED")
     lines = log.read_text().splitlines()
-    assert lines
-    for line in lines:
+    calls = [line for line in lines if line.startswith(("docker ", "podman "))]
+    assert calls
+    for line in calls:
         if line.startswith("docker"):
             assert "--host unix:///run/fixtures/openship.sock" in line
         else:
@@ -43,8 +44,8 @@ def test_each_engine_operation_targets_the_explicit_socket(tmp_path, monkeypatch
             assert "--remote --url unix:///run/fixtures/openship.sock" in line
     for cli in ("docker", "podman"):
         for sub in ("info", "inspect", "build", "run"):
-            assert any(line.startswith(cli) and sub in line.split() for line in lines)
-    assert "unix:///var/run/docker.sock" not in "".join(lines)
+            assert any(line.startswith(cli) and sub in line.split() for line in calls)
+    assert "unix:///var/run/docker.sock" not in "".join(calls)
 
 
 def test_smoke_container_carries_the_unprivileged_offline_policy(tmp_path, monkeypatch):

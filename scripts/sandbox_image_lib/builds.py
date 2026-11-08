@@ -112,6 +112,23 @@ def inspect_status(root: Path, recipe, engine) -> dict:
     }
 
 
+def _tool_build_args(root: Path, recipe, entry) -> dict:
+    """Map the profile's tool list to <TOOL>_URL/<TOOL>_SHA256 build args.
+
+    The tool manifest is hashed through the projected catalog input but never
+    staged; the archive values reach the Dockerfile only as build args."""
+    args = {}
+    for name in entry.get("tools", []):
+        try:
+            tools_doc = json.loads((root / "deploy/sandbox/tools.lock.json").read_text())
+            archived = tools_doc["tools"][name][recipe.platform]
+            args[f"{name.upper()}_URL"] = archived["url"]
+            args[f"{name.upper()}_SHA256"] = archived["sha256"]
+        except (KeyError, ValueError, TypeError):
+            raise ImageError(f"tool {name} has no archive entry for {recipe.platform}")
+    return args
+
+
 def _profile_rels(root: Path, recipe) -> tuple:
     images = _inventory(root)
     base_entry = images["managed_base"]
@@ -135,12 +152,17 @@ def ensure_base(root: Path, recipe, engine) -> None:
     python_base_image = pins.get("python_base_image")
     if python_base_image is None:
         raise ImageError("pins manifest declares no python_base_image")
+    build_args = {"PYTHON_BASE_IMAGE": python_base_image}
+    for key in ("uv_url", "uv_sha256"):
+        value = pins.get(key)
+        if value is not None:
+            build_args[key.upper()] = value
     context = _stage(root, base_rels)
     image_id = engine.build(
         context / _inventory(root)["managed_base"]["dockerfile"],
         context,
         recipe.base_tag,
-        {"PYTHON_BASE_IMAGE": python_base_image},
+        build_args,
         {"openship.role": "base"},
     )
     _write_record(
@@ -169,11 +191,13 @@ def ensure_image(root: Path, recipe, engine) -> dict:
     _base_rels, profile_rels = _profile_rels(root, recipe)
     context = _stage(root, profile_rels)
     entry = _inventory(root)["managed_profiles"][recipe.profile.id]
+    build_args = {"WORKLOAD_BASE_IMAGE": recipe.base_tag}
+    build_args.update(_tool_build_args(root, recipe, entry))
     image_id = engine.build(
         context / entry["dockerfile"],
         context,
         recipe.image_tag,
-        {"WORKLOAD_BASE_IMAGE": recipe.base_tag},
+        build_args,
         {"openship.profile": recipe.profile.id, "openship.fingerprint": recipe.fingerprint},
     )
     try:

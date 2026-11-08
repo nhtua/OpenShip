@@ -1,0 +1,4 @@
+# hash-locked build prerequisites for the managed base
+# resolver: uv 0.12.23 (none required on the 2026-11-05 Debian 13 snapshot)
+# install with: uv pip sync --python <base python> build-requirements.lock (hash-verified)
+# no automatic build-isolation downloads: an unaccounted build dependency fails the build

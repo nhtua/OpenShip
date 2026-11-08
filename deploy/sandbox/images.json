@@ -34,6 +34,27 @@
       "jpeg_sha256": "330cf11ce57a420c147d7e1682348f00ced34756ff0e138f95dd305eeefb858d"
     }
   },
+  "managed_base": {
+    "dockerfile": "deploy/sandbox/Dockerfile.base",
+    "pins": "deploy/sandbox/pins.json",
+    "build_requirements_in": "deploy/sandbox/build-requirements.in",
+    "build_requirements_lock": "deploy/sandbox/build-requirements.lock",
+    "install_helper": "deploy/sandbox/install_pinned.py"
+  },
+  "managed_profiles": {
+    "standard": {
+      "dockerfile": "deploy/sandbox/profiles/standard/Dockerfile",
+      "requirements_in": "deploy/sandbox/profiles/standard/requirements.in",
+      "requirements_lock": "deploy/sandbox/profiles/standard/requirements.lock",
+      "os_packages_lock": "deploy/sandbox/profiles/standard/os-packages.lock",
+      "smoke": "deploy/sandbox/profiles/standard/smoke.py",
+      "install_helper": "deploy/sandbox/profiles/standard/install.sh",
+      "extra_inputs": [],
+      "tools": [
+        "node"
+      ]
+    }
+  },
   "sandbox_lifetime_seconds": 1800,
   "limitations": [
     "The workload image must be built/preloaded for the selected engine; an old local image digest is not a portable registry image",
