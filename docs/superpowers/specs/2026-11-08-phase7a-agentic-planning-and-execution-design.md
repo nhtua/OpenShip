@@ -1,7 +1,7 @@
 ---
 type: spec
 summary: Outcome-driven agentic tasks with shared internal abilities, persistent Auto/Copilot modes, bounded repair, and locally mapped sandbox profiles.
-status: planning-authorized
+status: implementation-in-progress
 date: 2026-11-08
 ---
 
@@ -13,7 +13,7 @@ A user should describe a desired result, not supply every tool call. OpenShip mu
 
 This spec consolidates the conversationally agreed direction in [ideas](../../ideas.md#outcome-driven-reasoning-planning-and-continuous-execution) and [roadmap Phase 7A](../../roadmap.md#phase-7a--outcome-driven-agentic-planning-and-execution). The former Phase 7 is now **7B**; its saved-workflow increments are **7B.1/7B.2**. Later numbered phases are unchanged.
 
-**Planning authorized 2026-11-08:** After receiving this written spec, the user requested the [implementation plan](../plans/2026-11-08-phase7a-agentic-planning-and-execution.md). That authorizes planning from this spec, not product implementation. Agreed product decisions below remain distinct from §12's proposed technical defaults, carried into the plan as working defaults for review rather than claimed as separately approved decisions. The written plan and execution method still require user review. No code, migrations, image builds, stack recreation or live qualification is claimed here.
+**Execution and revision status:** The user selected subagent-driven execution of the [implementation plan](../plans/2026-11-08-phase7a-agentic-planning-and-execution.md). Tasks 1–7 have implementation/review evidence; Task 8 has only a committed partial foundation (`5d2ec7b`). The user subsequently approved the recovery behavior below and requested revision of Tasks 8 onward. This revision is documentation-only and awaits review before implementation resumes. §12 defaults remain the plan's working limits; neither implementation progress nor this revision establishes live qualification or user acceptance.
 
 ### Agreed decisions
 
@@ -23,6 +23,7 @@ This spec consolidates the conversationally agreed direction in [ideas](../../id
 | Preference | Persistent account-level server-side selection, changed in Chat UI and restored across reloads/sign-ins/browsers. Capture the mode for each new task; preference changes do not alter active or waiting tasks. |
 | Confirmation | Exact task/plan-revision binding, durable waiting, authorized response and no accidental approval by selecting Auto. One confirmation releases continuous execution, not a confirmation after every step. |
 | Repair | Bounded implementation-level self-repair after a known failure, informed by inputs, outputs and error evidence. No automatic replay of uncertain/interrupted execution. |
+| Crash recovery | If an approval was not recorded, ask again for the same current plan without restarting completed work. For uncertain execution, diagnose first and let the user choose abort, repeat the affected step, or continue to the next eligible step, in both Auto and Copilot. |
 | Internal abilities | Runtime-controlled reasoning, planning, tracking and switching with shared typed contracts, not four optional model-selected tools or separate nested agents. |
 | Sandbox selection | One execution tool with a validated `profile_id` selector and purpose metadata for configured, enabled, ready profiles. |
 | Image mapping | Registry-free local builds. The existing build command offers writing a local YAML mapping interactively; `--overwrite-profiles` authorizes a noninteractive write. |
@@ -111,9 +112,13 @@ The logical contracts include:
 
 The existing application transaction/event/outbox remains authoritative for visible progression and decisions; graph checkpoints carry related runtime state, not an independent writable source of truth. Serialize updates with current ownership/fences and revision checks. Reconcile checkpoint/projection mismatches from committed identities/results before progressing.
 
+Phase 7A does not require a conversation-wide graph whose topology grows with every turn. Use a fixed versioned LangGraph and durable plan-local progress: completed and skipped steps, attempts, exact output refs, pending decisions and remaining budgets. Tracking is a persisted runtime responsibility, not model memory. A dynamically expanding free-form conversation graph is a separate future proposal; it cannot rewrite saved workflows' reviewed topology.
+
 Add the required waiting states and decision records through explicit migrations. Retain existing terminal meanings such as `completed`; do not rename historical statuses or mark a waiting task complete to release its worker. Waiting persists state, releases ownership/execution capacity and broker delivery after durable handoff, and resumes through an authenticated idempotent command on the existing queue/outbox path.
 
 Confirmation/rejection/clarification must be bound to the current request and actor. An unambiguous conversational reply and a browser button use the same validated command. A bare ambiguous “yes”, another user's response, an expired request, stale revision or changed digest cannot release work. Consume a request atomically; repeated identical commands return its recorded result, while conflicting decisions cannot consume it again. Rejection closes the request and admits no planned tool execution; cancellation closes pending requests and prevents new dispatch.
+
+If a crash occurs before the user's choice commits, leave the task waiting and present the same current request for approval/continuation again. Do not infer consent from chat text or a lost HTTP response. If the decision committed, recover its recorded result and existing outbox dispatch instead of requesting approval again or enqueuing twice. One local database transaction records the decision, task/job transition, public event and outbox intent; no distributed exactly-once protocol or new queue is required.
 
 Approval is a separate stage from side effects. On graph resume, code before an interrupt may re-enter; never put an unrecorded model/tool effect before a wait and assume it executes once. Resume checks current policy, ownership, exact request and pinned compatibility without regenerating the reviewed plan. A valid confirmation never authorizes unavailable tools or a cloud mutation.
 
@@ -125,6 +130,8 @@ The Chat UI shows the current selection, save/pending/error behavior and that ch
 
 Active runs, tasks waiting for confirmation and in-place recovery of those tasks retain their captured mode. Selecting Auto is never a confirmation command. Switching to Copilot does not retroactively pause an Auto task at an arbitrary point. Starting a deliberately new task captures the new preference. In the new task graph, 6B recovery A remains within the task; explicit recovery B creates a new root, captures the then-selected mode and follows its normal plan gate. A B restart is not implicit confirmation of a newly generated plan. Legacy graph versions retain their recorded recovery behavior.
 
+In v5, recovery A is not blanket permission to replay an uncertain step: require the diagnosis and explicit choice in §7. B remains a separate deliberate restart, not one of the three same-task uncertainty decisions. The three-choice recovery gate applies even in Auto mode.
+
 Render the plan and evidence-linked progress within the existing conversation/run presentation. Distinguish pending, running, repaired, completed and blocked steps; show revised plans and pending decisions clearly. No large standalone workflow editor is required. Reconnect reconstructs the same durable plan/decision/progress; title generation must not pollute tool inputs or duplicate final messages.
 
 ## 7. Bounded self-repair and completion
@@ -135,7 +142,15 @@ After an observed failed step, tracking records its known disposition and bounde
 
 **Material revision:** change step ordering/approach, execution profile or deliverables beyond the current reviewed plan. Make the new revision visible. Copilot requires renewed confirmation before executing the changed portion. Auto may revise only within the original request and authority; new data sources, expanded scope or missing material intent still require user input/authorization. Preserve prior completed evidence; do not silently rerun completed steps.
 
-**Not ordinary repair:** timeout after possible dispatch, interrupted sandbox execution, lost ownership, denied authority, policy revocation or exhausted/no-progress budgets. Stop new dispatch and preserve existing 6B A/B recovery or other applicable uncertain-operation handling. Broker replay and worker restart do not authorize a new execution.
+**Not ordinary repair:** timeout after possible dispatch, interrupted sandbox execution, lost ownership, denied authority, policy revocation or exhausted/no-progress budgets. Stop new dispatch. For uncertain execution in v5, follow the diagnosis and user-decision procedure below; preserve legacy graph versions' existing 6B A/B behavior. Denied authority and exhausted budgets remain blockers, not conditions a recovery choice can waive. Broker replay and worker restart do not authorize a new execution.
+
+### User-controlled recovery from uncertain execution
+
+1. Preserve the interrupted attempt, prior committed outputs, plan and cumulative budgets. Do not silently repeat, skip or mark the affected step complete.
+2. Inspect already retained operation records, transcripts, logs, checkpoint state and artifacts within the task's scope. Produce a bounded public diagnosis: what was attempted, what is known, what is uncertain, evidence refs, risks and a recommendation. Reasoning uses the same root inference budget and cannot dispatch the affected command as a debugging shortcut. If inference is unavailable or exhausted, show the deterministic evidence and that limitation; never invent a diagnosis or auto-select recovery.
+3. Present **Abort**, **Repeat the step**, and **Continue to the next step** to the authorized user, in both modes. Bind the choice to the exact task, plan revision, affected step/attempt/operation and diagnosis/evidence digest. Persist the request and release execution capacity while waiting. Recheck eligibility when the choice is consumed; an older diagnosis cannot authorize changed work.
+4. **Abort** cancels remaining task work and retains partial results; it does not claim an already-dispatched effect was undone. **Repeat** authorizes one distinct attempt of the affected step, preserving the original attempt and all consumption. It cannot silently rerun earlier completed steps or change source/inputs/profile under the same choice. **Continue** records the step as skipped/unresolved and advances only if the next step's required inputs are available and validated. A skip is never verified success; missing dependencies require input or a visible plan revision, and missing required deliverables preclude full completion.
+5. Repeat is unavailable while the prior command may still run. Dependent or conflicting next-step execution is also blocked until safe quiescence. Use existing provider evidence/lifetime boundaries without extending, deleting or renewing sandboxes. Show why an option is unavailable rather than silently choosing another. Every new operation remains subject to policy, pins, the per-step attempt ceiling and root limits.
 
 Transport redelivery of the same logical operation retains its recorded identity. A deliberate corrected execution has its own admitted attempt/operation bound to the same logical plan step and changed source/input digests; it must not overwrite an earlier result or disguise uncertainty as a fresh attempt. Persist all cumulative budget use across clarification, confirmation and explicit recovery. A new-root 6B B run is explicitly new work, not a hidden budget reset for an existing run.
 
@@ -245,7 +260,7 @@ No acceptance box is complete until evidence is recorded. A unit suite alone doe
 | Contract/unit | Strict assessment/plan/action validation; stable step/attempt identities; evidence-backed tracking; no model-text-only completion; ordinary chat; capability/profile selection; malformed output; limits/no progress; known failure repair versus uncertain dispatch. |
 | Preference/API/UI | Copilot migration/default; per-user isolation; cross-browser restored selection; save failure/conflict; captured task mode; toggle cannot approve a pending plan; plan/clarification/revision cards; no per-step prompting; retries/titles/cancellation/reconnect remain correct. |
 | PostgreSQL/runtime | Atomic/idempotent decisions; stale/repeated/conflicting/wrong-user replies; wait expiry/cancellation; release of lease/delivery/slot; failure between committed decision/outbox/checkpoint boundaries; old-history migration and coordinated restore. |
-| Broker/recovery | Redelivery, worker/API restart, stale fence and lost acknowledgements never duplicate plan confirmation, a completed output or sandbox dispatch. Preserve existing explicit 6B A/B recovery, including saved prior outputs. |
+| Broker/recovery | Crash before decision commit re-prompts the same current request; crash after commit/lost acknowledgement recovers one recorded decision/outbox intent. Completed operations are not replayed. Uncertain execution gets an evidence-backed diagnosis and explicit abort/repeat/continue choice in both modes; repeat has a new attempt identity, skip is not success, missing inputs and a possibly live prior command block unsafe choices. Preserve legacy 6B A/B behavior and saved outputs. |
 | Profile/build/config | Four descriptors select the intended contexts; disabled/missing/incompatible profiles fail closed; partial merges/decline/flag/no-terminal behavior; failed smoke; malformed existing YAML; concurrent/interrupted writes; ignored generated file; default/custom host paths and identical fixed container target; missing-source and sandbox-disabled bootstrap. |
 | Execution/real stack | Fresh exact input staging; compatible reuse only; immutable selected runtime identity through the real manager; offline credential-free execution; valid chart/data outputs; malformed/oversized outputs and untrusted instructions cannot advance progress or alter policy. |
 | Live user journey | On one explicitly qualified provider/profile, weather-chart completion in Copilot and Auto, independent expected averages, real retained image, persisted preference, one known repair and one honest invalid-source blocker. Also demonstrate a second input/task shape, such as uploaded log aggregation, without a weather-specific router. |
@@ -278,7 +293,7 @@ class Contract(BaseModel):
 
 **Always:** validate proposals at runtime boundaries, preserve pinned identities, enforce cumulative budgets and current authority, write failure/recovery tests, update the active plan with verified evidence, and keep secrets out of checkpoints/events/artifacts/configuration.
 
-**Review first:** the [written implementation plan](../plans/2026-11-08-phase7a-agentic-planning-and-execution.md), including the carried-forward P1–P8 defaults, and select its execution method. The plan must specify migrations/cutover, safe YAML parsing and any direct parser dependency, activation/rollback eligibility, test fixtures and exact acceptance evidence. An incompatible runtime or broader authority change requires a revised design, not an incidental refactor.
+**Review first:** the revised Tasks 8–17 of the [written implementation plan](../plans/2026-11-08-phase7a-agentic-planning-and-execution.md), including recovery choices and the carried-forward P1–P8 limits. Subagent-driven execution is already selected; preserve it rather than asking again. The plan must specify migrations/cutover, safe YAML parsing and any direct parser dependency, activation/rollback eligibility, test fixtures and exact acceptance evidence. An incompatible runtime or broader authority change requires a revised design, not an incidental refactor.
 
 **Never:** implement product code before those reviews, install agent-selected packages, silently replay uncertain work, invent evidence, leak host/credential details into model metadata, bypass gateway checks, mutate saved workflow topology or claim that this document delivers Phase 7A/6C acceptance.
 
