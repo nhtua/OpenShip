@@ -452,6 +452,7 @@ def _validate_operation(
         db.query(ToolOperation)
         .filter(ToolOperation.id == operation_id)
         .with_for_update()
+        .populate_existing()
         .one_or_none()
     )
     if operation is None:

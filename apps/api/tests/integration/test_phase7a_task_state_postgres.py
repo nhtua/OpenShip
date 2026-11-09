@@ -26,7 +26,11 @@ from src.openship.execution.models import ToolOperation
 from src.openship.runs.models import Run, RunJob
 from src.openship.runs.queue import Claim
 from src.openship.runs.tasks.contracts import TaskPlan, TaskStep
-from src.openship.runs.tasks.models import TaskDecisionRecord
+from src.openship.runs.tasks.models import (
+    TaskDecisionCommandRecord,
+    TaskDecisionRecord,
+    TaskRecord,
+)
 from src.openship.runs.tasks.state import (
     TaskStateError,
     read_progress,
@@ -331,8 +335,13 @@ def test_postgres_waiting_statuses_and_open_decision_uniqueness(pg_lane):
     sessions, _, _ = pg_lane
     db = sessions()
     try:
-        _, run, _ = _identity(db)
+        _, run, claim = _identity(db)
         run_id = run.id
+        save_plan(db, claim, _plan(), expected_revision=0)
+        db.commit()
+        task = db.query(TaskRecord).filter(TaskRecord.run_id == run_id).one()
+        task_id = task.id
+
         for status in ("waiting_plan", "waiting_input", "waiting_config"):
             db.execute(
                 text("UPDATE runs SET status=:status WHERE id=:id"),
@@ -340,21 +349,24 @@ def test_postgres_waiting_statuses_and_open_decision_uniqueness(pg_lane):
             )
         db.commit()
         expires_at = datetime.now(UTC) + timedelta(hours=24)
-        db.add(
-            TaskDecisionRecord(
-                run_id=run_id,
-                request_id=uuid.uuid4(),
-                kind="plan_confirmation",
-                plan_revision=1,
-                expected_digest="a" * 64,
-                state="open",
-                request_json="{}",
-                expires_at=expires_at,
-            )
+        decision = TaskDecisionRecord(
+            task_id=task_id,
+            run_id=run_id,
+            request_id=uuid.uuid4(),
+            kind="plan_confirmation",
+            plan_revision=1,
+            expected_digest="a" * 64,
+            state="open",
+            request_json="{}",
+            expires_at=expires_at,
         )
+        db.add(decision)
         db.commit()
+
+        # At most one open decision per run.
         db.add(
             TaskDecisionRecord(
+                task_id=task_id,
                 run_id=run_id,
                 request_id=uuid.uuid4(),
                 kind="clarification",
@@ -368,6 +380,56 @@ def test_postgres_waiting_statuses_and_open_decision_uniqueness(pg_lane):
         with pytest.raises(IntegrityError):
             db.commit()
         db.rollback()
+
+        # Decision commands are idempotent per run/client request identity.
+        client_request_id = uuid.uuid4()
+        db.add(
+            TaskDecisionCommandRecord(
+                task_id=task_id,
+                run_id=run_id,
+                decision_id=decision.id,
+                client_request_id=client_request_id,
+                request_id=decision.request_id,
+                action="confirm",
+                plan_revision=1,
+                expected_digest="a" * 64,
+                result_json="{}",
+            )
+        )
+        db.commit()
+
+        db.add(
+            TaskDecisionCommandRecord(
+                task_id=task_id,
+                run_id=run_id,
+                decision_id=decision.id,
+                client_request_id=client_request_id,
+                request_id=decision.request_id,
+                action="confirm",
+                plan_revision=1,
+                expected_digest="a" * 64,
+                result_json="{}",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+
+        # A distinct client request id is a distinct command.
+        db.add(
+            TaskDecisionCommandRecord(
+                task_id=task_id,
+                run_id=run_id,
+                decision_id=decision.id,
+                client_request_id=uuid.uuid4(),
+                request_id=decision.request_id,
+                action="confirm",
+                plan_revision=1,
+                expected_digest="a" * 64,
+                result_json="{}",
+            )
+        )
+        db.commit()
     finally:
         db.close()
 

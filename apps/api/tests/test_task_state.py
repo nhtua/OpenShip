@@ -287,6 +287,50 @@ def test_committed_operation_is_only_source_of_attempt_outcome():
         db.close()
 
 
+def test_stale_identity_map_cannot_hide_committed_operation():
+    db = TestSessionLocal()
+    try:
+        user, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        db.commit()
+        operation = _operation(
+            db, run, user, status="running", result_digest=None
+        )
+        db.commit()
+
+        # This session now holds a pre-commit copy of the operation.
+        stale = db.get(ToolOperation, operation.id)
+        assert stale is not None and stale.status == "running"
+
+        # A worker's committed outcome lands; the identity map is not expired.
+        updated = (
+            db.query(ToolOperation)
+            .filter(ToolOperation.id == operation.id)
+            .update(
+                {
+                    "status": "succeeded",
+                    "result_json": '{"ok": true}',
+                    "result_digest": "c" * 64,
+                },
+                synchronize_session=False,
+            )
+        )
+        assert updated == 1
+        assert stale.status == "running"
+        assert db.get(ToolOperation, operation.id).status == "running"
+
+        progress = record_attempt_result(
+            db, claim, step_id="inspect", attempt=1, operation_id=operation.id
+        )
+        db.commit()
+        attempt = progress.steps[0].attempts[0]
+        assert attempt.operation_id == operation.id
+        assert attempt.status == "succeeded"
+        assert attempt.result_digest == "c" * 64
+    finally:
+        db.close()
+
+
 def test_duplicate_result_does_not_advance_twice():
     db = TestSessionLocal()
     try:
