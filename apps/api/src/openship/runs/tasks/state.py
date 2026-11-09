@@ -420,6 +420,15 @@ def save_plan(
             raise TaskStateError(
                 "stale_revision", "a new plan revision must follow the current one"
             )
+        progress = _project(db, task)
+        referenced = set(progress.skipped_steps) | {
+            binding.step_id for binding in progress.call_bindings
+        }
+        if not referenced <= {step.id for step in plan.steps}:
+            raise TaskStateError(
+                "recovery_history_conflict",
+                "a new plan cannot remove steps referenced by recovery history",
+            )
 
     db.add(
         TaskPlanRecord(

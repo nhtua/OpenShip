@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -244,6 +245,41 @@ def _artifact(
 # ---------------------------------------------------------------------------
 # State behavior
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["skipped_steps_json", "call_bindings_json"])
+def test_plan_revision_cannot_remove_recovery_referenced_step(field):
+    with TestSessionLocal() as db:
+        _, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        value = (
+            ["inspect"]
+            if field == "skipped_steps_json"
+            else [
+                {
+                    "schema_version": 1,
+                    "plan_revision": 1,
+                    "step_id": "inspect",
+                    "attempt": 1,
+                    "logical_call_id": "model:1:call:0",
+                }
+            ]
+        )
+        setattr(task, field, json.dumps(value))
+        db.commit()
+        step = _plan().steps[0].model_copy(update={"id": "other"})
+        revised = _plan(revision=2).model_copy(update={"steps": (step,)})
+        with pytest.raises(TaskStateError, match="recovery"):
+            save_plan(db, claim, revised, expected_revision=1)
+        db.rollback()
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        assert task.current_revision == 1
+        assert json.loads(getattr(task, field)) == value
+        assert read_progress(db, run.id).current_revision == 1
+        updated = save_plan(db, claim, _plan(revision=2), expected_revision=1)
+        assert updated.current_revision == 2
+        assert json.loads(getattr(task, field)) == value
 
 
 def test_plan_revision_is_immutable_and_fenced():
@@ -709,6 +745,67 @@ def test_recovery_migration_guard_matrix_sqlite(tmp_path):
     engine = create_engine(f"sqlite:///{db_path}")
     try:
         check_guards(engine, ini, _run_alembic)
+    finally:
+        engine.dispose()
+
+
+def test_recovery_downgrade_waits_for_sqlite_writer_before_checking(tmp_path):
+    from tests.task_recovery_migration_support import seed_032
+
+    db_path = tmp_path / "concurrent.db"
+    ini = _alembic_ini(tmp_path, db_path)
+    assert _run_alembic(ini, "upgrade", "phase7a032").returncode == 0
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        seed_032(engine)
+        assert _run_alembic(ini, "upgrade", "phase7a034").returncode == 0
+        with engine.connect() as writer:
+            writer.exec_driver_sql("BEGIN IMMEDIATE")
+            writer.execute(
+                text("UPDATE task_records SET skipped_steps_json = :value"),
+                {"value": '["inspect"]'},
+            )
+            api_root = Path(__file__).parents[1]
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "alembic",
+                    "-c",
+                    str(ini),
+                    "downgrade",
+                    "phase7a033",
+                ],
+                cwd=api_root,
+                env={"PYTHONPATH": str(api_root / "src"), "ALEMBIC_CONFIG": str(ini)},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                time.sleep(1)
+                assert process.poll() is None
+                writer.commit()
+                _, stderr = process.communicate(timeout=30)
+                assert process.returncode != 0
+                assert "cannot downgrade: recovery data would be lost" in stderr
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT skipped_steps_json FROM task_records")
+                ).scalar_one()
+                == '["inspect"]'
+            )
+            assert (
+                conn.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalar_one()
+                == "phase7a034"
+            )
     finally:
         engine.dispose()
 

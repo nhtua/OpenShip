@@ -44,6 +44,21 @@ OPERATION_ID = UUID("66666666-6666-6666-6666-666666666666")
 CLIENT_REQUEST_ID = UUID("77777777-7777-7777-7777-777777777777")
 
 
+def test_preplan_answer_allowed_but_confirmation_forbidden():
+    values = {
+        "client_request_id": CLIENT_REQUEST_ID,
+        "request_id": REQUEST_ID,
+        "plan_revision": 0,
+        "expected_digest": "a" * 64,
+    }
+    assert (
+        TaskDecisionCommand(**values, action="answer", answer="Proceed").answer
+        == "Proceed"
+    )
+    with pytest.raises(ValidationError):
+        TaskDecisionCommand(**values, action="confirm")
+
+
 def test_recovery_contracts_bind_report_and_positive_revision():
     from src.openship.runs.tasks.contracts import TaskRecoveryReport
 

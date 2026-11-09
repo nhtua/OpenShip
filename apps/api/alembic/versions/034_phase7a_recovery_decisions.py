@@ -53,6 +53,14 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
+    if connection.dialect.name == "postgresql":
+        connection.execute(
+            sa.text(
+                "LOCK TABLE task_records, task_decisions, task_decision_commands IN ACCESS EXCLUSIVE MODE"
+            )
+        )
+    elif connection.dialect.name == "sqlite":
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
     checks = (
         "SELECT 1 FROM task_records WHERE skipped_steps_json != '[]' OR call_bindings_json != '[]' LIMIT 1",
         "SELECT 1 FROM task_decisions WHERE kind = 'recovery' LIMIT 1",

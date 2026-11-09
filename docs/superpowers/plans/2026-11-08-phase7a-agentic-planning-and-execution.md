@@ -368,6 +368,14 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
 
 ### Slice 8A — contract and migration compatibility
 
+**Review follow-up:** Added downgrade pre-check locking, rejection of plan
+revisions that omit recovery-referenced steps, and the named pre-plan answer
+test. Focused SQLite tests: 42 passed, one warning; Ruff passed. A concurrent
+writer PostgreSQL regression test was added but remains unrun because the
+service URL was unavailable. The previously reported PostgreSQL result
+predates these fixes and is not evidence for them. Controller verification
+and review of this follow-up remain pending.
+
 **Slice 8A evidence:** Focused SQLite contract/state suite: 38 passed, one
 SQLAlchemy deprecation warning; Ruff passed. The controller independently
 reports the authorized PostgreSQL migration lane passed: 1 passed, one
