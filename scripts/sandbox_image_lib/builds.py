@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .catalog import ImageError, _declared_paths, _inventory, safe_input
+from .catalog import ImageError, _declared_paths, _inventory, load_metadata, safe_input
 
 RECORD_FIELDS = (
     "schema_version",
@@ -286,6 +286,28 @@ def _run_smoke(root: Path, recipe, engine) -> dict:
     record["smoke"] = {"status": outcome, "image_id": image_id, "fingerprint": recipe.fingerprint, "at": _now()}
     _write_record(root, engine, recipe.profile.id, record)
     return {"status": outcome, "image_id": image_id}
+
+
+def publication_record(root: Path, recipe, engine) -> dict:
+    """Reinspect a successful image and return the record eligible for publication.
+
+    The record is trusted only when the current engine inspection, the stored
+    build fingerprint and the passed smoke evidence all agree. Curated metadata
+    is attached for the profile snapshot but stays out of the build inputs.
+    """
+    with _build_lock(root, engine, recipe.profile.id):
+        status = inspect_status(root, recipe, engine)
+        record = _read_record(root, engine, recipe.profile.id)
+        if record is None or status["status"] != "matching":
+            raise ImageError(f"profile {recipe.profile.id} has no matching inspected image to publish")
+        if record["fingerprint"] != recipe.fingerprint or record["dependency_identity"] != recipe.dependency_identity:
+            raise ImageError(f"profile {recipe.profile.id} build record no longer matches the recipe")
+        smoke = record.get("smoke")
+        if not isinstance(smoke, dict) or smoke.get("status") != "passed":
+            raise ImageError(f"profile {recipe.profile.id} has no passed smoke evidence to publish")
+        if smoke.get("image_id") != status["image_id"] or smoke.get("fingerprint") != recipe.fingerprint:
+            raise ImageError(f"profile {recipe.profile.id} smoke evidence does not match the current image")
+        return {**record, "metadata": load_metadata(root, recipe.profile.id)}
 
 
 def runtime_values(recipe) -> dict:

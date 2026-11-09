@@ -3,12 +3,14 @@
 import os
 import re
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 
 from .builds import runtime_values
 from .catalog import ImageError
 
 MANAGED = {"standard", "logs-data", "iac-validation", "devops-shell"}
+DEFAULT_PROFILES_FILE = "deploy/sandbox/sandbox-profiles.yaml"
 KEYS = {
     "SANDBOX_ENABLED", "SANDBOX_PROFILE_ID", "SANDBOX_IMAGE", "SANDBOX_DEPENDENCY_IDENTITY",
     "OPENSHIP_SANDBOX_ENGINE_SOCKET", "XDG_RUNTIME_DIR",
@@ -27,6 +29,45 @@ def _literal(key, value):
     if any(token in value for token in ("$", "`", "\n", "\r", "\\")):
         raise ImageError(f"{key} requires a literal value or process override (no interpolation)")
     return value
+
+
+def _dotenv_value(root: Path, key: str) -> str | None:
+    """Read one literal assignment from root .env without sourcing or evaluating it."""
+    dotenv = root / ".env"
+    try:
+        if not dotenv.exists():
+            return None
+        lines = dotenv.read_text().splitlines()
+    except OSError as exc:
+        raise ImageError(f"unreadable {dotenv}") from exc
+    for line in lines:
+        match = re.match(r"^\s*(?:export\s+)?([A-Z_]+)\s*=(.*)$", line)
+        if match and match[1] == key:
+            return match[2]
+    return None
+
+
+def resolve_profiles_source(root: Path, environ: Mapping[str, str]) -> tuple[Path, bool]:
+    """Resolve the host profile source: process env, root .env, then the default.
+
+    Paths are always interpreted relative to the repository root, never the
+    caller's working directory. The boolean reports an explicit override.
+    """
+    root = Path(root)
+    if "SANDBOX_PROFILES_FILE" in environ:
+        raw, explicit = environ["SANDBOX_PROFILES_FILE"], True
+    else:
+        raw = _dotenv_value(root, "SANDBOX_PROFILES_FILE")
+        explicit = raw is not None
+        if raw is None:
+            raw = DEFAULT_PROFILES_FILE
+    value = _literal("SANDBOX_PROFILES_FILE", raw)
+    if not value:
+        raise ImageError("SANDBOX_PROFILES_FILE requires a non-empty literal path")
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    return Path(os.path.abspath(path)), explicit
 
 
 def read_settings(root: Path, environ) -> dict[str, str]:

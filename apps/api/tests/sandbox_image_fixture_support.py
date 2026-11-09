@@ -81,6 +81,11 @@ def build_catalog(tmp_path, monkeypatch) -> dict:
         },
         "managed_profiles": {
             profile_id: {
+                "label": f"{profile_id} fixture label",
+                "description": f"{profile_id} fixture description",
+                "use_for": [f"{profile_id} fixture purpose"],
+                "highlights": [f"{profile_id} fixture highlight"],
+                "limitations": [f"{profile_id} fixture limitation"],
                 "dockerfile": f"deploy/sandbox/profiles/{profile_id}/Dockerfile",
                 "requirements_in": f"deploy/sandbox/profiles/{profile_id}/requirements.in",
                 "requirements_lock": f"deploy/sandbox/profiles/{profile_id}/requirements.lock",

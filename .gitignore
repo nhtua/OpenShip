@@ -53,6 +53,10 @@ Thumbs.db
 # Rendered installation-specific sandbox config (the tracked template stays)
 deploy/sandbox/config.local.toml
 
+# Generated local sandbox profile snapshot (the tracked example stays)
+/deploy/sandbox/sandbox-profiles.yaml
+/deploy/sandbox/.sandbox-profiles.yaml.lock
+
 # Logs
 *.log
 logs/

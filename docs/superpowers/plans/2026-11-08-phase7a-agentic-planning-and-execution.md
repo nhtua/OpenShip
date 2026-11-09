@@ -124,17 +124,30 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
 
 **Interfaces:** Consumes Task 1 codec. Produces `resolve_profiles_source(root: Path, environ: Mapping[str,str]) -> tuple[Path,bool]` in `config.py` (bool means explicit override); `merge_profile_updates(root: Path, destination: Path, updates: Mapping[str,dict]) -> tuple[str,...]` in `profiles.py`. `updates` contains only reinspected successful build/smoke records plus matching curated metadata. Codec subprocess timeout 10 seconds, no shell and no secret-bearing environment dump.
 
-- [ ] **1. Write failing write/command tests.** Names: `test_decline_and_non_tty_leave_bytes_unchanged`, `test_flag_creates_or_merges_without_deleting_other_profiles`, `test_partial_build_writes_successes_and_returns_failure`, `test_concurrent_writers_reread_under_lock`, `test_failed_codec_replace_or_symlink_preserves_old_file`, `test_custom_in_repo_path_requires_ignore`. Assert:
+- [x] **1. Write failing write/command tests.** Names: `test_decline_and_non_tty_leave_bytes_unchanged`, `test_flag_creates_or_merges_without_deleting_other_profiles`, `test_partial_build_writes_successes_and_returns_failure`, `test_concurrent_writers_reread_under_lock`, `test_failed_codec_replace_or_symlink_preserves_old_file`, `test_custom_in_repo_path_requires_ignore`. Assert:
   ```python
   assert merged.profiles["standard"] == previous.profiles["standard"]
   assert merged.profiles["logs-data"].enabled is False  # existing operator choice
   assert merged.profiles["logs-data"].extensions == {"owner": "platform"}
   assert exit_code == 1 and published_ids == ("logs-data",)  # another build failed
   ```
-- [ ] **2. Run red:** `uv run pytest -q tests/test_sandbox_profile_writes.py tests/test_sandbox_image_commands.py` from `apps/api`.
-- [ ] **3. Implement the existing command extension.** Accept exactly `build PROFILE|--all [--overwrite-profiles]`; preserve list/smoke and invalid-input exit 2. Catch per-profile failures so separately successful profiles remain eligible for one consent/write; still exit 1 on any failed build/smoke/write. Show destination/profile IDs before prompting; default refusal on EOF. Without TTY/flag, build normally and visibly skip writing. Reinspect successful images before publishing. Use a stable sibling lock, no-follow regular-file checks on destination/ancestors, reread+validate under lock, same-directory temporary file, fsync and atomic replace; preserve safe existing mode and make new files readable by UID 1000. Reject unsafe/group-or-world-writable destinations/directories rather than trusting raceable paths. Refuse malformed old YAML even with the flag. Ignore `/deploy/sandbox/sandbox-profiles.yaml`; for a custom in-repo destination require `git check-ignore` success before writing, never edit ignores automatically.
-- [ ] **4. Run green:** repeat red command, plus `uv run pytest -q tests/test_sandbox_image_catalog.py tests/test_sandbox_image_engine.py`. Expected: no lost updates/truncation; process-env/root-`.env`/default resolution works from a different cwd, quoted spaces are literal, empty/interpolated explicit paths fail safely. Build records stay untracked; no real build yet.
-- [ ] **5. Commit** with subject `feat: write local profiles from sandbox image builds`; record evidence and any blocked real-engine checks.
+- [x] **2. Run red:** `uv run pytest -q tests/test_sandbox_profile_writes.py tests/test_sandbox_image_commands.py` from `apps/api`.
+- [x] **3. Implement the existing command extension.** Accept exactly `build PROFILE|--all [--overwrite-profiles]`; preserve list/smoke and invalid-input exit 2. Catch per-profile failures so separately successful profiles remain eligible for one consent/write; still exit 1 on any failed build/smoke/write. Show destination/profile IDs before prompting; default refusal on EOF. Without TTY/flag, build normally and visibly skip writing. Reinspect successful images before publishing. Use a stable sibling lock, no-follow regular-file checks on destination/ancestors, reread+validate under lock, same-directory temporary file, fsync and atomic replace; preserve safe existing mode and make new files readable by UID 1000. Reject unsafe/group-or-world-writable destinations/directories rather than trusting raceable paths. Refuse malformed old YAML even with the flag. Ignore `/deploy/sandbox/sandbox-profiles.yaml`; for a custom in-repo destination require `git check-ignore` success before writing, never edit ignores automatically.
+- [x] **4. Run green:** repeat red command, plus `uv run pytest -q tests/test_sandbox_image_catalog.py tests/test_sandbox_image_engine.py`. Expected: no lost updates/truncation; process-env/root-`.env`/default resolution works from a different cwd, quoted spaces are literal, empty/interpolated explicit paths fail safely. Build records stay untracked; no real build yet.
+- [x] **5. Commit** with subject `feat: write local profiles from sandbox image builds`; record evidence and any blocked real-engine checks.
+
+  Evidence: the red command failed at collection because
+  `sandbox_image_lib.profiles` did not exist; the command suite alone failed
+  `test_build_accepts_the_overwrite_flag_and_rejects_other_build_shapes` (exit
+  2, 1 failed / 12 passed) because `--overwrite-profiles` was parsed as a
+  profile. Green: the repeated write/command suite passed 26 tests, and the
+  combined write/command/catalog/engine/profile suite passed 49. `uv run ruff
+  check` passed on all touched Python modules. Tests exercise the codec bridge
+  against the existing API venv with a minimal environment; no image was built,
+  pulled, run, or contacted, and no real-engine publication check was attempted.
+  The generated default and its sibling lock are ignored. Custom in-repo
+  destinations require both the destination and its lock file to pass
+  `git check-ignore`; the helper never edits ignore files.
 
 ## Task 3: Fixed-target mounts and runtime snapshot readiness
 
