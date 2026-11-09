@@ -296,17 +296,55 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
 
 **Interfaces:** Produces `read_preferences(db: Session, user_id: UUID) -> AgentPreferences`, `update_preferences(db: Session, user_id: UUID, command: AgentPreferencesUpdate) -> AgentPreferences`. Auth schemas define `AgentPreferences(agent_mode, revision)` / `AgentPreferencesUpdate(agent_mode, expected_revision)`. `submit_turn` retains its existing call shape and consumes extended `TurnSubmitRequest`; v5 captures `TaskContext`/profile snapshot and records exact submission digest atomically with message/run/job/outbox.
 
-- [ ] **1. Write failing API/admission tests.** `test_existing_and_new_accounts_default_copilot`, `test_preference_cas_and_cross_account_isolation`, `test_stale_new_submission_creates_nothing`, `test_retry_after_preference_change_returns_original_run`, `test_feature_gate_and_unqualified_profile_fail_visibly`. Assert:
+- [x] **1. Write failing API/admission tests.** `test_existing_and_new_accounts_default_copilot`, `test_preference_cas_and_cross_account_isolation`, `test_stale_new_submission_creates_nothing`, `test_retry_after_preference_change_returns_original_run`, `test_feature_gate_and_unqualified_profile_fail_visibly`. Assert:
   ```python
   assert preferences.json() == {"agent_mode": "copilot", "revision": 1}
   assert stale_patch.status_code == 409
   assert retry_run.id == original.id and retry_execution.task_context.mode == "copilot"
   assert (new_message_count, new_run_count, new_outbox_count) == (0, 0, 0)  # stale send
   ```
-- [ ] **2. Run red:** `uv run pytest -q tests/test_agent_mode_preferences.py tests/test_task_admission.py` from `apps/api`.
-- [ ] **3. Implement preference migration `phase7a032` after `phase7a031`, APIs and admission.** Add mode check constraint and positive revision default 1. Preference GET/PATCH uses authenticated identity, not request-supplied account ID; same-mode save need not increment. Validate paired mode/revision and idempotency in the order specified above. Include waits in active-conversation admission checks so a second execution task cannot bypass one waiting for approval. Add rollout settings without enabling existing deployments. Reject a v5 profile that cannot support tools/contract output; never silently choose an unselected provider or execution mode. Explicit already-pinned fallback rules and private-continuation restrictions remain authoritative; qualify initially with fallbacks disabled. Tool-disabled chat remains usable when sandbox is disabled. Task 9 supplies task-specific effective model/loop limits before gate activation.
+- [x] **2. Run red:** `uv run pytest -q tests/test_agent_mode_preferences.py tests/test_task_admission.py` from `apps/api`.
+- [x] **3. Implement preference migration `phase7a032` after `phase7a031`, APIs and admission.** Add mode check constraint and positive revision default 1. Preference GET/PATCH uses authenticated identity, not request-supplied account ID; same-mode save need not increment. Validate paired mode/revision and idempotency in the order specified above. Include waits in active-conversation admission checks so a second execution task cannot bypass one waiting for approval. Add rollout settings without enabling existing deployments. Reject a v5 profile that cannot support tools/contract output; never silently choose an unselected provider or execution mode. Explicit already-pinned fallback rules and private-continuation restrictions remain authoritative; qualify initially with fallbacks disabled. Tool-disabled chat remains usable when sandbox is disabled. Task 9 supplies task-specific effective model/loop limits before gate activation.
 - [ ] **4. Run green:** repeat tests plus `uv run pytest -q tests/test_auth_login.py tests/test_auth_register.py tests/test_run_commands.py tests/test_tool_run_commands.py`. Verify 031→032 upgrade on PostgreSQL through Task 6 migration suite extended for preference rows; stale writes race under the user lock and return 409, not last-writer-wins.
-- [ ] **5. Commit** with subject `feat: persist agent mode and pin it at task admission`; record evidence.
+- [x] **5. Commit** with subject `feat: persist agent mode and pin it at task admission`; record evidence.
+
+  **Task 7 evidence (SQLite lane, complete):** the red command failed first at
+  collection (`ImportError: cannot import name 'Message' from
+  'src.openship.runs.models'`), then with 9 failed / 1 passed once the import
+  was corrected (missing preference settings attributes, routes and admission
+  behavior). Green: `uv run pytest -q tests/test_agent_mode_preferences.py
+  tests/test_task_admission.py` passed 10 tests, and the named follow-up suites
+  (`test_auth_login.py test_auth_register.py test_run_commands.py
+  test_tool_run_commands.py test_task_state.py test_task_profile_selection.py`)
+  passed 56 tests. Additional regressions (`test_tool_turn_commands.py
+  test_task_contracts.py test_agent_tool_loop.py test_conversation_lifecycle.py
+  test_archive_admission.py`) passed 58 tests, and `uv run ruff check` passed on
+  every touched module. The suite proves existing and new accounts default to
+  `{"agent_mode": "copilot", "revision": 1}` across the 031→032 SQLite upgrade,
+  PATCH uses revision CAS (stale writes and concurrent same-account writers
+  return 409 rather than last-writer-wins) and is isolated by authenticated
+  identity, and a stale new submission returns 409 while creating no message,
+  run, job or outbox rows. A retry with the same `client_request_id` returns the
+  original run and pinned `copilot` mode even after the account preference
+  changed. The rollout gate defaults off with an empty profile allowlist; enabled
+  submissions require a tool-capable allowlisted profile built as
+  `ExecutionConfigV5`, and unqualified selections return actionable 422 blockers
+  with no legacy/Auto fallback. Wait statuses (`waiting_connector`,
+  `waiting_plan`, `waiting_input`, `waiting_config`) participate in
+  active-conversation admission, and unpaired `agent_mode`/`agent_mode_revision`
+  fields are rejected. `save_plan` now derives mode/scope/graph version from the
+  pinned `TaskContext` instead of hardcoding `copilot`/`conversation`. The full
+  API lane reported 1 failed / 1784 passed / 92 skipped / 53 errors; the single
+  non-integration failure was `tests/full_stack/test_sandbox_python_chat.py`
+  failing only because `TEST_POSTGRES_URL` is unset, and
+  `test_opensandbox_packaging.py` passed when re-run alone. The 53 errors are
+  external-service integration lanes (NATS/JetStream/PostgreSQL).
+
+  **PostgreSQL lane (blocked, unrun):** `TEST_POSTGRES_URL` is unset in this
+  environment. The new `test_postgres_preference_defaults_and_cas_under_lock`
+  case and the 031→032 PostgreSQL upgrade/downgrade checks were not executed.
+  No PostgreSQL evidence is claimed; the lane remains open for an authorized
+  disposable service.
 
 ## Task 8: Durable plan/input/configuration waits and idempotent decisions
 

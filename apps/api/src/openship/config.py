@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     tool_enabled_ids: str | None = None
     tool_concurrency: int = Field(default=1, ge=1, le=128)
 
+    # Agentic task rollout stays off for existing deployments. Even when the
+    # gate is enabled, only an explicitly allowlisted provider profile may
+    # execute tool-enabled v5 work; an empty list admits none.
+    agentic_tasks_enabled: bool = False
+    agentic_task_profile_ids: str = ""
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -60,6 +66,14 @@ class Settings(BaseSettings):
             return None
         return frozenset(
             item.strip() for item in self.tool_enabled_ids.split(",") if item.strip()
+        )
+
+    @property
+    def agentic_task_profile_allowlist(self) -> frozenset[str]:
+        return frozenset(
+            item.strip()
+            for item in self.agentic_task_profile_ids.split(",")
+            if item.strip()
         )
 
     # Managed Connector keys are provisioned separately and read lazily by

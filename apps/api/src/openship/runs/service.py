@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..artifacts.contracts import ArtifactRef
 from ..artifacts.models import Artifact
+from ..auth.models import User
 from ..capabilities.catalog import (
     legacy_credential_binding,
     list_capability_manifests,
@@ -55,6 +56,8 @@ from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
 from ..resources.models import ConnectorBlocker
 from ..runs.models import Run, RunJob
+from ..sandboxes.profile_schema import catalog_digest
+from ..sandboxes.profiles import runtime_catalog
 from ..workspace.lifecycle import (
     ArchiveStateError,
     archive_http_error,
@@ -62,6 +65,18 @@ from ..workspace.lifecycle import (
 )
 from .queue import fenced_update_run
 from .schemas import ResumeAnalysisRequest, ResumeChatPythonRequest
+from .tasks.contracts import ExecutionConfigV5, TaskContext
+
+_ACTIVE_RUN_STATUSES = (
+    "created",
+    "queued",
+    "running",
+    "waiting_connector",
+    "waiting_plan",
+    "waiting_input",
+    "waiting_config",
+)
+_AGENT_MODES = ("auto", "copilot")
 
 
 def require_owned_conversation(
@@ -181,6 +196,8 @@ def _turn_submission_digest(
     enable_tools: bool,
     artifact_ids,
     connector_selections=None,
+    agent_mode: str | None = None,
+    agent_mode_revision: int | None = None,
 ) -> str:
     """Hash only client-controlled chat semantics, never current configuration."""
     canonical = {
@@ -192,7 +209,103 @@ def _turn_submission_digest(
             for kind, connector_id in sorted((connector_selections or {}).items())
         },
     }
+    # Runs made before agent modes existed keep their original digest shape.
+    if agent_mode is not None and agent_mode_revision is not None:
+        canonical["agent_mode"] = agent_mode
+        canonical["agent_mode_revision"] = agent_mode_revision
     return canonical_digest(canonical)
+
+
+def _recorded_agent_mode(run: Run) -> tuple[str | None, int | None]:
+    """Read the mode/revision pinned into a new-format run's selection record."""
+    if not run.model_selection:
+        return None, None
+    try:
+        selection = json.loads(run.model_selection)
+    except (TypeError, ValueError):
+        return None, None
+    mode = selection.get("agent_mode")
+    revision = selection.get("agent_mode_revision")
+    if mode in _AGENT_MODES and isinstance(revision, int) and not isinstance(
+        revision, bool
+    ) and revision >= 1:
+        return mode, revision
+    return None, None
+
+
+def _locked_agent_preference(db: Session, user_id: uuid.UUID) -> tuple[str, int]:
+    """Lock and read this account's preference before a fresh admission."""
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .with_for_update()
+        .populate_existing()
+        .one_or_none()
+    )
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "User not found",
+                }
+            },
+        )
+    mode = user.agent_mode if user.agent_mode in _AGENT_MODES else "copilot"
+    revision = user.agent_mode_revision if user.agent_mode_revision else 1
+    return mode, revision
+
+
+def _stale_agent_preference(mode: str, revision: int) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": {
+                "code": "stale_agent_preference",
+                "message": (
+                    f"The account preference is now {mode!r} at revision "
+                    f"{revision}; reload it and submit the new task again"
+                ),
+            }
+        },
+    )
+
+
+def _require_agentic_profile(config: RunModelConfig) -> None:
+    """Refuse a v5 selection that the rollout has not explicitly qualified."""
+    if config.primary.id not in settings.agentic_task_profile_allowlist:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "agentic_profile_not_enabled",
+                    "message": (
+                        f"Profile {config.primary.id!r} is not allowlisted for "
+                        "agentic tasks; add it to AGENTIC_TASK_PROFILE_IDS or "
+                        "choose an allowlisted profile"
+                    ),
+                }
+            },
+        )
+    capabilities = config.primary.capabilities
+    if config.fallbacks or not (
+        capabilities.tool_calls and capabilities.structured_output
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "agentic_profile_unsupported",
+                    "message": (
+                        f"Profile {config.primary.id!r} cannot support agentic "
+                        "tools and contract output; choose a tool-capable "
+                        "profile without fallbacks"
+                    ),
+                }
+            },
+        )
+
 
 
 def _owned_artifact_refs(
@@ -369,6 +482,8 @@ def _tool_chat_execution(
     model_config: RunModelConfig,
     artifact_refs: tuple[ArtifactRef, ...],
     connector_selections: dict[str, uuid.UUID],
+    *,
+    task_context: TaskContext | None = None,
 ):
     if model_config.fallbacks:
         raise HTTPException(
@@ -607,6 +722,31 @@ def _tool_chat_execution(
     has_aws_discovery = any(
         ref.id in {"aws_read_catalog", "aws_read"} for ref in refs
     )
+    if task_context is not None:
+        # v5 pins the same authority set plus the task context and the exact
+        # sandbox profile snapshot. Task-specific model/loop budgets arrive
+        # with Task 9; this admission does not invent them.
+        catalog = runtime_catalog()
+        return (
+            ExecutionConfigV5(
+                allowed_capabilities=tuple(refs),
+                selected_artifacts=artifact_refs,
+                connector_refs=tuple(connector_refs),
+                credential_binding_refs=tuple(binding_refs),
+                preferred_search_kind=preferred_search_kind,
+                aws_read_catalog_digest=load_aws_read_catalog().digest,
+                loop_limits=LoopLimits(
+                    deadline_seconds=min(
+                        settings.workflow_run_timeout_seconds,
+                        int(model_config.limits.run_timeout_seconds),
+                    )
+                ),
+                task_context=task_context,
+                profile_catalog=catalog,
+                profile_catalog_digest=catalog_digest(catalog),
+            ),
+            policy.revision,
+        )
     if has_aws_discovery:
         loop_limits = LoopLimits(
             deadline_seconds=min(
@@ -692,6 +832,8 @@ def submit_turn(
     artifact_ids=(),
     connector_selections: dict[str, uuid.UUID] | None = None,
     resource_binding_selections=(),
+    agent_mode: str | None = None,
+    agent_mode_revision: int | None = None,
 ) -> Run:
     """Submit a chat turn as a durable, queued run.
 
@@ -700,6 +842,37 @@ def submit_turn(
     The run also freezes the provider configuration it will execute, so a later
     change to the installation's default cannot change what it runs.
     """
+    if (agent_mode is None) != (agent_mode_revision is None):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "invalid_agent_mode",
+                    "message": "agent_mode and agent_mode_revision must be supplied together",
+                }
+            },
+        )
+    if agent_mode is not None and agent_mode not in _AGENT_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "invalid_agent_mode",
+                    "message": "agent_mode must be 'auto' or 'copilot'",
+                }
+            },
+        )
+    if agent_mode_revision is not None and agent_mode_revision < 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "invalid_agent_mode",
+                    "message": "agent_mode_revision must be positive",
+                }
+            },
+        )
+
     conv = require_owned_conversation(db, user_id, conversation_id)
     if resource_binding_selections:
         raise HTTPException(
@@ -726,25 +899,30 @@ def submit_turn(
             },
         )
 
-    try:
-        submission_digest = _turn_submission_digest(
-            content,
-            enable_tools,
-            artifact_ids,
-            connector_selections,
-        )
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": {
-                    "code": "invalid_turn_request",
-                    "message": "The submitted chat request is invalid",
-                }
-            },
-        ) from exc
+    def digest_for(mode: str | None, revision: int | None) -> str:
+        try:
+            return _turn_submission_digest(
+                content,
+                enable_tools,
+                artifact_ids,
+                connector_selections,
+                mode,
+                revision,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": {
+                        "code": "invalid_turn_request",
+                        "message": "The submitted chat request is invalid",
+                    }
+                },
+            ) from exc
 
-    # Check for existing run with same client_request_id (idempotency)
+    # Check for existing run with same client_request_id (idempotency). This
+    # lookup happens before the current preference is read: a retry preserves
+    # the mode its submission originally captured.
     existing = db.query(Run).filter(Run.client_request_id == client_request_id).first()
     if existing:
         # Verify same conversation
@@ -777,6 +955,33 @@ def submit_turn(
                     }
                 },
             )
+
+        recorded_mode, recorded_revision = _recorded_agent_mode(existing)
+        if agent_mode is not None:
+            if recorded_mode is None or (
+                agent_mode,
+                agent_mode_revision,
+            ) != (recorded_mode, recorded_revision):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": {
+                            "code": "client_request_id_conflict",
+                            "message": (
+                                "client_request_id already used with a different "
+                                "agent mode selection"
+                            ),
+                        }
+                    },
+                )
+            digest_mode, digest_revision = agent_mode, agent_mode_revision
+        else:
+            # An omitted pair means "the original submission", not "today's
+            # preference"; a run from before modes existed keeps the legacy
+            # digest shape.
+            digest_mode, digest_revision = recorded_mode, recorded_revision
+        submission_digest = digest_for(digest_mode, digest_revision)
+
         if existing.submission_digest is not None:
             if existing.submission_digest != submission_digest:
                 raise HTTPException(
@@ -788,7 +993,7 @@ def submit_turn(
                         }
                     },
                 )
-        elif enable_tools or artifact_ids:
+        elif enable_tools or artifact_ids or agent_mode is not None:
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -817,12 +1022,14 @@ def submit_turn(
     # order so an archive and admission serialize on the same rows.
     conv = _lock_active_conversation_scope(db, user_id=user_id, conversation_id=conv.id)
 
-    # Check for an active run on this conversation (one active run per conversation)
+    # Check for an active run on this conversation (one active run per
+    # conversation). Durable waits stay active: a task waiting for approval
+    # must not be bypassed by a second execution admission.
     active = (
         db.query(Run)
         .filter(
             Run.conversation_id == conv.id,
-            Run.status.in_(["created", "queued", "running"]),
+            Run.status.in_(_ACTIVE_RUN_STATUSES),
         )
         .first()
     )
@@ -839,6 +1046,19 @@ def submit_turn(
 
     check_submission_capacity(db)
 
+    # Read the account preference only for fresh work, under its row lock, so
+    # a concurrent PATCH either commits before this admission (and is seen
+    # here) or waits for it. A supplied pair must match exactly; an omitted
+    # pair captures the current server value.
+    current_mode, current_revision = _locked_agent_preference(db, user_id)
+    if agent_mode is not None:
+        if (agent_mode, agent_mode_revision) != (current_mode, current_revision):
+            raise _stale_agent_preference(current_mode, current_revision)
+        captured_mode, captured_revision = agent_mode, agent_mode_revision
+    else:
+        captured_mode, captured_revision = current_mode, current_revision
+    submission_digest = digest_for(captured_mode, captured_revision)
+
     # Resolve and validate the selection before anything is queued
     config = _resolve_selection(provider_profile_id, fallback_profile_ids)
     artifact_refs = _owned_artifact_refs(db, conv, artifact_ids)
@@ -852,6 +1072,33 @@ def submit_turn(
                 }
             },
         )
+    agentic_task = bool(settings.agentic_tasks_enabled and enable_tools)
+    if agentic_task:
+        _require_agentic_profile(config)
+    run_id = uuid.uuid4()
+    task_context = None
+    if agentic_task:
+        try:
+            task_context = TaskContext(
+                root_run_id=run_id,
+                project_id=conv.project_id,
+                conversation_id=conv.id,
+                initiator_id=user_id,
+                scope="conversation",
+                mode=captured_mode,
+                graph_version=5,
+                original_intent=content,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": {
+                        "code": "invalid_turn_request",
+                        "message": "The submitted task intent is invalid",
+                    }
+                },
+            ) from exc
     execution_and_policy = (
         _tool_chat_execution(
             db,
@@ -859,6 +1106,7 @@ def submit_turn(
             config,
             artifact_refs,
             connector_selections or {},
+            task_context=task_context,
         )
         if enable_tools
         else None
@@ -881,12 +1129,15 @@ def submit_turn(
         {
             "profile_id": provider_profile_id,
             "fallback_profile_ids": list(fallback_profile_ids or ()),
+            "agent_mode": captured_mode,
+            "agent_mode_revision": captured_revision,
         },
         sort_keys=True,
     )
 
     # Create the run
     run = Run(
+        id=run_id,
         conversation_id=conv.id,
         project_id=conv.project_id,
         client_request_id=client_request_id,
@@ -1053,7 +1304,7 @@ def submit_tool_run(
         db.query(Run)
         .filter(
             Run.conversation_id == conversation.id,
-            Run.status.in_(("created", "queued", "running")),
+            Run.status.in_(_ACTIVE_RUN_STATUSES),
         )
         .first()
     )

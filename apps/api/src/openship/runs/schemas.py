@@ -10,6 +10,7 @@ from pydantic import (
     StrictBool,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from ..execution.projections import OperationSummary
@@ -32,6 +33,10 @@ class TurnSubmitRequest(BaseModel):
     # fallback disabled. The two are not the same request.
     fallback_profile_ids: list[str] | None = None
     enable_tools: StrictBool = False
+    # Server-captured mode and its revision travel together. Omitting both
+    # asks admission to capture the account's current preference exactly once.
+    agent_mode: Literal["auto", "copilot"] | None = None
+    agent_mode_revision: int | None = Field(default=None, ge=1)
     artifact_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     resource_binding_selections: list[uuid.UUID] = Field(
         default_factory=list, max_length=10
@@ -55,6 +60,14 @@ class TurnSubmitRequest(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("resource_binding_selections must be distinct")
         return value
+
+    @model_validator(mode="after")
+    def _agent_mode_is_paired(self):
+        if (self.agent_mode is None) != (self.agent_mode_revision is None):
+            raise ValueError(
+                "agent_mode and agent_mode_revision must be supplied together"
+            )
+        return self
 
 
 class ModelSummary(BaseModel):

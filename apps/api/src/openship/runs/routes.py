@@ -144,6 +144,8 @@ async def submit_chat_turn(
             artifact_ids=req.artifact_ids,
             connector_selections=req.connector_selections,
             resource_binding_selections=req.resource_binding_selections,
+            agent_mode=req.agent_mode,
+            agent_mode_revision=req.agent_mode_revision,
         )
         logger.info(f"submit_chat_turn success: run={run.id}")
         return project_run_response(run)

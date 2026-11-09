@@ -20,6 +20,12 @@ from sqlalchemy.orm import sessionmaker
 
 from src.openship.artifacts.models import Artifact
 from src.openship.auth.models import User
+from src.openship.auth.preferences import (
+    AgentPreferenceConflict,
+    read_preferences,
+    update_preferences,
+)
+from src.openship.auth.schemas import AgentPreferencesUpdate
 from src.openship.capabilities.contracts import CapabilityRef
 from src.openship.chat.models import Conversation
 from src.openship.execution.models import ToolOperation
@@ -432,6 +438,64 @@ def test_postgres_waiting_statuses_and_open_decision_uniqueness(pg_lane):
         db.commit()
     finally:
         db.close()
+
+
+def test_postgres_preference_defaults_and_cas_under_lock(pg_lane):
+    sessions, _ini, _engine = pg_lane
+    suffix = uuid.uuid4().hex
+    user_id = uuid.uuid4()
+    with sessions() as db:
+        db.add(
+            User(
+                id=user_id,
+                username=f"agentmode_pg_{suffix}",
+                email=f"agentmode_pg_{suffix}@example.test",
+                password_hash="hash",
+            )
+        )
+        db.commit()
+        current = read_preferences(db, user_id)
+        assert current.agent_mode == "copilot"
+        assert current.revision == 1
+        updated = update_preferences(
+            db,
+            user_id,
+            AgentPreferencesUpdate(agent_mode="auto", expected_revision=1),
+        )
+        db.commit()
+        assert (updated.agent_mode, updated.revision) == ("auto", 2)
+
+    barrier = threading.Barrier(2)
+    results: list[tuple[str, int]] = []
+
+    def write(mode: str) -> None:
+        db = sessions()
+        try:
+            barrier.wait(timeout=10)
+            preferences = update_preferences(
+                db,
+                user_id,
+                AgentPreferencesUpdate(
+                    agent_mode=mode, expected_revision=2
+                ),
+            )
+            db.commit()
+            results.append(("saved", preferences.revision))
+        except AgentPreferenceConflict as conflict:
+            db.rollback()
+            results.append(("conflict", conflict.current.revision))
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(write, ("copilot", "copilot")))
+
+    assert [result[0] for result in sorted(results)] == ["conflict", "saved"]
+    assert sorted(result[1] for result in results) == [3, 3]
+    with sessions() as db:
+        final = read_preferences(db, user_id)
+        assert final.revision == 3
+        assert final.agent_mode == "copilot"
 
 
 def test_postgres_downgrade_refuses_v5_rows(pg_lane):

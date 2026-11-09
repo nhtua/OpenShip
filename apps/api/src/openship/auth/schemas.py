@@ -1,4 +1,8 @@
-from pydantic import BaseModel, Field, field_validator
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+AgentMode = Literal["auto", "copilot"]
 
 
 class RegisterRequest(BaseModel):
@@ -22,3 +26,15 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class AgentPreferences(BaseModel):
+    agent_mode: AgentMode
+    revision: int = Field(ge=1)
+
+
+class AgentPreferencesUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_mode: AgentMode
+    expected_revision: int = Field(ge=1)

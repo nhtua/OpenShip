@@ -27,6 +27,7 @@ from ...workspace.models import Project
 from ..models import Run, RunJob
 from ..queue import Claim
 from .contracts import (
+    ExecutionConfigV5,
     TaskAttempt,
     TaskCounters,
     TaskDecision,
@@ -313,7 +314,14 @@ def _claim_state(db, claim: Claim) -> _ClaimState:
 
 
 def _default_context(run: Run, claim: Claim) -> dict:
-    return {
+    """The task context pinned at admission, or the legacy conversation shape.
+
+    A v5 admission writes its context into the run's execution snapshot. That
+    pinned mode is authoritative for the task; the account's current
+    preference is never re-read here. Runs created before admission pinned a
+    context (tests and historical fixtures) keep the prior defaults.
+    """
+    legacy = {
         "root_run_id": str(run.id),
         "project_id": str(run.project_id),
         "conversation_id": str(run.conversation_id),
@@ -322,6 +330,26 @@ def _default_context(run: Run, claim: Claim) -> dict:
         "mode": "copilot",
         "graph_version": 5,
     }
+    if not run.execution_configuration:
+        return legacy
+    try:
+        config = ExecutionConfigV5.model_validate_json(run.execution_configuration)
+    except ValueError as exc:
+        raise TaskStateError(
+            "state_corrupt", "the task run execution configuration is invalid"
+        ) from exc
+    context = config.task_context
+    if (
+        context.root_run_id != run.id
+        or context.project_id != run.project_id
+        or context.conversation_id != run.conversation_id
+        or context.initiator_id != claim.user_id
+    ):
+        raise TaskStateError(
+            "state_corrupt", "the pinned task context does not match its run"
+        )
+    return context.model_dump(mode="json")
+
 
 
 def save_plan(
@@ -353,19 +381,20 @@ def save_plan(
                 "stale_revision",
                 "a new task starts at revision 1 with expected_revision 0",
             )
+        context = _default_context(state.run, claim)
         task = TaskRecord(
             run_id=state.run.id,
             project_id=state.run.project_id,
             conversation_id=state.run.conversation_id,
             initiator_id=claim.user_id,
-            scope="conversation",
-            mode="copilot",
-            graph_version=5,
+            scope=context["scope"],
+            mode=context["mode"],
+            graph_version=int(context["graph_version"]),
             current_revision=1,
             status="planned",
             digest=digest,
             fence=claim.fence,
-            context_json=json.dumps(_default_context(state.run, claim)),
+            context_json=json.dumps(context),
             counters_json=TaskCounters().model_dump_json(),
             accepted_evidence_json="[]",
             verified_outputs_json="[]",

@@ -677,7 +677,7 @@ def test_upgrade_keeps_old_history_without_fabricating_tasks(tmp_path):
         revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-        assert revision == "phase7a031"
+        assert revision == "phase7a032"
 
         # The nonterminal waiting statuses fit the existing 20-character column.
         for status in ("waiting_plan", "waiting_input", "waiting_config"):
