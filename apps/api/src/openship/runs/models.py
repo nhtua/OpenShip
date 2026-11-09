@@ -24,6 +24,18 @@ from ..messaging.models import (
 )
 from ..workspace.models import Project  # noqa: F401
 
+# Statuses that hold a conversation's execution slot. Durable waits stay here
+# so a second run cannot bypass work waiting for approval or configuration.
+ACTIVE_RUN_STATUSES = (
+    "created",
+    "queued",
+    "running",
+    "waiting_connector",
+    "waiting_plan",
+    "waiting_input",
+    "waiting_config",
+)
+
 
 class Run(Base):
     """A durable run within a conversation/project. Tracks execution state and fencing."""
@@ -79,7 +91,7 @@ class Run(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('created', 'queued', 'running', 'waiting_connector', 'completed', 'failed', 'cancelled', 'timed_out', 'stale')",
+            "status IN ('created', 'queued', 'running', 'waiting_connector', 'waiting_plan', 'waiting_input', 'waiting_config', 'completed', 'failed', 'cancelled', 'timed_out', 'stale')",
             name="ck_runs_status",
         ),
         CheckConstraint("kind IN ('chat', 'tool')", name="ck_runs_kind"),

@@ -321,17 +321,20 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
   test_archive_admission.py`) passed 58 tests, and `uv run ruff check` passed on
   every touched module. The suite proves existing and new accounts default to
   `{"agent_mode": "copilot", "revision": 1}` across the 031→032 SQLite upgrade,
-  PATCH uses revision CAS (stale writes and concurrent same-account writers
-  return 409 rather than last-writer-wins) and is isolated by authenticated
-  identity, and a stale new submission returns 409 while creating no message,
-  run, job or outbox rows. A retry with the same `client_request_id` returns the
-  original run and pinned `copilot` mode even after the account preference
+  PATCH uses revision CAS sequentially (a stale revision returns 409 and a
+  same-mode save does not increment) and is isolated by authenticated identity,
+  and a stale new submission returns 409 while creating no message, run, job or
+  outbox rows. The *concurrent* same-account race is covered only by the
+  PostgreSQL test, which was not run (see below); SQLite does not establish
+  concurrent-writer evidence. A retry with the same `client_request_id` returns
+  the original run and pinned `copilot` mode even after the account preference
   changed. The rollout gate defaults off with an empty profile allowlist; enabled
   submissions require a tool-capable allowlisted profile built as
   `ExecutionConfigV5`, and unqualified selections return actionable 422 blockers
   with no legacy/Auto fallback. Wait statuses (`waiting_connector`,
   `waiting_plan`, `waiting_input`, `waiting_config`) participate in
-  active-conversation admission, and unpaired `agent_mode`/`agent_mode_revision`
+  active-conversation admission, both resume paths, connector-wait resume and
+  artifact-pin retention, and unpaired `agent_mode`/`agent_mode_revision`
   fields are rejected. `save_plan` now derives mode/scope/graph version from the
   pinned `TaskContext` instead of hardcoding `copilot`/`conversation`. The full
   API lane reported 1 failed / 1784 passed / 92 skipped / 53 errors; the single

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from src.openship.artifacts.models import Artifact, ArtifactQuota
 from src.openship.chat.models import Conversation
 from src.openship.config import settings
-from src.openship.runs.models import Run
+from src.openship.runs.models import ACTIVE_RUN_STATUSES, Run
 from src.openship.workspace.lifecycle import (
     ArchiveStateError,
     archive_http_error,
@@ -370,7 +370,7 @@ def require_artifact_not_pinned(db: Session, artifact: Artifact) -> None:
     artifact_text_id = str(artifact.id)
     runs = db.query(Run).filter(
         Run.conversation_id == artifact.conversation_id,
-        Run.status.in_(("created", "queued", "running")),
+        Run.status.in_(ACTIVE_RUN_STATUSES),
     ).all()
     for run in runs:
         try:

@@ -19,7 +19,7 @@ from ..connectors.credentials.broker import (
 from ..events.service import append_event
 from ..execution.models import ToolOperation
 from ..resources.models import ConnectorBlocker, ResourceBinding
-from ..runs.models import ProviderAttempt, Run, RunJob
+from ..runs.models import ACTIVE_RUN_STATUSES, ProviderAttempt, Run, RunJob
 from .readiness import ConnectorReadinessFailure, preflight_connector_references
 
 _WAIT_LIMIT = timedelta(hours=24)
@@ -340,7 +340,7 @@ def resume_connector_wait(
         .filter(
             Run.conversation_id == conversation.id,
             Run.id != run.id,
-            Run.status.in_(("created", "queued", "running")),
+            Run.status.in_(ACTIVE_RUN_STATUSES),
         )
         .first()
     )

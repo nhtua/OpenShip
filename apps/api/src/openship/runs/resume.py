@@ -21,7 +21,7 @@ from ..messaging.models import MessageTransportState
 from ..messaging.outbox import check_submission_capacity, enqueue_run
 from ..sandboxes.models import WorkflowSandbox
 from .analysis_graph import AnalysisJourney, decode_journey, encode_journey
-from .models import Run, RunJob, RunTranscriptRecord
+from .models import ACTIVE_RUN_STATUSES, Run, RunJob, RunTranscriptRecord
 from .schemas import ResumeAnalysisRequest, ResumeChatPythonRequest
 from .service import (
     _lock_active_conversation_scope,
@@ -155,7 +155,7 @@ def resume_analysis(
         db.query(Run)
         .filter(
             Run.conversation_id == conversation.id,
-            Run.status.in_(("created", "queued", "running", "waiting_connector")),
+            Run.status.in_(ACTIVE_RUN_STATUSES),
         )
         .first()
     ):
@@ -353,7 +353,7 @@ def resume_chat_python(
         db.query(Run)
         .filter(
             Run.conversation_id == conversation.id,
-            Run.status.in_(("created", "queued", "running", "waiting_connector")),
+            Run.status.in_(ACTIVE_RUN_STATUSES),
         )
         .first()
     ):

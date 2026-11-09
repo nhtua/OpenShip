@@ -55,7 +55,7 @@ from ..providers.contracts import RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
 from ..resources.models import ConnectorBlocker
-from ..runs.models import Run, RunJob
+from ..runs.models import ACTIVE_RUN_STATUSES, Run, RunJob
 from ..sandboxes.profile_schema import catalog_digest
 from ..sandboxes.profiles import runtime_catalog
 from ..workspace.lifecycle import (
@@ -67,15 +67,6 @@ from .queue import fenced_update_run
 from .schemas import ResumeAnalysisRequest, ResumeChatPythonRequest
 from .tasks.contracts import ExecutionConfigV5, TaskContext
 
-_ACTIVE_RUN_STATUSES = (
-    "created",
-    "queued",
-    "running",
-    "waiting_connector",
-    "waiting_plan",
-    "waiting_input",
-    "waiting_config",
-)
 _AGENT_MODES = ("auto", "copilot")
 
 
@@ -1029,7 +1020,7 @@ def submit_turn(
         db.query(Run)
         .filter(
             Run.conversation_id == conv.id,
-            Run.status.in_(_ACTIVE_RUN_STATUSES),
+            Run.status.in_(ACTIVE_RUN_STATUSES),
         )
         .first()
     )
@@ -1304,7 +1295,7 @@ def submit_tool_run(
         db.query(Run)
         .filter(
             Run.conversation_id == conversation.id,
-            Run.status.in_(_ACTIVE_RUN_STATUSES),
+            Run.status.in_(ACTIVE_RUN_STATUSES),
         )
         .first()
     )

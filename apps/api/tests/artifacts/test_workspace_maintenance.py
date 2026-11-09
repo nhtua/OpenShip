@@ -138,7 +138,17 @@ def test_purge_plan_is_non_mutating_and_purge_keeps_digest_tombstone(tmp_path):
         assert db.query(Outbox).filter_by(type="artifact.deleted").count() == 1
 
 
-def test_workspace_purge_refuses_an_active_run_input_pin(tmp_path):
+@pytest.mark.parametrize(
+    "run_status",
+    (
+        "running",
+        "waiting_connector",
+        "waiting_plan",
+        "waiting_input",
+        "waiting_config",
+    ),
+)
+def test_workspace_purge_refuses_an_active_run_input_pin(tmp_path, run_status):
     from src.openship.workspace.maintenance import plan_workspace_purge
 
     with _isolated_session() as db:
@@ -151,7 +161,7 @@ def test_workspace_purge_refuses_an_active_run_input_pin(tmp_path):
             Run(
                 conversation_id=conversation.id,
                 project_id=project.id,
-                status="running",
+                status=run_status,
                 execution_configuration=json.dumps(
                     {"selected_artifacts": [{"id": str(artifact.id), "sha256": artifact.sha256}]}
                 ),

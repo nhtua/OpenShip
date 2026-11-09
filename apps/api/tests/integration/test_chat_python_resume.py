@@ -176,6 +176,34 @@ async def test_active_run_blocks_resume(monkeypatch, tmp_path):
     assert lane.db.query(Run).filter_by(conversation_id=lane.conversation.id).count() == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wait_status",
+    ("waiting_connector", "waiting_plan", "waiting_input", "waiting_config"),
+)
+async def test_waiting_task_blocks_resume(monkeypatch, tmp_path, wait_status):
+    lane, gateway, *_ = _lane(monkeypatch, tmp_path)
+    await _execute_ops(lane, gateway, lane.claim, lane.context())
+    _finalize(lane)
+    waiting = Run(
+        conversation_id=lane.conversation.id,
+        project_id=lane.project.id,
+        client_request_id=str(_uuid.uuid4()),
+        status=wait_status,
+        kind="chat",
+        graph_version=5,
+    )
+    lane.db.add(waiting)
+    lane.db.commit()
+    with pytest.raises(HTTPException) as refused:
+        _resume(lane, "last_step", _uuid.uuid4())
+    assert refused.value.status_code == 409
+    assert refused.value.detail["error"]["code"] == "run_already_active"
+    assert (
+        lane.db.query(Run).filter_by(conversation_id=lane.conversation.id).count() == 2
+    )
+
+
 def _resume(lane, mode, request_id, *, principal_id=None):
     """Admit one explicit continuation through the ordinary queue/outbox."""
     db = SessionLocal()
