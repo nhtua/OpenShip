@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "tools": {
+    "aws": {
+      "linux/amd64": {
+        "version": "2.39.6",
+        "url": "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.39.6.zip",
+        "sha256": "7a121264f2637a3b90767aaf5bdd43ee88b8c925a931d0479fa2ce22b1a2fa76",
+        "provenance": "2026-11-07: downloaded archive and .sig; GPG VALIDSIG FB5DB77FD5C118B80511ADA8A6310ACC4672475C (AWS CLI Team key from official aws/aws-cli installer), then computed SHA256"
+      }
+    },
+    "gcloud": {
+      "linux/amd64": {
+        "version": "592.0.0",
+        "url": "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-592.0.0-linux-x86_64.tar.gz",
+        "sha256": "2d841a23a681ab94486af6841e5f1cd123cd300fb8c4be6ba5b51350fca3d50b",
+        "provenance": "2026-11-07: official install guide publishes SHA256 16fda6058d66e4ec29e8575e2b6e19b0d03cea7b091e6730f7e8361209e6955f for google-cloud-cli-linux-x86_64.tar.gz; verified that artifact, then verified its decompressed tar SHA256 e6243aa0419dc9e68da5b543ff0d95181db14f9e614e82ed0062d66a60606b10 equals this versioned archive's full tar payload. Gzip headers differ; recorded the versioned compressed SHA256 above. Retain bundled interpreter/components."
+      }
+    },
+    "terraform": {
+      "linux/amd64": {
+        "version": "1.17.1",
+        "url": "https://releases.hashicorp.com/terraform/1.17.1/terraform_1.17.1_linux_amd64.zip",
+        "sha256": "4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061",
+        "provenance": "releases.hashicorp.com/terraform/1.17.1/terraform_1.17.1_SHA256SUMS, fetched 2026-11-07"
+      }
+    },
+    "terragrunt": {
+      "linux/amd64": {
+        "version": "1.2.1",
+        "url": "https://github.com/gruntwork-io/terragrunt/releases/download/v1.2.1/terragrunt_linux_amd64",
+        "sha256": "f2f6238ad2348855a4e876b90fd31f3f5d106bb234794202a00b2bcc139fa753",
+        "provenance": "Upstream GitHub v1.2.1 SHA256SUMS, fetched 2026-11-07"
+      }
+    },
+    "tflint": {
+      "linux/amd64": {
+        "version": "0.65.0",
+        "url": "https://github.com/terraform-linters/tflint/releases/download/v0.65.0/tflint_linux_amd64.zip",
+        "sha256": "d4c545ed2e29d6338604b586f34f544f380f70f243aa72f7b484713835eaec61",
+        "provenance": "Upstream GitHub v0.65.0 checksums.txt, fetched 2026-11-07; bundled Terraform language ruleset only"
+      }
+    },
+    "node": {
+      "linux/amd64": {
+        "version": "22.23.4",
+        "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.gz",
+        "sha256": "b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406",
+        "provenance": "nodejs.org dist v22.23.4 (LTS 'Jod', released 2026-10-20); SHASUMS256.txt fetched 2026-11-07"
+      }
+    }
+  }
+}

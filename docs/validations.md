@@ -75,3 +75,10 @@ These align directly with OpenShip's planned workflow templates (provision/build
 The recurring theme is: **engineers want AI that understands context, proposes solutions, and executes safely — but they want to remain in control.** OpenShip's design (requirements → design → plan → human approval → execute) maps precisely to this expectation.
 
 The chat-first home page with workflow template selection underneath is also validated — users want both the familiar conversational entry point AND structured, proven workflows they can trust.
+
+## Engineering validation records
+
+This page records community validation of OpenShip concepts; it is not a
+delivery or build record. Implementation evidence belongs with the feature
+runbooks. For Phase 6C sandbox images, see the
+[local image validation record](operations/opensandbox.md#local-image-validation-record-2026-11-07).

@@ -467,7 +467,9 @@ def test_stale_claim_cannot_dispatch_into_a_reused_sandbox(lane, seeded):
 
 
 @pytest.fixture
-def lane(tmp_path):
+def lane(tmp_path, monkeypatch):
+    # Leases start at test execution, not collection (the full suite can take >5 min).
+    monkeypatch.setattr(f"{__name__}.NOW", datetime.now(UTC))
     return _lane(tmp_path)
 
 

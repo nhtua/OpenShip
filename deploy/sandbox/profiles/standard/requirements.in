@@ -1,0 +1,3 @@
+# direct third-party requirements for the standard profile
+sympy
+regex

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "python_base_image": "python:3.12-slim@sha256:05a994d2344eb364cc186910f4fc8786a38215f39f00d0acc25bff33a08f4177",
+  "python_base_updated": "2026-11-05T17:07:19.036169Z",
+  "python_version": "3.12",
+  "uv_version": "0.12.23",
+  "uv_url": "https://github.com/astral-sh/uv/releases/download/0.12.23/uv-x86_64-unknown-linux-gnu.tar.gz",
+  "uv_sha256": "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6",
+  "uv_provenance": "GitHub release 0.12.23 published checksum file uv-x86_64-unknown-linux-gnu.tar.gz.sha256, fetched 2026-11-07; uv_version matches the host resolver tool (uv 0.12.23, 46b84fd0b 2026-10-03)",
+  "supported_platforms": ["linux/amd64"],
+  "debian_snapshot": "20261101T000000Z",
+  "debian_snapshot_os": "Debian 13 (trixie), /etc/debian_version 13.7 as recorded on the digest-pinned base",
+  "debian_snapshot_packages": {
+    "bash": "5.2.37-2+b10",
+    "coreutils": "9.7-3",
+    "gzip": "1.13-1+deb13u1",
+    "tar": "1.35+dfsg-3.1"
+  },
+  "debian_snapshot_note": "Additional profile apt requests use the signed immutable Debian snapshot 20261101T000000Z. Inherited base OS packages are fixed by the Python image digest; this snapshot timestamp is not a claim about when the upstream base was assembled. curl is absent; archives use urllib with hash verification before extraction."
+}

@@ -65,28 +65,49 @@ additional values in the root `.env` before using the README startup commands:
    Add those two assignments to `.env`. Keep pins together with the versioned
    provider configuration; do not substitute arbitrary `latest` images.
 
-2. Build the standard-library Python workload on the **same engine the provider
-   uses** (the system Docker daemon in the primary setup):
+2. Build a managed workload profile with the wrapper, on the **same engine the
+   provider uses**. The wrapper resolves the socket explicitly; Docker defaults
+   to `/var/run/docker.sock`, Podman to the rootless manager socket:
 
    ```bash
-   docker build \
-     --build-arg "PYTHON_BASE_IMAGE=$(python3 -c 'import json; print(json.load(open("deploy/sandbox/images.json"))["python_base_image"])')" \
-     -f deploy/sandbox/Dockerfile.python -t openship-python:local .
+   scripts/openship-stack -e dev sandbox-images list
+   scripts/openship-stack -e dev sandbox-images build logs-data   # or: build --all
+   scripts/openship-stack -e dev sandbox-images smoke logs-data
    ```
+
+   `build --all` builds `standard`, `logs-data`, `iac-validation` and
+   `devops-shell`. Each successful build prints three settings; copy all three
+   verbatim into `.env`:
+
+   ```dotenv
+   SANDBOX_IMAGE=openship-sandbox-logs-data:<printed recipe identity>
+   SANDBOX_PROFILE_ID=logs-data
+   SANDBOX_DEPENDENCY_IDENTITY=sha256:<printed recipe identity>
+   ```
+
+   An explicit `smoke` is advisory preparation evidence; managed startup
+   requires recorded smoke for the current image.
 
 3. Set the application runtime values in `.env`:
 
    ```dotenv
    SANDBOX_ENABLED=true
-   SANDBOX_IMAGE=openship-python:local
-   SANDBOX_PROFILE_ID=python311
-   SANDBOX_DEPENDENCY_IDENTITY=stdlib
    ```
 
    Use a stable, installation-specific `SANDBOX_DEPLOYMENT_ID`. Keep the supplied
-   Compose endpoint and secret-file path for this stack. Charts need the separate
-   [plotting image and matching runtime identity](operations/opensandbox.md#plotting-layer-optional-general-python-execution);
-   the standard image does not include plotting dependencies.
+   Compose endpoint and secret-file path for this stack. A normal
+   `--sandbox start` preflights the selected managed image and **never builds**;
+   `--sandbox start --build-sandbox` (dev only) builds only the selected profile
+   when its local image is missing or stale. Application services must be
+   recreated to receive changed environment values; a code reload or Compose
+   `restart` does not reread `.env`.
+
+   Legacy alternative: build the standard-library image with
+   `deploy/sandbox/Dockerfile.python` and select
+   `SANDBOX_IMAGE=openship-python:local`, `SANDBOX_PROFILE_ID=python311`,
+   `SANDBOX_DEPENDENCY_IDENTITY=stdlib`; charts additionally need the separate
+   [plotting image and matching runtime identity](operations/opensandbox.md#plotting-layer-optional-general-python-execution).
+   The managed `logs-data` profile already includes Matplotlib.
 
 Return to [initialization and startup](../README.md#3-initialize-once-then-start).
 Run `init-sandbox` before `init-artifacts` so it creates the private `secrets/`
@@ -156,6 +177,18 @@ on the Connectors page, and enable the relevant tools in Global Settings.
 Do not run separate worktrees against the same stack/database/volumes without
 an explicit decision to share them. Preserve installation IDs and keys; never
 regenerate them merely to bypass an initialization failure.
+
+The dev web container mounts `/app` read-only and keeps `node_modules` in the
+`openship-dev_web_node_modules` volume, so pnpm's automatic install check is
+disabled there. After changing `apps/web/package.json` or `apps/web/pnpm-lock.yaml`
+(including by switching worktrees with different dependencies), recreate that
+volume so the image's locked install is used:
+
+```bash
+scripts/openship-stack -e dev stop
+docker volume rm openship-dev_web_node_modules
+scripts/openship-stack -e dev start
+```
 
 ## Native / custom local development
 

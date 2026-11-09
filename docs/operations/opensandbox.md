@@ -47,30 +47,29 @@ receive it. Keep the ordinary Docker runtime default; the TOML selects
 
 ## Images, configuration and authentication
 
-1. Use [images.json](../../deploy/sandbox/images.json) as the carried release/image
-   reference, not new qualification evidence. Build/preload the workload image
-   from `deploy/sandbox/Dockerfile.python` with its `PYTHON_BASE_IMAGE` argument
-   set to the recorded digest-pinned base; keep its resulting image identity in
-   protected worker configuration.
+1. Select a maintained workload profile from
+   [images.json](../../deploy/sandbox/images.json) and build it locally on the
+   **same engine the provider uses**:
 
-## Plotting layer (optional, general Python execution)
+   ```bash
+   scripts/openship-stack -e dev sandbox-images list
+   scripts/openship-stack -e dev sandbox-images build logs-data   # or: build --all
+   scripts/openship-stack -e dev sandbox-images smoke logs-data
+   ```
 
-Chat-directed Python execution may request PNG/JPEG chart outputs. A maintained
-operator-built plotting layer installs pinned headless plotting packages on top
-of the digest-pinned standard workload **without changing the standard-library
-runtime identity** (`SANDBOX_PROFILE_ID`/`SANDBOX_DEPENDENCY_IDENTITY` stay
-`python311`/`stdlib` unless the plotting runtime is selected):
+   Copy the three settings printed by a successful build verbatim into protected
+   worker configuration (`.env` for the Compose dev stack). The normal
+   `--sandbox start` path preflights that selection and reuses a matching image;
+   it never builds. `--sandbox start --build-sandbox` is the explicit dev-only
+   opt-in and builds only the selected profile when missing or stale. A missing,
+   stale or unverified image stops startup before messaging/artifact
+   initialization, migrations, Compose changes or cutover.
 
-```sh
-podman build --build-arg PLOTTING_BASE_IMAGE=openship-python@sha256:<workload-digest> \
-  -f deploy/sandbox/Dockerfile.python-plotting -t openship-python-plot:local .
-```
+   The legacy `deploy/sandbox/Dockerfile.python` and
+   `deploy/sandbox/Dockerfile.python-plotting` builds remain supported with
+   their existing `python311`/`stdlib` and
+   `python311-plot`/`matplotlib-3.9.2-numpy-2.1.0` identities.
 
-Selecting it records the built image identity plus `plotting_profile_id`
-(`python311-plot`) and `plotting_dependency_identity`
-(`matplotlib-3.9.2-numpy-2.1.0`) from `images.json` in protected worker
-configuration; only `Agg` is installed, and the API-side verifier, not the
-runtime, decides whether an output is retained.
 2. Copy `deploy/sandbox/config.example.toml` to a protected installation-specific
    path and replace `REPLACE_WITH_PINNED_EXECD_IMAGE`. Its maximum sandbox timeout
    is **1,800 seconds**, permitting the client's requested 30-minute lifetime.
@@ -85,6 +84,133 @@ runtime, decides whether an output is retained.
    `http://opensandbox-gateway:8080`, not direct manager/execd access. The
    manager and gateway use separate private networks; workload network/storage
    controls remain operator/OpenSandbox configuration, not OpenShip code.
+
+### Plotting layer (optional, general Python execution, legacy path)
+
+Chat-directed Python execution may request PNG/JPEG chart outputs. The managed
+`logs-data` profile already ships headless Matplotlib. The legacy operator-built
+plotting layer remains available for the standard workload; it installs pinned
+packages on top of the digest-pinned standard workload **without changing the
+standard-library runtime identity** (`SANDBOX_PROFILE_ID`/
+`SANDBOX_DEPENDENCY_IDENTITY` stay `python311`/`stdlib` unless the plotting
+runtime is selected):
+
+```sh
+podman build --build-arg PLOTTING_BASE_IMAGE=openship-python@sha256:<workload-digest> \
+  -f deploy/sandbox/Dockerfile.python-plotting -t openship-python-plot:local .
+```
+
+Selecting it records the built image identity plus `plotting_profile_id`
+(`python311-plot`) and `plotting_dependency_identity`
+(`matplotlib-3.9.2-numpy-2.1.0`) from `images.json` in protected worker
+configuration; only `Agg` is installed, and the API-side verifier, not the
+runtime, decides whether an output is retained.
+
+### Managed profile contents
+
+All managed images derive from the digest-pinned shared base, run Python 3.12
+with the existing `python` entrypoint, UID/GID 1000, 1 CPU, 512 MiB and the
+30-second command / 1,800-second lifetime limits. They add packages, not
+execution permissions: networking, mounts, credentials and a shell tool remain
+absent/deferred.
+
+| Profile | Python packages (representative pins) | CLI tools |
+| --- | --- | --- |
+| `standard` | SymPy 1.14.0, regex 2026.11.7 | Node.js 22.23.4 |
+| `logs-data` | pandas 3.1.1, NumPy 2.5.4, Matplotlib 3.11.2 (`Agg`), regex 2026.11.7, pygrok 1.0.0, Drain3 0.9.11 | none |
+| `iac-validation` | Checkov 3.4.3, jsonschema 4.26.0, PyYAML 6.0.3, graphviz 0.21 | TFLint 0.65.0 (bundled Terraform rules only), Graphviz 2.42.4-3 |
+| `devops-shell` | isolated Azure CLI venv, Azure CLI 2.92.0 | Bash 5.2.37, Git 2.47.3, AWS CLI 2.39.6, gcloud 592.0.0, Terraform 1.17.1, Terragrunt 1.2.1 |
+
+`devops-shell` keeps `az` in `/opt/azure-cli` so cloud SDK dependencies cannot
+shadow the workload Python. gcloud retains its bundled interpreter and
+components (smoke-verified: core 2026.10.30, bq 2.1.41, gsutil 5.38, bundled
+Python 3.14.9). Binaries may be invoked from submitted Python; this does not add
+a shell execution API, authenticated cloud operations or provider/module bundles.
+
+### Updating locks and pins
+
+The committed locks are the only build inputs; `build`/`start` never resolve or
+upgrade dependencies. Regenerate one profile explicitly with the pinned host
+`uv` 0.12.23 on Linux x86_64:
+
+```bash
+python3 scripts/lock_sandbox_dependencies.py logs-data
+python3 scripts/lock_sandbox_dependencies.py standard --upgrade-package sympy
+```
+
+The command resolves the complete transitive closure for Python 3.12 and
+writes hash-pinned wheel/source entries atomically; a failed resolution leaves
+the previous lock intact. Changing any declared base or profile input — a lock,
+Dockerfile, installer, OS package list, tool manifest pin or the shared
+`build-requirements.lock` — changes that recipe's fingerprint. Changing only
+one profile's lock does not change another profile's identity.
+
+Pin sources:
+
+- `deploy/sandbox/pins.json` — digest-pinned Python base, the checksum-pinned
+  uv release archive, and the signed Debian snapshot timestamp. The archive
+  checksum is **not** an OCI image digest; the snapshot is passed to profiles
+  that run `apt-get` as the `DEBIAN_SNAPSHOT` build argument, so editing it
+  changes those recipes and requires an explicit rebuild.
+- `deploy/sandbox/tools.lock.json` — platform-specific CLI archive URLs and
+  published SHA-256 values.
+- Profile `os-packages.lock` — exact apt packages installed from that snapshot
+  by `iac-validation` and `devops-shell`. Profiles that add no OS packages
+  inherit the digest-pinned base and keep an informational lock only; their
+  Dockerfiles never run `apt-get`.
+- `deploy/sandbox/build-requirements.lock` — PEP 517 prerequisites installed
+  without network access during source-package builds.
+
+After regenerating a lock, rebuild and smoke the profile, then update the three
+runtime assignments. No dependency is upgraded implicitly, and a changed
+recipe must be built explicitly.
+
+### Engine, socket and local records
+
+Every helper operation passes the selected Unix endpoint explicitly instead of
+relying on the CLI's implicit default connection. Docker defaults to
+`/var/run/docker.sock`; rootless Podman defaults to
+`$XDG_RUNTIME_DIR/openship-sandbox/podman.sock`. An explicit
+`OPENSHIP_SANDBOX_ENGINE_SOCKET` wins and must be an accessible absolute Unix
+socket. The helper verifies the engine reports Linux amd64 before any build or
+run.
+
+```bash
+scripts/openship-stack -e dev sandbox-images list
+docker context inspect default --format '{{.Endpoints.docker.Host}}'
+```
+
+`list` reports each profile's `matching`, `missing` or `stale` status plus
+recorded smoke. Records live under the gitignored
+`.openship/sandbox/images/<engine>/<platform>/<profile>.json`. They bind the
+recipe fingerprint, local image ID, build time and smoke evidence; the
+fingerprint is **not** an image digest, and the image ID is engine-local, not a
+registry manifest. Deleting a record does not delete the image but removes the
+local build/smoke evidence. To roll back, check out the previous pins/locks,
+rebuild that profile and restore its printed assignments; the legacy image
+identities are unaffected.
+
+### Local image validation record (2026-11-07)
+
+All four images were built with the ordinary Docker daemon (Docker 29.8.2,
+`linux/amd64`, default context `/var/run/docker.sock`). Each build ran its
+installed smoke program in a fresh container; the same programs were then
+re-run separately under the gVisor `runsc` runtime with `--network none`,
+UID/GID 1000, 1 CPU, 512 MiB, all capabilities dropped and a 30-second timeout.
+
+| Profile | Recipe fingerprint | Image ID | Smoke |
+| --- | --- | --- | --- |
+| `standard` | `0bd7e473c8c5602e2f981d8dcb633b4f613496afaade7e11ba6ca1810d393ef9` | `sha256:35172a0a7d72c9c42af14cfc0b7a912fb04f41c2458822e3b6fd0fad8adf7d77` | Python 3.12.16, SymPy 1.14.0, regex 2026.11.7, Node answer 42 |
+| `logs-data` | `51e55f2b24334b844319219bd8671f188bd7b3bfb84d2cc349795c80b801c2f9` | `sha256:3309a813331ac51aaa6c09fd62d38b589a169066169da9ac737f131bc270917c` | CSV groups `{"api": 5, "worker": 7}`, JSON round-trip, grok/regex metadata, two Drain3 clusters, decoded `Agg` PNG |
+| `iac-validation` | `31f132439a64330c464e1600095a3345976d3f88a36faa5f7d98e6db26c9d615` | `sha256:1d654f857e0950aa79b72963221e69cff9bb37a2535bcb5c821c9b2b4f974511` | JSON Schema accept/reject, YAML load, Checkov violation/corrected, TFLint violation/corrected, decoded Graphviz PNG |
+| `devops-shell` | `b54ad6cb23a16ae3a27ff6e122c041c4dad0ab9e6310fda84ad5c66cc15d71ed` | `sha256:b89323b20c107bfe186907bdfbb3e16f0019eeda4acc8f203cc9ef9b475d5ecd` | Bash 42, local Git staging/diff, Terraform formatting, offline CLI version checks |
+
+This is image-build/smoke evidence, not evidence that a live chat journey ran
+under a managed profile. pygrok 1.0.0 emits an upstream Python 3.12 invalid-
+escape `SyntaxWarning`; its parsing behavior is verified. TFLint uses bundled
+rules only: arbitrary plugins and Terraform providers/modules remain absent.
+Live provider testing and user acceptance are recorded separately.
+
 
 Generate an API key and matching protected, case-sensitive Nginx map **outside
 Git**, for example in an existing operator-owned protected directory:
@@ -262,11 +388,14 @@ of reports, shell arguments and browser traces.
 
 The implemented worker settings are `SANDBOX_ENABLED`, `SANDBOX_ENDPOINT`,
 `SANDBOX_DEPLOYMENT_ID`, `SANDBOX_KEY_FILE`, `SANDBOX_IMAGE`,
-`SANDBOX_PROFILE_ID` and `SANDBOX_DEPENDENCY_IDENTITY`. The first supported
-profile is `python311` / `stdlib`. Use an installation-specific deployment ID;
-the key file belongs only in protected worker configuration, not task data or
-browser configuration. These are separate from the `OPENSHIP_LIVE_OPENSANDBOX_*`
-selectors used by the historical direct-client test.
+`SANDBOX_PROFILE_ID` and `SANDBOX_DEPENDENCY_IDENTITY`. Select a managed profile
+(`standard`, `logs-data`, `iac-validation` or `devops-shell`) with the three
+assignments printed by `sandbox-images build`; the legacy `python311` / `stdlib`
+and `python311-plot` identities remain supported through their own Dockerfiles.
+Use an installation-specific deployment ID; the key file belongs only in
+protected worker configuration, not task data or browser configuration. These
+are separate from the `OPENSHIP_LIVE_OPENSANDBOX_*` selectors used by the
+historical direct-client test.
 
 The planned `apps/api/tests/full_stack/test_sandbox_analysis.py` and browser
 parser/resume journey have **not been implemented or executed** at this stop.

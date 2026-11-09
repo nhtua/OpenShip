@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -218,3 +219,64 @@ def test_manager_rejects_missing_key_before_starting():
     result = subprocess.run(entrypoint, env=env, capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert "key" in result.stderr.lower()
+
+
+def test_legacy_inventory_values_remain_unchanged():
+    config = json.loads((ROOT / "deploy/sandbox/images.json").read_text())
+    assert config["python_base_image"] == "python:3.11-slim@sha256:6d10e720318bd84cc3d88af92bb5a47189222e17620a2fd214da6445e4afb679"
+    assert config["workload_dockerfile"] == "deploy/sandbox/Dockerfile.python"
+    assert config["plotting_workload_dockerfile"] == "deploy/sandbox/Dockerfile.python-plotting"
+    assert config["plotting_profile_id"] == "python311-plot"
+    assert config["plotting_dependency_identity"] == "matplotlib-3.9.2-numpy-2.1.0"
+    assert config["plotting_dependency_pins"]["numpy"] == "2.1.0"
+    assert "managed_base" in config
+    assert "standard" in config["managed_profiles"]
+
+
+def test_standard_smoke_requires_python_312_node_and_sympy(tmp_path):
+    pins = json.loads((ROOT / "deploy/sandbox/pins.json").read_text())
+    assert pins["python_version"] == "3.12"
+    smoke = ROOT / "deploy/sandbox/profiles/standard/smoke.py"
+    lock_text = (ROOT / "deploy/sandbox/profiles/standard/requirements.lock").read_text()
+    assert re.search(r"--hash=sha256:[0-9a-f]{64}", lock_text)
+
+    def workload_env(name, lock_body):
+        env = tmp_path / name
+        lock = tmp_path / f"{name}.lock"
+        lock.write_text(lock_body)
+        subprocess.run(["uv", "venv", str(env), "--python", "3.12"], check=True, capture_output=True)
+        subprocess.run(["uv", "pip", "sync", "--python", str(env), str(lock)], check=True, capture_output=True)
+        return env
+
+    full = workload_env("full", lock_text)
+    version = subprocess.run(
+        [str(full / "bin/python"), "-c", "import sys; print(sys.version.split()[0])"],
+        capture_output=True, text=True, check=True,
+    )
+    assert version.stdout.strip().startswith("3.12")
+    passed = subprocess.run(
+        [str(full / "bin/python"), str(smoke)], capture_output=True, text=True, check=False
+    )
+    assert passed.returncode == 0, passed.stderr
+    assert "42" in passed.stdout
+
+    partial = re.sub(r"^sympy[^\n]*\n(?:[ \t]+[^\n]*\n)*", "", lock_text, flags=re.MULTILINE)
+    without_sympy = workload_env("partial", partial + "\n")
+    missing = subprocess.run(
+        [str(without_sympy / "bin/python"), str(smoke)], capture_output=True, text=True, check=False
+    )
+    assert missing.returncode != 0
+    assert "sympy" in missing.stderr
+
+    node_dirs = [d for d in os.environ["PATH"].split(os.pathsep) if os.path.exists(os.path.join(d, "node"))]
+    assert node_dirs
+    stripped = os.pathsep.join(d for d in os.environ["PATH"].split(os.pathsep) if d not in node_dirs)
+    without_node = subprocess.run(
+        [str(full / "bin/python"), str(smoke)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PATH": stripped},
+    )
+    assert without_node.returncode != 0
+    assert "node" in without_node.stderr

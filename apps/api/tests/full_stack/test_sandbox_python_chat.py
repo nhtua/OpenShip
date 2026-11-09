@@ -39,7 +39,17 @@ from tests.full_stack.test_manual_search import (
 pytestmark = [pytest.mark.full_stack]
 
 SANDBOX_ENDPOINT = os.environ.get("OPENSHIP_SANDBOX_TEST_ENDPOINT", "http://127.0.0.1:18080")
-SANDBOX_IMAGE = os.environ.get("OPENSHIP_SANDBOX_TEST_IMAGE", "openship-python-plot:phase6b-task4")
+def _runtime_settings(environ):
+    return {
+        "SANDBOX_IMAGE": environ.get("OPENSHIP_SANDBOX_TEST_IMAGE", "openship-python-plot:phase6b-task4"),
+        "SANDBOX_PROFILE_ID": environ.get("OPENSHIP_SANDBOX_TEST_PROFILE_ID", "python311-plot"),
+        "SANDBOX_DEPENDENCY_IDENTITY": environ.get(
+            "OPENSHIP_SANDBOX_TEST_DEPENDENCY_IDENTITY", "matplotlib-3.9.2-numpy-2.1.0"
+        ),
+    }
+
+
+SANDBOX_IMAGE = _runtime_settings(os.environ)["SANDBOX_IMAGE"]
 DOWNLOAD_URL = "https://data.example.com/reports/sales.csv"
 USER_TURN = f"Chart the CSV at {DOWNLOAD_URL} as a bar chart."
 
@@ -190,9 +200,7 @@ def test_chat_download_python_chart_resume_journey(tmp_path):
         "SANDBOX_ENDPOINT": SANDBOX_ENDPOINT,
         "SANDBOX_DEPLOYMENT_ID": "phase6b-full-stack-lane",
         "SANDBOX_KEY_FILE": str(key_file),
-        "SANDBOX_IMAGE": SANDBOX_IMAGE,
-        "SANDBOX_PROFILE_ID": "python311-plot",
-        "SANDBOX_DEPENDENCY_IDENTITY": "matplotlib-3.9.2-numpy-2.1.0",
+        **_runtime_settings(os.environ),
         "SYNTHETIC_MODEL_CALL_LOG": str(model_log),
         "SYNTHETIC_DOWNLOAD_CALL_LOG": str(download_log),
         "SYNTHETIC_SANDBOX_CALL_LOG": str(sandbox_log),
@@ -304,7 +312,12 @@ def test_chat_download_python_chart_resume_journey(tmp_path):
             commands = [item for item in sandbox_records if item["kind"] == "command"]
             assert len(creates) == 1
             assert len(commands) == 1
+            runtime = _runtime_settings(os.environ)
             assert creates[0]["image"] == SANDBOX_IMAGE
+            assert creates[0]["profile_id"] == runtime["SANDBOX_PROFILE_ID"]
+            assert creates[0]["dependency_identity"] == runtime["SANDBOX_DEPENDENCY_IDENTITY"]
+            if runtime["SANDBOX_PROFILE_ID"] != "python311-plot":
+                assert creates[0]["image"] != "openship-python-plot:phase6b-task4"
             sandbox_id = creates[0]["sandbox_id"]
             assert sandbox_id
             command_directory = commands[0]["cwd"]

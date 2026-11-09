@@ -1,0 +1,3 @@
+# Explicit PEP 517 prerequisites for legacy source-only pygrok and Drain3.
+setuptools
+wheel

@@ -1,0 +1,32 @@
+# Operator-built shared base for the Phase 6C managed profiles.
+# PYTHON_BASE_IMAGE is the digest-pinned python:3.12-slim reference recorded in
+# deploy/sandbox/pins.json, passed as a build argument; the pinned uv release
+# archive URL/checksum arrive as UV_URL/UV_SHA256 build arguments and are
+# fetched, checksum-verified and extracted by deploy/sandbox/install_pinned.py.
+# Reproduce the existing UID/GID 1000 and /code /inputs /outputs ownership
+# layout; no USER line: provider init (execd) must keep container-start
+# privileges and select the workload UID itself.
+ARG PYTHON_BASE_IMAGE
+FROM ${PYTHON_BASE_IMAGE}
+
+ARG UV_URL
+ARG UV_SHA256
+
+RUN groupadd --gid 1000 openship \
+    && useradd --uid 1000 --gid 1000 --no-create-home \
+        --shell /usr/sbin/nologin openship \
+    && install -d --owner=root --group=root --mode=0755 /code /inputs \
+    && install -d --owner=openship --group=openship --mode=0700 /outputs
+
+COPY deploy/sandbox/install_pinned.py /tmp/install_pinned.py
+RUN install -d --mode=0755 /opt/uv \
+    && python3 /tmp/install_pinned.py "$UV_URL" "$UV_SHA256" /opt/uv \
+    && rm -f /tmp/install_pinned.py /tmp/openship-pinned-archive.bin
+
+ENV PATH="/opt/uv/uv-x86_64-unknown-linux-gnu:${PATH}" \
+    PYTHONDONTWRITEBYTECODE=1
+COPY deploy/sandbox/build-requirements.lock /tmp/build-requirements.lock
+RUN uv pip install --python /usr/local/bin/python3 --require-hashes --no-deps \
+        --only-binary :all: --link-mode=copy -r /tmp/build-requirements.lock \
+    && rm -f /tmp/build-requirements.lock
+WORKDIR /code
