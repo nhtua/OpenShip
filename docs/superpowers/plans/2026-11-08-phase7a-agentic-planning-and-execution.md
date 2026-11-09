@@ -423,6 +423,20 @@ test or 30s stalled-test traceback; it did not finish the suite.
 
 ### Slice 8C — apply a choice with one local transaction
 
+**Implementation and review evidence:** Ordinary decisions, recovery abort and
+narrowly eligible repeat/continue intents are implemented. The focused SQLite
+decision, task-state and contract run passed 88 tests; Ruff passed for the
+decision module and tests. Confirmation rollback and recovery replay were
+tested. Recovery continuations require a bound admitted operation with no
+physical attempt or uncertain sandbox reservation; previously dispatched
+operations fail closed. The controller adjudicated that old waits without pin
+evidence remain visibly blocked rather than inventing pins; parking replay
+preserves their original identity. The controller reports PostgreSQL concurrency
+after alias reservation: 1 passed, 2 deselected, 2 warnings, and scoped re-review
+found no new critical/important defects. The full PostgreSQL migration lane was
+not rerun in this process; see the 8C report for evidence and the credential-safe
+test warning. Task 15 remains responsible for actual recovery graph execution.
+
 - [ ] **8C.1 Write failing tests:** add `test_crash_before_choice_commit_reprompts_same_request`, `test_lost_response_replays_same_decision_once`, `test_conflicting_stale_expired_wrong_actor_and_bare_yes_do_not_release`, `test_cancel_wins_over_confirmation`, `test_configuration_resume_cannot_replace_pins`, `test_confirm_cannot_consume_recovery_request`, and PostgreSQL `test_two_decisions_cannot_enqueue_twice`. Assert rollback leaves request open with zero new outbox rows; replay has one command/dispatch generation; wrong actor is 404, stale/conflicting command 409; abort enqueues nothing; no command handler calls the gateway.
 - [ ] **8C.2 Run red:** `uv run pytest -q tests/test_task_decisions.py`; authorized DB: `uv run pytest -q -m postgres tests/integration/test_task_decisions_postgres.py`.
 - [ ] **8C.3 Implement:** implement `apply_decision` using existing connector-resume transaction/outbox patterns, not its zero-operations-only helper. Authorize owned scope before replay lookup; return an already committed result without another transition. Under locks validate request kind/revision/digest, actor, cancellation and execution eligibility. One local transaction records command/result, consumes request, updates task/run/job, advances dispatch generation, appends event and `enqueue_run` intent. Reject/abort cancel remaining work even when execution configuration is unavailable, without an undo claim or enqueue. Recovery repeat/continue require backend eligibility against the bound report; Task 15 consumes their intent in the recovery-aware graph. Changed eligibility blocks/re-presents a request, never selects a substitute.

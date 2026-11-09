@@ -14,6 +14,962 @@ from tests.conftest import TestSessionLocal
 from tests.test_task_state import _identity, _operation, _plan
 
 
+def _pinned_execution(run, user, project, conversation):
+    from src.openship.sandboxes.profiles import install_runtime_catalog
+    from tests.test_task_profile_selection import _all_profiles, _catalog, _execution
+
+    execution = _execution(_catalog(_all_profiles()))
+    install_runtime_catalog(execution.profile_catalog)
+    context = execution.task_context.model_copy(
+        update={
+            "root_run_id": run.id,
+            "project_id": project.id,
+            "conversation_id": conversation.id,
+            "initiator_id": user.id,
+        }
+    )
+    run.execution_configuration = execution.model_copy(
+        update={"task_context": context}
+    ).model_dump_json()
+
+
+@pytest.fixture(autouse=True)
+def _reset_profile_catalog(monkeypatch):
+    from src.openship.config import settings
+    from src.openship.sandboxes.profiles import reset_runtime_catalog
+
+    monkeypatch.setattr(settings, "sandbox_endpoint", "http://sandbox.test")
+    monkeypatch.setattr(settings, "sandbox_deployment_id", "test-deployment")
+    yield
+    reset_runtime_catalog()
+
+
+def test_lost_response_replays_same_decision_once(monkeypatch):
+    from src.openship.execution.gateway import ToolGateway
+    from src.openship.runs.models import Outbox
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+    from src.openship.runs.tasks.models import TaskDecisionCommandRecord
+
+    def no_dispatch(*args, **kwargs):
+        pytest.fail("decision handler dispatched a tool")
+
+    monkeypatch.setattr(ToolGateway, "execute_tool", no_dispatch)
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+        ).pending_decision
+        db.commit()
+        generation = db.query(RunJob).filter_by(run_id=run.id).one().dispatch_generation
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="confirm",
+        )
+        first = apply_decision(
+            db, principal_id=user.id, run_id=run.id, command=command, now=now
+        )
+        db.commit()
+        second = apply_decision(
+            db, principal_id=user.id, run_id=run.id, command=command, now=now
+        )
+        assert first == second
+        assert run.status == "queued"
+        assert (
+            db.query(RunJob).filter_by(run_id=run.id).one().dispatch_generation
+            == generation + 1
+        )
+        assert (
+            db.query(Outbox).filter_by(run_id=run.id, destination="command").count()
+            == 1
+        )
+        assert db.query(TaskDecisionCommandRecord).filter_by(run_id=run.id).count() == 1
+
+
+def test_same_choice_with_new_client_id_replays_but_conflict_is_rejected():
+    from fastapi import HTTPException
+
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+        ).pending_decision
+        db.commit()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="reject",
+        )
+        first = apply_decision(
+            db, principal_id=user.id, run_id=run.id, command=command, now=now
+        )
+        db.commit()
+        retry = command.model_copy(update={"client_request_id": uuid.uuid4()})
+        assert (
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=retry, now=now
+            )
+            == first
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db,
+                principal_id=user.id,
+                run_id=run.id,
+                command=retry.model_copy(update={"action": "confirm"}),
+                now=now,
+            )
+        assert error.value.status_code == 409
+
+
+def test_replayed_client_id_cannot_authorize_a_later_decision():
+    from fastapi import HTTPException
+
+    from src.openship.runs.queue import Claim
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        first = park_task_wait(
+            db, claim, kind="clarification", prompt="First?", now=now
+        ).pending_decision
+        db.commit()
+        cmd = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=first.request_id,
+            plan_revision=first.plan_revision,
+            expected_digest=first.expected_digest,
+            action="answer",
+            answer="first answer",
+        )
+        apply_decision(db, principal_id=user.id, run_id=run.id, command=cmd, now=now)
+        db.commit()
+        alias = uuid.uuid4()
+        apply_decision(
+            db,
+            principal_id=user.id,
+            run_id=run.id,
+            command=cmd.model_copy(update={"client_request_id": alias}),
+            now=now,
+        )
+        db.commit()
+        job = db.query(RunJob).filter_by(run_id=run.id).one()
+        run.status = "running"
+        job.owner_id = "next-worker"
+        job.lease_until = now + timedelta(minutes=5)
+        db.flush()
+        next_claim = Claim(
+            run_id=run.id,
+            fence=run.fence,
+            worker_id=job.owner_id,
+            lease_until=job.lease_until,
+            user_id=user.id,
+        )
+        second = park_task_wait(
+            db, next_claim, kind="clarification", prompt="Second?", now=now
+        ).pending_decision
+        db.commit()
+        next_cmd = TaskDecisionCommand(
+            client_request_id=alias,
+            request_id=second.request_id,
+            plan_revision=second.plan_revision,
+            expected_digest=second.expected_digest,
+            action="answer",
+            answer="second answer",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=next_cmd, now=now
+            )
+        assert error.value.status_code == 409
+        assert (
+            db.query(TaskDecisionRecord)
+            .filter_by(request_id=second.request_id)
+            .one()
+            .state
+            == "open"
+        )
+
+
+def test_cancel_wins_over_confirmation():
+    from fastapi import HTTPException
+
+    from src.openship.runs.models import Outbox
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+        ).pending_decision
+        db.commit()
+        run.status = "cancelled"
+        db.flush()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="confirm",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 409
+        assert (
+            db.query(Outbox).filter_by(run_id=run.id, destination="command").count()
+            == 0
+        )
+
+
+def test_conflicting_stale_expired_wrong_actor_and_bare_yes_do_not_release():
+    from fastapi import HTTPException
+
+    from src.openship.runs.models import Outbox
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+        ).pending_decision
+        db.commit()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="confirm",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=uuid.uuid4(), run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 404
+        for bad in (
+            command.model_copy(update={"expected_digest": "a" * 64}),
+            command.model_copy(update={"request_id": uuid.uuid4()}),
+            command.model_copy(update={"action": "answer", "answer": "yes"}),
+        ):
+            with pytest.raises(HTTPException) as error:
+                apply_decision(
+                    db, principal_id=user.id, run_id=run.id, command=bad, now=now
+                )
+            assert error.value.status_code == 409
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db,
+                principal_id=user.id,
+                run_id=run.id,
+                command=command,
+                now=now + timedelta(days=2),
+            )
+        assert error.value.status_code == 409
+        assert run.status == "waiting_plan"
+        assert (
+            db.query(Outbox).filter_by(run_id=run.id, destination="command").count()
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "action", "answer"),
+    [
+        ("clarification", "answer", "Additional details"),
+        ("configuration", "resume_configuration", None),
+    ],
+)
+def test_ordinary_decision_resumes_unchanged_execution(kind, action, answer):
+    from src.openship.runs.models import Outbox
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind=kind, prompt="Details?", now=now
+        ).pending_decision
+        db.commit()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action=action,
+            answer=answer,
+        )
+        apply_decision(
+            db, principal_id=user.id, run_id=run.id, command=command, now=now
+        )
+        assert run.status == "queued"
+        assert (
+            db.query(Outbox).filter_by(run_id=run.id, destination="command").count()
+            == 1
+        )
+
+
+def test_configuration_resume_cannot_replace_pins():
+    from fastapi import HTTPException
+
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="configuration", prompt="Repair?", now=now
+        ).pending_decision
+        db.commit()
+        config = json.loads(run.execution_configuration)
+        config["aws_read_catalog_digest"] = "a" * 64
+        run.execution_configuration = json.dumps(config)
+        db.flush()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="resume_configuration",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 409
+        assert run.status == "waiting_config"
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
+        )
+
+
+def test_resume_rejects_changed_model_pin():
+    from fastapi import HTTPException
+
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        run.model_configuration = "original"
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="configuration", prompt="Repair?", now=now
+        ).pending_decision
+        db.commit()
+        run.model_configuration = "replacement"
+        db.flush()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="resume_configuration",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 409
+
+
+def test_resume_refuses_another_active_run():
+    from fastapi import HTTPException
+
+    from src.openship.runs.models import Run
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+        ).pending_decision
+        db.commit()
+        db.add(
+            Run(
+                project_id=project.id, conversation_id=conversation.id, status="running"
+            )
+        )
+        db.flush()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="confirm",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 409
+
+
+def test_configuration_resume_blocks_unavailable_runtime_profile():
+    from fastapi import HTTPException
+
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+    from src.openship.sandboxes.profiles import (
+        empty_catalog,
+        install_runtime_catalog,
+        reset_runtime_catalog,
+    )
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="configuration", prompt="Repair?", now=now
+        ).pending_decision
+        db.commit()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="resume_configuration",
+        )
+        install_runtime_catalog(empty_catalog())
+        try:
+            with pytest.raises(HTTPException) as error:
+                apply_decision(
+                    db, principal_id=user.id, run_id=run.id, command=command, now=now
+                )
+            assert error.value.status_code == 409
+            assert run.status == "waiting_config"
+        finally:
+            reset_runtime_catalog()
+
+
+def test_ordinary_resume_refuses_new_unsettled_operation():
+    from fastapi import HTTPException
+
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+        ).pending_decision
+        db.commit()
+        _operation(db, run, user, status="interrupted")
+        db.flush()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="confirm",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 409
+        assert run.status == "waiting_plan"
+
+
+def test_resume_rejects_missing_pinned_artifact():
+    from fastapi import HTTPException
+
+    from src.openship.artifacts.contracts import ArtifactRef
+    from src.openship.runs.tasks.contracts import ExecutionConfigV5, TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        config = ExecutionConfigV5.model_validate_json(run.execution_configuration)
+        ref = ArtifactRef(
+            id=uuid.uuid4(), sha256="a" * 64, size_bytes=1, media_type="text/plain"
+        )
+        run.execution_configuration = config.model_copy(
+            update={"selected_artifacts": (ref,)}
+        ).model_dump_json()
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+        ).pending_decision
+        db.commit()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="confirm",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 409
+        assert run.status == "waiting_plan"
+
+
+def test_confirm_cannot_consume_recovery_request():
+    from fastapi import HTTPException
+
+    from src.openship.runs.models import Outbox
+    from src.openship.runs.tasks.contracts import (
+        TaskDecisionCommand,
+        TaskRecoveryReport,
+    )
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, _, _, run, claim = _identity(db)
+        plan = _plan()
+        save_plan(db, claim, plan, expected_revision=0)
+        operation = _operation(db, run, user, status="interrupted")
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        task.call_bindings_json = json.dumps(
+            [
+                {
+                    "plan_revision": 1,
+                    "step_id": "inspect",
+                    "attempt": 1,
+                    "logical_call_id": operation.logical_call_id,
+                }
+            ]
+        )
+        db.commit()
+        now = datetime.now(UTC)
+        report = TaskRecoveryReport(
+            plan_revision=1,
+            plan_digest=plan.digest,
+            step_id="inspect",
+            attempt=1,
+            operation_id=operation.id,
+            explanation="Unknown",
+        )
+        request = park_task_wait(
+            db, claim, kind="recovery", prompt="Next?", now=now, recovery_report=report
+        ).pending_decision
+        db.commit()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="abort",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db,
+                principal_id=user.id,
+                run_id=run.id,
+                command=command.model_copy(update={"action": "confirm"}),
+                now=now,
+            )
+        assert error.value.status_code == 409
+        result = apply_decision(
+            db, principal_id=user.id, run_id=run.id, command=command, now=now
+        )
+        assert result.status == "cancelled" and run.status == "cancelled"
+        assert operation.status == "interrupted"
+        assert (
+            db.query(Outbox).filter_by(run_id=run.id, destination="command").count()
+            == 0
+        )
+
+
+@pytest.mark.parametrize("action", ["repeat_step", "continue_next"])
+def test_recovery_choice_records_one_bound_intent_without_dispatch(action, monkeypatch):
+    from src.openship.execution.gateway import ToolGateway
+    from src.openship.runs.models import Outbox
+    from src.openship.runs.tasks.contracts import (
+        TaskDecisionCommand,
+        TaskRecoveryReport,
+    )
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+    from src.openship.runs.tasks.models import TaskDecisionCommandRecord
+
+    def no_dispatch(*args, **kwargs):
+        pytest.fail("recovery decision dispatched a tool")
+
+    monkeypatch.setattr(ToolGateway, "execute_tool", no_dispatch)
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        from src.openship.runs.tasks.contracts import ExecutionConfigV5
+
+        execution = ExecutionConfigV5.model_validate_json(run.execution_configuration)
+        run.execution_configuration = execution.model_copy(
+            update={"allowed_capabilities": (_plan().steps[0].capability,)}
+        ).model_dump_json()
+        db.flush()
+        plan = _plan()
+        save_plan(db, claim, plan, expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        task.call_bindings_json = json.dumps(
+            [
+                {
+                    "plan_revision": 1,
+                    "step_id": "inspect",
+                    "attempt": 1,
+                    "logical_call_id": operation.logical_call_id,
+                }
+            ]
+        )
+        db.commit()
+        now = datetime.now(UTC)
+        report = TaskRecoveryReport(
+            plan_revision=1,
+            plan_digest=plan.digest,
+            step_id="inspect",
+            attempt=1,
+            operation_id=operation.id,
+            explanation="No dispatch recorded",
+            eligible_actions=(action,),
+        )
+        request = park_task_wait(
+            db, claim, kind="recovery", prompt="Next?", now=now, recovery_report=report
+        ).pending_decision
+        db.commit()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action=action,
+        )
+        before = (
+            task.counters_json,
+            task.verified_outputs_json,
+            task.verified_steps_json,
+        )
+        first = apply_decision(
+            db, principal_id=user.id, run_id=run.id, command=command, now=now
+        )
+        db.commit()
+        assert (
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+            == first
+        )
+        stored = db.query(TaskDecisionCommandRecord).filter_by(run_id=run.id).one()
+        assert stored.action == action
+        assert (
+            db.query(Outbox).filter_by(run_id=run.id, destination="command").count()
+            == 1
+        )
+        assert operation.status == "admitted"
+        assert (
+            task.counters_json,
+            task.verified_outputs_json,
+            task.verified_steps_json,
+        ) == before
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "dispatched",
+        "operation_changed",
+        "operation_identity",
+        "attempt_binding",
+        "not_offered",
+        "blocker",
+        "budget",
+        "repair_limit",
+        "repair_counter",
+        "model_turns",
+        "generation_attempts",
+        "output_tokens",
+        "task_model_limit",
+    ],
+)
+def test_recovery_choice_refuses_stale_evidence_or_controls(change):
+    from fastapi import HTTPException
+
+    from src.openship.execution.models import ToolAttempt
+    from src.openship.runs.tasks.contracts import (
+        ExecutionConfigV5,
+        TaskDecisionCommand,
+        TaskRecoveryReport,
+    )
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+    from src.openship.runs.tasks.models import TaskStepAttempt
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        config = ExecutionConfigV5.model_validate_json(run.execution_configuration)
+        if change == "task_model_limit":
+            config = config.model_copy(
+                update={
+                    "task_limits": config.task_limits.model_copy(
+                        update={"max_model_turns": 1}
+                    )
+                }
+            )
+        if change == "repair_limit":
+            config = config.model_copy(
+                update={
+                    "task_limits": config.task_limits.model_copy(
+                        update={"max_repairs_per_step": 0}
+                    )
+                }
+            )
+        run.execution_configuration = config.model_copy(
+            update={"allowed_capabilities": (_plan().steps[0].capability,)}
+        ).model_dump_json()
+        db.flush()
+        plan = _plan()
+        save_plan(db, claim, plan, expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        task.call_bindings_json = json.dumps(
+            [
+                {
+                    "plan_revision": 1,
+                    "step_id": "inspect",
+                    "attempt": 1,
+                    "logical_call_id": operation.logical_call_id,
+                }
+            ]
+        )
+        db.commit()
+        now = datetime.now(UTC)
+        report = TaskRecoveryReport(
+            plan_revision=1,
+            plan_digest=plan.digest,
+            step_id="inspect",
+            attempt=1,
+            operation_id=operation.id,
+            explanation="No dispatch recorded",
+            eligible_actions=() if change == "not_offered" else ("repeat_step",),
+            blockers=("Control unavailable",) if change == "blocker" else (),
+        )
+        request = park_task_wait(
+            db, claim, kind="recovery", prompt="Next?", now=now, recovery_report=report
+        ).pending_decision
+        db.commit()
+        if change == "dispatched":
+            db.add(
+                ToolAttempt(
+                    operation_id=operation.id,
+                    ordinal=1,
+                    fence=claim.fence,
+                    dispatch_started_at=now,
+                    outcome="started",
+                )
+            )
+        elif change == "operation_changed":
+            operation.status = "interrupted"
+        elif change == "operation_identity":
+            operation.request_digest = "a" * 64
+        elif change == "attempt_binding":
+            db.add(
+                TaskStepAttempt(
+                    task_id=task.id,
+                    run_id=run.id,
+                    plan_revision=1,
+                    step_id="other",
+                    ordinal=1,
+                    status="interrupted",
+                    operation_id=operation.id,
+                )
+            )
+        elif change == "budget":
+            task.counters_json = json.dumps(
+                {"tool_calls": config.loop_limits.max_tool_calls}
+            )
+        elif change == "repair_counter":
+            task.counters_json = json.dumps({"repairs_by_step": {"inspect": 2}})
+        elif change == "model_turns":
+            task.counters_json = json.dumps(
+                {"model_turns": config.loop_limits.max_model_turns}
+            )
+        elif change == "generation_attempts":
+            task.counters_json = json.dumps(
+                {"generation_attempts": config.loop_limits.max_generation_attempts}
+            )
+        elif change == "output_tokens":
+            task.counters_json = json.dumps(
+                {"output_tokens": config.loop_limits.max_total_output_tokens}
+            )
+        elif change == "task_model_limit":
+            task.counters_json = json.dumps({"model_turns": 1})
+        db.flush()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="repeat_step",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 409
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
+        )
+        assert run.status == "waiting_input"
+
+
+def test_legacy_parked_request_requires_actionable_pin_blocker():
+    from fastapi import HTTPException
+
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        request = park_task_wait(
+            db, claim, kind="configuration", prompt="Repair?", now=now
+        ).pending_decision
+        db.commit()
+        row = db.query(TaskDecisionRecord).filter_by(run_id=run.id).one()
+        payload = json.loads(row.request_json)
+        del payload["execution_digest"]
+        row.request_json = json.dumps(payload)
+        db.flush()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="resume_configuration",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db, principal_id=user.id, run_id=run.id, command=command, now=now
+            )
+        assert error.value.status_code == 409
+        assert error.value.detail["error"]["code"] == "decision_pins_unverifiable"
+        assert "new" in error.value.detail["error"]["message"].lower()
+        assert row.state == "open" and run.status == "waiting_config"
+
+
+def test_legacy_park_replay_preserves_request_without_repinning():
+    from src.openship.runs.tasks.decisions import park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        first = park_task_wait(
+            db, claim, kind="configuration", prompt="Repair?", now=now
+        )
+        db.commit()
+        row = db.query(TaskDecisionRecord).filter_by(run_id=run.id).one()
+        row.request_json = json.dumps({"prompt": "Repair?"})
+        db.commit()
+        replay = park_task_wait(
+            db, claim, kind="configuration", prompt="Repair?", now=now
+        )
+        assert replay.pending_decision == first.pending_decision
+        assert json.loads(row.request_json) == {"prompt": "Repair?"}
+
+
+def test_crash_before_choice_commit_reprompts_same_request():
+    from src.openship.runs.models import Outbox
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        now = datetime.now(UTC)
+        parked = park_task_wait(
+            db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+        )
+        db.commit()
+        request = parked.pending_decision
+        before = db.query(Outbox).filter_by(run_id=run.id).count()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="confirm",
+        )
+        apply_decision(
+            db, principal_id=user.id, run_id=run.id, command=command, now=now
+        )
+        assert (
+            db.query(Outbox).filter_by(run_id=run.id, destination="command").count()
+            == 1
+        )
+        db.rollback()
+        decision = db.query(TaskDecisionRecord).filter_by(run_id=run.id).one()
+        assert decision.state == "open"
+        assert decision.request_id == request.request_id
+        assert db.query(Outbox).filter_by(run_id=run.id).count() == before
+
+
 def test_park_preserves_completed_work_and_releases_claim(monkeypatch):
     from src.openship.execution.gateway import ToolGateway
     from src.openship.runs.tasks.decisions import park_task_wait
