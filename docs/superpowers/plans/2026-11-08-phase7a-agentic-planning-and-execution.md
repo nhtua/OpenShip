@@ -95,17 +95,26 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
 
 **Interfaces:** Produces `ProfileId`, `ProfileMetadata`, `ProfileBinding`, `ProfileEntry`, `ProfileCatalog`; `decode_catalog(data: bytes) -> ProfileCatalog`, `encode_catalog(catalog: ProfileCatalog) -> bytes`, `catalog_digest(catalog: ProfileCatalog) -> str` in `profile_schema.py`; codec `main(argv: Sequence[str]|None=None) -> int`. Catalog models are strict/frozen and secret-free. Host metadata projection does not change existing recipe fingerprints.
 
-- [ ] **1. Write failing codec/catalog tests.** Include `test_empty_catalog_and_four_profiles_round_trip`, `test_duplicate_keys_tags_aliases_merge_and_oversize_fail`, `test_metadata_only_change_does_not_change_recipe_identity`, `test_smoke_binding_must_match_image_and_fingerprint`. Pin these assertions:
+- [x] **1. Write failing codec/catalog tests.** Include `test_empty_catalog_and_four_profiles_round_trip`, `test_duplicate_keys_tags_aliases_merge_and_oversize_fail`, `test_metadata_only_change_does_not_change_recipe_identity`, `test_smoke_binding_must_match_image_and_fingerprint`. Pin these assertions:
   ```python
   assert decode_catalog(b"schema_version: 1\nprofiles: {}\n").profiles == {}
   assert before_recipe.fingerprint == after_metadata_only_change.fingerprint
   assert catalog_digest(before_metadata) != catalog_digest(after_metadata)
   assert codec_process.returncode != 0  # unsafe tag, duplicate key or alias
   ```
-- [ ] **2. Run red:** from `apps/api`, `uv run pytest -q tests/test_sandbox_profile_catalog.py`. Expect failures for the missing codec/metadata contract, not absent containers.
-- [ ] **3. Implement the codec and curated metadata.** Add the direct PyYAML dependency and resolve the lock with uv. Use a restricted `SafeLoader` plus preconstruction token/depth/node checks and duplicate detection; `safe_load` alone is insufficient. Reject implicit non-JSON scalar types, then validate canonical JSON with `model_validate_json` so YAML lists correctly enter strict tuple fields. Write the empty example `schema_version: 1` / `profiles: {}` with comments describing generation and ownership. Project metadata separately from recipe inputs; never hash descriptive text as image bytes.
-- [ ] **4. Run green:** repeat the targeted tests and `uv run pytest -q tests/test_sandbox_image_catalog.py tests/test_opensandbox_packaging.py`; run `uv run ruff check src/openship/sandboxes/profile_schema.py src/openship/sandboxes/profile_codec.py`. Expected: all pass, legacy recipe identities unchanged by metadata-only edits.
-- [ ] **5. Commit verified files** using the file-based workflow; suggested subject `feat: define validated sandbox profile snapshots`. Record red/green evidence here.
+- [x] **2. Run red:** from `apps/api`, `uv run pytest -q tests/test_sandbox_profile_catalog.py`. Expect failures for the missing codec/metadata contract, not absent containers.
+- [x] **3. Implement the codec and curated metadata.** Add the direct PyYAML dependency and resolve the lock with uv. Use a restricted `SafeLoader` plus preconstruction token/depth/node checks and duplicate detection; `safe_load` alone is insufficient. Reject implicit non-JSON scalar types, then validate canonical JSON with `model_validate_json` so YAML lists correctly enter strict tuple fields. Write the empty example `schema_version: 1` / `profiles: {}` with comments describing generation and ownership. Project metadata separately from recipe inputs; never hash descriptive text as image bytes.
+- [x] **4. Run green:** repeat the targeted tests and `uv run pytest -q tests/test_sandbox_image_catalog.py tests/test_opensandbox_packaging.py`; run `uv run ruff check src/openship/sandboxes/profile_schema.py src/openship/sandboxes/profile_codec.py`. Expected: all pass, legacy recipe identities unchanged by metadata-only edits.
+- [x] **5. Commit verified files** using the file-based workflow; suggested subject `feat: define validated sandbox profile snapshots`. Record red/green evidence here.
+
+  Evidence: the red command failed during collection for missing `profile_schema`.
+  The targeted catalog suite passed 31 tests; the image catalog/packaging suites
+  passed 27 tests; Ruff passed. All four recipe fingerprints were unchanged by
+  removing the metadata. The full API suite had 1,706 passes, 88 skips, one
+  failure and 53 setup errors because the full-stack PostgreSQL and JetStream
+  test-service configuration was not available; those lanes remain to verify.
+  Implementation commit `4a92a17` passed the configured API lint and unit,
+  frontend typecheck and unit, and staged-secret pre-commit hooks.
 
 ## Task 2: Build-command consent and atomic partial YAML updates
 
