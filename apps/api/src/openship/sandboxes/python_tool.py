@@ -29,11 +29,19 @@ from src.openship.sandboxes.contracts import (
     _alias,
 )
 from src.openship.sandboxes.outputs import OutputValidationFailed, validate_outputs
+from src.openship.sandboxes.profile_schema import ProfileId
 
 
 class PythonArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    profile_id: ProfileId | None = Field(
+        default=None,
+        description=(
+            "Purpose-selected sandbox profile. Task-v5 execution requires one "
+            "of the profiles offered in this tool description."
+        ),
+    )
     source: str | None = Field(
         default=None,
         description=(
@@ -231,6 +239,35 @@ async def python_execute(arguments: PythonArguments, invocation, control) -> Pyt
         except (TypeError, ValueError):
             raise ProviderError("invalid_response") from None
     by_id = {ref.id: ref for ref in refs}
+    execution = getattr(invocation, "execution", None)
+    if getattr(execution, "schema_version", None) == 5:
+        if arguments.profile_id is None:
+            raise ProviderError(
+                "invalid_request",
+                safe_message="Select a sandbox profile before running this task.",
+            )
+        from src.openship.sandboxes.profiles import (
+            TaskProfileError,
+            resolve_task_requirements,
+            runtime_catalog,
+        )
+
+        try:
+            requirements = resolve_task_requirements(
+                execution, arguments.profile_id, runtime_catalog()
+            )
+        except TaskProfileError:
+            raise ProviderError(
+                "invalid_response",
+                safe_message="The selected sandbox profile is no longer available.",
+            ) from None
+    else:
+        if arguments.profile_id is not None:
+            raise ProviderError(
+                "invalid_request",
+                safe_message="This execution version does not select a sandbox profile.",
+            )
+        requirements = sandbox_tool.runtime_requirements()
     if arguments.source is not None:
         source = capture_python_source(invocation, claim, invocation.operation_id,
                                        arguments.source.encode("utf-8"))
@@ -245,7 +282,7 @@ async def python_execute(arguments: PythonArguments, invocation, control) -> Pyt
         raise ProviderError("invalid_response") from None
     request = ExecutionRequest(
         root_run_id=claim.run_id, operation_id=invocation.operation_id,
-        requirements=sandbox_tool.runtime_requirements(), source=source, inputs=inputs,
+        requirements=requirements, source=source, inputs=inputs,
         parameters=dict(arguments.parameters),
         outputs=tuple(OutputSpec(alias=alias, media_type=media, kind="data")
                       for alias, media in sorted(arguments.output_media.items())),

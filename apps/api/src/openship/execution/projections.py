@@ -32,6 +32,7 @@ class OperationSummary(BaseModel):
     error_code: str | None = Field(default=None, max_length=64)
     error: ToolFailure | None = None
     query: str | None = Field(default=None, max_length=512)
+    profile_id: str | None = Field(default=None, max_length=64)
     result: dict[str, Any] | None = None
     artifacts: tuple[ArtifactSummary, ...] = ()
     attempts: tuple[ToolAttemptSummary, ...] = ()
@@ -56,11 +57,18 @@ class ToolAttemptSummary(BaseModel):
 def operation_summary(operation) -> OperationSummary:
     """Project only safe operation metadata; args, credentials and raw bodies stay private."""
     query = None
+    profile_id = None
     try:
         definition = get_tool_definition_by_id(operation.capability_id)
+        arguments = definition.validate_arguments(json.loads(operation.arguments_json))
         if definition.query_projector is not None:
-            arguments = definition.validate_arguments(json.loads(operation.arguments_json))
             query = definition.query_projector(arguments)
+        if operation.capability_id == "python_execute":
+            from src.openship.sandboxes.profiles import MANAGED_PROFILE_IDS
+
+            selected = getattr(arguments, "profile_id", None)
+            if selected in MANAGED_PROFILE_IDS:
+                profile_id = selected
     except (LookupError, TypeError, ValueError, json.JSONDecodeError):
         # Malformed or historical private arguments are not copied into the
         # public read model.
@@ -76,6 +84,7 @@ def operation_summary(operation) -> OperationSummary:
         status=operation.status,
         error_code=operation.error_code,
         query=query,
+        profile_id=profile_id,
         created_at=operation.created_at,
         updated_at=operation.updated_at,
         finished_at=operation.finished_at,

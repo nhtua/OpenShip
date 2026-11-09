@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -65,6 +66,10 @@ from src.openship.workspace.tools import (
     list_workspace_files,
     read_workspace_file,
 )
+
+if TYPE_CHECKING:
+    from src.openship.providers.contracts import ToolDefinition
+    from src.openship.runs.tasks.contracts import ExecutionConfigV5
 
 ToolHandler = Callable[..., Any]
 ResultProjector = Callable[[Any], Any]
@@ -774,6 +779,109 @@ def _builtin_definition(manifest: CapabilityManifestLike) -> ToolDefinitionEntry
 
     override = TOOL_HANDLER_OVERRIDES.get(manifest.id)
     return replace(entry, handler=override) if override is not None else entry
+
+
+def _bounded_tool_description(value: str) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= 1024:
+        return value
+    return encoded[:1024].decode("utf-8", "ignore").rstrip()
+
+
+def _task_python_definition(
+    definition: ToolDefinitionEntry,
+    profile_ids: tuple[str, ...],
+    catalog,
+) -> ToolDefinition:
+    """Expose the one Python tool with a bounded, purpose-derived profile enum."""
+    from src.openship.providers.contracts import ToolDefinition
+
+    parameters = copy.deepcopy(definition.manifest.input_schema)
+    properties = parameters.get("properties", {})
+    properties["profile_id"] = {
+        "type": "string",
+        "enum": list(profile_ids),
+        "description": (
+            "Purpose-selected sandbox profile for this task. Choose from the "
+            "available descriptions; no image or runtime override is accepted."
+        ),
+    }
+    required = list(parameters.get("required", []))
+    if "profile_id" not in required:
+        required.append("profile_id")
+    parameters["required"] = required
+
+    purposes = []
+    for profile_id in profile_ids:
+        metadata = catalog.profiles[profile_id].metadata
+        use_for = ", ".join(metadata.use_for[:2]) or metadata.label
+        purposes.append(f"{profile_id}: {metadata.label} ({use_for})")
+    description = _bounded_tool_description(
+        f"{definition.description} Choose profile_id by purpose: "
+        + "; ".join(purposes)
+        + "."
+    )
+    return ToolDefinition(
+        name=definition.manifest.id,
+        description=description,
+        parameters=parameters,
+    )
+
+
+def task_tool_definitions(
+    execution: ExecutionConfigV5, enabled_ids: frozenset[str]
+) -> tuple[ToolDefinition, ...]:
+    """Describe v5 tools with only permitted, enabled and currently ready profiles."""
+    from src.openship.capabilities.catalog import resolve_capability
+    from src.openship.execution.errors import CapabilityError
+    from src.openship.providers.contracts import ToolDefinition
+    from src.openship.sandboxes.profiles import (
+        MANAGED_PROFILE_IDS,
+        TaskProfileError,
+        eligible_profiles,
+        resolve_task_requirements,
+        runtime_catalog,
+    )
+
+    current = runtime_catalog()
+    ready_profiles = []
+    for profile_id in eligible_profiles(
+        execution.profile_catalog, MANAGED_PROFILE_IDS
+    ):
+        try:
+            resolve_task_requirements(execution, profile_id, current)
+        except TaskProfileError:
+            continue
+        ready_profiles.append(profile_id)
+    ready_profiles = tuple(ready_profiles)
+    definitions = []
+    for ref in execution.allowed_capabilities:
+        if ref.id not in enabled_ids:
+            continue
+        try:
+            manifest = resolve_capability(ref, enabled_ids)
+            definition = get_tool_definition(manifest)
+        except (CapabilityError, LookupError):
+            continue
+        if not definition.model_selectable:
+            continue
+        if manifest.id == "python_execute":
+            if not ready_profiles:
+                continue
+            definitions.append(
+                _task_python_definition(
+                    definition, ready_profiles, execution.profile_catalog
+                )
+            )
+        else:
+            definitions.append(
+                ToolDefinition(
+                    name=manifest.id,
+                    description=definition.description,
+                    parameters=manifest.input_schema,
+                )
+            )
+    return tuple(definitions)
 
 
 def register_tool_definition(entry: ToolDefinitionEntry) -> None:

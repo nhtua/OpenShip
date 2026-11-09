@@ -620,6 +620,7 @@ def _python_manifest() -> CapabilityManifest:
             "src/openship/sandboxes/python_tool.py", "src/openship/sandboxes/client.py",
             "src/openship/sandboxes/contracts.py", "src/openship/sandboxes/tool.py",
             "src/openship/sandboxes/sessions.py", "src/openship/sandboxes/outputs.py",
+            "src/openship/sandboxes/profiles.py", "src/openship/sandboxes/profile_schema.py",
             "src/openship/execution/admission.py", "src/openship/execution/gateway.py",
             "src/openship/execution/publication.py", "src/openship/artifacts/filesystem.py",
         )),

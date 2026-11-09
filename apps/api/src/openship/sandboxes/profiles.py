@@ -7,10 +7,15 @@ into container settings.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import httpx
+
+from .contracts import RuntimeRequirements
 from .profile_schema import (
     MAX_YAML_BYTES,
     ProfileCatalog,
@@ -18,6 +23,9 @@ from .profile_schema import (
     catalog_digest,
     decode_catalog,
 )
+
+if TYPE_CHECKING:
+    from ..runs.tasks.contracts import ExecutionConfigV5
 
 DEFAULT_PROFILE_PATH = Path("/etc/openship/sandbox-profiles.yaml")
 MANAGED_PROFILE_IDS: frozenset[ProfileId] = frozenset(
@@ -29,6 +37,14 @@ _runtime_catalog: ProfileCatalog | None = None
 
 class ProfileSnapshotError(ValueError):
     """A mounted snapshot is missing, unsafe, oversized or invalid."""
+
+
+class TaskProfileError(ValueError):
+    """A selected task profile is not permitted, enabled or current."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
 
 
 def empty_catalog() -> ProfileCatalog:
@@ -98,6 +114,91 @@ def eligible_profiles(
             and entry.runtime.smoke_passed
             and entry.runtime.platform == "linux/amd64"
         )
+    )
+
+
+def sandbox_provider_id() -> str:
+    """Derive the secret-free provider identity from installation settings."""
+    from src.openship.config import settings
+
+    try:
+        endpoint = httpx.URL(settings.sandbox_endpoint)
+        if (
+            endpoint.scheme not in ("http", "https")
+            or not endpoint.host
+            or endpoint.userinfo
+            or endpoint.query
+            or endpoint.fragment
+        ):
+            raise ValueError("invalid endpoint identity")
+    except ValueError:
+        raise TaskProfileError(
+            "not_ready", "sandbox provider identity is not configured"
+        ) from None
+    deployment = settings.sandbox_deployment_id.strip()
+    if not deployment:
+        raise TaskProfileError(
+            "not_ready", "sandbox deployment identity is not configured"
+        )
+    endpoint_identity = (
+        f"{endpoint.scheme}://{endpoint.host}:{endpoint.port}"
+        f"{endpoint.path.rstrip('/')}"
+    )
+    return "opensandbox:" + hashlib.sha256(
+        f"{deployment}\n{endpoint_identity}".encode()
+    ).hexdigest()
+
+
+def resolve_task_requirements(
+    execution: ExecutionConfigV5,
+    profile_id: ProfileId,
+    current: ProfileCatalog,
+) -> RuntimeRequirements:
+    """Resolve one exact pinned profile against the mounted current snapshot.
+
+    The pinned execution snapshot is authoritative for the binding, but the
+    current mount must still contain the same exact binding, enabled. A change,
+    disablement or unknown selection is a blocker; there is no fallback to a
+    different profile, tag, or legacy installation setting.
+    """
+    if profile_id not in MANAGED_PROFILE_IDS:
+        raise TaskProfileError(
+            "unsupported_profile", "the selected sandbox profile is not supported"
+        )
+    pinned_entry = execution.profile_catalog.profiles.get(profile_id)
+    if pinned_entry is None:
+        raise TaskProfileError(
+            "unsupported_profile", "the selected sandbox profile is not permitted"
+        )
+    if not pinned_entry.enabled:
+        raise TaskProfileError(
+            "disabled", "the selected sandbox profile is disabled"
+        )
+    current_entry = current.profiles.get(profile_id)
+    if current_entry is None:
+        raise TaskProfileError(
+            "changed", "the selected sandbox profile is no longer mounted"
+        )
+    if not current_entry.enabled:
+        raise TaskProfileError(
+            "disabled", "the selected sandbox profile is disabled"
+        )
+    if pinned_entry.runtime != current_entry.runtime:
+        raise TaskProfileError(
+            "changed", "the selected sandbox image binding has changed"
+        )
+    if (
+        current_entry.runtime.platform != "linux/amd64"
+        or not current_entry.runtime.smoke_passed
+    ):
+        raise TaskProfileError(
+            "changed", "the selected sandbox image is not qualified"
+        )
+    return RuntimeRequirements(
+        provider_id=sandbox_provider_id(),
+        profile_id=profile_id,
+        image=pinned_entry.runtime.image_id,
+        dependency_identity=pinned_entry.runtime.dependency_identity,
     )
 
 
