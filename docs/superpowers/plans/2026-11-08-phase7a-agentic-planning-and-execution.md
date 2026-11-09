@@ -405,8 +405,9 @@ An additional dispatched-interruption regression failed before its fix and
 passed afterward. The author performed a self-review; an independent slice review remains pending
 because this assignment prohibits subagents. PostgreSQL concurrency evidence,
 delivery/maintenance integration and recovery resumption remain future work.
-Commit gate remains open: the API unit-test pre-commit hook exceeded both 120s
-and 600s timeouts; no commit was created and no hooks were bypassed.
+The API unit-test pre-commit hook initially exceeded 120s and 600s timeouts;
+the subsequent unmodified commit attempt passed all applicable hooks and
+created implementation commit `53a7e7a`.
 Review fixes require a matching persisted operation-to-step binding or attempt,
 reject conflicting identities, and conservatively treat every interrupted
 operation as unsettled. The corresponding missing/conflicting identity and
