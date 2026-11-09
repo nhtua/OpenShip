@@ -153,6 +153,12 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - type: bind
+        source: "${OPENSHIP_SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+        target: /etc/openship/sandbox-profiles.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/api.json:/run/nats-auth/api.json:ro"
     depends_on:
       postgres:
@@ -226,6 +232,12 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - type: bind
+        source: "${OPENSHIP_SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+        target: /etc/openship/sandbox-profiles.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/worker.json:/run/nats-auth/worker.json:ro"
     networks:
       - default

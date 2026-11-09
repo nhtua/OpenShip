@@ -125,6 +125,12 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - type: bind
+        source: "${OPENSHIP_SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+        target: /etc/openship/sandbox-profiles.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - ./.openship/messaging/prod/api.json:/run/nats-auth/api.json:ro
       - ./.openship/messaging/prod/ca.crt:/run/nats-tls/ca.crt:ro
     depends_on:
@@ -165,6 +171,12 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - type: bind
+        source: "${OPENSHIP_SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+        target: /etc/openship/sandbox-profiles.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - ./.openship/messaging/prod/worker.json:/run/nats-auth/worker.json:ro
       - ./.openship/messaging/prod/ca.crt:/run/nats-tls/ca.crt:ro
     depends_on:

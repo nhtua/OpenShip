@@ -16,16 +16,22 @@ from sandbox_image_lib.catalog import ImageError, _inventory, resolve_recipe
 from sandbox_image_lib.config import (
     MANAGED,
     read_settings,
+    resolve_compose_source,
     resolve_endpoint,
     resolve_profiles_source,
     validate_selection,
 )
 from sandbox_image_lib.engine import Engine
-from sandbox_image_lib.profiles import merge_profile_updates
+from sandbox_image_lib.profiles import (
+    merge_profile_updates,
+    preflight_mapping,
+    read_catalog,
+)
 
 PLATFORM = "linux/amd64"
 USAGE = ("usage: sandbox_images.py [--root PATH] --engine docker|podman "
-         "list | build PROFILE|--all [--overwrite-profiles] | smoke PROFILE | preflight [--build]")
+         "list | build PROFILE|--all [--overwrite-profiles] | smoke PROFILE | preflight [--build] "
+         "| profiles-source [--settings-file PATH]")
 
 
 def _interactive_stdin() -> bool:
@@ -63,6 +69,20 @@ def main(argv=None) -> int:
         print(USAGE, file=sys.stderr)
         return 2
     command, args = args[0], args[1:]
+    if command == "profiles-source":
+        settings_file = None
+        if args:
+            if len(args) == 2 and args[0] == "--settings-file":
+                settings_file = Path(args[1])
+            else:
+                print(USAGE, file=sys.stderr)
+                return 2
+        try:
+            print(resolve_compose_source(root, os.environ, settings_file=settings_file))
+        except (ImageError, OSError) as exc:
+            print(f"sandbox-images: {exc}", file=sys.stderr)
+            return 2
+        return 0
     overwrite_profiles = False
     target = None
     if command == "build":
@@ -96,6 +116,7 @@ def main(argv=None) -> int:
             print(f"unknown sandbox profile: {selected_target} (known: {' '.join(known)})", file=sys.stderr)
             return 2
         settings = read_settings(root, os.environ)
+        catalog = None
         if command == "preflight":
             build_requested = args == ["--build"]
             enabled = settings["SANDBOX_ENABLED"].lower() in ("1", "true", "yes", "on")
@@ -108,7 +129,16 @@ def main(argv=None) -> int:
                 # Parse the managed literals, without enabling the actual environment.
                 settings = read_settings(root, {**os.environ, "SANDBOX_ENABLED": "true"})
             recipe = resolve_recipe(root, selected, PLATFORM)
-            validate_selection(recipe, settings)
+            if selected not in MANAGED:
+                validate_selection(recipe, settings)
+            elif not build_requested:
+                try:
+                    destination = resolve_compose_source(root, os.environ)
+                except ImageError as exc:
+                    raise ImageError(
+                        f"{exc}; run sandbox-images build {selected}"
+                    ) from exc
+                catalog = read_catalog(root, destination)
         endpoint = resolve_endpoint(cli, settings)
     except (ImageError, OSError) as exc:
         print(f"sandbox-images: {exc}", file=sys.stderr)
@@ -118,6 +148,9 @@ def main(argv=None) -> int:
         engine = Engine(cli, endpoint, PLATFORM)
         engine.info()
         if command == "preflight":
+            if not build_requested and selected in MANAGED:
+                preflight_mapping(catalog, engine)
+                return 0
             status = inspect_status(root, recipe, engine)
             if build_requested:
                 result = ensure_image(root, recipe, engine)

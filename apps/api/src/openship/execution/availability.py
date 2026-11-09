@@ -39,12 +39,18 @@ class ToolAvailabilityObservation:
 def sandbox_runtime_ready() -> bool:
     """Whether the opt-in sandbox profile is fully provisioned, secrets-free."""
     from src.openship.config import settings
+    from src.openship.sandboxes.profiles import (
+        MANAGED_PROFILE_IDS,
+        eligible_profiles,
+        runtime_catalog,
+    )
 
-    if not (
-        settings.sandbox_enabled
-        and settings.sandbox_endpoint.strip()
-        and settings.sandbox_image.strip()
-    ):
+    if not (settings.sandbox_enabled and settings.sandbox_endpoint.strip()):
+        return False
+    if settings.sandbox_profile_id in MANAGED_PROFILE_IDS:
+        if not eligible_profiles(runtime_catalog(), MANAGED_PROFILE_IDS):
+            return False
+    elif not settings.sandbox_image.strip():
         return False
     key_file = settings.sandbox_key_file
     try:

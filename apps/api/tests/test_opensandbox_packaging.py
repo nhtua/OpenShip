@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -24,6 +25,21 @@ def prepare_sandbox_files(root):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("test-only\n")
+
+
+def prepare_profile_source(root):
+    """Copy the host helper and tracked disabled bootstrap example."""
+    scripts = root / "scripts"
+    scripts.mkdir(exist_ok=True)
+    shutil.copy(ROOT / "scripts/sandbox_images.py", scripts)
+    shutil.copytree(
+        ROOT / "scripts/sandbox_image_lib",
+        scripts / "sandbox_image_lib",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    example = root / "deploy/sandbox/sandbox-profiles.example.yaml"
+    example.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(ROOT / "deploy/sandbox/sandbox-profiles.example.yaml", example)
 
 
 def test_sandbox_services_in_base_compose_are_private_and_opt_in():
@@ -91,6 +107,7 @@ def test_stack_selects_sandbox_profile_only_when_requested(tmp_path, engine):
     stack.write_text((ROOT / "scripts/openship-stack").read_text())
     stack.chmod(0o755)
     (tmp_path / ".env").write_text("")
+    prepare_profile_source(tmp_path)
     docker = tmp_path / engine
     docker.write_text('#!/bin/sh\nif [ "$2" = version ]; then echo 2.30.0; else printf "%s\\n" "$*" >> "$OPENSHIP_TEST_LOG"; fi\n')
     docker.chmod(0o755)
@@ -122,6 +139,7 @@ def test_stack_defaults_to_docker_when_both_engines_exist(tmp_path):
     stack.write_text((ROOT / "scripts/openship-stack").read_text())
     stack.chmod(0o755)
     (tmp_path / ".env").write_text("")
+    prepare_profile_source(tmp_path)
     for name in ("docker", "podman"):
         executable = tmp_path / name
         executable.write_text(
@@ -200,16 +218,26 @@ def test_provider_test_override_exposes_only_loopback_gateway():
     assert not overlay["networks"]["sandbox-test-ingress"].get("internal", False)
 
 
-def test_default_compose_renders_without_sandbox_settings():
+def test_default_compose_renders_without_sandbox_runtime_settings():
     env = {**os.environ, "JWT_SECRET": "test", "ARTIFACT_STORAGE_ID": "test"}
     for name in list(env):
         if name.startswith("OPENSHIP_SANDBOX_"):
             del env[name]
+    example = ROOT / "deploy/sandbox/sandbox-profiles.example.yaml"
+    env["OPENSHIP_SANDBOX_PROFILES_FILE"] = str(example)
     result = subprocess.run(
         ["docker", "compose", "-f", str(ROOT / "docker-compose.yml"), "config", "--quiet"],
         cwd=ROOT, env=env, capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr
+
+    direct = {**env, "OPENSHIP_SANDBOX_PROFILES_FILE": ""}
+    missing = subprocess.run(
+        ["docker", "compose", "-f", str(ROOT / "docker-compose.yml"), "config", "--quiet"],
+        cwd=ROOT, env=direct, capture_output=True, text=True, check=False,
+    )
+    assert missing.returncode != 0
+    assert "OPENSHIP_SANDBOX_PROFILES_FILE" in missing.stderr
 
 
 def test_manager_rejects_missing_key_before_starting():

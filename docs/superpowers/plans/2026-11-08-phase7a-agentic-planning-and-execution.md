@@ -160,17 +160,34 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
 
 **Interfaces:** Produces `load_runtime_catalog(path: Path=Path("/etc/openship/sandbox-profiles.yaml")) -> ProfileCatalog`, `eligible_profiles(catalog: ProfileCatalog, permitted: frozenset[ProfileId]) -> tuple[ProfileId,...]`. Runtime uses the fixed default; explicit path injection is for native-host setup/tests, never host `SANDBOX_PROFILES_FILE` forwarded into container settings. `preflight` validates enabled mapping entries using their engine/platform/build/smoke identities without requiring legacy single-profile settings.
 
-- [ ] **1. Write failing mount/readiness tests.** `test_default_and_custom_sources_share_fixed_readonly_target`, `test_disabled_missing_default_uses_example_without_writing`, `test_explicit_missing_or_bad_override_never_falls_back`, `test_mapping_preflight_uses_manager_engine_and_immutable_identity`, `test_prod_env_does_not_change_root_dotenv_selector_contract`. Assert:
+- [x] **1. Write failing mount/readiness tests.** `test_default_and_custom_sources_share_fixed_readonly_target`, `test_disabled_missing_default_uses_example_without_writing`, `test_explicit_missing_or_bad_override_never_falls_back`, `test_mapping_preflight_uses_manager_engine_and_immutable_identity`, `test_prod_env_does_not_change_root_dotenv_selector_contract`. Assert:
   ```python
   assert api_mount["target"] == worker_mount["target"] == "/etc/openship/sandbox-profiles.yaml"
   assert api_mount["read_only"] is True and api_mount["bind"]["create_host_path"] is False
   assert not generated_default.exists()  # disabled bootstrap mounted tracked example
   assert probe_engine.identity == mapping_engine_identity
   ```
-- [ ] **2. Run red:** `uv run pytest -q tests/test_sandbox_profile_mounts.py tests/test_sandbox_image_stack.py` from `apps/api`.
-- [ ] **3. Implement mount/source resolution and load.** Reuse Task 2's resolver through an internal host-helper invocation, not a second Bash dotenv parser. Export only the resolved source for Compose interpolation. The profile-source setting deliberately reads root `.env` in all launcher environments; `.env.prod` keeps its existing role for all other settings, and production overrides this selector through process env. Add long-syntax read-only mounts to API/worker in base and standalone prod files; test effective dev/rootless merge without widening existing mounts. Disabled bootstrap applies only under P7. Enabled new mapping mode preflights every enabled entry in the serving store and requires at least one ready entry; legacy execution remains a separate explicitly versioned path. Native-host setup uses an explicit existing mapping path, no file creation. Load bounded snapshots at process startup only when the new sandbox path needs them; sandbox-disabled native chat exposes an empty catalog and requires no file. Readiness reports safe digest/profile availability without engine sockets or image IDs in public capability descriptions.
-- [ ] **4. Run green:** repeat tests and `bash -n scripts/openship-stack`. Expected: mount/config fixtures pass. Record Checkpoint 1; real mount-byte checks remain Task 17, not established by a fake Compose process.
-- [ ] **5. Commit** with subject `feat: mount validated sandbox profile snapshots`; record disabled and explicit-invalid-source evidence.
+- [x] **2. Run red:** `uv run pytest -q tests/test_sandbox_profile_mounts.py tests/test_sandbox_image_stack.py` from `apps/api`.
+- [x] **3. Implement mount/source resolution and load.** Reuse Task 2's resolver through an internal host-helper invocation, not a second Bash dotenv parser. Export only the resolved source for Compose interpolation. The profile-source setting deliberately reads root `.env` in all launcher environments; `.env.prod` keeps its existing role for all other settings, and production overrides this selector through process env. Add long-syntax read-only mounts to API/worker in base and standalone prod files; test effective dev/rootless merge without widening existing mounts. Disabled bootstrap applies only under P7. Enabled new mapping mode preflights every enabled entry in the serving store and requires at least one ready entry; legacy execution remains a separate explicitly versioned path. Native-host setup uses an explicit existing mapping path, no file creation. Load bounded snapshots at process startup only when the new sandbox path needs them; sandbox-disabled native chat exposes an empty catalog and requires no file. Readiness reports safe digest/profile availability without engine sockets or image IDs in public capability descriptions.
+- [x] **4. Run green:** repeat tests and `bash -n scripts/openship-stack`. Expected: mount/config fixtures pass. Record Checkpoint 1; real mount-byte checks remain Task 17, not established by a fake Compose process.
+- [x] **5. Commit** with subject `feat: mount validated sandbox profile snapshots`; record disabled and explicit-invalid-source evidence.
+
+  Evidence: the red command failed during collection because
+  `sandbox_image_lib.config.resolve_compose_source` did not exist. Green: the
+  named mount/stack suite passed 27 tests, and the sandbox/profile/availability
+  regression set (catalog, commands, writes, engine, profile catalog,
+  OpenSandbox packaging, availability, tool, worker entry, capability routes
+  and tool-run commands) passed 188 tests.
+  `bash -n scripts/openship-stack` and Ruff on every touched Python module
+  passed. Disabled startup mounts the tracked empty example and leaves the
+  generated default absent; an explicit missing, directory, or interpolated
+  override is refused without falling back. Enabled mapping preflight reads the
+  validated snapshot and inspects each enabled entry's immutable image ID
+  against the manager engine identity; legacy `python311` remains on its
+  separate path. `/ready` exposes only the catalog digest and eligible profile
+  IDs, never engine sockets or image IDs. **Checkpoint 1:** fixture Compose
+  parsing establishes the declared mounts, not real mount bytes; actual
+  API/worker byte equality remains Task 17 and is not claimed here.
 
 ## Task 4: Versioned task, plan, assessment and switching contracts
 

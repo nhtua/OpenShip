@@ -44,6 +44,7 @@ from ..providers.errors import ProviderError
 from ..providers.runner import authorize_current_profile
 from ..runs.schemas import _model_projection
 from ..runs.service import bind_run_model_config
+from ..sandboxes.profiles import startup_catalog
 from .dispatch import UnsupportedGraphVersion, resolve_graph
 from .graph import ModelResult
 from .models import ProviderAttempt, Run, RunJob
@@ -198,6 +199,9 @@ class Worker:
         self.running = True
         self._closed = False
         self.refresh_availability_during_run = refresh_availability_during_run
+        # Load the mounted snapshot once per process, and only when enabled
+        # mapping or deployment selection actually needs it.
+        self.profile_catalog = startup_catalog(settings_obj=settings)
 
         # Set up database connection
         self.engine = create_engine(settings.database_url)

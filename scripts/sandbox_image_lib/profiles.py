@@ -113,6 +113,75 @@ def _encode_catalog(root: Path, catalog: dict) -> bytes:
         raise ImageError("profile codec returned invalid snapshot bytes") from exc
 
 
+def read_catalog(root: Path, path: Path) -> dict:
+    """Read and validate a snapshot through the shared API-owned codec."""
+    existing = _read_existing(Path(path))
+    if existing is None:
+        raise ImageError("sandbox profile snapshot is missing")
+    return _decode_catalog(Path(root), existing[0])
+
+
+MAPPING_RUNTIME_FIELDS = (
+    "image_id",
+    "dependency_identity",
+    "platform",
+    "fingerprint",
+    "engine_identity",
+    "smoke_image_id",
+    "smoke_fingerprint",
+    "smoke_passed",
+)
+
+
+def preflight_mapping(catalog: Mapping, engine) -> tuple[str, ...]:
+    """Validate enabled mapping entries against the serving manager engine.
+
+    The snapshot's immutable image identity is inspected directly; mutable tags
+    and the legacy single-profile settings are deliberately not consulted.
+    """
+    profiles = catalog.get("profiles") if isinstance(catalog, Mapping) else None
+    if not isinstance(profiles, Mapping):
+        raise ImageError("sandbox profile snapshot is malformed")
+    ready = []
+    for profile_id in sorted(profiles):
+        entry = profiles[profile_id]
+        if profile_id not in PROFILE_IDS:
+            raise ImageError(f"unknown sandbox profile: {profile_id}")
+        if not isinstance(entry, Mapping) or entry.get("enabled") is not True:
+            continue
+        runtime = entry.get("runtime")
+        if not isinstance(runtime, Mapping) or any(
+            field not in runtime for field in MAPPING_RUNTIME_FIELDS
+        ):
+            raise ImageError(f"enabled sandbox profile {profile_id} has incomplete runtime identity")
+        if runtime["engine_identity"] != engine.identity:
+            raise ImageError(
+                f"enabled sandbox profile {profile_id} was built for a different engine; "
+                "rebuild it against the serving manager"
+            )
+        if runtime["platform"] != engine.platform:
+            raise ImageError(
+                f"enabled sandbox profile {profile_id} does not match the serving platform"
+            )
+        if (
+            runtime["smoke_passed"] is not True
+            or runtime["smoke_image_id"] != runtime["image_id"]
+            or runtime["smoke_fingerprint"] != runtime["fingerprint"]
+        ):
+            raise ImageError(
+                f"enabled sandbox profile {profile_id} has incomplete smoke evidence"
+            )
+        inspected = engine.inspect_image(runtime["image_id"])
+        if inspected is not None and inspected.get("Id") == runtime["image_id"]:
+            ready.append(profile_id)
+    if not ready:
+        raise ImageError(
+            "no enabled sandbox profile is ready in the serving image store; "
+            "run sandbox-images build PROFILE and retry"
+        )
+    return tuple(ready)
+
+
 def _entry_from_update(update: dict) -> dict:
     try:
         metadata = update["metadata"]

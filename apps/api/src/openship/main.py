@@ -25,6 +25,14 @@ from .workspace.routes import router as workspace_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Own one independent event consumer for this API process."""
+    from .sandboxes.profiles import startup_catalog
+
+    try:
+        app.state.sandbox_profiles = startup_catalog()
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            "the enabled sandbox profile snapshot is missing or invalid"
+        ) from exc
     fanout = EventFanout()
     app.state.event_fanout = fanout
     await fanout.start()
@@ -111,6 +119,11 @@ async def readiness_check():
     from .messaging.health import check_worker_health
     from .messaging.models import MessageTransportState
     from .runs.models import Run, RunJob
+    from .sandboxes.profiles import (
+        MANAGED_PROFILE_IDS,
+        profile_readiness,
+        runtime_catalog,
+    )
 
     # Check database
     db_ok = False
@@ -199,6 +212,9 @@ async def readiness_check():
                 "event_consumer": event_consumer_ready,
                 "worker_health": worker_health_status,
             },
+            "sandbox_profiles": profile_readiness(
+                runtime_catalog(), MANAGED_PROFILE_IDS
+            ),
         }
     )
     status = 200 if ready else 503
