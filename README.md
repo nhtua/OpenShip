@@ -69,6 +69,7 @@ cp .env.example .env
 | --- | --- |
 | `JWT_SECRET` | A long random signing secret; replace the example. |
 | `ARTIFACT_STORAGE_ID` | A new UUID for this installation. Keep it unchanged across restarts and restores. |
+| `CONNECTOR_OPERATOR_USERNAME` | Set your username allowing manage tools and connectors |
 | `MODEL_PROFILES_JSON`, `MODEL_DEFAULT_PROFILE_ID` | A model/endpoint you can access and its matching default profile ID. Review the supplied examples using the [provider guide](docs/provider-support.md). |
 | `OPENAI_API_KEY` (or your profile's credential binding) | Your model provider key. The supplied profiles use `OPENAI_API_KEY`. |
 | `OPENSHIP_SANDBOX_SERVER_IMAGE`, `OPENSHIP_SANDBOX_GATEWAY_IMAGE` | The pinned provider images from [`deploy/sandbox/images.json`](deploy/sandbox/images.json). |
