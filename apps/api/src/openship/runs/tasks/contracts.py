@@ -7,6 +7,7 @@ proposals until the server validates them against the pinned catalog.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from typing import Literal
@@ -362,18 +363,81 @@ class TaskAttempt(FrozenModel):
         return self
 
 
+RecoveryAction = Literal["abort", "repeat_step", "continue_next"]
+
+
+class TaskRecoveryReport(FrozenModel):
+    schema_version: Literal[1] = 1
+    plan_revision: int = Field(ge=1)
+    plan_digest: str = Field(pattern=SHA256_PATTERN)
+    step_id: str = Field(pattern=STEP_ID_PATTERN)
+    attempt: int = Field(ge=1, le=3)
+    operation_id: UUID
+    explanation: str
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=16)
+    unknowns: tuple[str, ...] = Field(default=(), max_length=16)
+    risks: tuple[str, ...] = Field(default=(), max_length=16)
+    recommended_action: RecoveryAction | None = None
+    eligible_actions: tuple[RecoveryAction, ...] = Field(default=(), max_length=16)
+    blockers: tuple[str, ...] = Field(default=(), max_length=16)
+
+    @field_validator("explanation")
+    @classmethod
+    def _explanation(cls, value: str) -> str:
+        return _public_text(value, 2048)
+
+    @field_validator("evidence_refs", "unknowns", "risks", "blockers")
+    @classmethod
+    def _items(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for item in value:
+            _public_text(item, 512)
+        return value
+
+    @model_validator(mode="after")
+    def _size(self) -> TaskRecoveryReport:
+        if (
+            len(json.dumps(self.model_dump(mode="json"), ensure_ascii=False).encode())
+            > 32768
+        ):
+            raise ValueError("recovery report exceeds byte limit")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.model_dump(mode="json"))
+
+
+class TaskCallBinding(FrozenModel):
+    schema_version: Literal[1] = 1
+    plan_revision: int = Field(ge=1)
+    step_id: str = Field(pattern=STEP_ID_PATTERN)
+    attempt: int = Field(ge=1, le=3)
+    logical_call_id: str = Field(pattern=r"^model:[0-9]+:call:[0-9]+$")
+
+
 class TaskDecision(FrozenModel):
     schema_version: Literal[1] = 1
     request_id: UUID
-    kind: Literal["plan_confirmation", "clarification", "configuration"]
+    kind: Literal["plan_confirmation", "clarification", "configuration", "recovery"]
     plan_revision: int = Field(ge=0)
     expected_digest: str = Field(pattern=SHA256_PATTERN)
     expires_at: datetime
+    recovery_report: TaskRecoveryReport | None = None
 
     @model_validator(mode="after")
     def _confirmation_requires_plan(self) -> TaskDecision:
         if self.kind == "plan_confirmation" and self.plan_revision == 0:
             raise ValueError("plan confirmation requires a plan revision")
+        if self.kind == "recovery":
+            if (
+                self.recovery_report is None
+                or self.plan_revision < 1
+                or self.recovery_report.plan_revision != self.plan_revision
+                or self.expected_digest != self.recovery_report.digest
+            ):
+                raise ValueError("recovery requires a matching report and revision")
+        elif self.recovery_report is not None:
+            raise ValueError("only recovery decisions carry a recovery report")
         return self
 
 
@@ -482,6 +546,8 @@ class TaskProgress(FrozenModel):
     attempts: tuple[TaskAttempt, ...] = Field(default=(), max_length=24)
     verified_outputs: tuple[ArtifactRef, ...] = Field(default=(), max_length=64)
     verified_steps: tuple[str, ...] = Field(default=(), max_length=8)
+    skipped_steps: tuple[str, ...] = Field(default=(), max_length=8)
+    call_bindings: tuple[TaskCallBinding, ...] = Field(default=(), max_length=16)
     pending_decision: TaskDecision | None = None
     counters: TaskCounters = Field(default_factory=TaskCounters)
     last_disposition: Literal[
@@ -494,7 +560,7 @@ class TaskProgress(FrozenModel):
         "budget_exhausted",
     ] = "none"
 
-    @field_validator("step_ids", "verified_steps")
+    @field_validator("step_ids", "verified_steps", "skipped_steps")
     @classmethod
     def _step_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         for item in value:
@@ -506,12 +572,26 @@ class TaskProgress(FrozenModel):
     @model_validator(mode="after")
     def _progress_is_consistent(self) -> TaskProgress:
         if self.current_revision == 0 and (
-            self.step_ids or self.attempts or self.verified_steps
+            self.step_ids
+            or self.attempts
+            or self.verified_steps
+            or self.skipped_steps
+            or self.call_bindings
         ):
             raise ValueError("pre-plan progress cannot contain plan steps or attempts")
         plan_steps = set(self.step_ids)
         if not set(self.verified_steps) <= plan_steps:
             raise ValueError("verified steps must belong to the current plan")
+        if not set(self.skipped_steps) <= plan_steps or set(self.skipped_steps) & set(
+            self.verified_steps
+        ):
+            raise ValueError(
+                "skipped steps must belong to the plan and not be verified"
+            )
+        if len({binding.logical_call_id for binding in self.call_bindings}) != len(
+            self.call_bindings
+        ):
+            raise ValueError("logical call IDs must be unique")
         if any(attempt.step_id not in plan_steps for attempt in self.attempts):
             raise ValueError("attempts must belong to the current plan")
         if (
@@ -528,7 +608,15 @@ class TaskDecisionCommand(FrozenModel):
     request_id: UUID
     plan_revision: int = Field(ge=0)
     expected_digest: str = Field(pattern=SHA256_PATTERN)
-    action: Literal["confirm", "reject", "answer", "resume_configuration"]
+    action: Literal[
+        "confirm",
+        "reject",
+        "answer",
+        "resume_configuration",
+        "abort",
+        "repeat_step",
+        "continue_next",
+    ]
     answer: str | None = Field(default=None, max_length=10_000)
 
     @field_validator("client_request_id", "request_id", mode="before")

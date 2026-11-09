@@ -32,6 +32,7 @@ from .contracts import (
     TaskCounters,
     TaskDecision,
     TaskPlan,
+    TaskRecoveryReport,
 )
 from .models import (
     TaskDecisionRecord,
@@ -95,9 +96,7 @@ def _verified_outputs(task: TaskRecord) -> tuple[ArtifactRef, ...]:
     try:
         return tuple(ArtifactRef.model_validate(item) for item in raw)
     except ValueError as exc:
-        raise TaskStateError(
-            "state_corrupt", "verified outputs are invalid"
-        ) from exc
+        raise TaskStateError("state_corrupt", "verified outputs are invalid") from exc
 
 
 def _verified_steps(task: TaskRecord) -> tuple[str, ...]:
@@ -139,12 +138,18 @@ def _pending_decision(db, task: TaskRecord) -> TaskDecision | None:
     )
     if row is None or row.plan_revision != task.current_revision:
         return None
+    report = _json(row.request_json, {}).get("recovery_report")
     return TaskDecision(
         request_id=row.request_id,
         kind=row.kind,
         plan_revision=row.plan_revision,
         expected_digest=row.expected_digest,
         expires_at=row.expires_at,
+        recovery_report=(
+            TaskRecoveryReport.model_validate_json(json.dumps(report))
+            if report is not None
+            else None
+        ),
     )
 
 
@@ -177,9 +182,7 @@ def _project(db, task: TaskRecord | None) -> TaskProgressProjection:
                 TaskStepAttempt.task_id == task.id,
                 TaskStepAttempt.step_id.in_([step.id for step in plan.steps]),
             )
-            .order_by(
-                TaskStepAttempt.step_id.asc(), TaskStepAttempt.ordinal.asc()
-            )
+            .order_by(TaskStepAttempt.step_id.asc(), TaskStepAttempt.ordinal.asc())
             .all()
         )
         for row in rows:
@@ -219,6 +222,8 @@ def _project(db, task: TaskRecord | None) -> TaskProgressProjection:
         attempts=tuple(flat_attempts),
         verified_outputs=_verified_outputs(task),
         verified_steps=verified_steps,
+        skipped_steps=tuple(_json(task.skipped_steps_json, [])),
+        call_bindings=tuple(_json(task.call_bindings_json, [])),
         pending_decision=_pending_decision(db, task),
         counters=_counters(task),
         last_disposition=task.last_disposition,
@@ -228,11 +233,7 @@ def _project(db, task: TaskRecord | None) -> TaskProgressProjection:
 
 def read_progress(db, run_id: uuid.UUID) -> TaskProgressProjection:
     """Read the current durable projection without locking or mutating."""
-    task = (
-        db.query(TaskRecord)
-        .filter(TaskRecord.run_id == run_id)
-        .one_or_none()
-    )
+    task = db.query(TaskRecord).filter(TaskRecord.run_id == run_id).one_or_none()
     return _project(db, task)
 
 
@@ -304,11 +305,7 @@ def _claim_state(db, claim: Claim) -> _ClaimState:
         raise TaskStateError("run_terminal", "the run is already terminal")
     if run.fence != claim.fence:
         raise TaskStateError("stale_claim", "the run fence has moved")
-    if (
-        job is None
-        or job.fence != claim.fence
-        or job.owner_id != claim.worker_id
-    ):
+    if job is None or job.fence != claim.fence or job.owner_id != claim.worker_id:
         raise TaskStateError("stale_claim", "the job is not owned by this claim")
     return _ClaimState(run=run, job=job, task=task)
 
@@ -349,7 +346,6 @@ def _default_context(run: Run, claim: Claim) -> dict:
             "state_corrupt", "the pinned task context does not match its run"
         )
     return context.model_dump(mode="json")
-
 
 
 def save_plan(
@@ -417,13 +413,9 @@ def save_plan(
                 plan.revision == expected_revision + 1
             ):
                 return _project(db, task)
-            raise TaskStateError(
-                "plan_conflict", "that plan revision is immutable"
-            )
+            raise TaskStateError("plan_conflict", "that plan revision is immutable")
         if expected_revision != task.current_revision:
-            raise TaskStateError(
-                "stale_revision", "the task revision has advanced"
-            )
+            raise TaskStateError("stale_revision", "the task revision has advanced")
         if plan.revision != task.current_revision + 1:
             raise TaskStateError(
                 "stale_revision", "a new plan revision must follow the current one"
@@ -511,9 +503,7 @@ def _validate_operation(
 
     artifact_ids = _json(operation.output_artifact_ids, [])
     if not isinstance(artifact_ids, list):
-        raise TaskStateError(
-            "state_corrupt", "operation artifact ids are not a list"
-        )
+        raise TaskStateError("state_corrupt", "operation artifact ids are not a list")
     parsed_ids = []
     for item in artifact_ids:
         try:
@@ -561,16 +551,18 @@ def record_attempt_result(
     operation_id: uuid.UUID,
 ) -> TaskProgressProjection:
     """Track one committed operation as a step attempt, idempotently."""
-    if not isinstance(attempt, int) or isinstance(attempt, bool) or not 1 <= attempt <= 3:
+    if (
+        not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+        or not 1 <= attempt <= 3
+    ):
         raise TaskStateError(
             "invalid_attempt", "attempt ordinals are bounded from 1 to 3"
         )
     state = _claim_state(db, claim)
     task = state.task
     if task is None:
-        raise TaskStateError(
-            "task_missing", "no plan has been saved for this run"
-        )
+        raise TaskStateError("task_missing", "no plan has been saved for this run")
 
     plan_row = _current_plan(db, task)
     if plan_row is None:
@@ -581,9 +573,7 @@ def record_attempt_result(
             "step_unknown", "the step does not belong to the current plan"
         )
 
-    operation, outcome, evidence = _validate_operation(
-        db, state, claim, operation_id
-    )
+    operation, outcome, evidence = _validate_operation(db, state, claim, operation_id)
 
     existing_operation = _attempt_for_operation(db, task.run_id, operation.id)
     if existing_operation is not None:

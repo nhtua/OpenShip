@@ -368,10 +368,21 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
 
 ### Slice 8A — contract and migration compatibility
 
+**Slice 8A evidence:** Focused SQLite contract/state suite: 38 passed, one
+SQLAlchemy deprecation warning; Ruff passed. The controller independently
+reports the authorized PostgreSQL migration lane passed: 1 passed, one
+existing SQLAlchemy warning, 17.33s. The migration matrix covers six 034
+blockers and three 033 revision-zero blockers with preservation and clean
+downgrade checks; nine isolated missing-guard mutations were detected. The
+guard tests were written after implementation, so mutation evidence does not
+constitute original red-before-green evidence. Independent slice review and
+the explicitly named pre-plan answer test remain outstanding; do not treat
+Task 8 or its later slices as complete. See the 8A report for details.
+
 - [ ] **8A.1 Write failing tests:** extend `test_task_contracts.py`/`test_task_state.py` and create the owning `tests/integration/test_task_decisions_postgres.py` with `test_recovery_contracts_bind_report_and_positive_revision`, `test_preplan_answer_allowed_but_confirmation_forbidden`, `test_skipped_is_disjoint_from_verified`, `test_recovery_migration_upgrade_and_lossy_downgrade_guard`. Assert recovery requests require a report and revision ≥1, pre-plan answers remain valid, old progress defaults new fields to empty, bindings refer to unique logical call IDs, and downgrade cannot erase recovery/skip/call-binding or revision-zero data. Decision-kind/action matching is enforced against the persisted request in 8C, not a command-supplied `kind`.
 - [ ] **8A.2 Run red:** `uv run pytest -q tests/test_task_contracts.py tests/test_task_state.py`; authorized DB: `uv run pytest -q -m postgres tests/integration/test_task_decisions_postgres.py`. Expect missing recovery contracts/schema, not missing containers.
 - [ ] **8A.3 Implement:** add `TaskRecoveryReport`, `TaskCallBinding` and default-empty progress fields above; migration `phase7a034` after `phase7a033` adds `skipped_steps_json`, `call_bindings_json`, recovery decision kind/action checks and positive-revision recovery constraints. Reports use existing `request_json`; no second ledger/table. Update the existing head assertion in `test_task_state.py` to 034; keep explicit historical 031→032 tests at their named revisions. Guard lossy downgrade of new data and revision-zero data before tightening constraints.
-- [ ] **8A.4 Run green:** repeat both red commands and `uv run ruff check src/openship/runs/tasks alembic/versions/033_phase7a_preplan_decisions.py alembic/versions/034_phase7a_recovery_decisions.py`. Record actual SQLite/PostgreSQL scope; a skipped lane is not green evidence.
+- [x] **8A.4 Run green:** repeat both red commands and `uv run ruff check src/openship/runs/tasks alembic/versions/033_phase7a_preplan_decisions.py alembic/versions/034_phase7a_recovery_decisions.py`. Record actual SQLite/PostgreSQL scope; a skipped lane is not green evidence.
 - [ ] **8A.5 Commit:** use scanned file-based subject `feat: define task recovery decision contracts`, obtain a slice review and record the commit/evidence here.
 
 ### Slice 8B — park and expire without executing

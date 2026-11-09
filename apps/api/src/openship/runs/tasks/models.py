@@ -44,9 +44,17 @@ TASK_STATUSES = (
 )
 PLAN_STATUSES = ("proposed", "validated")
 ATTEMPT_STATUSES = ("running", "succeeded", "failed", "interrupted", "uncertain")
-DECISION_KINDS = ("plan_confirmation", "clarification", "configuration")
+DECISION_KINDS = ("plan_confirmation", "clarification", "configuration", "recovery")
 DECISION_STATES = ("open", "confirmed", "rejected", "answered", "expired", "cancelled")
-DECISION_ACTIONS = ("confirm", "reject", "answer", "resume_configuration")
+DECISION_ACTIONS = (
+    "confirm",
+    "reject",
+    "answer",
+    "resume_configuration",
+    "abort",
+    "repeat_step",
+    "continue_next",
+)
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -91,6 +99,8 @@ class TaskRecord(Base):
     accepted_evidence_json = Column(Text, nullable=False, server_default="[]")
     verified_outputs_json = Column(Text, nullable=False, server_default="[]")
     verified_steps_json = Column(Text, nullable=False, server_default="[]")
+    skipped_steps_json = Column(Text, nullable=False, server_default="[]")
+    call_bindings_json = Column(Text, nullable=False, server_default="[]")
     last_disposition = Column(String(24), nullable=False, server_default="none")
     active_ms = Column(BigInteger, nullable=False, server_default="0")
     active_started_at = Column(DateTime(timezone=True), nullable=True)
@@ -261,7 +271,7 @@ class TaskDecisionRecord(Base):
     __table_args__ = (
         UniqueConstraint("run_id", "request_id", name="uq_task_decisions_run_request"),
         CheckConstraint(
-            "plan_revision >= 0 AND (kind != 'plan_confirmation' OR plan_revision >= 1)",
+            "plan_revision >= 0 AND (kind NOT IN ('plan_confirmation', 'recovery') OR plan_revision >= 1)",
             name="ck_task_decisions_revision",
         ),
         CheckConstraint(_in("kind", DECISION_KINDS), name="ck_task_decisions_kind"),

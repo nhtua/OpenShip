@@ -8,6 +8,7 @@ to inspect the pre-upgrade history.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import uuid
@@ -46,6 +47,61 @@ from tests.conftest import TestSessionLocal
 CAPABILITY = CapabilityRef(
     id="python_execute", version="1.0.0", manifest_digest="b" * 64
 )
+
+
+def test_recovery_columns_are_persisted_and_projected():
+    from src.openship.runs.tasks.contracts import TaskCallBinding
+
+    with TestSessionLocal() as db:
+        _, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        binding = TaskCallBinding(
+            plan_revision=1,
+            step_id="inspect",
+            attempt=1,
+            logical_call_id="model:1:call:0",
+        )
+        task.skipped_steps_json = json.dumps(["inspect"])
+        task.call_bindings_json = json.dumps([binding.model_dump(mode="json")])
+        db.flush()
+        progress = read_progress(db, run.id)
+        assert progress.skipped_steps == ("inspect",)
+        assert progress.call_bindings == (binding,)
+
+
+def test_recovery_request_projection_decodes_persisted_report():
+    from src.openship.runs.tasks.contracts import TaskRecoveryReport
+
+    with TestSessionLocal() as db:
+        _, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        report = TaskRecoveryReport(
+            plan_revision=1,
+            plan_digest="a" * 64,
+            step_id="inspect",
+            attempt=1,
+            operation_id=uuid.uuid4(),
+            explanation="Unknown",
+        )
+        db.add(
+            TaskDecisionRecord(
+                task_id=task.id,
+                run_id=run.id,
+                request_id=uuid.uuid4(),
+                kind="recovery",
+                plan_revision=1,
+                expected_digest=report.digest,
+                request_json=json.dumps(
+                    {"recovery_report": report.model_dump(mode="json")}
+                ),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        )
+        db.flush()
+        assert read_progress(db, run.id).pending_decision.recovery_report == report
+
 
 pytestmark = pytest.mark.filterwarnings("ignore::sqlalchemy.exc.SAWarning")
 
@@ -274,9 +330,7 @@ def test_committed_operation_is_only_source_of_attempt_outcome():
         assert attempt.input_digest == operation.arguments_digest
         assert attempt.result_digest == operation.result_digest
         assert attempt.evidence_refs
-        assert any(
-            artifact.sha256 in reference for reference in attempt.evidence_refs
-        )
+        assert any(artifact.sha256 in reference for reference in attempt.evidence_refs)
         assert progress.status == "running"
         assert progress.verified_outputs == ()
         assert progress.counters.tool_calls == 1
@@ -293,9 +347,7 @@ def test_stale_identity_map_cannot_hide_committed_operation():
         user, _, _, run, claim = _identity(db)
         save_plan(db, claim, _plan(), expected_revision=0)
         db.commit()
-        operation = _operation(
-            db, run, user, status="running", result_digest=None
-        )
+        operation = _operation(db, run, user, status="running", result_digest=None)
         db.commit()
 
         # This session now holds a pre-commit copy of the operation.
@@ -485,11 +537,7 @@ def test_open_decision_and_decision_command_uniqueness():
         _, _, _, run, claim = _identity(db)
         save_plan(db, claim, _plan(), expected_revision=0)
         db.commit()
-        task = (
-            db.query(TaskRecord)
-            .filter(TaskRecord.run_id == run.id)
-            .one()
-        )
+        task = db.query(TaskRecord).filter(TaskRecord.run_id == run.id).one()
         expires_at = datetime.now(UTC) + timedelta(hours=24)
         decision = TaskDecisionRecord(
             task_id=task.id,
@@ -570,7 +618,7 @@ def _alembic_ini(tmp_path: Path, db_path: Path) -> Path:
     path = tmp_path / "alembic.ini"
     path.write_text(
         f"""[alembic]
-script_location = {api_root / 'alembic'}
+script_location = {api_root / "alembic"}
 sqlalchemy.url = sqlite:///{db_path}
 
 [loggers]
@@ -653,6 +701,164 @@ def _seed_legacy_run(engine) -> str:
     return run_id
 
 
+def test_recovery_migration_guard_matrix_sqlite(tmp_path):
+    from tests.task_recovery_migration_support import check_guards
+
+    db_path = tmp_path / "guard-matrix.db"
+    ini = _alembic_ini(tmp_path, db_path)
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        check_guards(engine, ini, _run_alembic)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "table,column,value,needle,replacement,target",
+    [
+        (
+            "task_records",
+            "skipped_steps_json",
+            '["inspect"]',
+            "skipped_steps_json != '[]'",
+            "1 = 0",
+            "phase7a033",
+        ),
+        (
+            "task_records",
+            "call_bindings_json",
+            '["binding"]',
+            "call_bindings_json != '[]'",
+            "1 = 0",
+            "phase7a033",
+        ),
+        (
+            "task_decisions",
+            "kind",
+            "recovery",
+            "WHERE kind = 'recovery'",
+            "WHERE 1 = 0",
+            "phase7a033",
+        ),
+        *[
+            (
+                "task_decision_commands",
+                "action",
+                action,
+                "WHERE action IN ('abort', 'repeat_step', 'continue_next')",
+                "WHERE action IN ("
+                + ", ".join(
+                    repr(a)
+                    for a in ("abort", "repeat_step", "continue_next")
+                    if a != action
+                )
+                + ")",
+                "phase7a033",
+            )
+            for action in ("abort", "repeat_step", "continue_next")
+        ],
+        *[
+            (table, column, 0, f'        ("{table}", "{column}"),\n', "", "phase7a032")
+            for table, column in (
+                ("task_records", "current_revision"),
+                ("task_decisions", "plan_revision"),
+                ("task_decision_commands", "plan_revision"),
+            )
+        ],
+    ],
+)
+def test_guard_matrix_detects_missing_guard_in_isolated_copy(
+    tmp_path, table, column, value, needle, replacement, target
+):
+    from tests.task_recovery_migration_support import (
+        assert_guard_refuses,
+        seed_032,
+        set_value,
+    )
+
+    api_root = Path(__file__).parents[1]
+    copied = tmp_path / "isolated" / "alembic"
+    copied.parent.mkdir()
+    shutil.copytree(
+        api_root / "alembic",
+        copied,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    db_path = tmp_path / "mutation.db"
+    ini = _alembic_ini(tmp_path, db_path)
+    ini.write_text(ini.read_text().replace(str(api_root / "alembic"), str(copied)))
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        assert _run_alembic(ini, "upgrade", "phase7a032").returncode == 0
+        seed_032(engine)
+        assert _run_alembic(ini, "upgrade", "phase7a034").returncode == 0
+        if target == "phase7a032":
+            assert _run_alembic(ini, "downgrade", "phase7a033").returncode == 0
+        set_value(engine, table, column, value)
+        filename = (
+            "034_phase7a_recovery_decisions.py"
+            if target == "phase7a033"
+            else "033_phase7a_preplan_decisions.py"
+        )
+        migration = copied / "versions" / filename
+        source = migration.read_text()
+        assert source.count(needle) == 1
+        migration.write_text(source.replace(needle, replacement))
+        message = (
+            "cannot downgrade: recovery data would be lost"
+            if target == "phase7a033"
+            else "cannot downgrade: revision-zero task data exists"
+        )
+        with pytest.raises(AssertionError) as detected:
+            assert_guard_refuses(engine, ini, _run_alembic, target, message)
+        if column in {"skipped_steps_json", "call_bindings_json"}:
+            assert "downgrade unexpectedly succeeded" in str(detected.value)
+        else:
+            assert "downgrade failed without the intended guard" in str(detected.value)
+            assert "CHECK constraint failed" in str(detected.value)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [
+        ("skipped_steps_json", '["inspect"]'),
+        ("call_bindings_json", '[{"logical_call_id":"model:1:call:0"}]'),
+    ],
+)
+def test_recovery_downgrade_rejects_persisted_progress(tmp_path, column, value):
+    db_path = tmp_path / "guard.db"
+    ini = _alembic_ini(tmp_path, db_path)
+    assert _run_alembic(ini, "upgrade", "head").returncode == 0
+    engine = create_engine(f"sqlite:///{db_path}")
+    run_id = _seed_legacy_run(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO task_records (id, run_id, project_id, conversation_id, initiator_id, "
+                f"{column}) VALUES (:id, :run, :project, :conversation, :user, :value)"
+            ),
+            {
+                "id": "50000000-0000-0000-0000-000000000001",
+                "run": run_id,
+                "project": "20000000-0000-0000-0000-000000000001",
+                "conversation": "30000000-0000-0000-0000-000000000001",
+                "user": "10000000-0000-0000-0000-000000000001",
+                "value": value,
+            },
+        )
+    result = _run_alembic(ini, "downgrade", "phase7a033")
+    assert result.returncode != 0
+    assert "recovery data would be lost" in result.stderr
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text(f"SELECT {column} FROM task_records")).scalar_one()
+            == value
+        )
+    engine.dispose()
+
+
 def test_upgrade_keeps_old_history_without_fabricating_tasks(tmp_path):
     db_path = tmp_path / "phase7a-history.db"
     ini = _alembic_ini(tmp_path, db_path)
@@ -677,7 +883,7 @@ def test_upgrade_keeps_old_history_without_fabricating_tasks(tmp_path):
         revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-        assert revision == "phase7a033"
+        assert revision == "phase7a034"
 
         # The nonterminal waiting statuses fit the existing 20-character column.
         for status in ("waiting_plan", "waiting_input", "waiting_config"):

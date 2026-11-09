@@ -6,6 +6,8 @@ Revises: phase7a032
 
 from collections.abc import Sequence
 
+from sqlalchemy import text
+
 from alembic import op
 
 revision: str = "phase7a033"
@@ -35,6 +37,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    connection = op.get_bind()
+    for table, column in (
+        ("task_records", "current_revision"),
+        ("task_decisions", "plan_revision"),
+        ("task_decision_commands", "plan_revision"),
+    ):
+        if connection.execute(
+            text(f"SELECT 1 FROM {table} WHERE {column} = 0 LIMIT 1")
+        ).first():
+            raise RuntimeError("cannot downgrade: revision-zero task data exists")
     _replace(
         "task_decision_commands",
         "ck_task_decision_commands_revision",

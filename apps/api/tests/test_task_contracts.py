@@ -43,6 +43,55 @@ REQUEST_ID = UUID("55555555-5555-5555-5555-555555555555")
 OPERATION_ID = UUID("66666666-6666-6666-6666-666666666666")
 CLIENT_REQUEST_ID = UUID("77777777-7777-7777-7777-777777777777")
 
+
+def test_recovery_contracts_bind_report_and_positive_revision():
+    from src.openship.runs.tasks.contracts import TaskRecoveryReport
+
+    report = TaskRecoveryReport(
+        plan_revision=1,
+        plan_digest="a" * 64,
+        step_id="inspect",
+        attempt=1,
+        operation_id=OPERATION_ID,
+        explanation="Outcome unknown",
+        eligible_actions=("abort",),
+    )
+    values = {
+        "request_id": REQUEST_ID,
+        "kind": "recovery",
+        "plan_revision": 1,
+        "expected_digest": report.digest,
+        "expires_at": datetime.now(UTC),
+        "recovery_report": report,
+    }
+    assert TaskDecision(**values).recovery_report == report
+    for change in (
+        {"recovery_report": None},
+        {"plan_revision": 0},
+        {"expected_digest": "b" * 64},
+    ):
+        with pytest.raises(ValidationError):
+            TaskDecision(**(values | change))
+
+
+def test_skipped_is_disjoint_from_verified():
+    from src.openship.runs.tasks.contracts import TaskCallBinding
+
+    assert TaskProgress().skipped_steps == ()
+    assert TaskProgress().call_bindings == ()
+    binding = TaskCallBinding(
+        plan_revision=1, step_id="inspect", attempt=1, logical_call_id="model:1:call:0"
+    )
+    with pytest.raises(ValidationError):
+        TaskProgress(
+            step_ids=("inspect",),
+            skipped_steps=("inspect",),
+            verified_steps=("inspect",),
+        )
+    with pytest.raises(ValidationError):
+        TaskProgress(step_ids=("inspect",), call_bindings=(binding, binding))
+
+
 CAPABILITY = CapabilityRef(
     id="python_execute", version="1.0.0", manifest_digest="a" * 64
 )
@@ -157,16 +206,19 @@ def test_limits_defaults_match_p1_p3_and_ceilings_cannot_be_inflated():
     assert limits.max_repairs_per_step == 2
     assert limits.decision_expiry_hours == 24
 
-    assert TaskLimits(
-        max_steps=4,
-        max_tool_calls=8,
-        max_model_turns=10,
-        max_generation_attempts=12,
-        max_output_tokens_per_request=2000,
-        max_total_output_tokens=24000,
-        max_repairs_per_step=1,
-        decision_expiry_hours=12,
-    ).max_steps == 4
+    assert (
+        TaskLimits(
+            max_steps=4,
+            max_tool_calls=8,
+            max_model_turns=10,
+            max_generation_attempts=12,
+            max_output_tokens_per_request=2000,
+            max_total_output_tokens=24000,
+            max_repairs_per_step=1,
+            decision_expiry_hours=12,
+        ).max_steps
+        == 4
+    )
 
     for field, value in (
         ("max_steps", 9),
@@ -264,7 +316,9 @@ def test_limits_and_missing_evidence_fail_closed():
     with pytest.raises(ValidationError):
         TaskLimits(max_total_output_tokens=48001)
 
-    passing = VerificationCheck(name="chart exists", passed=True, evidence_ref="artifact:" + "1" * 64)
+    passing = VerificationCheck(
+        name="chart exists", passed=True, evidence_ref="artifact:" + "1" * 64
+    )
     failing = VerificationCheck(name="chart exists", passed=False)
     with pytest.raises(ValidationError):
         VerificationReport(
@@ -360,7 +414,10 @@ def test_task_action_literals_and_wait_kind():
     for kind in ("execute", "repair", "verify"):
         action = TaskAction(kind=kind, step_id="render", reason="reason")
         assert action.kind == kind
-    assert TaskAction(kind="wait", wait_kind="decision", reason="need input").wait_kind == "decision"
+    assert (
+        TaskAction(kind="wait", wait_kind="decision", reason="need input").wait_kind
+        == "decision"
+    )
     assert (
         TaskAction(
             kind="wait", wait_kind="configuration", reason="needs profile"
@@ -471,9 +528,7 @@ def test_progress_binds_pending_decision_to_revision_and_counters():
     with pytest.raises(ValidationError):
         TaskProgress(
             step_ids=("inspect",),
-            attempts=(
-                TaskAttempt(step_id="render", attempt=1, status="failed"),
-            ),
+            attempts=(TaskAttempt(step_id="render", attempt=1, status="failed"),),
         )
     with pytest.raises(ValidationError):
         TaskCounters(repairs_by_step={"render": 3})
@@ -552,20 +607,24 @@ def test_old_execution_versions_decode_without_task_fields():
         decode_execution_config({**old_v4, "task_context": {}})
 
     assert isinstance(
-        decode_execution_config({"schema_version": 1, "graph_kind": "chat", "graph_version": 1}),
+        decode_execution_config(
+            {"schema_version": 1, "graph_kind": "chat", "graph_version": 1}
+        ),
         ExecutionConfig,
     )
     assert isinstance(
-        decode_execution_config({"schema_version": 2, "graph_kind": "chat", "graph_version": 2}),
+        decode_execution_config(
+            {"schema_version": 2, "graph_kind": "chat", "graph_version": 2}
+        ),
         ExecutionConfigV2,
     )
     assert isinstance(
-        decode_execution_config({"schema_version": 3, "graph_kind": "chat", "graph_version": 3}),
+        decode_execution_config(
+            {"schema_version": 3, "graph_kind": "chat", "graph_version": 3}
+        ),
         ExecutionConfigV3,
     )
-    with pytest.raises(
-        ValueError, match="unsupported execution configuration version"
-    ):
+    with pytest.raises(ValueError, match="unsupported execution configuration version"):
         decode_execution_config({"schema_version": 6, "graph_kind": "chat"})
 
 
