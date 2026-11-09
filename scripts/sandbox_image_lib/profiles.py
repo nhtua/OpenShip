@@ -161,19 +161,23 @@ def _require_safe_directory(path: Path) -> None:
         raise ImageError(f"profile destination directory is missing or unsafe: {path}") from exc
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ImageError(f"profile destination directory is unsafe: {path}")
-    if info.st_mode & 0o022:
-        raise ImageError(f"profile destination directory is group or world writable: {path}")
+    if info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
+        raise ImageError(
+            f"profile destination directory is group or world writable without the sticky bit: {path}"
+        )
 
 
-def _check_destination(destination: Path, root: Path, in_repository: bool) -> None:
-    if in_repository:
-        _require_safe_directory(root)
-        current = root
-        for part in destination.relative_to(root).parts[:-1]:
-            current = current / part
-            _require_safe_directory(current)
-    else:
-        _require_safe_directory(destination.parent)
+def _check_destination(destination: Path) -> None:
+    # Walk every ancestor with lstat (never following symlinks). A sticky
+    # group/world-writable directory such as /tmp is permitted because its
+    # sticky bit prevents other users from replacing our file or lock; any
+    # non-sticky group/world-writable ancestor is rejected.
+    current = destination.parent
+    while True:
+        _require_safe_directory(current)
+        if current == current.parent:
+            break
+        current = current.parent
     try:
         info = os.lstat(destination)
     except FileNotFoundError:
@@ -311,10 +315,10 @@ def merge_profile_updates(
     in_repository = destination == root or root in destination.parents
     if in_repository:
         _require_git_ignore(root, destination)
-    _check_destination(destination, root, in_repository)
+    _check_destination(destination)
 
     with _profile_lock(destination):
-        _check_destination(destination, root, in_repository)
+        _check_destination(destination)
         existing = _read_existing(destination)
         if existing is None:
             catalog = {"schema_version": 1, "profiles": {}}

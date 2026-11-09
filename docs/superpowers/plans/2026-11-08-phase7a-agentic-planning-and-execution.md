@@ -141,8 +141,11 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
   `test_build_accepts_the_overwrite_flag_and_rejects_other_build_shapes` (exit
   2, 1 failed / 12 passed) because `--overwrite-profiles` was parsed as a
   profile. Green: the repeated write/command suite passed 26 tests, and the
-  combined write/command/catalog/engine/profile suite passed 49. `uv run ruff
-  check` passed on all touched Python modules. Tests exercise the codec bridge
+  combined write/command/catalog/engine/profile suite passed 50. `uv run ruff
+  check` passed on all touched Python modules. A review follow-up validates
+  every destination ancestor with `lstat`, permitting sticky group/world-
+  writable directories such as `/tmp` while rejecting non-sticky ones. Tests
+  exercise the codec bridge
   against the existing API venv with a minimal environment; no image was built,
   pulled, run, or contacted, and no real-engine publication check was attempted.
   The generated default and its sibling lock are ignored. Custom in-repo

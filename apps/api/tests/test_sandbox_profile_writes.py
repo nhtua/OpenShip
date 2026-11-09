@@ -232,6 +232,35 @@ def test_failed_codec_replace_or_symlink_preserves_old_file(tmp_path, monkeypatc
     assert target.read_bytes() == previous
 
 
+def test_external_destination_validates_all_ancestors_and_sticky_policy(tmp_path, monkeypatch):
+    root = _prepare(tmp_path, monkeypatch)
+    update = {"logs-data": _update(root, "logs-data")}
+
+    unsafe = tmp_path / "unsafe"
+    safe_inside = unsafe / "safe"
+    safe_inside.mkdir(parents=True)
+    unsafe.chmod(0o770)
+    with pytest.raises(ImageError):
+        profiles.merge_profile_updates(root, safe_inside / "profiles.yaml", update)
+    assert not (safe_inside / "profiles.yaml").exists()
+
+    linked = tmp_path / "linked"
+    linked.symlink_to(safe_inside, target_is_directory=True)
+    with pytest.raises(ImageError):
+        profiles.merge_profile_updates(root, linked / "profiles.yaml", update)
+
+    sticky = tmp_path / "sticky"
+    sticky_inside = sticky / "inside"
+    sticky_inside.mkdir(parents=True)
+    sticky.chmod(0o1777)
+    sticky_inside.chmod(0o700)
+    destination = sticky_inside / "profiles.yaml"
+    assert profiles.merge_profile_updates(root, destination, update) == ("logs-data",)
+    assert decode_catalog(destination.read_bytes()).profiles["logs-data"].runtime.image_id == (
+        "sha256:" + "4" * 64
+    )
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is required for the ignore check")
 def test_custom_in_repo_path_requires_ignore(tmp_path, monkeypatch):
     root = _prepare(tmp_path, monkeypatch)
