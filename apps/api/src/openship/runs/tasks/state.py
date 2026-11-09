@@ -144,7 +144,11 @@ def _pending_decision(db, task: TaskRecord) -> TaskDecision | None:
         kind=row.kind,
         plan_revision=row.plan_revision,
         expected_digest=row.expected_digest,
-        expires_at=row.expires_at,
+        expires_at=(
+            row.expires_at.replace(tzinfo=UTC)
+            if row.expires_at.tzinfo is None
+            else row.expires_at
+        ),
         recovery_report=(
             TaskRecoveryReport.model_validate_json(json.dumps(report))
             if report is not None

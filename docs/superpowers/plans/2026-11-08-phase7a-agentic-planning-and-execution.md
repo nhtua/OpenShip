@@ -395,6 +395,25 @@ Task 8 or its later slices as complete. See the 8A report for details.
 
 ### Slice 8B — park and expire without executing
 
+**8B implementation evidence (2026-11-09):** Added caller-owned fenced parking,
+revision-zero pinned-context binding, recovery operation/report binding, and
+recovery expiry. The named red command initially produced 4 missing-API
+failures and 30 passes; after review fixes it produced **41 passed** (SQLite,
+one SQLAlchemy deprecation warning). Ruff passed on the changed task modules
+and decision tests. Parking rollback restores the run, lease and request state.
+An additional dispatched-interruption regression failed before its fix and
+passed afterward. The author performed a self-review; an independent slice review remains pending
+because this assignment prohibits subagents. PostgreSQL concurrency evidence,
+delivery/maintenance integration and recovery resumption remain future work.
+Commit gate remains open: the API unit-test pre-commit hook exceeded both 120s
+and 600s timeouts; no commit was created and no hooks were bypassed.
+Review fixes require a matching persisted operation-to-step binding or attempt,
+reject conflicting identities, and conservatively treat every interrupted
+operation as unsettled. The corresponding missing/conflicting identity and
+missing tool-attempt regressions were observed failing before the fix and
+passing afterward. A bounded 120s verbose API run reached 17% with no failed
+test or 30s stalled-test traceback; it did not finish the suite.
+
 - [ ] **8B.1 Write failing tests:** extend `test_task_decisions.py` with `test_park_preserves_completed_work_and_releases_claim`, `test_preplan_wait_binds_pinned_context_digest`, `test_park_replay_keeps_request_identity`, `test_expiry_cancels_recovery_wait_without_dispatch`. Assert `ended_at is None`, no owner/lease, one open request, unchanged attempts/output refs/counters and no provider calls. Recovery retains the explicit unsettled operation; ordinary waits cannot conceal in-flight effects.
 - [ ] **8B.2 Run red:** `uv run pytest -q tests/test_task_decisions.py tests/test_task_state.py`; expect missing parking behavior, not external-service failures.
 - [ ] **8B.3 Implement:** implement `park_task_wait` with scope→run/job→task/decision locks and refreshed claim/fence checks. Create pre-plan context from pinned execution if needed; revision 0 binds its context digest. Use `waiting_plan`/`waiting_input`/`waiting_config`; recovery maps to `waiting_input`/`last_disposition="uncertain"` with the same 24-hour input-decision expiry. Persist state/decision/event and fence/release ownership before acknowledgement. Never mark waiting complete. Extend expiry's kind mapping without dispatch or sandbox mutation.
