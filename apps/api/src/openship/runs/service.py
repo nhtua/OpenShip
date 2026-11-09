@@ -1757,6 +1757,23 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
         job.owner_id = None
         job.lease_until = None
 
+    from .tasks.models import TaskDecisionRecord, TaskRecord
+
+    task = db.query(TaskRecord).filter_by(run_id=rid).with_for_update().first()
+    if task is not None:
+        task.status = "cancelled"
+        task.fence = run.fence
+        task.updated_at = run.ended_at
+        decisions = (
+            db.query(TaskDecisionRecord)
+            .filter_by(run_id=rid, state="open")
+            .with_for_update()
+            .all()
+        )
+        for decision in decisions:
+            decision.state = "cancelled"
+            decision.resolved_at = run.ended_at
+
     from ..execution.recovery import cancel_tool_operations
 
     cancel_tool_operations(

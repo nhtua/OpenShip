@@ -1,6 +1,7 @@
 """Pydantic schemas for event API."""
 
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -16,8 +17,33 @@ from ..runs.schemas import (
 )
 
 
+class TaskDecisionRequestedEvent(BaseModel):
+    schema_version: Literal[1]
+    run_id: UUID
+    revision: int = Field(ge=0)
+    request_id: UUID
+    kind: Literal["plan_confirmation", "clarification", "configuration", "recovery"]
+    prompt: str = Field(min_length=1, max_length=10000)
+    expires_at: str
+
+
+class TaskDecisionResolvedEvent(BaseModel):
+    schema_version: Literal[1]
+    run_id: UUID
+    revision: int = Field(ge=0)
+    request_id: UUID
+    state: Literal["confirmed", "rejected", "answered", "expired", "cancelled"]
+
+
+TASK_DECISION_EVENT_SCHEMAS = {
+    "task.decision_requested": TaskDecisionRequestedEvent,
+    "task.decision_resolved": TaskDecisionResolvedEvent,
+}
+
+
 class EventInput(BaseModel):
     """Input for appending an event."""
+
     type: str = Field(..., min_length=1, max_length=100)
     payload: dict[str, Any] = Field(default_factory=dict)
     run_id: str | None = None
@@ -25,6 +51,7 @@ class EventInput(BaseModel):
 
 class EventRead(BaseModel):
     """Event as returned to client."""
+
     id: str
     conversation_id: str
     run_id: str | None
@@ -36,6 +63,7 @@ class EventRead(BaseModel):
 
 class MessageSummary(BaseModel):
     """Summary of a chat message."""
+
     id: str
     role: str
     content: str
@@ -45,6 +73,7 @@ class MessageSummary(BaseModel):
 
 class RunSummary(BaseModel):
     """Summary of a run. Only the public projection: no credential, no SDK setting."""
+
     id: str
     status: str
     attempt: int
@@ -65,6 +94,7 @@ class RunSummary(BaseModel):
 
 class SnapshotResponse(BaseModel):
     """Complete state snapshot for a conversation."""
+
     conversation_id: str
     project_id: str
     archived_at: str | None
@@ -79,6 +109,7 @@ class SnapshotResponse(BaseModel):
 
 class StreamResponse(BaseModel):
     """Stream of events after a sequence cursor."""
+
     conversation_id: str
     after_sequence: int
     events: list[EventRead]

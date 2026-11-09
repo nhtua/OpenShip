@@ -18,6 +18,7 @@ from .events.routes import router as events_router
 from .providers.routes import router as providers_router
 from .resources.routes import router as resources_router
 from .runs.routes import router as runs_router
+from .runs.tasks.routes import router as task_decisions_router
 from .workspace.project_routes import router as project_router
 from .workspace.routes import router as workspace_router
 
@@ -70,6 +71,7 @@ app.include_router(capabilities_router)
 app.include_router(chat_router)
 app.include_router(connectors_router)
 app.include_router(runs_router)
+app.include_router(task_decisions_router)
 app.include_router(workspace_router)
 app.include_router(project_router)
 app.include_router(events_router)

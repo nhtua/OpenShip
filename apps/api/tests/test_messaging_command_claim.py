@@ -195,9 +195,9 @@ def test_persisted_identity_mismatch_never_claims(mutation):
     "status,expected", [
         ("completed", "disposed"),
         ("waiting_connector", "disposed"),
-        ("waiting_plan", "disposed"),
-        ("waiting_input", "disposed"),
-        ("waiting_config", "disposed"),
+        ("waiting_plan", "reconcile_required"),
+        ("waiting_input", "reconcile_required"),
+        ("waiting_config", "reconcile_required"),
     ]
 )
 def test_non_executable_run_is_not_claimed(status, expected):

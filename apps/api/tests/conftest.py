@@ -141,6 +141,7 @@ def restore_transport_gates(request, setup_db):
         "test_messaging_executor.py",
         "test_messaging_maintenance.py",
         "test_messaging_outbox.py",
+        "test_task_wait_delivery.py",
     }:
         yield
         return

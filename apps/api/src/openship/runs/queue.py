@@ -194,6 +194,12 @@ def _claim_run_exact(
             return ClaimDecision("disposed", code="digest_mismatch")
     if job.dispatch_generation != generation:
         return ClaimDecision("disposed", code="obsolete_generation")
+    if run.status in {"waiting_plan", "waiting_input", "waiting_config"}:
+        from ..messaging.delivery import durable_task_wait
+
+        if not durable_task_wait(db, run, job):
+            return ClaimDecision("reconcile_required", code="task_wait_incomplete")
+        return ClaimDecision("disposed", code="run_not_executable")
     if run.status in {
         "completed",
         "failed",
@@ -201,9 +207,6 @@ def _claim_run_exact(
         "timed_out",
         "stale",
         "waiting_connector",
-        "waiting_plan",
-        "waiting_input",
-        "waiting_config",
     }:
         return ClaimDecision("disposed", code="run_not_executable")
     if not state.active:

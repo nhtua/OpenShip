@@ -756,6 +756,9 @@ class Worker:
                 logger.warning(f"Run {run_id} not found")
                 return False
 
+            if run.status in {"waiting_plan", "waiting_input", "waiting_config"}:
+                return False
+
             conv = (
                 job.query(Conversation)
                 .filter(Conversation.id == run.conversation_id)
