@@ -43,6 +43,11 @@
   },
   "managed_profiles": {
     "devops-shell": {
+      "label": "DevOps shell",
+      "description": "Offline DevOps utilities available through the Python sandbox entrypoint.",
+      "use_for": ["Inspecting infrastructure files", "Running packaged command-line utilities offline"],
+      "highlights": ["AWS, Azure and Google Cloud CLIs", "Terraform and Terragrunt"],
+      "limitations": ["No credentials or network access", "CLI packaging does not add a separate execution API"],
       "dockerfile": "deploy/sandbox/profiles/devops-shell/Dockerfile",
       "requirements_in": "deploy/sandbox/profiles/devops-shell/requirements.in",
       "requirements_lock": "deploy/sandbox/profiles/devops-shell/requirements.lock",
@@ -58,6 +63,11 @@
       "tools": ["aws", "gcloud", "terraform", "terragrunt"]
     },
     "iac-validation": {
+      "label": "IaC validation",
+      "description": "Local infrastructure configuration validation and diagram generation.",
+      "use_for": ["Checking infrastructure configuration", "Generating local diagrams"],
+      "highlights": ["TFLint", "Python diagram libraries"],
+      "limitations": ["Offline checks do not verify deployed infrastructure", "No credentials or network access"],
       "dockerfile": "deploy/sandbox/profiles/iac-validation/Dockerfile",
       "requirements_in": "deploy/sandbox/profiles/iac-validation/requirements.in",
       "requirements_lock": "deploy/sandbox/profiles/iac-validation/requirements.lock",
@@ -68,6 +78,11 @@
       "tools": ["tflint"]
     },
     "logs-data": {
+      "label": "Logs and data",
+      "description": "Offline data analysis and chart generation for logs and structured data.",
+      "use_for": ["Analyzing logs and tabular data", "Producing charts"],
+      "highlights": ["Python data analysis", "Headless charting"],
+      "limitations": ["Offline execution only", "Outputs must be declared and validated"],
       "dockerfile": "deploy/sandbox/profiles/logs-data/Dockerfile",
       "requirements_in": "deploy/sandbox/profiles/logs-data/requirements.in",
       "requirements_lock": "deploy/sandbox/profiles/logs-data/requirements.lock",
@@ -78,6 +93,11 @@
       "tools": []
     },
     "standard": {
+      "label": "Standard",
+      "description": "General Python, Node.js and mathematical utilities for offline tasks.",
+      "use_for": ["General-purpose computation", "Processing structured data"],
+      "highlights": ["Python and Node.js", "Mathematical libraries"],
+      "limitations": ["Python remains the sandbox execution entrypoint", "No credentials or network access"],
       "dockerfile": "deploy/sandbox/profiles/standard/Dockerfile",
       "requirements_in": "deploy/sandbox/profiles/standard/requirements.in",
       "requirements_lock": "deploy/sandbox/profiles/standard/requirements.lock",

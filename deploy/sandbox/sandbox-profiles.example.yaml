@@ -1,0 +1,6 @@
+# Empty bootstrap catalog. The host build workflow generates a separate local
+# snapshot after successful builds and smoke checks with operator consent.
+# Operators own enabled and extensions; metadata and runtime bindings are
+# generated. Never commit machine-local identities or credentials.
+schema_version: 1
+profiles: {}

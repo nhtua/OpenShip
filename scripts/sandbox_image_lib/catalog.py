@@ -103,6 +103,17 @@ def load_profile(root: Path, profile_id: str) -> ProfileSpec:
     )
 
 
+def load_metadata(root: Path, profile_id: str) -> dict:
+    """Project descriptive fields without adding them to recipe inputs."""
+    entry = _inventory(root).get("managed_profiles", {}).get(profile_id)
+    if entry is None:
+        raise ImageError(f"unknown sandbox profile: {profile_id}")
+    try:
+        return {key: entry[key] for key in ("label", "description", "use_for", "highlights", "limitations")}
+    except KeyError as exc:
+        raise ImageError(f"missing profile metadata for {profile_id}") from exc
+
+
 def resolve_recipe(root: Path, profile_id: str, platform: str) -> Recipe:
     images = _inventory(root)
     base_entry = images.get("managed_base")
