@@ -1,7 +1,7 @@
 ---
 type: spec
 summary: Outcome-driven agentic tasks with shared internal abilities, persistent Auto/Copilot modes, bounded repair, and locally mapped sandbox profiles.
-status: draft-review
+status: planning-authorized
 date: 2026-11-08
 ---
 
@@ -13,7 +13,7 @@ A user should describe a desired result, not supply every tool call. OpenShip mu
 
 This spec consolidates the conversationally agreed direction in [ideas](../../ideas.md#outcome-driven-reasoning-planning-and-continuous-execution) and [roadmap Phase 7A](../../roadmap.md#phase-7a--outcome-driven-agentic-planning-and-execution). The former Phase 7 is now **7B**; its saved-workflow increments are **7B.1/7B.2**. Later numbered phases are unchanged.
 
-**The written spec is not yet approved.** Agreed product decisions below are distinct from the proposed technical defaults in §12. Approval of this file permits drafting the implementation plan, not implementing the product. No code, migrations, image builds, stack recreation or live qualification is claimed here.
+**Planning authorized 2026-11-08:** After receiving this written spec, the user requested the [implementation plan](../plans/2026-11-08-phase7a-agentic-planning-and-execution.md). That authorizes planning from this spec, not product implementation. Agreed product decisions below remain distinct from §12's proposed technical defaults, carried into the plan as working defaults for review rather than claimed as separately approved decisions. The written plan and execution method still require user review. No code, migrations, image builds, stack recreation or live qualification is claimed here.
 
 ### Agreed decisions
 
@@ -278,7 +278,7 @@ class Contract(BaseModel):
 
 **Always:** validate proposals at runtime boundaries, preserve pinned identities, enforce cumulative budgets and current authority, write failure/recovery tests, update the active plan with verified evidence, and keep secrets out of checkpoints/events/artifacts/configuration.
 
-**Review first:** the written spec and P1–P8 defaults, then the implementation plan and execution method. The plan must specify migrations/cutover, safe YAML parsing and any direct parser dependency, activation/rollback eligibility, test fixtures and exact acceptance evidence. An incompatible runtime or broader authority change requires a revised design, not an incidental refactor.
+**Review first:** the [written implementation plan](../plans/2026-11-08-phase7a-agentic-planning-and-execution.md), including the carried-forward P1–P8 defaults, and select its execution method. The plan must specify migrations/cutover, safe YAML parsing and any direct parser dependency, activation/rollback eligibility, test fixtures and exact acceptance evidence. An incompatible runtime or broader authority change requires a revised design, not an incidental refactor.
 
 **Never:** implement product code before those reviews, install agent-selected packages, silently replay uncertain work, invent evidence, leak host/credential details into model metadata, bypass gateway checks, mutate saved workflow topology or claim that this document delivers Phase 7A/6C acceptance.
 
