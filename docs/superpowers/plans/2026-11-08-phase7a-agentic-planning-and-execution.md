@@ -200,17 +200,30 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
 
 **Interfaces:** Produces `TaskLimits`, `TaskContext`, `TaskPlan`, `TaskStep`, `TaskAssessment`, `TaskAction`, `TaskProgress`, `TaskDecisionCommand`, `VerificationReport`, `ExecutionConfigV5`. `ExecutionConfigV5` extends v4's maintained capability/connector/catalog fields and adds `task_context`, `profile_catalog`, `profile_catalog_digest`, `task_limits`; v4 remains decodable. `select_action(progress: TaskProgress, assessment: TaskAssessment|None, *, policy_allows: bool, budget_allows: bool) -> TaskAction` is deterministic and performs no inference or dispatch.
 
-- [ ] **1. Write failing contract/routing tests.** Include `test_plan_rejects_cycles_future_dependencies_duplicate_steps_and_unknown_capability`, `test_limits_and_missing_evidence_fail_closed`, `test_switch_does_not_infer_or_dispatch`, `test_old_execution_versions_decode_without_task_fields`. Pin:
+- [x] **1. Write failing contract/routing tests.** Include `test_plan_rejects_cycles_future_dependencies_duplicate_steps_and_unknown_capability`, `test_limits_and_missing_evidence_fail_closed`, `test_switch_does_not_infer_or_dispatch`, `test_old_execution_versions_decode_without_task_fields`. Pin:
   ```python
   assert TaskLimits().max_steps == 8 and TaskLimits().max_repairs_per_step == 2
   assert select_action(waiting_progress, None, policy_allows=True, budget_allows=True).kind == "wait"
   assert select_action(unverified_progress, None, policy_allows=True, budget_allows=True).kind != "finish"
   assert decode_execution_config(old_v4).schema_version == 4
   ```
-- [ ] **2. Run red:** `uv run pytest -q tests/test_task_contracts.py tests/test_task_routing.py` from `apps/api`.
-- [ ] **3. Define the schemas and transition table.** All public contracts have `schema_version=1` and strict/frozen fields. Step IDs are stable ≤64-character lowercase identifiers; ordered dependencies must point only to earlier steps. Each step declares intent, capability ref/profile choice where relevant, expected outputs and completion checks. Model-authored draft IDs/refs remain proposals until server validation. Assessment contains bounded public explanation/evidence refs, not private reasoning. Action literals: `assess`, `execute`, `repair`, `revise`, `wait`, `verify`, `finish`, `stop`; `wait` specifies decision/configuration kind. `TaskProgress` carries current revision, attempts, verified outputs, pending decision and cumulative counters; unknown/unsafe/denied states select stop/wait, never execute. `TaskContext` includes root/initiator/scope/mode and original intent constraints. Task limits copy P1–P3 exactly; lower operator ceilings may reduce them.
-- [ ] **4. Run green:** repeat tests and `uv run ruff check src/openship/runs/tasks src/openship/capabilities/contracts.py`. Expected: contract matrices pass, no added `agent_*` capability/tool IDs.
-- [ ] **5. Commit** with subject `feat: define versioned agentic task contracts` and record evidence.
+- [x] **2. Run red:** `uv run pytest -q tests/test_task_contracts.py tests/test_task_routing.py` from `apps/api`.
+- [x] **3. Define the schemas and transition table.** All public contracts have `schema_version=1` and strict/frozen fields. Step IDs are stable ≤64-character lowercase identifiers; ordered dependencies must point only to earlier steps. Each step declares intent, capability ref/profile choice where relevant, expected outputs and completion checks. Model-authored draft IDs/refs remain proposals until server validation. Assessment contains bounded public explanation/evidence refs, not private reasoning. Action literals: `assess`, `execute`, `repair`, `revise`, `wait`, `verify`, `finish`, `stop`; `wait` specifies decision/configuration kind. `TaskProgress` carries current revision, attempts, verified outputs, pending decision and cumulative counters; unknown/unsafe/denied states select stop/wait, never execute. `TaskContext` includes root/initiator/scope/mode and original intent constraints. Task limits copy P1–P3 exactly; lower operator ceilings may reduce them.
+- [x] **4. Run green:** repeat tests and `uv run ruff check src/openship/runs/tasks src/openship/capabilities/contracts.py`. Expected: contract matrices pass, no added `agent_*` capability/tool IDs.
+- [x] **5. Commit** with subject `feat: define versioned agentic task contracts` and record evidence.
+
+  Evidence: the red command failed during collection with
+  `ModuleNotFoundError: No module named 'src.openship.runs.tasks'` for both new
+  suites. Green: the named contract/routing suite passed 25 tests, and the
+  existing execution-contract plus profile-catalog regressions passed 39 tests;
+  Ruff passed on the new package, the modified contracts module and both test
+  files. v1–v4 decode to their original types and reject v5-only fields; v5
+  pins the task context, profile catalog digest and P1–P3 limits. No
+  `agent_reasoning`, `agent_planning`, `agent_tracking` or `agent_switch`
+  capability/tool IDs were added; the four remain runtime responsibilities.
+  `select_action` is synchronous and deterministic: it performs no inference,
+  dispatch, persistence or authority grant, and unverified or waiting progress
+  can never select `finish` or `execute` past a wait.
 
 ## Task 5: Enforce one profile-selecting Python execution path
 
