@@ -178,6 +178,18 @@ Do not run separate worktrees against the same stack/database/volumes without
 an explicit decision to share them. Preserve installation IDs and keys; never
 regenerate them merely to bypass an initialization failure.
 
+The dev web container mounts `/app` read-only and keeps `node_modules` in the
+`openship-dev_web_node_modules` volume, so pnpm's automatic install check is
+disabled there. After changing `apps/web/package.json` or `apps/web/pnpm-lock.yaml`
+(including by switching worktrees with different dependencies), recreate that
+volume so the image's locked install is used:
+
+```bash
+scripts/openship-stack -e dev stop
+docker volume rm openship-dev_web_node_modules
+scripts/openship-stack -e dev start
+```
+
 ## Native / custom local development
 
 Use this path when you want to run the API, worker, relay, and web client in

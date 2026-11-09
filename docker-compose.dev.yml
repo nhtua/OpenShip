@@ -76,6 +76,11 @@ services:
     command: ["pnpm", "run", "dev", "--host", "0.0.0.0"]
     environment:
       VITE_API_PROXY_TARGET: http://api:8000
+      # pnpm 11 defaults verify-deps-before-run to "install", but /app is
+      # mounted read-only and node_modules lives in a named volume, so the
+      # install can never succeed. Dependency changes require rebuilding this
+      # image and recreating the web_node_modules volume.
+      pnpm_config_verify_deps_before_run: "false"
       # Force polling where the host bind mount does not relay filesystem events.
       OPENSHIP_VITE_WATCH_POLLING: "1"
     # Clear the base Nginx mapping. The Vite port mapping lives in

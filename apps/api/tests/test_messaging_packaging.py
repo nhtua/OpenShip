@@ -217,6 +217,9 @@ def test_dev_override_preserves_native_reload_entry_points():
     assert "auto-restart" in development
     assert 'command: ["pnpm", "run", "dev", "--host", "0.0.0.0"]' in development
     assert "VITE_API_PROXY_TARGET: http://api:8000" in development
+    # The dev container mounts /app read-only, so pnpm's automatic install
+    # check can only fail; dependency refresh is a volume/image operation.
+    assert 'pnpm_config_verify_deps_before_run: "false"' in development
     assert "/app/node_modules" in development
     assert "!reset []" in development
     dev_ports = (ROOT / "docker-compose.dev-ports.yml").read_text()
