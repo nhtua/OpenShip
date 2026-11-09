@@ -224,20 +224,20 @@ def test_default_compose_renders_without_sandbox_runtime_settings():
         if name.startswith("OPENSHIP_SANDBOX_"):
             del env[name]
     example = ROOT / "deploy/sandbox/sandbox-profiles.example.yaml"
-    env["OPENSHIP_SANDBOX_PROFILES_FILE"] = str(example)
+    env["SANDBOX_PROFILES_FILE"] = str(example)
     result = subprocess.run(
         ["docker", "compose", "-f", str(ROOT / "docker-compose.yml"), "config", "--quiet"],
         cwd=ROOT, env=env, capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr
 
-    direct = {**env, "OPENSHIP_SANDBOX_PROFILES_FILE": ""}
+    direct = {**env, "SANDBOX_PROFILES_FILE": ""}
     missing = subprocess.run(
         ["docker", "compose", "-f", str(ROOT / "docker-compose.yml"), "config", "--quiet"],
         cwd=ROOT, env=direct, capture_output=True, text=True, check=False,
     )
     assert missing.returncode != 0
-    assert "OPENSHIP_SANDBOX_PROFILES_FILE" in missing.stderr
+    assert "SANDBOX_PROFILES_FILE" in missing.stderr
 
 
 def test_manager_rejects_missing_key_before_starting():

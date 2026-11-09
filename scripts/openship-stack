@@ -229,7 +229,7 @@ compose() {
     if [[ -n "$profiles_source" ]]; then
       # Host-only interpolation: the API and worker mount this exact source at
       # the fixed in-container target. It is never a container setting.
-      export OPENSHIP_SANDBOX_PROFILES_FILE="$profiles_source"
+      export SANDBOX_PROFILES_FILE="$profiles_source"
     fi
     if ((SANDBOX)); then
       # Keep the gateway key out of .env and Git: read the protected file per

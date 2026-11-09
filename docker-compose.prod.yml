@@ -126,7 +126,7 @@ services:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
       - type: bind
-        source: "${OPENSHIP_SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+        source: "${SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
         target: /etc/openship/sandbox-profiles.yaml
         read_only: true
         bind:
@@ -172,7 +172,7 @@ services:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
       - type: bind
-        source: "${OPENSHIP_SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+        source: "${SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
         target: /etc/openship/sandbox-profiles.yaml
         read_only: true
         bind:

@@ -102,14 +102,22 @@ def eligible_profiles(
 
 
 def profile_readiness(
-    catalog: ProfileCatalog, permitted: frozenset[ProfileId]
+    catalog: ProfileCatalog,
+    permitted: frozenset[ProfileId],
+    *,
+    selected: ProfileId | None = None,
 ) -> dict[str, object]:
-    """Secret-free readiness projection: digest and eligible IDs only."""
+    """Secret-free readiness projection: digest and eligible IDs only.
+
+    When ``selected`` is supplied, overall readiness also requires that exact
+    profile to be eligible; another eligible managed profile is not enough.
+    """
     eligible = eligible_profiles(catalog, permitted)
+    ready = bool(eligible) if selected is None else selected in eligible
     return {
         "digest": catalog_digest(catalog),
         "eligible": list(eligible),
-        "ready": bool(eligible),
+        "ready": ready,
     }
 
 

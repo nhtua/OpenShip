@@ -115,6 +115,7 @@ async def readiness_check():
     from fastapi import Response as FastAPIResponse
     from sqlalchemy import func, text
 
+    from .config import settings
     from .database.session import SessionLocal
     from .messaging.health import check_worker_health
     from .messaging.models import MessageTransportState
@@ -213,7 +214,9 @@ async def readiness_check():
                 "worker_health": worker_health_status,
             },
             "sandbox_profiles": profile_readiness(
-                runtime_catalog(), MANAGED_PROFILE_IDS
+                runtime_catalog(),
+                MANAGED_PROFILE_IDS,
+                selected=settings.sandbox_profile_id,
             ),
         }
     )

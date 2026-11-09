@@ -24,10 +24,14 @@ from sandbox_image_lib.config import resolve_compose_source
 from sandbox_image_lib.profiles import preflight_mapping, read_catalog
 
 from src.openship.capabilities.contracts import canonical_digest
+from src.openship.config import settings
+from src.openship.execution.availability import sandbox_runtime_ready
 from src.openship.sandboxes.profile_schema import decode_catalog, encode_catalog
 from src.openship.sandboxes.profiles import (
     DEFAULT_PROFILE_PATH,
+    MANAGED_PROFILE_IDS,
     eligible_profiles,
+    install_runtime_catalog,
     load_runtime_catalog,
     profile_readiness,
     reset_runtime_catalog,
@@ -128,7 +132,7 @@ def test_default_and_custom_sources_share_fixed_readonly_target(tmp_path):
         assert worker_mount["bind"]["create_host_path"] is False
         assert api_mount["type"] == worker_mount["type"] == "bind"
         assert api_mount["source"] == worker_mount["source"]
-        assert "OPENSHIP_SANDBOX_PROFILES_FILE" in api_mount["source"]
+        assert api_mount["source"].startswith("${SANDBOX_PROFILES_FILE:")
 
         compose = _load(compose_path)
         for service in ("api", "worker"):
@@ -334,6 +338,57 @@ def test_runtime_catalog_is_bounded_and_eligibility_is_deterministic(tmp_path, m
     assert DEFAULT_PROFILE_PATH == Path("/etc/openship/sandbox-profiles.yaml")
 
 
+def test_direct_compose_interpolates_the_profile_selector_only():
+    expected = "${SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+    for compose_name in ("docker-compose.yml", "docker-compose.prod.yml"):
+        compose = _load(ROOT / compose_name)
+        for service in ("api", "worker"):
+            mount = _profile_mount(ROOT / compose_name, service)
+            assert mount["source"] == expected
+            assert "OPENSHIP_SANDBOX_PROFILES_FILE" not in mount["source"]
+            environment = compose["services"][service]["environment"]
+            assert "SANDBOX_PROFILES_FILE" not in environment
+            assert "OPENSHIP_SANDBOX_PROFILES_FILE" not in environment
+
+
+def test_readiness_requires_the_selected_profile_even_when_another_is_eligible(
+    tmp_path, monkeypatch
+):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    root = catalog["root"]
+    identity = f"docker@unix://{os.environ['OPENSHIP_SANDBOX_ENGINE_SOCKET']}@{PLATFORM}"
+    image_id = "sha256:" + "d" * 64
+    destination = root / "deploy/sandbox/sandbox-profiles.yaml"
+    destination.write_bytes(_catalog_bytes(root, "logs-data", identity, image_id))
+    loaded = load_runtime_catalog(destination)
+    key = tmp_path / "sandbox-key"
+    key.write_text("secret\n")
+
+    monkeypatch.setattr(settings, "sandbox_enabled", True)
+    monkeypatch.setattr(settings, "sandbox_endpoint", "http://opensandbox:8080")
+    monkeypatch.setattr(settings, "sandbox_key_file", key)
+    try:
+        install_runtime_catalog(loaded)
+        assert eligible_profiles(loaded, MANAGED_PROFILE_IDS) == ("logs-data",)
+
+        monkeypatch.setattr(settings, "sandbox_profile_id", "standard")
+        assert sandbox_runtime_ready() is False
+        projection = profile_readiness(
+            loaded, MANAGED_PROFILE_IDS, selected=settings.sandbox_profile_id
+        )
+        assert projection["eligible"] == ["logs-data"]
+        assert projection["ready"] is False
+
+        monkeypatch.setattr(settings, "sandbox_profile_id", "logs-data")
+        assert sandbox_runtime_ready() is True
+        projection = profile_readiness(
+            loaded, MANAGED_PROFILE_IDS, selected=settings.sandbox_profile_id
+        )
+        assert projection["ready"] is True
+    finally:
+        reset_runtime_catalog()
+
+
 def test_stack_exports_resolved_source_and_refuses_missing_explicit_override(
     tmp_path, monkeypatch
 ):
@@ -359,7 +414,7 @@ def test_stack_exports_resolved_source_and_refuses_missing_explicit_override(
     docker.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = compose ] && [ "$2" = version ]; then echo 2.30.0; exit 0; fi\n'
-        f'printf \'%s\\n\' "$OPENSHIP_SANDBOX_PROFILES_FILE" >> "{compose_log}"\n'
+        f'printf \'%s\\n\' "$SANDBOX_PROFILES_FILE" >> "{compose_log}"\n'
         "exit 0\n"
     )
     docker.chmod(0o755)

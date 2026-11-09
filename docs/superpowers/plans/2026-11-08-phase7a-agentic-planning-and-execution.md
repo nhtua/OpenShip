@@ -185,7 +185,10 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
   validated snapshot and inspects each enabled entry's immutable image ID
   against the manager engine identity; legacy `python311` remains on its
   separate path. `/ready` exposes only the catalog digest and eligible profile
-  IDs, never engine sockets or image IDs. **Checkpoint 1:** fixture Compose
+  IDs, never engine sockets or image IDs, and reports ready only when the
+  configured `SANDBOX_PROFILE_ID` itself is eligible. Compose interpolates the
+  public `SANDBOX_PROFILES_FILE` selector without forwarding it into any
+  service environment. **Checkpoint 1:** fixture Compose
   parsing establishes the declared mounts, not real mount bytes; actual
   API/worker byte equality remains Task 17 and is not claimed here.
 
