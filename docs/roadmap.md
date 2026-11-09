@@ -2,7 +2,7 @@
 type: roadmap
 summary: Cumulative delivery phases that establish shared foundations with one working use case before expanding capabilities and deployment scale.
 status: proposed
-date: 2026-11-07
+date: 2026-11-08
 ---
 
 # OpenShip Delivery Roadmap
@@ -11,7 +11,9 @@ Build OpenShip through **small, end-to-end milestones**, rather than finishing e
 
 This roadmap is based on the [OpenShip Harness Architecture](./architects.md) in PR #18, at architecture revision `9fe9f37`, and was reviewed after delivery of Phases 1–3.
 
-**Delivery baseline:** The user confirmed **Phases 1–5 complete**, **6A implemented** (PR #31 at `5fe6e03`), and **6B complete** (PR #32 at `60f0917`). Earlier descriptions/qualification records retain their historical evidence scope, not new deployment guarantees; the 6B operations record still distinguishes the verified chat-directed Python journey from pending analysis-specific journeys. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **6C's implementation and local image validation are complete; dev-stack recreation, the live `logs-data` chart journey and user acceptance remain pending; Phases 7–21 remain pending delivery work.** The Phase 10B two-role direction is an agreed design, not implementation or acceptance.
+**Delivery baseline:** The user confirmed **Phases 1–5 complete**, **6A implemented** (PR #31 at `5fe6e03`), and **6B complete** (PR #32 at `60f0917`). Earlier descriptions/qualification records retain their historical evidence scope, not new deployment guarantees; the 6B operations record still distinguishes the verified chat-directed Python journey from pending analysis-specific journeys. The [provider support matrix](./provider-support.md) remains authoritative for provider/model qualification claims. **6C's implementation and local image validation are complete; dev-stack recreation, the live `logs-data` chart journey and user acceptance remain pending; Phases 7A, 7B and 8–21 remain pending delivery work.** The Phase 10B two-role direction is an agreed design, not implementation or acceptance.
+
+**Phase 7 split (requested 2026-11-08):** Add **7A — Outcome-Driven Agentic Planning and Execution** before the former Phase 7, now **7B — Typed Reusable Workflow Execution**. The former 7A/7B acceptance units become **7B.1/7B.2**. Historical references to Phase 7's saved workflows refer to 7B; later numbered phases are not renumbered. The new 7A requirements are proposals for collaborative spec/plan review, not an approved implementation design.
 
 **Accepted forward architecture change:** NATS with JetStream is the main internal message broker. [Architecture §5](./architects.md#nats-messaging-foundation) defines routing, request/reply, and durable delivery. Phase **6A** introduces that transport and concurrent chat/SSE delivery; **6B** retains the generated-code/artifact milestone. This change applies from Phase 6 onward and does not rewrite or reopen Phases 1–5. Broker selection is accepted; implementation details and phase acceptance still require their normal review.
 
@@ -65,17 +67,17 @@ These are responsibility boundaries, not a requirement to implement future funct
 
 | Foundation | First working implementation | Later expansion through the same contract |
 | --- | --- | --- |
-| Durable execution, HTTP commands, semantic events, provider pinning | Delivered in 2–3 | Tools in 4, workflow steps in 7, waits in 8, triggers in 13, composition in 15 |
+| Durable execution, HTTP commands, semantic events, provider pinning | Delivered in 2–3 | Tools in 4, agentic task continuation in 7A, saved workflow steps in 7B, waits in 8, triggers in 13, composition in 15 |
 | Gateway authorization context and capability identity/version/digest | 4: current project-owner rules and one maintained tool | Connector operations in 5, imports/discovery in 11, MCP in 12, team roles in 20 |
 | Operation identity, fenced dispatch, bounded result publication | 4: one maintained read operation | Mutation reconciliation and conflict control in 10, Git/Terraform in 16–17 |
 | Artifact identity, ownership, immutable versions, bounded transfer, storage interface | 4: uploaded files and search results on durable local storage | Generated code/previews in 6, plans in 16, shared storage when multi-host operation requires it |
-| Model/tool conversation loop | 4: one tool-capable provider/profile, one tool, bounded calls | Additional qualified profiles, discovery in 11, MCP in 12, agent steps in 15 |
+| Model/tool conversation loop | 4: one tool-capable provider/profile, one tool, bounded calls | Outcome-driven planning/verification and execution-context selection in 7A, discovery in 11, MCP in 12, agent steps in 15; each provider/profile requires qualification |
 | Connector credentials, scoped target references, timestamped observations | 5: one staging target and one read operation | Mutation in 10, Terraform bindings in 16–17, drift and further clouds in 18 |
-| Workflow revision, step identity, compiler/runtime compatibility | 7: one sequential saved workflow | Wait nodes in 8, authoring in 9, additional node types in 15 |
+| Workflow revision, step identity, compiler/runtime compatibility | 7B: one sequential saved workflow | Wait nodes in 8, authoring in 9, additional node types in 15 |
 | Decision identity, eligible actor, digest binding, atomic consumption | 8: one durable input/approval request | Concrete mutation approval in 10, Terraform approval in 17, other clients in 19 |
 | External-event inbox, trigger identity, scoped initiator, admission deduplication | 13: one signed webhook and saved workflow | Schedules in 13B, alarm/broker adapters in 14, other sources in 19 |
 | Safe deployment and recovery | 2–3 baseline; extend whenever a store, worker, or privilege is added | Team and remote qualification in 20, Kubernetes packaging/scaling in 21 |
-| NATS internal commands/events, correlated responses, concurrent worker intake | 6A: migrate delivered chat/background dispatch and SSE delivery | Saved workflows/waits in 7–8, external admission in 13, source adapters in 14/19, operations/scaling in 20–21 |
+| NATS internal commands/events, correlated responses, concurrent worker intake | 6A: migrate delivered chat/background dispatch and SSE delivery | Agentic continuation in 7A, saved workflows/waits in 7B–8, external admission in 13, source adapters in 14/19, operations/scaling in 20–21 |
 
 ## 2. Roadmap Overview
 
@@ -83,7 +85,7 @@ These are responsibility boundaries, not a requirement to implement future funct
 
 Dependencies identify prerequisites; they do not require every preceding phase to be complete.
 
-Keep the phase IDs stable for references. Phases 4 onward are dependency-ordered branches, not a requirement to finish every lower number before starting a ready increment. In particular, Phase 20 can qualify the first complete mutation journey after Phase 10; it need not wait for more clouds, brokers, or client adapters. Each subsequently enabled feature must pass the relevant deployment checks before remote use.
+Keep the phase IDs stable except for the explicit Phase 7 split above. Phases 4 onward are dependency-ordered branches, not a requirement to finish every lower number before starting a ready increment. In particular, Phase 20 can qualify the first complete mutation journey after Phase 10; it need not wait for more clouds, brokers, or client adapters. Each subsequently enabled feature must pass the relevant deployment checks before remote use.
 
 | Phase | Working milestone | Dependencies | Size |
 | --- | --- | --- | --- |
@@ -93,20 +95,21 @@ Keep the phase IDs stable for references. Phases 4 onward are dependency-ordered
 | 4 | Trusted search and persistent conversation files — implemented | 3 | M per increment |
 | 5 | OpenShip inspects one real cloud environment safely | 4 | S–M |
 | 6 | NATS carries concurrent chat/events, generated code produces controlled artifacts, then prebuilt images expand offline tooling | 5; 6B builds on 6A; 6C builds on 6B | M per increment |
-| 7 | A saved, typed workflow can be run repeatedly | 4, 6 | M per increment |
-| 8 | Workflows wait for input or approval across restarts | 7 | S–M |
-| 9 | Conversation becomes a reviewed, reusable workflow | 5, 7, 8 | M |
+| 7A | A request becomes a tool-aware plan that the agent executes through a verified outcome | 4, 6A, 6B; 6C for the expanded execution profiles | M per increment |
+| 7B | A saved, typed workflow can be run repeatedly | 4, 6, 7A | M per increment |
+| 8 | Workflows wait for input or approval across restarts | 7B | S–M |
+| 9 | Conversation becomes a reviewed, reusable workflow | 5, 7B, 8 | M |
 | 10 | One approved change, then scoped temporary maintenance authority | 5, 8, 9; 10B builds on 10A | M per increment |
-| 11 | Relevant tools and skills are discovered progressively | 4, 7, 9 | M per increment |
+| 11 | Relevant tools and skills are discovered progressively | 4, 7B, 9 | M per increment |
 | 12 | Local and remote MCP tools use the same policy boundary | 4, 5, 11 | M |
-| 13 | A webhook or schedule starts a durable read-only workflow | 7, 8 | M per increment |
+| 13 | A webhook or schedule starts a durable read-only workflow | 7B, 8 | M per increment |
 | 14 | A cloud alarm or broker message drives investigation | 5, 13 | S–M per adapter |
-| 15 | Workflows support bounded branching and composition | 7, 8, 10 | M per increment |
+| 15 | Workflows support bounded branching and composition | 7B, 8, 10 | M per increment |
 | 16 | Requirements produce reviewed Git artifacts and Terraform plans | 5, 6, 9, 10 | M |
 | 17 | The exact approved Terraform plan provisions tracked resources | 8, 10, 16 | M |
 | 18 | Resource drift and additional clouds are supported | 5, 17 | M per increment |
 | 19 | Chat, email, file, and state-change adapters reuse automation | 8, 11, 13; source-specific prerequisites below | S per adapter |
-| 20 | A team can operate and recover a remote installation | 4, 5, 7, 8, 10; all features enabled in that deployment | M per qualification gate |
+| 20 | A team can operate and recover a remote installation | 4, 5, 7B, 8, 10; all features enabled in that deployment | M per qualification gate |
 | 21 | The qualified product runs and scales on Kubernetes | 20 | M per qualification gate |
 
 ### Wave A — A Small, Usable Harness
@@ -276,7 +279,7 @@ historical data migrations remain part of the application.
 
 **Milestones:** **6A:** "Several conversations progress through NATS without dispatch/event polling, and worker responses reach the correct client." **6B:** "OpenShip can write and run a small analysis program, then show me its outputs." **6C:** "I can build and select a prebuilt sandbox image with the libraries and CLI tools my offline task needs."
 
-**Build on:** The delivered Phases 1–5, preserving their HTTP commands, conversation history, pinned models/connectors, cancellation, ownership/fences, checkpoints, and event identities. The [accepted NATS direction](./ideas.md#nats-messaging-foundation) changes internal transport; it does not introduce a second runtime or permission path. Phase IDs 7–21 stay stable, and all later execution/event work builds on 6A.
+**Build on:** The delivered Phases 1–5, preserving their HTTP commands, conversation history, pinned models/connectors, cancellation, ownership/fences, checkpoints, and event identities. The [accepted NATS direction](./ideas.md#nats-messaging-foundation) changes internal transport; it does not introduce a second runtime or permission path. All later execution/event work builds on 6A; the explicit Phase 7 split does not renumber Phases 8–21.
 
 **Acceptance units:** **6B** builds on merged **6A** and carries forward applicable regressions. **6C** extends 6B's image packaging without changing execution authority or interfaces. Each is a usable increment with its own evidence and user decision; neither image expansion nor the 6B scope reset reopens 6A deployment qualification.
 
@@ -321,7 +324,7 @@ historical data migrations remain part of the application.
 - Save accepted output refs and use them in the next step. Offer **A: rerun the interrupted step using saved prior outputs**, or **B: rerun from the beginning as a new root run**. Neither restart nor broker redelivery silently reruns sandbox code.
 - Preserve credential-free execution, existing authorization/quotas/fencing, authorized downloads and escaped previews. Provider configuration owns network/runtime controls.
 
-Start with one credential-free Python standard-library profile and a fixed analysis journey in the existing runtime, not Phase 7's saved-workflow engine. Mutable logical files/editor/history, additional runtimes, dedicated qualification infrastructure, provider security certification and production/load matrices are deferred.
+Start with one credential-free Python standard-library profile and a fixed analysis journey in the existing runtime, not Phase 7B's saved-workflow engine. Mutable logical files/editor/history, additional runtimes, dedicated qualification infrastructure, provider security certification and production/load matrices are deferred.
 
 **User demonstration:** Upload deployment logs, generate/run a parser, validate and retain `summary.json`/`report.txt`, and use them in the answer. Show compatible sandbox reuse and both explicit resume choices.
 
@@ -358,17 +361,65 @@ Start with one credential-free Python standard-library profile and a fixed analy
 - Packaging/configuration regressions pass; legacy profile identities remain unchanged. No mount, network, credential, lifecycle, execution API or UI behavior changes are introduced.
 - Operator instructions distinguish image builds from service recreation and list limitations such as absent provider/module/plugin bundles. Live dev-stack testing and user acceptance are recorded separately from image smoke checks.
 
-**Deferred, not rejected:** Repository checkout and directory mounting/staging, writable workflow workspaces, per-task profile selection, a first-class shell tool, network-enabled execution, scoped cloud credentials, connected Terraform planning/apply, and their approval/UI flows. These remain future design options subject to the relevant authorization and execution controls; installing their binaries does not enable them in 6C.
+**Deferred, not rejected:** Repository checkout and directory mounting/staging, writable workflow workspaces, per-task profile selection, a first-class shell tool, network-enabled execution, scoped cloud credentials, connected Terraform planning/apply, and their approval/UI flows. Phase 7A now proposes per-task selection of configured profiles through the existing execution boundary; it does not enable the other deferred capabilities. Installing binaries does not enable them in 6C.
 
-### Wave C — Repeatable, Reviewed Workflows
+### Wave C — Agentic Tasks and Repeatable, Reviewed Workflows
 
-#### Phase 7 — Typed Reusable Workflow Execution
+#### Phase 7A — Outcome-Driven Agentic Planning and Execution
+
+**Status:** Pending implementation; conversational design direction agreed 2026-11-08. The [written spec](./superpowers/specs/2026-11-08-phase7a-agentic-planning-and-execution-design.md) is drafted for user review, including explicitly proposed technical defaults. Approval of that spec precedes implementation planning; neither an implementation plan nor product changes are approved yet. See the [related idea](./ideas.md#outcome-driven-reasoning-planning-and-continuous-execution).
+
+**Milestone:** "I describe the result I want; OpenShip clarifies what matters, presents a practical plan, and carries it through without making me prompt every tool call."
+
+**Problem:** The reported weather-chart request stops after `download_file` instead of continuing through analysis, generated Python, sandbox execution and chart delivery. Available tools, four packaged sandbox profiles and provider reasoning support do not by themselves provide reliable task orchestration. This phase extends the existing loop with explicit planning, progress and outcome verification; it is not merely a reasoning-model toggle or a saved-workflow compiler.
+
+**Build on:** Phase 4's model/tool loop, gateway and conversation artifacts; 6A's durable runtime, NATS commands/events, ownership and cancellation; 6B's Python/artifact execution and explicit interrupted-execution resume choices; and 6C's prebuilt images for expanded profile selection. Preserve provider/connector pinning, current enablement policy, authorization and exact operation/artifact identities. No second scheduler, chat runtime or permission path.
+
+**Build**
+
+- Interpret the user's desired outcome and define observable completion criteria. Ask focused questions when missing information materially changes the answer; surface unsupported requests or missing capabilities/configuration instead of inventing them.
+- Create a concise ordered plan in conversation/run context: steps, dependencies, relevant permitted tools/available skills, execution context and expected outputs. No required plan file, Git persistence, reusable JSON workflow revision or new skill-import/discovery subsystem. Phase 11 remains responsible for portable skills and progressive discovery.
+- Present the plan and a concise approach explanation, not private model reasoning. Support **Copilot** (default: wait for the user's plan confirmation before executing) and **Auto** (show the plan, then execute without a separate plan-confirmation turn). Both retain clarification, cancellation, policy and operation-specific approval controls; Auto does not grant broader authority.
+- Provide an Auto/Copilot selector in Chat UI with a server-side account-level preference restored across reloads/sign-ins/browsers. Capture the selected mode for each new task; later preference changes affect subsequent tasks only, never an active/waiting run or its pending confirmation. Copilot confirmation binds the exact task/plan revision and eligible actor, persists waiting state while releasing execution capacity, and resumes through authorized idempotent commands. Revisions invalidate prior confirmation; stale/repeated/ambiguous replies and selecting Auto cannot release another plan. Ordinary informational chat needs no task-plan confirmation. Establish this minimal contract without a circular dependency on Phase 8's later general durable decision nodes; confirmation is not cloud authority or mutation approval.
+- Follow the current plan through a bounded **plan → act → observe → verify → continue** loop. Pass exact retained results/artifact references into dependent steps, show progress, and do not finish simply because one tool returned or the model emitted prose. Completion requires checking the requested deliverable, not just a successful download or zero exit code.
+- Support agreed bounded self-repair after a known failed step: revisit relevant inputs/outputs/errors, reason about the failure and propose an implementation-level correction before another admitted attempt. Preserve the intended outcome, selected data and current authority; show repairs in progress and rerun normal validation. Stop on uncertain execution, missing authority, cancellation, no progress or exhausted budgets; never turn 6B's explicit interruption recovery into blind replay.
+- Keep necessary plan changes visible. Do not silently skip, reorder or replace reviewed steps, change requested outputs or broaden authority. Material changes produce a revised plan and renewed confirmation in Copilot; Auto remains within the original request and existing authority. Define exact repair/retry budgets, allowed revisions and no-progress rules in the spec. A saved workflow's reviewed graph remains fixed unless a later authoring revision changes it.
+- Implement the agreed shared internal abilities as typed runtime-controlled stages: `agent_reasoning` (interpret context/evidence and diagnose), `agent_planning` (plan/draft revisions), `agent_tracking` (verified step/attempt/evidence state) and `agent_switch` (validated next-action routing). These responsibilities are not four optional model-selected meta-tools or independent nested agents. Invoke reasoning again when observations/failures need interpretation, not solely before the first plan. Deterministic tracking/routing need no model call; logical decomposition must not force four inference calls per step. Keep model proposals separate from runtime-authorized transitions, with all inference/repairs sharing run budgets and existing gateway/operation records. Reuse these contracts in saved workflows and later declared branch/agent nodes without building a second workflow engine. Exact schemas remain subject to written-spec review; no implementation is claimed.
+- Use one execution tool with a validated `profile_id` selector, not four wrappers. Make the four 6C contexts (`logs-data`, `iac-validation`, `standard`, `devops-shell`) understandable through purpose metadata and selectable where configured, enabled and ready. Bind selection to operator-approved runtime/dependency identities and sandbox compatibility; never accept model-chosen image names, build images from a tool call or imply that installed CLIs authorize cloud actions.
+- Map each enabled profile to its image reference and dependency identity in an operator-owned YAML file, without a container registry. Extend `sandbox-images build PROFILE|--all` to ask interactively whether to write `deploy/sandbox/sandbox-profiles.yaml`, or write without prompting with explicit `--overwrite-profiles`. Update successfully built/validated profiles while preserving other existing entries/operator customizations; the flag authorizes this update, not whole-map regeneration or removal of unrelated profiles. Reuse validated local build records; do not add a separate export command or require manual tag discovery. Add `/deploy/sandbox/sandbox-profiles.yaml` to `.gitignore` because resolved image IDs are installation-specific, even when build-input tags match. Specify noninteractive behavior and custom-field ownership within rebuilt entries before implementation; never publish a failed/unverified build as a ready profile.
+- Maintain each selectable profile's purpose metadata, task examples, installed-tool/library highlights and limitations in the tracked `deploy/sandbox/images.json` `managed_profiles` catalog. The build command projects metadata into the generated local YAML alongside each runtime binding; the runtime reads that mounted snapshot rather than needing another catalog mount. The model sees bounded descriptions of permitted ready profiles through the execution tool, not image/host details or a separately hardcoded prompt catalog. Exact package versions remain sourced from locks. Descriptions cannot authorize execution or override enforced runtime/policy controls. This metadata direction is agreed; exact schema/snapshot compatibility checks still need specification.
+- In `docker-compose.yml`, use host-side `SANDBOX_PROFILES_FILE` to choose the bind-mount source, defaulting to `./deploy/sandbox/sandbox-profiles.yaml`. Mount read-only at fixed container path `/etc/openship/sandbox-profiles.yaml` for the API/runtime services that use it. A host override changes only the source, never the container lookup path. Prevent missing-source directory creation, give actionable enabled-sandbox setup errors and preserve sandbox-disabled startup. Define custom-host-path handling by the build command and container recreation after file replacement in the spec. Images must exist on the manager's serving engine; validate readiness and pin the resolved runtime identity for dispatch. A build-input fingerprint is not a registry manifest digest or proof of an image on another engine.
+- Retain offline, credential-free generated-code execution and bounded maintained downloads. Stage exact downloaded artifacts into the selected sandbox and publish only declared, validated outputs through existing access controls. No sandbox internet access, runtime dependency installation, new shell API or credential handoff is implied.
+- Stop with a truthful outcome on completion, clarification/approval/configuration need, unrecoverable failure, cancellation, or enforced model/tool/time/output/no-progress budgets. Preserve minimal plan/progress in existing run/checkpoint/event mechanisms for safe recovery; no mandatory plan-file artifact. Browser disconnect is not task completion. Restart/redelivery must not silently replay sandbox code or uncertain external operations.
+
+**User demonstration:** Give one outcome-level request using a controlled valid weather JSON URL, with a fixture defining units, dates and grouping: "Draw a bar chart of average temperature in London from this data." Without subsequent programming instructions, OpenShip presents a plan, downloads/inspects the data, generates and runs suitable Python in `logs-data`, validates/retains the chart and computed values, and presents them with source and aggregation details. Demonstrate default Copilot with one plan confirmation—not per-step prompting—then Auto with no separate plan-confirmation turn; reload/reopen Chat UI to verify that the selected mode persists. Repeat with the deliberately non-existent example URL to demonstrate an honest fetch blocker, not fabricated data or a false completion.
+
+**Exit gates**
+
+- The complete weather-chart journey succeeds from one outcome-level request on at least one explicitly qualified provider/profile. Independently computed expected averages match the retained values; the image is a valid retained artifact with the intended labels, units and grouping. A download-only response fails acceptance.
+- A second installed-tool task with a different input shape demonstrates that the agent coordinates steps rather than recognizing only a hardcoded weather recipe. Ambiguous aggregation or missing material inputs produce targeted clarification before the affected execution.
+- Every exposed sandbox profile has accurate purpose/readiness metadata and a representative offline execution check. A charting request selects `logs-data` from its declared capabilities rather than a weather-specific routing rule. Model-visible summaries and actual registered profile IDs stay consistent; descriptions do not make unavailable libraries/runtimes supported. Disabled, unavailable, incompatible or unauthorized profiles are blocked; changing a profile cannot reuse an incompatible sandbox or broaden authority. Validated selector behavior and legacy runtime compatibility are tested.
+- The local build → profile/image mapping → runtime selection path works without a registry or undocumented tag-discovery steps. Interactive consent/decline, `--overwrite-profiles`, partial builds and noninteractive invocation follow the specified write policy; failed builds cannot enable an unverified profile. The generated default YAML is ignored by Git. Default and custom host paths mount read-only at the same fixed container target; a missing source never becomes a directory, and sandbox-disabled startup still works. Malformed/unknown mappings, missing images, moved tags, changed dependency identities and wrong-engine/platform records cannot silently enable a different runtime. Configuration changes do not reinterpret the identity already pinned for an admitted execution.
+- Missing/invalid URLs, malformed data, denied downloads, missing libraries, tool errors and invalid/missing outputs yield a bounded repair or actionable blocked/failed outcome. No invented tool IDs, substitute sources, dependencies, observations or success claims. Untrusted downloaded content cannot rewrite the plan or gateway policy.
+- A known failed-step fixture demonstrates evidence-informed diagnosis, a bounded correction and successful revalidation without per-step user debugging prompts. Repeated ineffective repairs stop within the declared budgets. Uncertain/interrupted dispatch is not classified as an ordinary retryable failure. Reasoning/tracking/routing contracts reject unsupported next actions, fabricated completion and stale plan/step references; omitting a model-requested tracking/switch call cannot skip mandatory runtime progression.
+- Progress and final results distinguish completed, pending and blocked work with evidence-linked artifacts. Repeated no-progress actions and budget exhaustion terminate visibly; cancellation prevents new dispatches. Plain chat and applicable earlier tool/artifact journeys remain intact.
+- Disconnect/reconnect preserves truthful progress and authorized results. Worker restart, broker redelivery and explicit resume retain completed outputs without silently repeating dispatched code; applicable 6B A/B resume and operation-fencing regressions pass.
+- With no saved selection, Copilot is the default. The Chat UI changes/restores the account-level value across reloads/sign-ins/browsers without cross-user leakage or false save success. Both modes pass the same outcome/policy tests; missing/invalid preference state cannot silently choose Auto. New tasks capture the selected mode, while existing active/waiting tasks retain theirs despite later preference changes.
+- In Copilot, only the intended actor's response to the exact current plan can release execution; rejection, revision, cancellation, stale/repeated responses and restart cannot approve or duplicate work accidentally. Changing the mode preference is not a confirmation response. This remains separate from later concrete mutation approval.
+
+**Not yet:** Saved reusable workflows (7B), freeform-to-typed workflow authoring (9), unrestricted replanning, unbounded autonomy, parallel/subagent orchestration (15), portable skill/package discovery (11), general durable approval nodes (8), cloud mutation authority (10), networked/credentialed generated code or connected Terraform (16–17). Internal plan/execution sequencing may use existing LangGraph facilities; these exclusions concern user-authored reusable graph features, not a ban on implementing the agent loop.
+
+**Written-spec review:** Review the [spec](./superpowers/specs/2026-11-08-phase7a-agentic-planning-and-execution-design.md), especially its P1–P8 proposed defaults for budgets/expiry, noninteractive builds, mapping-field ownership/custom host resolution, sandbox-disabled empty-catalog bootstrap and initial qualification coverage. These defaults are not earlier user decisions. The agreed internal abilities, account-level Auto/Copilot preference captured for new tasks, exact durable confirmation, bounded repair, one profile selector, catalog-to-YAML metadata, partial-profile build updates and host-source/fixed-target mounts remain requirements. After written-spec approval, draft/review the implementation plan with exact schemas, migrations, activation/recovery and test evidence; do not treat this roadmap update as execution authorization.
+
+#### Phase 7B — Typed Reusable Workflow Execution
+
+**Status:** Pending. Renamed from Phase 7 on 2026-11-08; saved-workflow scope is retained, with Phase 7A's agentic task foundation preceding it.
 
 **Milestone:** "I can run the same saved process with different inputs and inspect each step."
 
-**Build on:** The existing LangGraph engine, Phase 6A NATS command/event/response contracts with PostgreSQL ownership/checkpoints/outbox, Phase 4 gateway, and Phase 6B artifact/code operations. Saved workflows are another graph within this runtime, not another scheduler or execution service.
+**Build on:** Phase 7A's qualified tool coordination and outcome checks, the existing LangGraph engine, Phase 6A NATS command/event/response contracts with PostgreSQL ownership/checkpoints/outbox, Phase 4 gateway, and Phase 6B artifact/code operations. Reuse applicable capability/artifact/observation contracts, not an ad hoc prose plan as the executable definition. Saved workflows are another graph within this runtime, not another scheduler or execution service.
 
-**Acceptance units:** **7A** runs one hand-authored, sequential, credential-free log-analysis workflow using the qualified Phase 6 parser, typed inputs, persisted step results, and a simple timeline. **7B** adds reusable forms, inspector detail, and the compatibility-aware compilation cache using that same revision format. A cache is an optimization, never the only source of an executable definition.
+**Acceptance units:** **7B.1** runs one hand-authored, sequential, credential-free log-analysis workflow using the qualified Phase 6 parser, typed inputs, persisted step results, and a simple timeline. **7B.2** adds reusable forms, inspector detail, and the compatibility-aware compilation cache using that same revision format. A cache is an optimization, never the only source of an executable definition.
 
 **Build**
 
@@ -398,7 +449,7 @@ Start with one credential-free Python standard-library profile and a fixed analy
 
 **Milestone:** "A workflow can wait for me overnight, survive a restart, and resume only the correct request."
 
-**Build on:** Phase 7's versioned node factories, step identities, and runtime on 6A messaging. Persist waiting states and release the broker delivery/execution slot; an authorized input/approval command resumes the exact recorded wait. Retain existing run status/event meanings, including completed chat runs; a reply inbox or unacknowledged message is not the storage for an overnight approval.
+**Build on:** Phase 7B's versioned node factories, step identities, and runtime on 6A messaging. Persist waiting states and release the broker delivery/execution slot; an authorized input/approval command resumes the exact recorded wait. Retain existing run status/event meanings, including completed chat runs; a reply inbox or unacknowledged message is not the storage for an overnight approval.
 
 **Acceptance units:** **8A** pauses for a typed input and resumes through one validated command. **8B** adds digest-bound approval/rejection using the same request identity, eligibility, and atomic consumption mechanism. The first eligible actor can be the project owner; team roles expand this policy in Phase 20.
 
@@ -428,7 +479,7 @@ Start with one credential-free Python standard-library profile and a fixed analy
 
 **Milestone:** "I describe a process, review OpenShip's formal interpretation, save it, and run it later."
 
-**Build on:** The Phase 7 executable definition/compiler, Phase 8 wait nodes, installed capability IDs, and Phase 5 staging reads. This phase adds an authoring path to the existing workflow service. It does not generate a second execution format or orchestration code.
+**Build on:** The Phase 7B executable definition/compiler, Phase 8 wait nodes, installed capability IDs, and Phase 5 staging reads. Phase 7A's ad hoc task planning is a precursor, not a replacement for reviewed reusable definitions. This phase adds an authoring path to the existing workflow service. It does not generate a second execution format or orchestration code.
 
 **Start small:** Author only the sequential and wait nodes already supported. Use one maintained staging-investigation example, then expand the acceptance corpus. Native model structured output is optional; every emitted specification must pass the same server-side schema and capability validation.
 
@@ -528,7 +579,7 @@ Start with one credential-free Python standard-library profile and a fixed analy
 
 **Milestone:** "OpenShip finds relevant permitted capabilities without loading the entire catalog."
 
-**Build on:** Phase 4 capability identity, exact lookup, enablement, and gateway checks, plus Phase 7 workflow revisions/lockfiles. Discovery changes selection; package installation changes what is available. Neither changes execution authority.
+**Build on:** Phase 4 capability identity, exact lookup, enablement, and gateway checks, plus Phase 7B workflow revisions/lockfiles. Phase 7A plans initially use the small installed permitted catalog; this phase expands discovery and skills through that same boundary. Discovery changes selection; package installation changes what is available. Neither changes execution authority.
 
 **Acceptance units**
 
@@ -655,13 +706,13 @@ Start with one credential-free Python standard-library profile and a fixed analy
 
 **Milestone:** "A reusable workflow handles conditions, parallel work, and reusable child processes."
 
-**Build on:** Phase 7's executable schema, compiler, step identities, and existing runtime; Phase 8 wait/decision nodes; Phase 10 operation recovery. Add supported node types with explicit schema/runtime compatibility. Sequential workflows stay valid and use the same factories and scheduler.
+**Build on:** Phase 7B's executable schema, compiler, step identities, and existing runtime; Phase 8 wait/decision nodes; Phase 10 operation recovery. Add supported node types with explicit schema/runtime compatibility. Sequential workflows stay valid and use the same factories and scheduler. Bounded agent nodes reuse Phase 7A's planning/verification behavior within their declared inputs, outputs, authority and budgets, never to rewrite the surrounding reviewed graph.
 
 Deliver as separate increments:
 
 1. **15A:** One conditional branch and bounded loop, with explicit iteration identities.
 2. **15B:** Bounded parallel branches and a join, with branch-specific step identities and recovery.
-3. **15C:** One child-workflow pattern, followed by a bounded agent-step pattern reusing Phase 4's model/tool loop.
+3. **15C:** One child-workflow pattern, followed by a bounded agent-step pattern reusing Phase 4's model/tool loop and applicable Phase 7A reasoning/planning/tracking/routing contracts. A model-mediated branch proposes only a declared successor; the runtime validates the typed decision and current authority. Deterministic branch conditions need no reasoning call, and neither form can rewrite the reviewed graph.
 
 **User demonstration:** Check several services, investigate unhealthy ones in parallel, then combine results into one report.
 
@@ -752,7 +803,7 @@ Split into independently accepted increments:
 - **18A:** Start with report-only drift for the one provisioned stack; then add confirmed mapping reconstruction and reviewed adopt/reconcile actions through existing authoring/mutation gates.
 - **18B:** A second cloud's read/investigate/change journey.
 - **18C:** A third cloud's equivalent journey.
-- **18D:** Expand the library of versioned workflows already introduced in Phase 7, using the same schema, lockfiles, and provider/connector qualification rules.
+- **18D:** Expand the library of versioned workflows already introduced in Phase 7B, using the same schema, lockfiles, and provider/connector qualification rules.
 
 **User demonstration:** Change a managed resource outside OpenShip, detect drift, then choose report, adopt, or reconcile.
 
@@ -904,6 +955,8 @@ If a phase proves too large, divide it at a point that still produces a usable i
 These distinctions should remain explicit throughout implementation:
 
 - **Workflow review is not mutation approval.**
+- **An ad hoc task plan is not a saved executable workflow, and plan confirmation is not new execution authority.**
+- **Continuous agentic execution is bounded by the agreed plan, observed results, cancellation, policy and budgets—not repeated “continue” prompts or an infinite loop.**
 - **Trigger configuration is not unrestricted execution authority.**
 - **Deterministic graphs do not imply deterministic model or cloud results.**
 - **Event deduplication does not guarantee exactly-once external effects.**
@@ -915,4 +968,4 @@ These distinctions should remain explicit throughout implementation:
 
 NATS with JetStream is the selected internal messaging foundation from Phase 6A. Stronger isolation providers, additional external broker adapters, a public marketplace, and alternative orchestration/storage systems remain follow-on choices justified by demonstrated needs—not prerequisites for this roadmap.
 
-**Next commitment:** Deliver the small Phase 6B prepare → OpenSandbox request → validate/save → continue journey, with 30-minute provider-owned lifetime, project/conversation-scoped reuse for this slice, and explicit A/B resume. Preserve Phases 1–6A and existing application controls; do not reintroduce lifecycle management, mutable-file scope or a qualification platform as prerequisites. The Phase 10B maintenance-authority boundary remains unchanged.
+**Next commitment:** Record the remaining Phase 6C live dev-stack/chart evidence and user acceptance separately from its completed image implementation/local validation. In parallel, refine and review the Phase 7A spec, then its implementation plan, for outcome-driven planning and continuous bounded execution; no product implementation is authorized by this roadmap update. Phase 7B retains saved typed workflows. Preserve Phases 1–6 and existing application controls, including 6B's provider-owned 30-minute lifetime, scoped reuse and explicit A/B resume; do not reintroduce OpenShip-owned lifecycle management, mutable-file scope or a qualification platform as prerequisites. The Phase 10B maintenance-authority boundary remains unchanged.
