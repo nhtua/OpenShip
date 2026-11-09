@@ -29,6 +29,7 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 # for 'autogenerate' support
 from openship.database.models import Base
+from openship.runs.tasks import models as _task_models  # noqa: F401
 
 target_metadata = Base.metadata
 

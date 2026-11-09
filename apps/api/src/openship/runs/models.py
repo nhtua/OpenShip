@@ -355,3 +355,14 @@ class Outbox(Base):
             sqlite_where=text("destination = 'command'"),
         ),
     )
+
+
+# Import the task tables for Alembic metadata discovery. They are declared in
+# their own module because they reference this module's tables by name only.
+from .tasks.models import (  # noqa: F401
+    TaskDecisionCommandRecord,
+    TaskDecisionRecord,
+    TaskPlanRecord,
+    TaskRecord,
+    TaskStepAttempt,
+)

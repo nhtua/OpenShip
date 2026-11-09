@@ -59,6 +59,7 @@ def setup_db(request):
         or "test_connector_resume_postgres" in test_path
         or "test_messaging_migration" in test_path
         or "test_messaging_relay" in test_path
+        or "test_phase7a_task_state_postgres" in test_path
     ):
         yield
         return
