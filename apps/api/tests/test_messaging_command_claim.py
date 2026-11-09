@@ -192,7 +192,13 @@ def test_persisted_identity_mismatch_never_claims(mutation):
 
 
 @pytest.mark.parametrize(
-    "status,expected", [("completed", "disposed"), ("waiting_connector", "disposed")]
+    "status,expected", [
+        ("completed", "disposed"),
+        ("waiting_connector", "disposed"),
+        ("waiting_plan", "disposed"),
+        ("waiting_input", "disposed"),
+        ("waiting_config", "disposed"),
+    ]
 )
 def test_non_executable_run_is_not_claimed(status, expected):
     with SessionLocal() as db:

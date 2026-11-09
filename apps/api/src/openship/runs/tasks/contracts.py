@@ -170,9 +170,7 @@ class TaskPlan(FrozenModel):
     intent: str
     constraints: tuple[str, ...] = Field(default=(), max_length=16)
     steps: tuple[TaskStep, ...] = Field(min_length=1, max_length=8)
-    available_capabilities: tuple[CapabilityRef, ...] = Field(
-        default=(), max_length=32
-    )
+    available_capabilities: tuple[CapabilityRef, ...] = Field(default=(), max_length=32)
     available_profiles: tuple[ProfileId, ...] = Field(default=(), max_length=4)
     status: Literal["proposed", "validated"] = "proposed"
 
@@ -195,18 +193,14 @@ class TaskPlan(FrozenModel):
     def _available_capabilities(
         cls, value: tuple[CapabilityRef, ...]
     ) -> tuple[CapabilityRef, ...]:
-        identities = {
-            (item.id, item.version, item.manifest_digest) for item in value
-        }
+        identities = {(item.id, item.version, item.manifest_digest) for item in value}
         if len(identities) != len(value):
             raise ValueError("available capabilities must be unique")
         return value
 
     @field_validator("available_profiles")
     @classmethod
-    def _available_profiles(
-        cls, value: tuple[ProfileId, ...]
-    ) -> tuple[ProfileId, ...]:
+    def _available_profiles(cls, value: tuple[ProfileId, ...]) -> tuple[ProfileId, ...]:
         if len(set(value)) != len(value):
             raise ValueError("available profiles must be unique")
         return value
@@ -223,9 +217,7 @@ class TaskPlan(FrozenModel):
                 raise ValueError("step identifiers must be unique")
             for dependency in item.depends_on:
                 if dependency not in seen:
-                    raise ValueError(
-                        "dependencies must point only to earlier steps"
-                    )
+                    raise ValueError("dependencies must point only to earlier steps")
             if item.capability is not None:
                 identity = (
                     item.capability.id,
@@ -277,7 +269,9 @@ class TaskAction(FrozenModel):
         step_kinds = {"execute", "repair", "verify"}
         if self.kind == "wait":
             if self.wait_kind is None:
-                raise ValueError("wait actions specify a decision or configuration kind")
+                raise ValueError(
+                    "wait actions specify a decision or configuration kind"
+                )
             if self.step_id is not None:
                 raise ValueError("wait actions do not target a step")
             return self
@@ -332,7 +326,9 @@ class TaskAssessment(FrozenModel):
         if self.classification == "blocked" and not (
             self.missing_information or self.evidence_refs
         ):
-            raise ValueError("blocked assessments require evidence or missing information")
+            raise ValueError(
+                "blocked assessments require evidence or missing information"
+            )
         if self.failure in {"known", "material"} and self.step_id is None:
             raise ValueError("known or material failures require a step identifier")
         if self.failure == "none" and self.step_id is not None:
@@ -370,9 +366,15 @@ class TaskDecision(FrozenModel):
     schema_version: Literal[1] = 1
     request_id: UUID
     kind: Literal["plan_confirmation", "clarification", "configuration"]
-    plan_revision: int = Field(ge=1)
+    plan_revision: int = Field(ge=0)
     expected_digest: str = Field(pattern=SHA256_PATTERN)
     expires_at: datetime
+
+    @model_validator(mode="after")
+    def _confirmation_requires_plan(self) -> TaskDecision:
+        if self.kind == "plan_confirmation" and self.plan_revision == 0:
+            raise ValueError("plan confirmation requires a plan revision")
+        return self
 
 
 class TaskCounters(FrozenModel):
@@ -464,7 +466,7 @@ class VerificationReport(FrozenModel):
 
 class TaskProgress(FrozenModel):
     schema_version: Literal[1] = 1
-    current_revision: int = Field(default=1, ge=1)
+    current_revision: int = Field(default=1, ge=0)
     status: Literal[
         "unknown",
         "planned",
@@ -503,6 +505,10 @@ class TaskProgress(FrozenModel):
 
     @model_validator(mode="after")
     def _progress_is_consistent(self) -> TaskProgress:
+        if self.current_revision == 0 and (
+            self.step_ids or self.attempts or self.verified_steps
+        ):
+            raise ValueError("pre-plan progress cannot contain plan steps or attempts")
         plan_steps = set(self.step_ids)
         if not set(self.verified_steps) <= plan_steps:
             raise ValueError("verified steps must belong to the current plan")
@@ -520,7 +526,7 @@ class TaskDecisionCommand(FrozenModel):
     schema_version: Literal[1] = 1
     client_request_id: UUID
     request_id: UUID
-    plan_revision: int = Field(ge=1)
+    plan_revision: int = Field(ge=0)
     expected_digest: str = Field(pattern=SHA256_PATTERN)
     action: Literal["confirm", "reject", "answer", "resume_configuration"]
     answer: str | None = Field(default=None, max_length=10_000)
@@ -546,6 +552,8 @@ class TaskDecisionCommand(FrozenModel):
 
     @model_validator(mode="after")
     def _action_matches_answer(self) -> TaskDecisionCommand:
+        if self.plan_revision == 0 and self.action == "confirm":
+            raise ValueError("plan confirmation requires a plan revision")
         if self.action == "answer":
             if self.answer is None:
                 raise ValueError("answer decisions require an answer")

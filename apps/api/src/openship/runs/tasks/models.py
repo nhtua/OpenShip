@@ -105,7 +105,7 @@ class TaskRecord(Base):
     __table_args__ = (
         UniqueConstraint("run_id", name="uq_task_records_run_id"),
         CheckConstraint("graph_version = 5", name="ck_task_records_graph_version"),
-        CheckConstraint("current_revision >= 1", name="ck_task_records_revision"),
+        CheckConstraint("current_revision >= 0", name="ck_task_records_revision"),
         CheckConstraint("fence >= 0", name="ck_task_records_fence"),
         CheckConstraint("active_ms >= 0", name="ck_task_records_active_ms"),
         CheckConstraint(
@@ -115,15 +115,18 @@ class TaskRecord(Base):
         CheckConstraint("mode IN ('auto', 'copilot')", name="ck_task_records_mode"),
         CheckConstraint(_in("status", TASK_STATUSES), name="ck_task_records_status"),
         CheckConstraint(
-            _in("last_disposition", (
-                "none",
-                "known_failure",
-                "material_revision",
-                "uncertain",
-                "denied",
-                "policy_revoked",
-                "budget_exhausted",
-            )),
+            _in(
+                "last_disposition",
+                (
+                    "none",
+                    "known_failure",
+                    "material_revision",
+                    "uncertain",
+                    "denied",
+                    "policy_revoked",
+                    "budget_exhausted",
+                ),
+            ),
             name="ck_task_records_last_disposition",
         ),
         Index("ix_task_records_project_id", "project_id"),
@@ -157,9 +160,7 @@ class TaskPlanRecord(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "run_id", "revision", name="uq_task_plans_run_revision"
-        ),
+        UniqueConstraint("run_id", "revision", name="uq_task_plans_run_revision"),
         CheckConstraint("revision >= 1", name="ck_task_plans_revision"),
         CheckConstraint(_in("status", PLAN_STATUSES), name="ck_task_plans_status"),
         Index("ix_task_plans_task_id", "task_id"),
@@ -258,10 +259,11 @@ class TaskDecisionRecord(Base):
     resolved_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "run_id", "request_id", name="uq_task_decisions_run_request"
+        UniqueConstraint("run_id", "request_id", name="uq_task_decisions_run_request"),
+        CheckConstraint(
+            "plan_revision >= 0 AND (kind != 'plan_confirmation' OR plan_revision >= 1)",
+            name="ck_task_decisions_revision",
         ),
-        CheckConstraint("plan_revision >= 1", name="ck_task_decisions_revision"),
         CheckConstraint(_in("kind", DECISION_KINDS), name="ck_task_decisions_kind"),
         CheckConstraint(_in("state", DECISION_STATES), name="ck_task_decisions_state"),
         Index("ix_task_decisions_task_id", "task_id"),
@@ -323,7 +325,7 @@ class TaskDecisionCommandRecord(Base):
             _in("action", DECISION_ACTIONS), name="ck_task_decision_commands_action"
         ),
         CheckConstraint(
-            "plan_revision >= 1", name="ck_task_decision_commands_revision"
+            "plan_revision >= 0", name="ck_task_decision_commands_revision"
         ),
         Index("ix_task_decision_commands_task_id", "task_id"),
         Index("ix_task_decision_commands_decision_id", "decision_id"),

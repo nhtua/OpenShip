@@ -286,7 +286,7 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
 
   **Checkpoint 2 evidence (SQLite lane, complete):** `uv run pytest -q tests/test_task_state.py` passed 10 tests after an initial collection failure (`ModuleNotFoundError: src.openship.runs.tasks.models`, the missing schema/state behavior). The suite proves old history upgrades without fabricated task rows (`legacy_run.status == "completed"`, `task_count == 0`), plan revisions are immutable and fenced (`updated.current_revision == previous.current_revision + 1`, stale revision/fence refusals), a committed `ToolOperation` is the only attempt-outcome source (`attempt.operation_id == existing_tool_operation.id`, input/result digests and owned artifacts, including a stale identity-map regression that must refresh the locked operation before validating), repeated publication stays at one attempt/one event, a state-plus-event transaction rolls back to neither half, the decision tables enforce one open request per run and per-client-command uniqueness, and downgrade refuses v5 rows/waits while succeeding on an otherwise empty task schema. The full network-free API lane passed 1772 tests (146 deselected). `uv run ruff check` passed on every touched module.
 
-  **PostgreSQL lane (blocked, unrun):** `TEST_POSTGRES_URL` is unset in this environment. `uv run pytest -q -m postgres tests/integration/test_phase7a_task_state_postgres.py -rs` reported 3 skips with the safe prerequisite message (`no TEST_POSTGRES_URL; task-state PostgreSQL proof is blocked on a disposable PostgreSQL service`). No PostgreSQL evidence is claimed; the lane remains open for an authorized disposable service.
+  **PostgreSQL lane (controller-reported green):** The controller ran `uv run pytest -q -m postgres tests/integration/test_phase7a_task_state_postgres.py`: 4 passed, with 1 existing SQLAlchemy warning. The previous local attempt was skipped because its connection was unavailable. The PostgreSQL red phase remains unverified.
 
 ## Task 7: Own-account preference API and exact mode capture at admission
 
@@ -325,7 +325,7 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
   same-mode save does not increment) and is isolated by authenticated identity,
   and a stale new submission returns 409 while creating no message, run, job or
   outbox rows. The *concurrent* same-account race is covered only by the
-  PostgreSQL test, which was not run (see below); SQLite does not establish
+  PostgreSQL test reported below; SQLite does not establish
   concurrent-writer evidence. A retry with the same `client_request_id` returns
   the original run and pinned `copilot` mode even after the account preference
   changed. The rollout gate defaults off with an empty profile allowlist; enabled
@@ -343,11 +343,9 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
   `test_opensandbox_packaging.py` passed when re-run alone. The 53 errors are
   external-service integration lanes (NATS/JetStream/PostgreSQL).
 
-  **PostgreSQL lane (blocked, unrun):** `TEST_POSTGRES_URL` is unset in this
-  environment. The new `test_postgres_preference_defaults_and_cas_under_lock`
-  case and the 031→032 PostgreSQL upgrade/downgrade checks were not executed.
-  No PostgreSQL evidence is claimed; the lane remains open for an authorized
-  disposable service.
+  **PostgreSQL lane (controller-reported green):** The controller ran
+  `uv run pytest -q -m postgres tests/integration/test_phase7a_task_state_postgres.py`:
+  4 passed, with 1 existing SQLAlchemy warning. No connection details were shared.
 
 ## Task 8: Durable plan/input/configuration waits and idempotent decisions
 
@@ -366,8 +364,17 @@ After Tasks 3, 6, 9, 12 and 14, run all affected unit suites, review the interfa
   ```
 - [ ] **2. Run red:** `uv run pytest -q tests/test_task_decisions.py tests/test_task_wait_delivery.py`; authorized PostgreSQL: `uv run pytest -q -m postgres tests/integration/test_task_decisions_postgres.py` from `apps/api`.
 - [ ] **3. Implement transactions and lifecycle integration.** Park only after recording the plan/progress and all settled effects; fence/release the job, persist decision+event, then allow delivery acknowledgement. Classify waits as parked/nonexecutable, not terminal, retryable failure or exhausted delivery. Consume decisions atomically with state/event/new dispatch-generation/outbox; unchanged exact replay returns the prior result without another enqueue. Do not dispatch inside the decision HTTP handler. Expire by the existing RecoverySupervisor's bounded maintenance tick; expiry requires no browser/worker execution slot. Recheck owned active scope, task digest/revision, authority/configuration and cancellation before requeue. Add waits to existing cancellation/active-run/cutover/restore predicates, not just the run CHECK. Keep connector waiting separate; v5 waits after prior provider/tool work cannot use the connector helper that requires zero attempts/operations.
+
+  **Partial slices (SQLite):** `expire_task_decisions` expires matching lease-free waits transactionally, but is not wired to recovery. Revision-zero pre-plan decisions, task records and progress are now allowed by contracts and migration 033; plan-confirmation requests and actual plans still require a positive revision. Exact queue claims now dispose all three task-wait statuses as non-executable; the focused claim, decision and state tests passed (54 tests). Parking, command consumption and other lifecycle integration remain open; pre-plan task creation and digest binding, PostgreSQL concurrency, migration downgrade with revision-zero data, and broader expiry behavior remain unverified.
 - [ ] **4. Run green:** repeat targeted lanes and existing messaging delivery/exhaustion/connector-wait regressions. Expected: parked work releases slots and stale generations dispose safely. Record PostgreSQL race outcomes separately from SQLite behavior.
 - [ ] **5. Commit** with subject `feat: add durable agentic task decisions`; record evidence and remaining broker fault tests under Task 15.
+
+  **Task 8 status: not implemented.** Existing queue and messaging paths classify
+  connector waits separately and do not yet handle task waits. Decision,
+  delivery, expiry, cancellation and PostgreSQL race tests remain outstanding.
+  Baseline SQLite command `uv run pytest -q tests/test_task_state.py
+  tests/test_agent_mode_preferences.py tests/test_task_admission.py` passed
+  20 tests with 2 deprecation warnings. Task 8 PostgreSQL evidence remains pending.
 
 ## Task 9: Root budgets, active execution windows and stable tool-call admission
 

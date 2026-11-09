@@ -194,7 +194,7 @@ def test_migration_031_to_032_defaults_existing_accounts_to_copilot(tmp_path):
             {"id": "10000000-0000-0000-0000-0000000000a1"},
         )
 
-    upgraded = _run_alembic(ini, "upgrade", "head")
+    upgraded = _run_alembic(ini, "upgrade", "phase7a032")
     assert upgraded.returncode == 0, upgraded.stderr
 
     with engine.begin() as connection:

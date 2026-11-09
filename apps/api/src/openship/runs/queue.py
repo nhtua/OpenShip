@@ -201,6 +201,9 @@ def _claim_run_exact(
         "timed_out",
         "stale",
         "waiting_connector",
+        "waiting_plan",
+        "waiting_input",
+        "waiting_config",
     }:
         return ClaimDecision("disposed", code="run_not_executable")
     if not state.active:
