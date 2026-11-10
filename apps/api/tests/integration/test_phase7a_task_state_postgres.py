@@ -328,7 +328,7 @@ def test_postgres_state_is_fenced_idempotent_and_atomic(pg_lane):
         assert read_progress(db, run_id).current_revision == 1
         events = db.execute(
             text(
-                "SELECT COUNT(*) FROM events WHERE run_id=:run AND type='task.plan_saved'"
+                "SELECT COUNT(*) FROM events WHERE run_id=:run AND type='task.plan_proposed'"
             ),
             {"run": run_id},
         ).scalar_one()

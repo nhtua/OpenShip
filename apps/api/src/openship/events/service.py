@@ -23,9 +23,10 @@ from ..runs.schemas import (
     _model_projection,
     _usage_projection,
 )
+from ..runs.tasks.projections import read_task_summary
 from ..workspace.lifecycle import format_archive_timestamp
 from .schemas import (
-    TASK_DECISION_EVENT_SCHEMAS,
+    TASK_EVENT_SCHEMAS,
     EventRead,
     MessageSummary,
     RunSummary,
@@ -228,7 +229,7 @@ def append_event(
     Returns:
         The persisted Event object.
     """
-    schema = TASK_DECISION_EVENT_SCHEMAS.get(event_type)
+    schema = TASK_EVENT_SCHEMAS.get(event_type)
     if schema is not None:
         schema.model_validate(payload)
     # Flush pending changes first, then allocate a sequence with one atomic
@@ -459,6 +460,13 @@ def read_snapshot(
             )
         )
 
+    # A reload shows the same plan and progress the events already showed.
+    task_summaries = []
+    for run in runs:
+        summary = read_task_summary(db, run.id)
+        if summary is not None:
+            task_summaries.append(summary)
+
     return SnapshotResponse(
         conversation_id=str(conv_id),
         project_id=str(conv.project_id),
@@ -468,6 +476,7 @@ def read_snapshot(
         events=[_event_to_read(ev) for ev in events],
         messages=[_message_to_summary(msg) for msg in messages],
         runs=run_summaries,
+        tasks=task_summaries,
         artifacts=artifact_summaries,
         artifacts_next_cursor=(
             encode_cursor(artifact_rows[-1].created_at, artifact_rows[-1].id)

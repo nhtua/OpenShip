@@ -31,6 +31,7 @@ from .schemas import (
     project_run_response,
 )
 from .service import get_run, request_cancel, submit_tool_run, submit_turn
+from .tasks.projections import read_task_summary
 
 logger = logging.getLogger("runs.routes")
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -97,7 +98,9 @@ async def get_run_status(
         )
         operations = read_operation_page(db, run.id)
         blocker = waiting_blocker(db, run.id)
-        return project_run_response(run, attempts, operations, blocker=blocker)
+        return project_run_response(
+            run, attempts, operations, blocker=blocker, task=read_task_summary(db, run.id)
+        )
     except HTTPException:
         raise
     except Exception as e:

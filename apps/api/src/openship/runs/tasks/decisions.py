@@ -36,7 +36,7 @@ from .models import (
     TaskRecord,
     TaskStepAttempt,
 )
-from .projections import TaskProgressProjection
+from .projections import TaskProgressProjection, recovery_summary
 from .state import (
     TaskStateError,
     _claim_state,
@@ -821,6 +821,14 @@ def park_task_wait(
             "kind": kind,
             "prompt": prompt,
             "expires_at": decision.expires_at.isoformat(),
+            # A recovery carries its diagnosis so a reconnect can show the
+            # same choices the reader was offered the first time. The
+            # diagnosis names the operation it diagnosed, this view does not.
+            "diagnosis": (
+                recovery_summary(recovery_report).model_dump(mode="json")
+                if recovery_report is not None
+                else None
+            ),
         },
     )
     db.flush()

@@ -42,7 +42,7 @@ from .models import (
     TaskRecord,
     TaskStepAttempt,
 )
-from .projections import TaskProgressProjection, TaskStepProgress
+from .projections import TaskProgressProjection, TaskStepProgress, read_task_summary
 
 TERMINAL_RUN_STATUSES = frozenset(
     {"completed", "failed", "cancelled", "timed_out", "stale"}
@@ -250,6 +250,19 @@ def read_progress(db, run_id: uuid.UUID) -> TaskProgressProjection:
     """Read the current durable projection without locking or mutating."""
     task = db.query(TaskRecord).filter(TaskRecord.run_id == run_id).one_or_none()
     return _project(db, task)
+
+
+def _progress_payload(db, task: TaskRecord) -> dict:
+    """The public progress view for the event stream.
+
+    It is the same ``TaskSummary`` the run reads and the snapshot return,
+    minus the plan (its own ``task.plan_proposed`` event) and the open
+    decision (its own request and resolution events).
+    """
+    payload = read_task_summary(db, task.run_id).model_dump(mode="json")
+    payload.pop("plan", None)
+    payload.pop("pending_decision", None)
+    return payload
 
 
 def read_plan(db, run_id: uuid.UUID) -> TaskPlan | None:
@@ -483,13 +496,21 @@ def save_plan(
         db,
         conversation_id=task.conversation_id,
         run_id=task.run_id,
-        event_type="task.plan_saved",
+        event_type="task.plan_proposed",
         payload={
+            "schema_version": 1,
             "run_id": str(task.run_id),
             "revision": plan.revision,
-            "digest": digest,
-            "step_ids": [step.id for step in plan.steps],
-            "status": "planned",
+            "mode": task.mode,
+            "review_digest": digest,
+            "steps": [
+                {
+                    "id": step.id,
+                    "intent": step.intent,
+                    "depends_on": list(step.depends_on),
+                }
+                for step in plan.steps
+            ],
         },
     )
     db.flush()
@@ -704,6 +725,14 @@ def record_attempt_result(
         },
     )
     db.flush()
+    append_event(
+        db,
+        conversation_id=task.conversation_id,
+        run_id=task.run_id,
+        event_type="task.progress",
+        payload=_progress_payload(db, task),
+    )
+    db.flush()
     return _project(db, task)
 
 
@@ -858,6 +887,28 @@ def record_verification(
             },
         )
         db.flush()
+        append_event(
+            db,
+            conversation_id=task.conversation_id,
+            run_id=task.run_id,
+            event_type="task.disposition",
+            payload={
+                "schema_version": 1,
+                "run_id": str(task.run_id),
+                "revision": task.current_revision,
+                "step_id": step_id,
+                "disposition": disposition,
+            },
+        )
+        db.flush()
+        append_event(
+            db,
+            conversation_id=task.conversation_id,
+            run_id=task.run_id,
+            event_type="task.progress",
+            payload=_progress_payload(db, task),
+        )
+        db.flush()
         return _project(db, task)
 
     if latest is None or latest.status != "succeeded":
@@ -956,6 +1007,28 @@ def record_verification(
             "artifact_ids": [str(row.id) for row in rows],
             "task_status": task.status,
         },
+    )
+    db.flush()
+    append_event(
+        db,
+        conversation_id=task.conversation_id,
+        run_id=task.run_id,
+        event_type="task.disposition",
+        payload={
+            "schema_version": 1,
+            "run_id": str(task.run_id),
+            "revision": task.current_revision,
+            "step_id": step_id,
+            "disposition": task.last_disposition,
+        },
+    )
+    db.flush()
+    append_event(
+        db,
+        conversation_id=task.conversation_id,
+        run_id=task.run_id,
+        event_type="task.progress",
+        payload=_progress_payload(db, task),
     )
     db.flush()
     return _project(db, task)

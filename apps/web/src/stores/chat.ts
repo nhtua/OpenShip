@@ -4,6 +4,7 @@ import { generateRequestId } from '@/lib/requestId'
 import { lifecycleConflictCode } from '@/lib/lifecycleErrors'
 import api, { runsApi, modelProfilesApi, capabilitiesApi, conversationsApi } from '@/services/api'
 import { useAgentModeStore } from '@/stores/agentMode'
+import { useTaskProgressStore } from '@/stores/taskProgress'
 import type {
   CapabilitySummary,
   ChatMessage,
@@ -321,6 +322,11 @@ export const useChatStore = defineStore('chat', () => {
             )
           }
         }
+        // A reload shows the same plan and progress the events already showed,
+        // so the snapshot's own task view is folded over the event fold.
+        for (const task of snapshot.tasks ?? []) {
+          useTaskProgressStore().handleSnapshot(task)
+        }
         // Set the cursor to the snapshot's sequence (or the highest event sequence)
         const maxSeq = snapshot.events.reduce(
           (max, e) => Math.max(max, e.sequence),
@@ -457,6 +463,13 @@ export const useChatStore = defineStore('chat', () => {
     appliedEventIds.value.add(event.id)
 
     const convId = event.conversation_id
+    // Task events fold into the task card, which owns plan, progress and the
+    // open decision. They never become messages, and the card is a fold of
+    // the same records the snapshot reports - not a second authority.
+    if (event.type.startsWith('task.')) {
+      useTaskProgressStore().handleEvent(event)
+      return
+    }
     // If no current conversation set, still process for run cards
     // but only add messages if the event is for the current conversation
     const isCurrent = currentConversation.value?.id === convId
@@ -692,6 +705,9 @@ export const useChatStore = defineStore('chat', () => {
         card.operations = run.operations
         card.operations_next_cursor = run.operations_next_cursor ?? null
       }
+      // The run read carries the same task view the events showed, so a card
+      // hydrated from it lands the same plan and progress.
+      if (run.task) useTaskProgressStore().handleSnapshot(run.task)
       card.usage = run.usage ?? null
       const failure: ErrorSummary | null = run.error ?? null
       card.error_code = failure?.code ?? null

@@ -161,6 +161,17 @@ export const runsApi = {
   ): Promise<{ data: OperationPage }> => api.get(`/runs/${runId}/operations`, { params }),
 }
 
+// The one door every user response to a parked task decision takes: the
+// command carries the exact request, revision and digest the card showed, and
+// a lost response re-asks the same command rather than inventing a new one.
+export const taskDecisionApi = {
+  submit: (
+    runId: string,
+    command: import('@/types').TaskDecisionCommand,
+  ): Promise<{ data: { current_revision?: number; status?: string } }> =>
+    api.post(`/runs/${encodeURIComponent(runId)}/task-decisions`, command),
+}
+
 // The installation's own model profiles: what may be selected, and nothing
 // secret. A browser names a profile and never an endpoint, adapter, or
 // credential.

@@ -78,6 +78,8 @@ export interface Run {
   operations?: ToolOperationSummary[]
   operations_next_cursor?: string | null
   connector_blocker?: ConnectorBlockerSummary | null
+  // A run read shows the same plan and progress the task events showed.
+  task?: TaskSummary | null
 }
 
 export interface RunCard {
@@ -306,12 +308,146 @@ export interface DurableEvent {
   created_at: string
 }
 
+// The browser's view of a durable task. Every field states a fact the records
+// already hold: the plan under review, what each step has durably done, and
+// the one decision the run waits on. Nothing here names an operation, a call
+// binding or a continuation - those stay in the ledgers the task indexes.
+export interface TaskPlanStepView {
+  id: string
+  intent: string
+  depends_on?: string[]
+}
+
+export interface TaskPlanView {
+  revision: number
+  review_digest: string
+  steps: TaskPlanStepView[]
+}
+
+export interface TaskArtifactLink {
+  id: string
+  name?: string | null
+  media_type: string
+  status: 'ready' | 'unavailable' | 'deleting' | 'deleted'
+}
+
+export interface TaskStepView {
+  id: string
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'uncertain' | 'verified' | 'skipped'
+  attempt_count?: number
+  evidence_refs?: string[]
+  outputs?: TaskArtifactLink[]
+}
+
+export type TaskStatus =
+  'unknown'
+  | 'planned'
+  | 'running'
+  | 'waiting'
+  | 'verification_pending'
+  | 'completed'
+  | 'blocked'
+  | 'failed'
+  | 'cancelled'
+
+export type TaskDisposition =
+  'none'
+  | 'known_failure'
+  | 'material_revision'
+  | 'uncertain'
+  | 'denied'
+  | 'policy_revoked'
+  | 'budget_exhausted'
+
+export type RecoveryAction = 'abort' | 'repeat_step' | 'continue_next'
+
+export interface TaskRecoveryView {
+  plan_revision: number
+  plan_digest: string
+  step_id: string
+  attempt: number
+  explanation: string
+  evidence_refs?: string[]
+  unknowns?: string[]
+  risks?: string[]
+  blockers?: string[]
+  eligible_actions?: RecoveryAction[]
+  recommended_action?: RecoveryAction | null
+  digest: string
+}
+
+export interface TaskPendingDecision {
+  request_id: string
+  kind: 'plan_confirmation' | 'clarification' | 'configuration' | 'recovery'
+  plan_revision: number
+  expected_digest?: string | null
+  expires_at?: string | null
+  // What the run asks, from the request event that parked it. The card keeps
+  // it so a reader can answer in their own words.
+  prompt?: string | null
+  diagnosis?: TaskRecoveryView | null
+}
+
+export interface TaskResolvedDecision {
+  request_id: string
+  kind: 'plan_confirmation' | 'clarification' | 'configuration' | 'recovery' | null
+  plan_revision: number
+  state: 'confirmed' | 'rejected' | 'answered' | 'expired' | 'cancelled'
+}
+
+export interface TaskSummary {
+  schema_version: 1
+  run_id: string
+  mode?: AgentMode
+  revision?: number
+  plan?: TaskPlanView | null
+  status?: TaskStatus
+  steps?: TaskStepView[]
+  skipped_steps?: string[]
+  verified_outputs?: TaskArtifactLink[]
+  last_disposition?: TaskDisposition
+  pending_decision?: TaskPendingDecision | null
+}
+
+export interface TaskDispositionView {
+  stepId: string | null
+  disposition: TaskDisposition
+}
+
+// The card the browser keeps for one task: the events and the snapshot both
+// fold into it, so a reload lands the same story the stream already showed.
+export interface TaskCardState {
+  runId: string
+  sequence: number
+  currentRevision: number
+  planRevisions: TaskPlanView[]
+  progress: TaskSummary
+  dispositions: TaskDispositionView[]
+  pendingDecision: TaskPendingDecision | null
+  resolvedDecisions: TaskResolvedDecision[]
+  decisionError: string | null
+  readOnly: boolean
+}
+
+// Every user response to a parked decision: bound to the exact request, the
+// plan revision under review and the digest that review or diagnosis made.
+export interface TaskDecisionCommand {
+  client_request_id: string
+  request_id: string
+  plan_revision: number
+  expected_digest: string
+  action: 'confirm' | 'reject' | 'answer' | 'resume_configuration' | RecoveryAction
+  answer?: string | null
+}
+
 export interface Snapshot {
   conversation_id: string
   project_id?: string
   sequence: number
   events: DurableEvent[]
   runs?: SnapshotRun[]
+  // A reload shows the same plan and progress the events already showed.
+  tasks?: TaskSummary[]
   artifacts?: ArtifactSummary[]
   artifacts_next_cursor?: string | null
 }

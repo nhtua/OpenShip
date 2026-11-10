@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useArtifactsStore } from '@/stores/artifacts'
 import { useAgentModeStore } from '@/stores/agentMode'
+import { useTaskProgressStore } from '@/stores/taskProgress'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
 import { runsApi } from '@/services/api'
@@ -13,6 +14,8 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import AgentModeSelector from '@/components/chat/AgentModeSelector.vue'
+import TaskPlan from '@/components/chat/TaskPlan.vue'
+import TaskDecision from '@/components/chat/TaskDecision.vue'
 import RunCard from '@/components/chat/RunCard.vue'
 import ConversationFiles from '@/components/chat/ConversationFiles.vue'
 import ArchivedConversationsDialog from '@/components/chat/ArchivedConversationsDialog.vue'
@@ -37,6 +40,7 @@ const artifacts = useArtifactsStore()
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
 const agentMode = useAgentModeStore()
+const taskProgress = useTaskProgressStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
@@ -278,6 +282,56 @@ async function handleCancelRun() {
   const runId = activeRunId.value
   if (!runId) return
   await chat.cancelRun(runId)
+}
+
+// The task card belongs to the run this conversation is showing, however that
+// run got here: from a stream, a reconnect, or a reload's snapshot. The store
+// folds both into the same view, so the card never restarts the task and never
+// shows a second copy of it.
+const taskCard = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  const runCard = conversationId ? chat.runCards.get(conversationId) : null
+  const runId = runCard?.run_id
+  return runId ? taskProgress.cards.get(runId) : null
+})
+// A composer reply only counts while the run is parked on a decision this
+// person can answer; elsewhere text is an ordinary turn.
+const decisionReplyContext = computed(
+  () => Boolean(taskCard.value) && !taskProgress.decisionActionsDisabled(taskCard.value!.runId),
+)
+const replyNotice = ref<string | null>(null)
+
+watch(
+  (): [string, boolean] => [taskCard.value?.runId ?? '', chat.currentConversationReadOnly],
+  ([runId, readOnly]) => {
+    if (runId) taskProgress.markReadOnly(runId, readOnly)
+  },
+)
+
+async function handleDecisionRespond(action: string, answer: string | null): Promise<void> {
+  const card = taskCard.value
+  if (!card) return
+  // A click only ever sends the command bound to the card's own request,
+  // revision and digest; the store refuses one it cannot bind.
+  const command = taskProgress.buildCommand(card.runId, action, answer)
+  if (!command) return
+  replyNotice.value = null
+  await taskProgress.submitTaskDecision(card.runId, command)
+}
+
+async function handleReplyToDecision(text: string): Promise<void> {
+  const card = taskCard.value
+  if (!card) return
+  const command = taskProgress.replyToDecision(card.runId, text)
+  if (!command) {
+    // Wording that does not name one of the options is not a choice: the
+    // words stay in the composer, and nothing is sent.
+    composerDraft.value = text
+    replyNotice.value = 'That wording does not choose. For a recovery, write Abort, Repeat the step or Continue to the next step; for a question, answer in your own words.'
+    return
+  }
+  replyNotice.value = null
+  await taskProgress.submitTaskDecision(card.runId, command)
 }
 
 async function handleResumeConnector(): Promise<void> {
@@ -677,6 +731,12 @@ onBeforeUnmount(() => {
           </Button>
         </RunCard>
       </div>
+      <!-- The task card reads the same durable records the events showed: plan,
+           progress, and the open decision never a second local task. -->
+      <TaskPlan
+        v-if="taskCard"
+        :card="taskCard"
+      />
       <!-- The stream/composer components own their data-testid hooks. -->
       <ChatStream
         :messages="chat.messages"
@@ -698,10 +758,25 @@ onBeforeUnmount(() => {
         :message="agentMode.error"
         @choose="handleChooseMode"
       />
+      <TaskDecision
+        v-if="taskCard"
+        :card="taskCard"
+        :read-only="chat.currentConversationReadOnly"
+        @respond="handleDecisionRespond"
+      />
+      <p
+        v-if="replyNotice"
+        data-testid="chat-reply-notice"
+        aria-live="polite"
+        class="text-xs text-muted-foreground"
+      >
+        {{ replyNotice }}
+      </p>
       <ChatInput
         :disabled="conversationBusy"
         :selection-disabled="chat.isSubmitting"
         :mode-submission-disabled="agentMode.submissionBlocked"
+        :reply-context="decisionReplyContext"
         :profiles="chat.modelProfiles?.profiles ?? []"
         :default-profile-id="chat.modelProfiles?.default_profile_id ?? null"
         :selected-profile-id="chat.selectedProfileId"
@@ -717,6 +792,7 @@ onBeforeUnmount(() => {
         :tool-submission-disabled="hasActiveRun"
         :submission-error="chat.error"
         @send="handleSend"
+        @reply="handleReplyToDecision"
         @search="handleSearch"
         @select="handleSelectProfile"
         @draft-consumed="handleComposerDraftConsumed"

@@ -16,6 +16,7 @@ from pydantic import (
 from ..execution.projections import OperationSummary
 from ..providers.configuration import destination_label
 from ..providers.errors import SAFE_MESSAGES
+from ..runs.tasks.projections import TaskSummary
 from .models import ProviderAttempt, Run
 
 
@@ -157,6 +158,8 @@ class RunResponse(BaseModel):
     operations: list[OperationSummary] = Field(default_factory=list)
     operations_next_cursor: str | None = None
     connector_blocker: ConnectorBlockerSummary | None = None
+    # A run read shows the same plan and progress the task events showed.
+    task: TaskSummary | None = None
 
     @field_serializer("id")
     def serialize_id(self, value: uuid.UUID) -> str:
@@ -330,7 +333,7 @@ def _attempt_projection(attempt: ProviderAttempt) -> AttemptSummary:
 
 
 def project_run_response(
-    run: Run, attempts=(), operation_page=None, blocker=None
+    run: Run, attempts=(), operation_page=None, blocker=None, task=None
 ) -> RunResponse:
     """The public shape of a run: only what a browser is allowed to see."""
     return RunResponse(
@@ -348,6 +351,7 @@ def project_run_response(
         provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
         operations=list(operation_page.items) if operation_page else [],
         operations_next_cursor=operation_page.next_cursor if operation_page else None,
+        task=task,
         connector_blocker=(
             ConnectorBlockerSummary(
                 id=blocker.id,

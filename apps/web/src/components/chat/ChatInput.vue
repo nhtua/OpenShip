@@ -32,6 +32,9 @@ interface Props {
   // The account's execution mode is not settled: a task send would have to
   // guess it, so only a text-only send stays available.
   modeSubmissionDisabled?: boolean
+  // The run is parked on a decision, so typed text is a reply to that
+  // request - it is never an ordinary turn that starts another task.
+  replyContext?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -49,10 +52,12 @@ const props = withDefaults(defineProps<Props>(), {
   defaultConnectorIds: () => ({}),
   draftContent: null,
   modeSubmissionDisabled: false,
+  replyContext: false,
 })
 
 const emit = defineEmits<{
   send: [content: string, options?: { enableTools: boolean; connectorSelections?: ConnectorSelections }]
+  reply: [content: string]
   search: [command: Omit<ToolCommandRequest, 'client_request_id'>]
   select: [profileId: string | null, fallbackIds: string[]]
   'draft-consumed': []
@@ -337,7 +342,10 @@ async function handleSubmit() {
     if (!isS3ReadTool.value && props.connectors !== undefined) command.connector_selections = connectorSelections
     emit('search', command)
   } else {
-    if (automaticToolMode.value) {
+    // A parked decision's context turns text into a reply: the run is
+    // waiting on an exact request, so nothing here starts another task.
+    if (props.replyContext) emit('reply', text)
+    else if (automaticToolMode.value) {
       const connectorSelections: ConnectorSelections = {}
       if (awsSelectionRequired.value && selectedAwsConnectorId.value) {
         connectorSelections.aws = selectedAwsConnectorId.value
