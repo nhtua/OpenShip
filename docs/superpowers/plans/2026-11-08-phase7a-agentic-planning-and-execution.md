@@ -450,7 +450,7 @@ test warning. Task 15 remains responsible for actual recovery graph execution.
 
 **8D review follow-up:** Decision event schemas reject undeclared fields, preventing new sensitive extras from being persisted. Added unauthenticated HTTP and consumer-to-single-slot reuse tests, and a PostgreSQL cancellation/confirmation race test (collected only; authorized lane still required). Focused task/delivery/consumer/claim suite: 187 passed; event service/routes/tool events: 27 passed. Previously persisted event payloads are not rewritten by this change. Direct end-to-end restore/cutover and broker-fault qualification remain open.
 
-**8D verification pass (2026-11-09):** Cutover/restore is now exercised end to end in
+**8D verification pass (2026-11-09, commit `8d72347`):** Cutover/restore is now exercised end to end in
 `tests/test_messaging_cutover_preview.py` (`test_cutover_apply_preserves_a_parked_task_wait`,
 `test_rollback_restore_never_readmits_a_parked_task_wait`,
 `test_cutover_apply_refuses_a_task_wait_with_an_unsettled_operation`): apply preserves the wait,
