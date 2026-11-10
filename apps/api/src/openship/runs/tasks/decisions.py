@@ -21,6 +21,7 @@ from ...sandboxes.models import WorkflowSandbox
 from ...workspace.models import Project
 from ..models import ACTIVE_RUN_STATUSES, Run, RunJob
 from ..queue import Claim
+from .clock import close_active_window
 from .contracts import (
     ExecutionConfigV5,
     TaskCounters,
@@ -799,6 +800,7 @@ def park_task_wait(
         expires_at=now + timedelta(hours=24),
     )
     db.add(decision)
+    close_active_window(task, now)
     task.status = "waiting"
     task.updated_at = now
     run.status = _WAIT_STATUS[kind]

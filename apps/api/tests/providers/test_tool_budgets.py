@@ -25,7 +25,9 @@ from src.openship.providers.contracts import (
 from src.openship.providers.errors import ProviderError
 from src.openship.runs.models import Event, ProviderAttempt, Run, RunJob
 from src.openship.runs.queue import Claim
+from src.openship.runs.tasks.contracts import ExecutionConfigV5, TaskContext
 from src.openship.runs.transcript import append_transcript
+from src.openship.sandboxes.profile_schema import ProfileCatalog, catalog_digest
 from src.openship.workspace.models import Project
 from tests.conftest import TestSessionLocal
 from tests.providers.conftest import qualified_profile
@@ -87,6 +89,36 @@ def _aws_execution():
             max_total_output_tokens=15000,
         ),
     )
+def _v5_execution():
+    """A task graph v5 snapshot: its ceilings come from the task contract."""
+    refs = tuple(
+        CapabilityRef(
+            id=manifest.id,
+            version=manifest.version,
+            manifest_digest=manifest.manifest_digest,
+        )
+        for manifest in list_capability_manifests()
+    )
+    catalog = ProfileCatalog(schema_version=1, profiles={})
+    return ExecutionConfigV5(
+        aws_read_catalog_digest="a" * 64,
+        task_context=TaskContext(
+            root_run_id=uuid.uuid4(),
+            project_id=uuid.uuid4(),
+            conversation_id=uuid.uuid4(),
+            initiator_id=uuid.uuid4(),
+            scope="conversation",
+            mode="copilot",
+            graph_version=5,
+            original_intent="Chart the supplied observations.",
+        ),
+        allowed_capabilities=refs,
+        profile_catalog=catalog,
+        profile_catalog_digest=catalog_digest(catalog),
+        loop_limits=LoopLimits(deadline_seconds=120),
+    )
+
+
 def _running_run(execution):
     suffix = uuid.uuid4().hex
     with TestSessionLocal() as db:
@@ -498,3 +530,69 @@ def test_context_admission_counts_function_schemas_and_tool_results(monkeypatch)
 
     assert refused.value.code == "context_limit_exceeded"
     assert transport.requests == 0
+
+
+def test_v5_budget_ignores_the_legacy_per_loop_defaults():
+    execution = _v5_execution()
+    run_id, user_id, _project_id, _conversation_id, lease_until = _running_run(execution)
+    _claim, budget = _budget(
+        execution,
+        run_id,
+        lease_until,
+        user_id,
+        limits=RunLimits(max_attempts=64, max_output_tokens=4_000),
+    )
+    profile = _profile()
+
+    for turn in range(20):
+        budget.reserve_generation(
+            profile,
+            reason="initial" if turn == 0 else "retry",
+            model_turn_ordinal=turn,
+            requested_output_tokens=1_000,
+            reserved_tokens=None,
+            reserved_cost=None,
+        )
+    with pytest.raises(ProviderError) as refused:
+        budget.reserve_generation(
+            profile,
+            reason="retry",
+            model_turn_ordinal=20,
+            requested_output_tokens=1_000,
+            reserved_tokens=None,
+            reserved_cost=None,
+        )
+    assert refused.value.code == "budget_exceeded"
+
+    execution = _v5_execution()
+    run_id, user_id, _project_id, _conversation_id, lease_until = _running_run(execution)
+    _claim, budget = _budget(
+        execution,
+        run_id,
+        lease_until,
+        user_id,
+        limits=RunLimits(max_attempts=64, max_output_tokens=4_000),
+    )
+    for turn in range(16):
+        budget.reserve_generation(
+            profile,
+            reason="initial" if turn == 0 else "retry",
+            model_turn_ordinal=turn,
+            requested_output_tokens=3_000,
+            reserved_tokens=None,
+            reserved_cost=None,
+        )
+    with pytest.raises(ProviderError) as over_reserved:
+        budget.reserve_generation(
+            profile,
+            reason="retry",
+            model_turn_ordinal=16,
+            requested_output_tokens=3_000,
+            reserved_tokens=None,
+            reserved_cost=None,
+        )
+    assert over_reserved.value.code == "budget_exceeded"
+    with TestSessionLocal() as db:
+        assert (
+            db.query(ProviderAttempt).filter_by(run_id=run_id).count() == 16
+        )

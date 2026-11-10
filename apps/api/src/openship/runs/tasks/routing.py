@@ -31,6 +31,17 @@ def _step_action(kind: str, step_id: str, reason: str) -> TaskAction:
     return TaskAction(kind=kind, step_id=step_id, reason=reason)
 
 
+def _attempt_ceiling_allows(progress: TaskProgress, step_id: str, ceilings) -> bool:
+    """The shared per-step attempt ceiling, one initial attempt plus repairs.
+
+    The import stays local so this switcher keeps its module imports contract
+    only: the ceiling lives with the task clocks, not beside them.
+    """
+    from .clock import attempt_ceiling_allows
+
+    return attempt_ceiling_allows(progress, step_id, limits=ceilings)
+
+
 def _all_verified(progress: TaskProgress) -> bool:
     return bool(progress.step_ids) and set(progress.step_ids) <= set(
         progress.verified_steps
@@ -85,8 +96,14 @@ def select_action(
     *,
     policy_allows: bool,
     budget_allows: bool,
+    limits: TaskLimits | None = None,
 ) -> TaskAction:
-    """Select exactly one eligible action without inferring or dispatching."""
+    """Select exactly one eligible action without inferring or dispatching.
+
+    `limits` lets the caller pass the effective ceilings it validated with the
+    budget instead of the contract defaults; it narrows a ceiling only.
+    """
+    ceilings = limits if limits is not None else _LIMITS
     if not policy_allows:
         return _stop("policy does not allow this transition")
     if not budget_allows:
@@ -128,9 +145,11 @@ def select_action(
                 return _stop("verified steps are not repaired")
             if (
                 progress.counters.repairs_by_step.get(step_id, 0)
-                >= _LIMITS.max_repairs_per_step
+                >= ceilings.max_repairs_per_step
             ):
                 return _stop("the step repair ceiling is exhausted")
+            if not _attempt_ceiling_allows(progress, step_id, ceilings):
+                return _stop("the step attempt ceiling is exhausted")
             return _step_action(
                 "repair", step_id, "repair a known, bounded failure"
             )

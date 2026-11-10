@@ -14,6 +14,7 @@ from ..providers.attempts import DatabaseAttemptRecorder
 from ..providers.errors import ProviderError
 from .models import ProviderAttempt, Run
 from .queue import Claim
+from .tasks.clock import effective_loop_limits
 from .transcript import read_transcript
 
 
@@ -38,6 +39,23 @@ class RunBudget:
         self._limits = limits
         self._execution = execution
 
+    def _effective_limits(self):
+        """The ceilings this run charges against: task ceilings for v5.
+
+        Legacy graphs keep their per-loop defaults; a v5 task budget counts
+        planning, repairs, diagnosis and ordinary turns against one shared set
+        of task ceilings, narrowed only by caps the profile actually declared.
+        """
+        if self._execution.graph_version == 5:
+            from src.openship.config import settings
+
+            return effective_loop_limits(
+                self._execution,
+                profile_limits=self._limits,
+                max_generation_attempts=settings.agentic_max_generation_attempts,
+            )
+        return self._execution.loop_limits
+
     def reserve_generation(
         self,
         profile,
@@ -50,7 +68,8 @@ class RunBudget:
         """Atomically admit one model request and record its reservation."""
         from ..execution.admission import require_live_claim
 
-        loop = self._execution.loop_limits
+        loop = self._effective_limits()
+        wall_deadline_seconds = self._execution.loop_limits.deadline_seconds
         output_limit = min(
             self._limits.max_output_tokens,
             loop.max_output_tokens_per_request,
@@ -88,7 +107,7 @@ class RunBudget:
             run = require_live_claim(db, self._claim, lock=True)
             if (
                 run.kind != "chat"
-                or run.graph_version not in (2, 3, 4)
+                or run.graph_version not in (2, 3, 4, 5)
                 or self._execution.graph_kind != "chat"
                 or self._execution.graph_version != run.graph_version
             ):
@@ -98,7 +117,7 @@ class RunBudget:
             if run.execution_started_at is None and run.execution_deadline_at is None:
                 run.execution_started_at = now
                 run.execution_deadline_at = now + timedelta(
-                    seconds=loop.deadline_seconds
+                    seconds=wall_deadline_seconds
                 )
             elif run.execution_started_at is None or run.execution_deadline_at is None:
                 raise ProviderError("configuration_error")
@@ -202,7 +221,7 @@ class RunBudget:
             run = require_live_claim(db, self._claim, lock=True)
             if (
                 run.kind != "chat"
-                or run.graph_version not in (2, 3, 4)
+                or run.graph_version not in (2, 3, 4, 5)
                 or self._execution.graph_kind != "chat"
                 or self._execution.graph_version != run.graph_version
             ):
@@ -220,7 +239,7 @@ class RunBudget:
                     "invalid_request",
                     safe_message="The model tool call was not saved in the run transcript.",
                 )
-            if len(call_ids) > self._execution.loop_limits.max_tool_calls:
+            if len(call_ids) > self._effective_limits().max_tool_calls:
                 raise ProviderError("tool_limit_exceeded")
         finally:
             db.close()

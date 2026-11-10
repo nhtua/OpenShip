@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     agentic_tasks_enabled: bool = False
     agentic_task_profile_ids: str = ""
 
+    # Deployment ceiling for agentic generation attempts. It is lowering-only:
+    # the contract ceiling for one task is the upper bound, and a deployment
+    # may narrow what one task may consume, never widen it.
+    agentic_max_generation_attempts: int = Field(default=24, ge=1, le=24)
+
     @classmethod
     def settings_customise_sources(
         cls,
