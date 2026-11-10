@@ -17,11 +17,13 @@ Two rules this module exists to protect:
 * A wait returns a parked disposition to the worker, which must not publish
   its ordinary final message or completion for a parked run.
 
-Verification authority (which committed evidence satisfies a plan criterion)
-belongs to Task 12, and uncertain-operation diagnosis plus recovery choices to
-Task 15. Until verification exists the ``verify`` node records one deferral per
-step and advances to the next eligible step, so an approved plan keeps running
-without re-prompting; nothing here claims a step is verified or a task complete.
+Verification authority lives in ``tasks.verification`` and this graph only
+records what it derives: the ``verify`` node asks for one step's verdict per
+pass and commits it, so a step whose evidence does not hold stays unverified
+and an approved plan keeps running without re-prompting; nothing here claims
+a step is verified or a task complete beyond what the verdicts support.
+A plan revision that reaches beyond what this run's pinned plan reviewed is
+classified in ``tasks.routing`` and asks the user again, in either mode.
 An unsettled attempt is never read as absence of work: the graph stops and keeps
 its identity.
 """
@@ -56,14 +58,16 @@ from ..runs.tasks.contracts import (
 )
 from ..runs.tasks.decisions import park_task_wait
 from ..runs.tasks.inference import assess_task, evidence_only_assessment, plan_task
-from ..runs.tasks.routing import select_action
+from ..runs.tasks.routing import classify_revision, select_action
 from ..runs.tasks.state import (
     read_plan,
     read_progress,
     record_attempt_result,
     record_task_call,
+    record_verification,
     save_plan,
 )
+from ..runs.tasks.verification import verify_step
 from .agent_graph import _failure_for_tool, _result_message
 from .transcript import append_transcript, read_transcript
 
@@ -106,7 +110,9 @@ _CURSOR_KEYS = frozenset(
         "stopped",
         "next_action",
         "action_step_id",
-        "verification_deferred",
+        "verification_recorded",
+        "verification_inspected",
+        "revision_class",
         "advance",
         "awaiting",
         "stage",
@@ -310,7 +316,13 @@ def build_task_graph(
         return {"cursor": cursor}
 
     def publish(state: TaskGraphState) -> dict:
-        """Persist the validated plan, then present it before any execution."""
+        """Persist the validated plan, then present it before any execution.
+
+        The published plan is classified against the plan this run carried
+        before: the class is only a durable reading of what the new revision
+        changed, and it is what lets the gate ask again for work that reaches
+        beyond the reviewed scope.
+        """
         invocation = _invocation(state)
         cursor = _cursor_of(state)
         plan = _plan_of(cursor)
@@ -318,11 +330,19 @@ def build_task_graph(
             raise ProviderError("configuration_error", safe_message="no plan draft was published.")
         with invocation.session_factory() as db:
             progress = read_progress(db, invocation.claim.run_id)
+            previous = read_plan(db, invocation.claim.run_id)
             save_plan(db, invocation.claim, plan, expected_revision=progress.current_revision)
             db.commit()
         intent = execution_of_intent(state)
         return {
-            "cursor": {**cursor, "plan_revision": plan.revision, "step_index": 0},
+            "cursor": {
+                **cursor,
+                "plan_revision": plan.revision,
+                "step_index": 0,
+                "revision_class": (
+                    classify_revision(previous, plan) if previous is not None else ""
+                ),
+            },
             "assistant_response": _presentation(plan, intent),
             "expected_revision": plan.revision,
         }
@@ -652,27 +672,77 @@ def build_task_graph(
         }
 
     def verify(state: TaskGraphState) -> dict:
-        """Note that one step still needs its evidence inspected, then advance.
+        """Ask the verification authority for one step's verdict and record it.
 
-        Task 12 owns the verdict (does committed evidence satisfy this step's
-        criteria). Until it exists this node records exactly one deferral per
-        step per invocation and moves on only to the next eligible step durable
-        progress has not committed a result for. It never writes a verdict, so
-        nothing here can read as verified work or a completed task.
+        The verdict comes from ``tasks.verification`` reading the durable
+        records - committed attempt, committed operation, the artifacts that
+        operation published and their stored bytes - never from the model's
+        words. Recording a failing verdict keeps the step unverified and notes
+        the disposition the records support; nothing here can read as a
+        completed task. The step's verdict is recorded at most once per
+        invocation so a failing verdict cannot spin the switch.
         """
         invocation = _invocation(state)
         cursor = _cursor_of(state)
         step_id = cursor.get("action_step_id")
-        deferred = list(cursor.get("verification_deferred") or ())
-        if step_id and step_id not in deferred:
-            deferred.append(step_id)
+        recorded = list(cursor.get("verification_recorded") or ())
+        inspected = list(cursor.get("verification_inspected") or ())
+        if not step_id:
+            return {
+                "cursor": {
+                    **cursor,
+                    "verification_recorded": recorded,
+                    "verification_inspected": inspected,
+                    "advance": "finish",
+                }
+            }
+        if step_id not in inspected:
+            inspected.append(step_id)
+        assessment = _assessment_of(cursor)
+        if assessment is None:
+            # An assessment-less cursor cites nothing durable: the verdict
+            # must fail rather than pass without cited evidence.
+            assessment = TaskAssessment(
+                classification="task",
+                explanation="This stage cites no evidence of its own.",
+            )
         with invocation.session_factory() as db:
             progress = read_progress(db, invocation.claim.run_id)
+            has_attempt = any(
+                attempt.step_id == step_id for attempt in progress.attempts
+            )
+            if has_attempt:
+                report = verify_step(
+                    db,
+                    run_id=invocation.claim.run_id,
+                    step_id=step_id,
+                    assessment=assessment,
+                )
+                progress = record_verification(
+                    db,
+                    invocation.claim,
+                    step_id=step_id,
+                    report=report,
+                )
+                db.commit()
+                recorded.append(step_id)
             plan = read_plan(db, invocation.claim.run_id)
+            pending = (
+                _pending_step(plan, cursor, progress, _committed_steps(progress))
+                if plan is not None
+                else None
+            )
         advance = "finish"
-        if plan is not None and _pending_step(plan, cursor, progress, _committed_steps(progress)):
+        if pending is not None:
             advance = "step"
-        return {"cursor": {**cursor, "verification_deferred": deferred, "advance": advance}}
+        return {
+            "cursor": {
+                **cursor,
+                "verification_recorded": recorded,
+                "verification_inspected": inspected,
+                "advance": advance,
+            }
+        }
 
     def finish(state: TaskGraphState) -> dict:
         if state.get("finish_reason") or state.get("assistant_response"):
@@ -701,6 +771,11 @@ def build_task_graph(
         execution = _execution_of(state)
         if execution.task_context.mode == "copilot":
             return "gate"
+        if (_cursor_of(state) or {}).get("revision_class") == "expanded_scope":
+            # New sources or scope cross what the reviewed plan pinned: they ask
+            # the user even in Auto, whose approval only ever covered the
+            # original intent.
+            return "gate"
         return "switch"
 
     def _after_switch(state: TaskGraphState) -> str:
@@ -716,12 +791,12 @@ def build_task_graph(
             return "wait"
         if action == "verify":
             step_id = cursor.get("action_step_id")
-            deferred = set(cursor.get("verification_deferred") or ())
-            if step_id and step_id not in deferred:
+            inspected = set(cursor.get("verification_inspected") or ())
+            if step_id and step_id not in inspected:
                 return "verify"
-            # That step's evidence was already deferred once this invocation
-            # ran: asking again would loop, so the run ends with its durable
-            # progress published and verification still owed.
+            # This invocation already inspected that step: asking again would
+            # loop, so the run ends with its durable progress published and
+            # any failing verdict still owed.
             return "finish"
         return "finish"
 

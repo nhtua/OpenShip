@@ -7,7 +7,9 @@ policy and budget decisions and remain responsible for enforcing them.
 
 from __future__ import annotations
 
-from .contracts import TaskAction, TaskAssessment, TaskLimits, TaskProgress
+from typing import Literal
+
+from .contracts import TaskAction, TaskAssessment, TaskLimits, TaskPlan, TaskProgress
 
 _LIMITS = TaskLimits()
 _TERMINAL_STATUSES = frozenset(
@@ -31,6 +33,67 @@ def _step_action(kind: str, step_id: str, reason: str) -> TaskAction:
     return TaskAction(kind=kind, step_id=step_id, reason=reason)
 
 
+def _repair_made_no_progress(progress: TaskProgress, step_id: str) -> bool:
+    """Whether the step's last two attempts carry the same evidence identity.
+
+    A repair that repeats the same inputs and the same recorded result changed
+    nothing: comparing the normalized attempt identity, not a model's words,
+    is what stops the loop instead of spending the remaining ceiling.
+    """
+    attempts = sorted(
+        (
+            attempt
+            for attempt in progress.attempts
+            if attempt.step_id == step_id and attempt.status == "failed"
+        ),
+        key=lambda attempt: attempt.attempt,
+    )
+    if len(attempts) < 2:
+        return False
+    left, right = attempts[-2], attempts[-1]
+    return left.input_digest == right.input_digest and left.result_digest == right.result_digest
+
+
+def classify_revision(
+    previous: TaskPlan, proposed: TaskPlan
+) -> Literal["repair", "material", "expanded_scope"]:
+    """Which revision boundary a proposed plan crosses.
+
+    A repair keeps the same steps, capabilities and profile choices and changes
+    only what a step works on, so it stays inside the reviewed scope. Re-choosing
+    a capability, a profile or the dependency shape is a different approach and
+    therefore material: it needs a new review. Adding or removing steps, or
+    reaching beyond the previous plan's pinned capability, profile and output
+    sets, expands scope and always asks the user, in either mode.
+    """
+    prior = {step.id: step for step in previous.steps}
+    if {step.id for step in proposed.steps} != set(prior):
+        return "expanded_scope"
+    prior_capabilities = {
+        (item.id, item.version, item.manifest_digest)
+        for item in previous.available_capabilities
+    }
+    if any(
+        (item.id, item.version, item.manifest_digest) not in prior_capabilities
+        for item in proposed.available_capabilities
+    ):
+        return "expanded_scope"
+    if not set(proposed.available_profiles) <= set(previous.available_profiles):
+        return "expanded_scope"
+    material = False
+    for step in proposed.steps:
+        earlier = prior[step.id]
+        if not set(step.expected_outputs) <= set(earlier.expected_outputs):
+            return "expanded_scope"
+        if (
+            step.depends_on != earlier.depends_on
+            or step.capability != earlier.capability
+            or step.profile_id != earlier.profile_id
+        ):
+            material = True
+    return "material" if material else "repair"
+
+
 def _attempt_ceiling_allows(progress: TaskProgress, step_id: str, ceilings) -> bool:
     """The shared per-step attempt ceiling, one initial attempt plus repairs.
 
@@ -43,16 +106,50 @@ def _attempt_ceiling_allows(progress: TaskProgress, step_id: str, ceilings) -> b
 
 
 def _all_verified(progress: TaskProgress) -> bool:
+    """Only verified work covers a step: a user's skip is never verified success."""
     return bool(progress.step_ids) and set(progress.step_ids) <= set(
         progress.verified_steps
     )
 
 
 def _next_unverified(progress: TaskProgress) -> str | None:
-    verified = set(progress.verified_steps)
+    """The next step still owed work, skipping steps the user chose to skip.
+
+    Skipped steps stay unverified, so they are never selected for work again;
+    what still has to run is decided from the plan order.
+    """
+    settled = set(progress.verified_steps) | set(progress.skipped_steps)
     for step_id in progress.step_ids:
-        if step_id not in verified:
+        if step_id not in settled:
             return step_id
+    return None
+
+
+def _dependency_gap(progress: TaskProgress, step_id: str) -> str | None:
+    """A dependency of this step that verified work does not cover.
+
+    The projection groups work per step with its dependency edges, so the
+    exact unvalidated input is named when the caller passes one; a bare
+    ``TaskProgress`` only pins plan order, where every earlier step is a
+    dependency. A step whose dependency was skipped (or never verified) has
+    an input nothing validated: continuing there would execute on unvalidated
+    inputs, which stays a wait or a visible plan revision instead.
+    """
+    verified = set(progress.verified_steps)
+    steps = getattr(progress, "steps", ())
+    if steps:
+        for step in steps:
+            if step.id != step_id:
+                continue
+            for dependency in step.depends_on:
+                if dependency not in verified:
+                    return dependency
+        return None
+    for previous in progress.step_ids:
+        if previous == step_id:
+            break
+        if previous not in verified:
+            return previous
     return None
 
 
@@ -86,7 +183,18 @@ def _continue(progress: TaskProgress) -> TaskAction:
     if step_id is None:
         if _all_verified(progress):
             return TaskAction(kind="finish", reason="all required steps are verified")
+        if set(progress.step_ids) <= set(progress.verified_steps) | set(
+            progress.skipped_steps
+        ):
+            return _stop("skipped work leaves required deliverables uncovered")
         return _stop("there is no eligible step to execute")
+    gap = _dependency_gap(progress, step_id)
+    if gap is not None:
+        if gap in set(progress.skipped_steps):
+            return _wait(
+                "a skipped dependency leaves this step's required inputs unvalidated"
+            )
+        return _step_action("execute", gap, "execute the dependency first")
     return _step_action("execute", step_id, "execute the next verified plan step")
 
 
@@ -170,11 +278,15 @@ def select_action(
                 return _stop("no bounded step can be repaired")
             if step_id in progress.verified_steps:
                 return _stop("verified steps are not repaired")
+            if step_id in set(progress.skipped_steps):
+                return _stop("a step the user skipped is not repaired here")
             if (
                 progress.counters.repairs_by_step.get(step_id, 0)
                 >= ceilings.max_repairs_per_step
             ):
                 return _stop("the step repair ceiling is exhausted")
+            if _repair_made_no_progress(progress, step_id):
+                return _stop("the same evidence repeated without progress")
             if not _attempt_ceiling_allows(progress, step_id, ceilings):
                 return _stop("the step attempt ceiling is exhausted")
             return _step_action(

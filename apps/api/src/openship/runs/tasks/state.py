@@ -34,6 +34,7 @@ from .contracts import (
     TaskDecision,
     TaskPlan,
     TaskRecoveryReport,
+    VerificationReport,
 )
 from .models import (
     TaskDecisionRecord,
@@ -95,7 +96,14 @@ def _counters(task: TaskRecord) -> TaskCounters:
 def _verified_outputs(task: TaskRecord) -> tuple[ArtifactRef, ...]:
     raw = _json(task.verified_outputs_json, [])
     try:
-        return tuple(ArtifactRef.model_validate(item) for item in raw)
+        items = []
+        for item in raw:
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                # The durable JSON stores UUIDs as strings; the strict contract
+                # wants the instance itself, so re-materialise it here.
+                item = {**item, "id": uuid.UUID(item["id"])}
+            items.append(item)
+        return tuple(ArtifactRef.model_validate(item) for item in items)
     except ValueError as exc:
         raise TaskStateError("state_corrupt", "verified outputs are invalid") from exc
 
@@ -768,5 +776,186 @@ def record_task_call(
     )
     task.fence = claim.fence
     task.updated_at = _now()
+    db.flush()
+    return _project(db, task)
+
+
+def record_verification(
+    db,
+    claim: Claim,
+    *,
+    step_id: str,
+    report: VerificationReport,
+) -> TaskProgressProjection:
+    """Commit one step's verdict, recording only evidence the records hold.
+
+    The report is a verdict over durable records, so recording cannot add
+    evidence: a passing verdict only names the step and the ready artifacts its
+    own committed operation published, and a failing verdict keeps the step
+    unverified while recording the disposition the records support. A skipped
+    step is refused outright, because a user's skip is never a verified success.
+    """
+    if not isinstance(report, VerificationReport):
+        raise TaskStateError("invalid_report", "a strict verification report is required")
+    state = _claim_state(db, claim)
+    task = state.task
+    if task is None:
+        raise TaskStateError("task_missing", "no plan has been saved for this run")
+    plan_row = _current_plan(db, task)
+    if plan_row is None:
+        raise TaskStateError("plan_missing", "the current plan is missing")
+    plan = _load_plan(plan_row)
+    step = next((item for item in plan.steps if item.id == step_id), None)
+    if step is None or report.step_id != step_id:
+        raise TaskStateError(
+            "step_unknown",
+            "the report does not name a step of the current plan",
+        )
+    skipped = [item for item in _json(task.skipped_steps_json, [])]
+    if step_id in skipped:
+        raise TaskStateError(
+            "skip_not_verifiable",
+            "a skipped step is recorded as skipped and never as verified",
+        )
+
+    attempts = (
+        db.query(TaskStepAttempt)
+        .filter_by(run_id=task.run_id, step_id=step_id)
+        .order_by(TaskStepAttempt.ordinal)
+        .all()
+    )
+    latest = attempts[-1] if attempts else None
+    counters = _counters(task)
+
+    if not report.passed:
+        disposition = "none"
+        if latest is not None and latest.status == "failed":
+            disposition = "known_failure"
+        elif latest is not None and latest.status == "uncertain":
+            disposition = "uncertain"
+        repairs = dict(counters.repairs_by_step)
+        if latest is not None:
+            repairs[step_id] = max(0, len(attempts) - 1)
+        task.counters_json = counters.model_copy(
+            update={"repairs_by_step": repairs}
+        ).model_dump_json()
+        task.last_disposition = disposition
+        task.fence = claim.fence
+        task.updated_at = _now()
+        db.flush()
+        append_event(
+            db,
+            conversation_id=task.conversation_id,
+            run_id=task.run_id,
+            event_type="task.verification_recorded",
+            payload={
+                "run_id": str(task.run_id),
+                "revision": task.current_revision,
+                "step_id": step_id,
+                "passed": False,
+                "missing": list(report.missing),
+                "disposition": disposition,
+            },
+        )
+        db.flush()
+        return _project(db, task)
+
+    if latest is None or latest.status != "succeeded":
+        raise TaskStateError(
+            "verification_conflict",
+            "a passing verdict requires a committed successful attempt",
+        )
+    operation = (
+        db.query(ToolOperation)
+        .filter_by(id=latest.operation_id)
+        .one_or_none()
+    )
+    if operation is None or operation.status != "succeeded":
+        raise TaskStateError(
+            "verification_conflict",
+            "a passing verdict requires a committed successful operation",
+        )
+    published = _json(operation.output_artifact_ids, [])
+    if not isinstance(published, list):
+        raise TaskStateError("state_corrupt", "operation artifact ids are not a list")
+    rows = []
+    for item in published:
+        try:
+            identity = uuid.UUID(str(item))
+        except (TypeError, ValueError):
+            raise TaskStateError("state_corrupt", "operation artifact id is invalid") from None
+        row = db.query(Artifact).filter_by(id=identity).one_or_none()
+        if (
+            row is None
+            or row.status != "ready"
+            or row.project_id != operation.project_id
+            or row.conversation_id != operation.conversation_id
+            or row.originating_run_id != operation.run_id
+            or row.originating_operation_id != operation.id
+        ):
+            raise TaskStateError(
+                "artifact_scope",
+                "a published artifact is missing, unready or belongs to another scope",
+            )
+        rows.append(row)
+    if not rows:
+        raise TaskStateError(
+            "verification_conflict",
+            "a passing verdict requires published evidence to record",
+        )
+
+    # Recording a passing verdict is not authority for the bytes behind it:
+    # the verification module is what proves the stored bytes still match the
+    # identity the record claims, so a record whose volume no longer proves it
+    # cannot be written as verified.
+    from .verification import _stored_bytes
+
+    for row in rows:
+        if _stored_bytes(row) is None:
+            raise TaskStateError(
+                "verification_conflict",
+                "a passing verdict requires stored bytes that prove the recorded identity",
+            )
+
+    recorded = {ref.id for ref in _verified_outputs(task)}
+    additions = [
+        ArtifactRef(
+            id=row.id,
+            sha256=row.sha256,
+            size_bytes=row.size_bytes,
+            media_type=row.media_type,
+        )
+        for row in rows
+        if row.id not in recorded
+    ]
+    steps = [item for item in _verified_steps(task)]
+    if step_id not in steps:
+        steps.append(step_id)
+    outputs = [ref.model_dump(mode="json") for ref in _verified_outputs(task)]
+    outputs.extend(ref.model_dump(mode="json") for ref in additions)
+    task.verified_steps_json = json.dumps(steps)
+    task.verified_outputs_json = json.dumps(outputs)
+
+    plan_steps = [item.id for item in plan.steps]
+    covered = all(item in steps for item in plan_steps)
+    task.status = "completed" if covered else "verification_pending"
+    task.last_disposition = "none"
+    task.fence = claim.fence
+    task.updated_at = _now()
+    db.flush()
+    append_event(
+        db,
+        conversation_id=task.conversation_id,
+        run_id=task.run_id,
+        event_type="task.verification_recorded",
+        payload={
+            "run_id": str(task.run_id),
+            "revision": task.current_revision,
+            "step_id": step_id,
+            "passed": True,
+            "artifact_ids": [str(row.id) for row in rows],
+            "task_status": task.status,
+        },
+    )
     db.flush()
     return _project(db, task)

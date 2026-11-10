@@ -3,33 +3,39 @@
 Every case drives the compiled graph itself (``runs.dispatch`` resolves it only
 as ``("chat", 5)`` against an ``ExecutionConfigV5`` snapshot), so the records
 under test are the ones the worker would write: task, plan revision, call
-binding, committed ``ToolOperation``, step attempt, transcript turn. The
-sandbox and HTTP legs of a capability already have their own tests, so the
-gateway here is a lane that performs the real authority check
-(``admit_operation``) and commits a real operation, then reports what it
-committed: a case about progress is never a case about transport.
+binding, committed ``ToolOperation``, published artifacts, step attempt,
+transcript turn. The sandbox and HTTP legs of a capability already have their
+own tests, so the gateway here is a lane that performs the real authority check
+(``admit_operation``), commits a real operation and stages real bytes for the
+artifacts it records: a case about progress is never a case about transport,
+and a verdict here is only ever a reading of those records.
 
-Two gaps are recorded honestly where the phase defers authority:
+Verification verdicts come from Task 12's authority, and this lane uses it: the
+``verify`` node asks for one step's verdict per pass and commits it, so a step
+whose declared outputs really are published, ready and backed by stored bytes
+becomes verified, and an approved plan that covers every step ends completed on
+the records - not because any answer said so.
 
-* Verification verdicts are Task 12's. The graph's ``verify`` node records one
-  deferral per step per invocation and advances, so an approved plan keeps
-  running without re-prompting. No case here may claim a step was verified or
-  a task completed, so the plan's ``final_task_status == "completed"`` clause
-  is asserted as the status the records actually give - ``"running"`` with the
-  step still unverified - and Task 12 closes that clause.
-* Uncertain-operation diagnosis and the abort/repeat/continue choice are Task
-  15's. Uncertain work stays visibly blocked, with no automatic repeat or skip.
+One deferral stays honest here: uncertain-operation diagnosis and the abort/repeat/continue
+choice are Task 15's, so uncertain work stays visibly blocked with no automatic
+repeat or skip.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import tempfile
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from src.openship.artifacts.contracts import ArtifactRef
+from src.openship.artifacts.filesystem import LocalArtifactStore
+from src.openship.artifacts.models import Artifact
 from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import (
     AuthorizationContext,
@@ -87,6 +93,71 @@ pytestmark = []
 
 INTENT = "Chart the supplied observations and report their averages."
 CAPABILITY_IDS = ("download_file", "python_execute")
+
+OBSERVATIONS = "observations.csv"
+CHART = "chart.png"
+AVERAGES = "averages.json"
+OBSERVATION_BYTES = b"timestamp,value\n2024-01-01,1.5\n2024-01-02,2.0\n"
+CHART_BYTES = b"\x89PNG\r\n\x1a\nsynthetic-chart"
+AVERAGE_BYTES = b'{"averages": {"mean": 3.5}}'
+
+#: The bytes each capability publishes, as the plan's declared outputs name them.
+PUBLISHED_OUTPUTS = {
+    "download_file": ((OBSERVATIONS, "cloud_observation", "text/plain", OBSERVATION_BYTES),),
+    "python_execute": (
+        (CHART, "analysis_output", "image/png", CHART_BYTES),
+        (AVERAGES, "analysis_output", "application/json", AVERAGE_BYTES),
+    ),
+}
+
+
+def _artifact_volume(monkeypatch) -> LocalArtifactStore:
+    """This lane's artifact volume, with the installation identity it carries."""
+    root = Path(tempfile.mkdtemp()) / "artifact-volume"
+    monkeypatch.setattr(settings, "artifact_root", root)
+    monkeypatch.setattr(settings, "artifact_storage_id", uuid.uuid4())
+    store = LocalArtifactStore(root, settings.artifact_storage_id)
+    store.initialize()
+    return store
+
+
+def _publish(db, store: LocalArtifactStore, *, scope, operation, name, kind, media_type, data) -> str:
+    """Real staged bytes for one declared output, recorded on that operation."""
+    project_id, conversation_id, run_id = scope
+    artifact_id = uuid.uuid4()
+    reference = ArtifactRef(
+        id=artifact_id,
+        sha256=hashlib.sha256(data).hexdigest(),
+        size_bytes=len(data),
+        media_type=media_type,
+    )
+    staged = store.stage(
+        artifact_id,
+        [data],
+        reference,
+        project_id=project_id,
+        conversation_id=conversation_id,
+    )
+    store.publish_file(staged, f"{artifact_id}/content")
+    db.add(
+        Artifact(
+            id=artifact_id,
+            project_id=project_id,
+            conversation_id=conversation_id,
+            originating_run_id=run_id,
+            originating_operation_id=operation.id,
+            kind=kind,
+            media_type=media_type,
+            display_name=name,
+            size_bytes=len(data),
+            sha256=reference.sha256,
+            relative_storage_key=f"{artifact_id}/content",
+            status="ready",
+            source="tool",
+        )
+    )
+    db.flush()
+    return str(artifact_id)
 
 
 def _refs() -> tuple[CapabilityRef, ...]:
@@ -197,8 +268,19 @@ def _journey() -> list[dict]:
 class _CommittedGateway:
     """Real authority, real durable operation: the result is only what it says."""
 
-    def __init__(self, *, principal_id, project_id, conversation_id, run_id, sessions=TestSessionLocal):
+    def __init__(
+        self,
+        *,
+        principal_id,
+        project_id,
+        conversation_id,
+        run_id,
+        store: LocalArtifactStore,
+        sessions=TestSessionLocal,
+    ):
         self.calls: list[dict] = []
+        self.store = store
+        self.scope = (project_id, conversation_id, run_id)
         self.sessions = sessions
         self.principal_id = principal_id
         self.project_id = project_id
@@ -212,7 +294,7 @@ class _CommittedGateway:
                 "url": arguments["url"],
                 "stored_alias": "observations.csv",
                 "size_bytes": 128,
-                "media_type": "text/csv",
+                "media_type": "text/plain",
             }
         return {
             "exit_code": 0,
@@ -251,6 +333,21 @@ class _CommittedGateway:
                     safe_message="the step stopped before its result was committed",
                 )
             result = self._result_for(ref.id, arguments)
+            operation.output_artifact_ids = json.dumps(
+                [
+                    _publish(
+                        db,
+                        self.store,
+                        scope=self.scope,
+                        operation=operation,
+                        name=name,
+                        kind=kind,
+                        media_type=media_type,
+                        data=data,
+                    )
+                    for name, kind, media_type, data in PUBLISHED_OUTPUTS[ref.id]
+                ]
+            )
             operation.status = "succeeded"
             operation.result_json = json.dumps(result)
             operation.result_digest = canonical_digest(result)
@@ -298,6 +395,7 @@ class Lane:
         monkeypatch.setattr(settings, "tool_enabled_ids", ",".join(CAPABILITY_IDS))
         monkeypatch.setattr(settings, "sandbox_endpoint", "http://sandbox.test")
         monkeypatch.setattr(settings, "sandbox_deployment_id", "task-lane-deployment")
+        self.store = _artifact_volume(monkeypatch)
 
         self.sessions = sessions or TestSessionLocal
         self.catalog = _catalog(_all_profiles())
@@ -329,6 +427,7 @@ class Lane:
         self.transport = serve_requests(monkeypatch, behaviors) if behaviors else None
         self.gateway = _CommittedGateway(
             sessions=self.sessions,
+            store=self.store,
             principal_id=self.user_id,
             project_id=self.project_id,
             conversation_id=self.conversation_id,
@@ -610,7 +709,7 @@ def test_auto_announces_plan_then_downloads_executes_and_verifies(monkeypatch):
     capability_calls = _calls(lane)
     assert capability_calls == ["download_file", "python_execute"]
     assert outcome["assistant_response"].startswith("Plan revision 1:")
-    assert outcome["cursor"]["verification_deferred"] == ["fetch"]
+    assert outcome["cursor"]["verification_recorded"] == ["fetch", "analyze"]
 
     durable = _durable(lane.run_id)
     assert _dispatch_counts(durable["operations"]) == {"download_file": 1, "python_execute": 1}
@@ -618,10 +717,14 @@ def test_auto_announces_plan_then_downloads_executes_and_verifies(monkeypatch):
     assert [row.logical_call_id for row in durable["operations"]] == [
         binding.logical_call_id for binding in durable["progress"].call_bindings
     ]
-    # Task 12 owns the verdict: the records say the work ran, not that it met
-    # its criteria, so no step is verified and no task is completed yet.
-    assert durable["progress"].verified_steps == ()
-    assert durable["task_status"] == "running"
+    # Task 12's verdicts are what make this completed: each step's declared
+    # outputs are published by its own committed operation, ready, and their
+    # stored bytes still prove the recorded identity, so every plan step is
+    # verified and nothing else had to be believed.
+    assert durable["progress"].verified_steps == ("fetch", "analyze")
+    assert len(durable["progress"].verified_outputs) == 3
+    assert durable["task_status"] == "completed"
+    assert durable["progress"].status == "completed"
     assert durable["decisions"] == []
 
 
@@ -642,7 +745,8 @@ def test_one_confirmation_allows_multiple_steps(monkeypatch):
     assert len(durable["decisions"]) == 1
     assert durable["plan"].revision == 1
     assert len(durable["attempts"]) == 2
-    assert durable["progress"].status == "running"
+    assert durable["progress"].verified_steps == ("fetch", "analyze")
+    assert durable["progress"].status == "completed"
     assert lane.transport.requests == 4
 
 
@@ -670,7 +774,13 @@ def test_committed_download_replayed_without_refetch_after_restart(monkeypatch):
         "fetch": "succeeded",
         "analyze": "succeeded",
     }
-    assert outcome["cursor"]["verification_deferred"] == ["fetch"]
+    # The restarted invocation inspected nothing again: both verdicts are
+    # already durable, so the switch ends the run from the records alone.
+    assert outcome["cursor"].get("verification_inspected") is None
+    assert outcome["cursor"]["next_action"] == "finish"
+    assert after_restart["progress"].verified_steps == ("fetch", "analyze")
+    assert after_restart["task_status"] == before_crash["task_status"]
+    assert after_restart["task_status"] == "completed"
     assert after_restart["plan"].revision == before_crash["plan"].revision
     assert len(lane.gateway.calls) == 2
     assert lane.transport.requests == 4
@@ -695,18 +805,20 @@ def test_assistant_final_text_does_not_complete_missing_outputs(monkeypatch):
 
     assert _calls(lane) == ["download_file"]
     assert outcome["cursor"]["stopped"] == "no_tool_call"
-    assert outcome["cursor"]["verification_deferred"] == ["fetch"]
+    assert outcome["cursor"]["verification_recorded"] == ["fetch"]
 
     durable = _durable(lane.run_id)
     assert _step_attempts(durable["attempts"]) == {"fetch": "succeeded"}
-    assert durable["progress"].verified_steps == ()
-    assert durable["task_status"] == "running"
     assert len(durable["operations"]) == 1
-    # Naming a deliverable in prose is neither completion nor the published
-    # message: the plan announcement is this run's only user-facing answer.
+    # The download earned a verdict because its own operation published a ready
+    # artifact whose stored bytes still prove the identity; the chart has no
+    # such evidence, so the task stays partial, and naming a deliverable in
+    # prose is neither completion nor the published message.
+    assert durable["progress"].verified_steps == ("fetch",)
+    assert durable["progress"].skipped_steps == ()
+    assert durable["task_status"] == "verification_pending"
     assert outcome["assistant_response"].startswith("Plan revision 1:")
     assert "The chart is finished." not in outcome["assistant_response"]
-    assert durable["progress"].status == "running"
 
 
 def test_lost_uncommitted_approval_shows_same_plan_without_restart(monkeypatch):

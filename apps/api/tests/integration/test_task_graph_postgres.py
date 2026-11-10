@@ -120,7 +120,15 @@ def test_pg_restart_replays_committed_results(pg_sessions, monkeypatch):
         row.step_id for row in before_restart["attempts"]
     ]
     assert len(lane.gateway.calls) == 2
-    assert outcome["cursor"]["next_action"] == "verify"
+    # The restarted invocation inspected nothing again: both steps' verdicts
+    # are already durable in this database, so the switch ends the run from
+    # these records alone, and the task is completed only because those
+    # records cover every plan step.
+    assert outcome["cursor"].get("verification_inspected") is None
+    assert outcome["cursor"]["next_action"] == "finish"
+    assert after_restart["progress"].verified_steps == ("fetch", "analyze")
+    assert after_restart["task_status"] == before_restart["task_status"]
+    assert after_restart["task_status"] == "completed"
 
 
 def test_pg_binding_survives_dispatch_without_result(pg_sessions, monkeypatch):
