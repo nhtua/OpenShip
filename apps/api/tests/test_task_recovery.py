@@ -12,24 +12,31 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi import HTTPException
 
 from src.openship.artifacts.contracts import ArtifactRef
+from src.openship.execution.models import ToolAttempt
 from src.openship.runs.tasks.contracts import (
     ExecutionConfigV5,
     TaskAssessment,
     TaskAttempt,
     TaskCallBinding,
     TaskCounters,
+    TaskDecisionCommand,
     TaskPlan,
     TaskRecoveryReport,
     TaskStep,
 )
+from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+from src.openship.runs.tasks.inference import evidence_only_assessment
 from src.openship.runs.tasks.models import (
+    TaskDecisionCommandRecord,
     TaskDecisionRecord,
     TaskRecord,
     TaskStepAttempt,
 )
 from src.openship.runs.tasks.recovery import (
+    capture_recovery_evidence,
     prepare_task_recovery,
     reconcile_task_projection,
 )
@@ -40,6 +47,7 @@ from src.openship.runs.tasks.state import (
     record_task_call,
     save_plan,
 )
+from src.openship.sandboxes.models import WorkflowSandbox
 from tests.conftest import TestSessionLocal
 from tests.test_task_decisions import _pinned_execution
 from tests.test_task_state import CAPABILITY, _artifact, _identity, _operation, _plan
@@ -153,7 +161,10 @@ def test_reconcile_reads_committed_identity_not_model_memory():
         assert progress.pending_decision is None
 
         # A read is side-effect free: no new rows and no rewritten task row.
-        assert db.query(TaskStepAttempt).filter_by(run_id=run.id).count() == before_attempts
+        assert (
+            db.query(TaskStepAttempt).filter_by(run_id=run.id).count()
+            == before_attempts
+        )
         assert (
             task.updated_at,
             task.status,
@@ -260,10 +271,13 @@ def test_reconcile_preserves_interrupted_attempt_without_inventing_an_operation(
 
 
 @pytest.fixture(autouse=True)
-def _reset_profile_catalog():
-    yield
+def _reset_profile_catalog(monkeypatch):
+    from src.openship.config import settings
     from src.openship.sandboxes.profiles import reset_runtime_catalog
 
+    monkeypatch.setattr(settings, "sandbox_endpoint", "http://sandbox.test")
+    monkeypatch.setattr(settings, "sandbox_deployment_id", "test-deployment")
+    yield
     reset_runtime_catalog()
 
 
@@ -344,9 +358,7 @@ def test_recovery_report_marks_repeat_ineligible_until_quiescent():
     with TestSessionLocal() as db:
         user, _, _, run, claim = _identity(db)
         save_plan(db, claim, _plan(), expected_revision=0)
-        operation = _operation(
-            db, run, user, status="dispatching", result_digest=None
-        )
+        operation = _operation(db, run, user, status="dispatching", result_digest=None)
         operation.logical_call_id = "model:1:call:0"
         task = db.query(TaskRecord).filter_by(run_id=run.id).one()
         _bind(
@@ -496,3 +508,437 @@ def test_reconcile_does_not_duplicate_a_settled_binding():
         assert not any(
             candidate.status == "uncertain" for candidate in progress.attempts
         )
+
+
+def test_recovery_report_refuses_when_nothing_is_unsettled():
+    """No unsettled operation and no bound call: the reader may not diagnose."""
+    with TestSessionLocal() as db:
+        _, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        db.commit()
+
+        with pytest.raises(TaskStateError) as error:
+            prepare_task_recovery(
+                db, run_id=run.id, assessment=None, now=datetime.now(UTC)
+            )
+
+        assert error.value.code == "recovery_conflict"
+        assert db.query(TaskDecisionRecord).filter_by(run_id=run.id).count() == 0
+        assert not db.new and not db.dirty
+
+
+def test_recovery_report_refuses_ambiguous_uncertainty():
+    """Two unsettled commands: the builder may not guess which one parked."""
+    with TestSessionLocal() as db:
+        user, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        admitted = _operation(db, run, user, status="admitted", result_digest=None)
+        admitted.logical_call_id = "model:1:call:0"
+        running = _operation(db, run, user, status="running", result_digest=None)
+        running.logical_call_id = "model:1:call:1"
+        db.commit()
+
+        with pytest.raises(TaskStateError) as error:
+            prepare_task_recovery(
+                db, run_id=run.id, assessment=None, now=datetime.now(UTC)
+            )
+
+        assert error.value.code == "recovery_conflict"
+        assert not db.new and not db.dirty
+
+
+def test_recovery_report_refuses_operation_outside_task_scope():
+    """An operation belonging to another principal cannot bind a diagnosis."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        operation = _operation(
+            db,
+            run,
+            user,
+            status="admitted",
+            result_digest=None,
+            principal_id=uuid.uuid4(),
+        )
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        with pytest.raises(TaskStateError) as error:
+            prepare_task_recovery(
+                db, run_id=run.id, assessment=None, now=datetime.now(UTC)
+            )
+
+        assert error.value.code == "recovery_conflict"
+        assert not db.new and not db.dirty
+
+
+def test_recovery_report_binding_only_offers_abort_and_parks():
+    """A bound call with no admitted operation is real uncertainty to park."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id="model:1:call:0",
+            ),
+        )
+        db.commit()
+
+        report = prepare_task_recovery(
+            db, run_id=run.id, assessment=None, now=datetime.now(UTC)
+        )
+        # No operation identity is invented; the only honest offer is abort.
+        assert report.operation_id is None
+        assert report.evidence_refs == ()
+        assert report.eligible_actions == ("abort",)
+        assert any("no admitted operation" in blocker for blocker in report.blockers)
+        assert not db.new and not db.dirty
+
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="The bound call may have dispatched. Choose.",
+            now=datetime.now(UTC),
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+        assert request.recovery_report == report
+        stored = db.query(TaskDecisionRecord).filter_by(run_id=run.id).one()
+        assert stored.expected_digest == report.digest
+        # No operation digest is stored for a report that has no operation.
+        assert "recovery_operation_digest" not in json.loads(stored.request_json)
+        assert run.status == "waiting_input"
+
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="repeat_step",
+        )
+        with pytest.raises(HTTPException) as error:
+            apply_decision(
+                db,
+                principal_id=user.id,
+                run_id=run.id,
+                command=command,
+                now=datetime.now(UTC),
+            )
+        assert error.value.status_code == 409
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
+        )
+
+
+def test_recovery_report_repeat_ineligible_while_a_dispatch_exists():
+    """A recorded dispatch makes the earlier attempt settled for re-attempting."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        now = datetime.now(UTC)
+        db.add(
+            ToolAttempt(
+                operation_id=operation.id,
+                ordinal=1,
+                fence=claim.fence,
+                dispatch_started_at=now,
+                outcome="started",
+            )
+        )
+        db.commit()
+
+        report = prepare_task_recovery(db, run_id=run.id, assessment=None, now=now)
+        assert "repeat_step" not in report.eligible_actions
+        assert "the earlier command was already dispatched" in report.blockers
+        # Continuation stays offered: the blocker names repeat, not every action.
+        assert "continue_next" in report.eligible_actions
+        assert not db.new and not db.dirty
+
+
+def test_recovery_report_repeat_ineligible_until_sandbox_ttl_clears():
+    """The provider TTL, not a probe, is what keeps repeat switched off."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        operation = _operation(db, run, user, status="interrupted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        now = datetime.now(UTC)
+        db.add(
+            WorkflowSandbox(
+                root_run_id=run.id,
+                project_id=run.project_id,
+                conversation_id=run.conversation_id,
+                provider_id="test-provider",
+                requirements_key="l" * 64,
+                status="active",
+                sandbox_id="sandbox-1",
+                expires_at=now + timedelta(hours=1),
+                command_uncertain_until=now + timedelta(hours=1),
+                command_operation_id=operation.id,
+                fence=1,
+            )
+        )
+        db.commit()
+
+        report = prepare_task_recovery(db, run_id=run.id, assessment=None, now=now)
+        assert "repeat_step" not in report.eligible_actions
+        assert "the sandbox may still be running the earlier command" in report.blockers
+        # Evidence reading only: the pointer and its TTL are left untouched.
+        sandbox_row = (
+            db.query(WorkflowSandbox).filter_by(project_id=run.project_id).one()
+        )
+        assert sandbox_row.status == "active"
+        assert sandbox_row.command_operation_id == operation.id
+        assert not db.new and not db.dirty
+
+
+def test_recovery_report_repeat_ineligible_when_capability_drifted():
+    """A drifted operation pin cannot be repeated under the current plan pin."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.capability_version = "9.9.9"
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        report = prepare_task_recovery(
+            db, run_id=run.id, assessment=None, now=datetime.now(UTC)
+        )
+        assert "repeat_step" not in report.eligible_actions
+        assert (
+            "the operation's capability does not match the affected step"
+            in report.blockers
+        )
+        assert not db.new and not db.dirty
+
+
+def test_recovery_report_repeat_ineligible_when_budget_exhausted():
+    """An exhausted tool-call budget keeps repeat off the offer."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        execution = ExecutionConfigV5.model_validate_json(run.execution_configuration)
+        task.counters_json = json.dumps(
+            {"tool_calls": execution.loop_limits.max_tool_calls}
+        )
+        db.commit()
+
+        report = prepare_task_recovery(
+            db, run_id=run.id, assessment=None, now=datetime.now(UTC)
+        )
+        assert "repeat_step" not in report.eligible_actions
+        assert "the tool-call budget is exhausted" in report.blockers
+        assert not db.new and not db.dirty
+
+
+def test_recovery_report_refuses_changed_evidence_behind_a_snapshot():
+    """A supplied snapshot must still match every durable identity."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        snapshot = capture_recovery_evidence(db, run_id=run.id)
+        operation.status = "interrupted"
+        db.flush()
+
+        with pytest.raises(TaskStateError) as error:
+            prepare_task_recovery(
+                db,
+                run_id=run.id,
+                assessment=None,
+                now=datetime.now(UTC),
+                snapshot=snapshot,
+            )
+        assert error.value.code == "recovery_superseded"
+        assert db.query(TaskDecisionRecord).filter_by(run_id=run.id).count() == 0
+        assert not db.new and not db.dirty
+
+
+def test_recovery_report_accepts_evidence_only_diagnosis():
+    """The mandated fallback diagnosis is accepted, not refused as moved."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _plan(), expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        artifact = _artifact(db, run, operation)
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        task.last_disposition = "uncertain"
+        db.commit()
+
+        progress = reconcile_task_projection(db, run_id=run.id)
+        assessment = evidence_only_assessment(progress, ())
+        report = prepare_task_recovery(
+            db, run_id=run.id, assessment=assessment, now=datetime.now(UTC)
+        )
+
+        assert report.explanation == assessment.explanation
+        assert report.unknowns == assessment.unknowns
+        assert report.risks == assessment.risks
+        # A diagnosis the run never inferred recommends nothing.
+        assert report.recommended_action is None
+        # The report evidence is still the freshly read operation identity.
+        assert report.evidence_refs == (
+            f"operation:{operation.request_digest}",
+            f"artifact:{artifact.sha256}",
+        )
+        assert not db.new and not db.dirty
+
+
+def test_recovery_choice_is_accepted_when_blockers_name_another_action():
+    """A blocker for continue must not veto the offered repeat choice."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        plan = _two_step_plan()
+        save_plan(db, claim, plan, expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        now = datetime.now(UTC)
+        report = prepare_task_recovery(db, run_id=run.id, assessment=None, now=now)
+        # The quiescent repeat stays offered next to the dependency blocker.
+        assert report.eligible_actions == ("abort", "repeat_step")
+        assert report.blockers == (
+            "a later step depends on the unresolved step's output",
+        )
+
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="Repeat the inspected step?",
+            now=now,
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+        command = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="repeat_step",
+        )
+        result = apply_decision(
+            db, principal_id=user.id, run_id=run.id, command=command, now=now
+        )
+        db.commit()
+        assert result.pending_decision is None
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state
+            == "confirmed"
+        )
+        assert run.status == "queued"
+        stored = db.query(TaskDecisionCommandRecord).filter_by(run_id=run.id).one()
+        assert stored.action == "repeat_step"

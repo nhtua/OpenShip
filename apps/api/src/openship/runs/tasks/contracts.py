@@ -348,7 +348,9 @@ class TaskAssessment(FrozenModel):
         if self.failure == "none" and self.step_id is not None:
             raise ValueError("a step identifier requires a failure category")
         if self.recommended_recovery_action is not None and self.failure != "uncertain":
-            raise ValueError("only an uncertain failure carries a recovery recommendation")
+            raise ValueError(
+                "only an uncertain failure carries a recovery recommendation"
+            )
         return self
 
 
@@ -384,7 +386,7 @@ class TaskRecoveryReport(FrozenModel):
     plan_digest: str = Field(pattern=SHA256_PATTERN)
     step_id: str = Field(pattern=STEP_ID_PATTERN)
     attempt: int = Field(ge=1, le=3)
-    operation_id: UUID
+    operation_id: UUID | None = None
     explanation: str
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=16)
     unknowns: tuple[str, ...] = Field(default=(), max_length=16)

@@ -245,8 +245,11 @@ def apply_decision(
             or report.plan_revision != task.current_revision
         ):
             raise _decision_error(409, "decision_conflict")
+        # ``blockers`` explains why some actions are unavailable; it is not a
+        # global veto. ``eligible_actions`` is the authoritative offer, so an
+        # eligible action stays selectable even when another action is blocked.
         if command.action != "abort" and (
-            command.action not in report.eligible_actions or report.blockers
+            report.operation_id is None or command.action not in report.eligible_actions
         ):
             raise _decision_error(409, "recovery_ineligible")
     rejecting = command.action in {"reject", "abort"}
@@ -715,75 +718,105 @@ def park_task_wait(
         raise TaskStateError("plan_missing", "plan confirmation requires a plan")
     if recovery_report is not None:
         report = recovery_report
-        operation = (
-            db.query(ToolOperation)
-            .filter_by(id=report.operation_id, run_id=run.id)
-            .with_for_update()
-            .populate_existing()
-            .one_or_none()
-        )
+        progress = _project(db, task)
         if (
             task.current_revision != report.plan_revision
             or task.digest != report.plan_digest
-            or operation is None
-            or operation.project_id != run.project_id
-            or operation.conversation_id != run.conversation_id
-            or operation.principal_id != claim.user_id
-            or operation.status
-            not in {"admitted", "dispatching", "running", "interrupted"}
-            or any(item.id != operation.id for item in operations)
-            or any(item.id != operation.id for item in interrupted_dispatches)
+            or report.step_id not in progress.step_ids
         ):
             raise TaskStateError(
                 "recovery_conflict",
-                "recovery report does not bind the unsettled operation",
+                "recovery report does not bind the current plan",
             )
-        progress = _project(db, task)
-        if report.step_id not in progress.step_ids:
-            raise TaskStateError(
-                "recovery_conflict", "recovery step is not in the plan"
-            )
-        attempt = (
-            db.query(TaskStepAttempt)
-            .filter_by(run_id=run.id, operation_id=operation.id)
-            .one_or_none()
-        )
-        ordinal = (
-            db.query(TaskStepAttempt)
-            .filter_by(run_id=run.id, step_id=report.step_id, ordinal=report.attempt)
-            .one_or_none()
-        )
-        bindings = [
-            binding
-            for binding in progress.call_bindings
-            if binding.logical_call_id == operation.logical_call_id
-            or (binding.step_id == report.step_id and binding.attempt == report.attempt)
-        ]
-        if (
-            (attempt is None and not bindings)
-            or (
-                attempt is not None
-                and (
-                    attempt.task_id != task.id
-                    or attempt.step_id != report.step_id
-                    or attempt.ordinal != report.attempt
-                    or attempt.plan_revision != report.plan_revision
+        if report.operation_id is None:
+            # A bound logical call with no admitted operation can only be
+            # aborted: there is no operation identity to repeat or continue.
+            bindings = [
+                binding
+                for binding in progress.call_bindings
+                if binding.step_id == report.step_id
+                and binding.attempt == report.attempt
+            ]
+            if (
+                operations
+                or interrupted_dispatches
+                or tuple(report.eligible_actions) != ("abort",)
+                or len(bindings) != 1
+                or bindings[0].plan_revision != report.plan_revision
+            ):
+                raise TaskStateError(
+                    "recovery_conflict",
+                    "abort-only report does not bind the unsettled call",
                 )
+            task.last_disposition = "uncertain"
+        else:
+            operation = (
+                db.query(ToolOperation)
+                .filter_by(id=report.operation_id, run_id=run.id)
+                .with_for_update()
+                .populate_existing()
+                .one_or_none()
             )
-            or (ordinal is not None and ordinal.operation_id != operation.id)
-            or any(
-                binding.logical_call_id != operation.logical_call_id
-                or binding.step_id != report.step_id
-                or binding.attempt != report.attempt
-                or binding.plan_revision != report.plan_revision
-                for binding in bindings
+            if (
+                operation is None
+                or operation.project_id != run.project_id
+                or operation.conversation_id != run.conversation_id
+                or operation.principal_id != claim.user_id
+                or operation.status
+                not in {"admitted", "dispatching", "running", "interrupted"}
+                or any(item.id != operation.id for item in operations)
+                or any(item.id != operation.id for item in interrupted_dispatches)
+            ):
+                raise TaskStateError(
+                    "recovery_conflict",
+                    "recovery report does not bind the unsettled operation",
+                )
+            attempt = (
+                db.query(TaskStepAttempt)
+                .filter_by(run_id=run.id, operation_id=operation.id)
+                .one_or_none()
             )
-        ):
-            raise TaskStateError(
-                "recovery_conflict", "recovery attempt identity does not match"
+            ordinal = (
+                db.query(TaskStepAttempt)
+                .filter_by(
+                    run_id=run.id, step_id=report.step_id, ordinal=report.attempt
+                )
+                .one_or_none()
             )
-        task.last_disposition = "uncertain"
-        request["recovery_operation_digest"] = _operation_digest(operation)
+            bindings = [
+                binding
+                for binding in progress.call_bindings
+                if binding.logical_call_id == operation.logical_call_id
+                or (
+                    binding.step_id == report.step_id
+                    and binding.attempt == report.attempt
+                )
+            ]
+            if (
+                (attempt is None and not bindings)
+                or (
+                    attempt is not None
+                    and (
+                        attempt.task_id != task.id
+                        or attempt.step_id != report.step_id
+                        or attempt.ordinal != report.attempt
+                        or attempt.plan_revision != report.plan_revision
+                    )
+                )
+                or (ordinal is not None and ordinal.operation_id != operation.id)
+                or any(
+                    binding.logical_call_id != operation.logical_call_id
+                    or binding.step_id != report.step_id
+                    or binding.attempt != report.attempt
+                    or binding.plan_revision != report.plan_revision
+                    for binding in bindings
+                )
+            ):
+                raise TaskStateError(
+                    "recovery_conflict", "recovery attempt identity does not match"
+                )
+            task.last_disposition = "uncertain"
+            request["recovery_operation_digest"] = _operation_digest(operation)
     digest = recovery_report.digest if recovery_report else task.digest
     if not digest:
         raise TaskStateError("state_corrupt", "the task has no decision digest")

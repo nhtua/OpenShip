@@ -799,8 +799,19 @@ def test_recovery_choice_refuses_stale_evidence_or_controls(change):
             attempt=1,
             operation_id=operation.id,
             explanation="No dispatch recorded",
-            eligible_actions=() if change == "not_offered" else ("repeat_step",),
-            blockers=("Control unavailable",) if change == "blocker" else (),
+            # Task 15: ``blockers`` explains per-action refusals; the offer is
+            # authoritative, so the blocked case removes the action from it
+            # instead of vetting the whole report.
+            eligible_actions=(
+                ()
+                if change == "not_offered"
+                else ("abort",)
+                if change == "blocker"
+                else ("repeat_step",)
+            ),
+            blockers=("the step repair ceiling is exhausted",)
+            if change == "blocker"
+            else (),
         )
         request = park_task_wait(
             db, claim, kind="recovery", prompt="Next?", now=now, recovery_report=report

@@ -9,12 +9,14 @@ one exists. Nothing here reads a checkpoint, a prompt or a provider response.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from ...artifacts.models import Artifact
+from ...capabilities.contracts import canonical_digest
 from ...execution.models import ToolAttempt, ToolOperation
 from ...sandboxes.models import WorkflowSandbox
 from ..models import Run
@@ -131,9 +133,7 @@ def reconcile_task_projection(db: Session, *, run_id: UUID) -> TaskProgress:
 
     bindings = _call_bindings(task)
     if bindings and not plan_steps:
-        raise TaskStateError(
-            "state_corrupt", "call bindings require a current plan"
-        )
+        raise TaskStateError("state_corrupt", "call bindings require a current plan")
     for binding in bindings:
         if binding.step_id not in plan_steps:
             raise TaskStateError(
@@ -204,7 +204,9 @@ def _subject(
         raise TaskStateError("run_not_found", "the run does not exist")
     task = db.query(TaskRecord).filter(TaskRecord.run_id == run_id).one_or_none()
     if task is None:
-        raise TaskStateError("task_missing", "no durable task record exists for this run")
+        raise TaskStateError(
+            "task_missing", "no durable task record exists for this run"
+        )
     if task.current_revision < 1:
         raise TaskStateError("plan_missing", "recovery requires a saved plan")
     plan_row = _current_plan(db, task)
@@ -223,8 +225,50 @@ def _subject(
     return run, task, plan_row, plan, _call_bindings(task)
 
 
-def _single_unsettled_operation(db: Session, run: Run) -> ToolOperation:
-    operations = (
+@dataclass(frozen=True)
+class RecoveryEvidence:
+    """One frozen view of the evidence a recovery diagnosis was made against."""
+
+    run_id: UUID
+    task_fence: int
+    task_revision: int
+    task_digest: str
+    plan_digest: str
+    step_id: str
+    attempt: int
+    operation_id: UUID | None
+    operation_status: str | None
+    request_digest: str | None
+    binding_logical_call_id: str | None
+    artifacts: tuple[tuple[UUID, str, int, str], ...] = ()
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "run_id": str(self.run_id),
+                "task_fence": self.task_fence,
+                "task_revision": self.task_revision,
+                "task_digest": self.task_digest,
+                "plan_digest": self.plan_digest,
+                "step_id": self.step_id,
+                "attempt": self.attempt,
+                "operation_id": (
+                    None if self.operation_id is None else str(self.operation_id)
+                ),
+                "operation_status": self.operation_status,
+                "request_digest": self.request_digest,
+                "binding_logical_call_id": self.binding_logical_call_id,
+                "artifacts": [
+                    [str(identity), sha256, size_bytes, media_type]
+                    for identity, sha256, size_bytes, media_type in self.artifacts
+                ],
+            }
+        )
+
+
+def _unsettled_operations(db: Session, run: Run) -> list[ToolOperation]:
+    return (
         db.query(ToolOperation)
         .filter(
             ToolOperation.run_id == run.id,
@@ -233,83 +277,33 @@ def _single_unsettled_operation(db: Session, run: Run) -> ToolOperation:
         .order_by(ToolOperation.id.asc())
         .all()
     )
-    if len(operations) != 1:
-        raise TaskStateError(
-            "recovery_conflict",
-            "recovery requires exactly one unsettled operation",
-        )
-    return operations[0]
 
 
-def _affected_attempt(
-    db: Session,
-    run: Run,
-    operation: ToolOperation,
-    bindings: tuple[TaskCallBinding, ...],
-    revision: int,
-) -> tuple[str, int]:
-    """The one step attempt the unsettled operation belongs to."""
-    attempt = (
-        db.query(TaskStepAttempt)
-        .filter(
-            TaskStepAttempt.run_id == run.id,
-            TaskStepAttempt.operation_id == operation.id,
-        )
-        .one_or_none()
+def _unsettled_bindings(
+    db: Session, task: TaskRecord, bindings: tuple[TaskCallBinding, ...]
+) -> tuple[TaskCallBinding, ...]:
+    """Bindings that still may have dispatched work, as 15A defines them."""
+    rows = db.query(TaskStepAttempt).filter(TaskStepAttempt.task_id == task.id).all()
+    settled_ordinals = {(row.step_id, row.ordinal) for row in rows}
+    settled_operations = {row.operation_id for row in rows}
+    operations = _operations_by_logical_call(
+        db, task.run_id, {binding.logical_call_id for binding in bindings}
     )
-    if attempt is not None:
-        if attempt.plan_revision != revision:
-            raise TaskStateError(
-                "recovery_conflict",
-                "the unsettled operation belongs to an earlier plan revision",
-            )
-        step_id, ordinal = attempt.step_id, attempt.ordinal
-    else:
-        matches = [
-            binding
-            for binding in bindings
-            if binding.logical_call_id == operation.logical_call_id
-        ]
-        if len(matches) != 1:
-            raise TaskStateError(
-                "recovery_conflict",
-                "the unsettled operation has no single bound call",
-            )
-        step_id, ordinal = matches[0].step_id, matches[0].attempt
-
-    same_attempt = [
-        binding
-        for binding in bindings
-        if binding.step_id == step_id and binding.attempt == ordinal
-    ]
-    if len(same_attempt) > 1:
-        raise TaskStateError(
-            "recovery_conflict",
-            "more than one call is bound to the affected step attempt",
-        )
-    if same_attempt and same_attempt[0].logical_call_id != operation.logical_call_id:
-        raise TaskStateError(
-            "recovery_conflict",
-            "the affected step attempt is bound to another call",
-        )
-    if attempt is None and len(same_attempt) != 1:
-        raise TaskStateError(
-            "recovery_conflict",
-            "the unsettled operation is not bound to a step attempt",
-        )
-    for binding in same_attempt:
-        if binding.plan_revision != revision:
-            raise TaskStateError(
-                "recovery_conflict",
-                "the call binding belongs to an earlier plan revision",
-            )
-    return step_id, ordinal
+    pending: list[TaskCallBinding] = []
+    for binding in bindings:
+        if (binding.step_id, binding.attempt) in settled_ordinals:
+            continue
+        operation = operations.get(binding.logical_call_id)
+        if operation is not None and operation.id in settled_operations:
+            continue
+        pending.append(binding)
+    return tuple(pending)
 
 
-def _evidence(
+def _artifact_rows(
     db: Session, run: Run, task: TaskRecord, operation: ToolOperation
-) -> tuple[str, ...]:
-    """Only the operation request digest and exact ready artifact hashes."""
+) -> tuple[Artifact, ...]:
+    """Scope-validate the operation and its ready output artifacts."""
     if (
         operation.run_id != run.id
         or operation.project_id != run.project_id
@@ -344,11 +338,8 @@ def _evidence(
         else {}
     )
     if len(artifacts) != len(ids):
-        raise TaskStateError(
-            "recovery_conflict", "an operation artifact is missing"
-        )
-
-    evidence = [f"operation:{operation.request_digest}"]
+        raise TaskStateError("recovery_conflict", "an operation artifact is missing")
+    ordered: list[Artifact] = []
     for identity in ids:
         artifact = artifacts[identity]
         if (
@@ -364,6 +355,18 @@ def _evidence(
             raise TaskStateError(
                 "recovery_conflict", "an operation artifact is not committed"
             )
+        ordered.append(artifact)
+    return tuple(ordered)
+
+
+def _evidence_for(
+    operation: ToolOperation | None, artifacts: tuple[Artifact, ...]
+) -> tuple[str, ...]:
+    """Only the operation request digest and exact ready artifact hashes."""
+    if operation is None:
+        return ()
+    evidence = [f"operation:{operation.request_digest}"]
+    for artifact in artifacts:
         reference = f"artifact:{artifact.sha256}"
         if reference not in evidence:
             evidence.append(reference)
@@ -372,6 +375,144 @@ def _evidence(
             "recovery_conflict", "the operation published too much evidence"
         )
     return tuple(evidence)
+
+
+def _resolve_target(
+    db: Session,
+    run: Run,
+    task: TaskRecord,
+    plan: TaskPlan,
+    bindings: tuple[TaskCallBinding, ...],
+) -> tuple[
+    ToolOperation | None,
+    str,
+    int,
+    TaskCallBinding | None,
+    tuple[Artifact, ...],
+]:
+    """The one unsettled operation or bound call, never a guess."""
+    operations = _unsettled_operations(db, run)
+    if len(operations) > 1:
+        raise TaskStateError(
+            "recovery_conflict",
+            "recovery requires exactly one unsettled operation or bound call",
+        )
+
+    plan_steps = {step.id for step in plan.steps}
+    if operations:
+        operation = operations[0]
+        attempt = (
+            db.query(TaskStepAttempt)
+            .filter(
+                TaskStepAttempt.run_id == run.id,
+                TaskStepAttempt.operation_id == operation.id,
+            )
+            .one_or_none()
+        )
+        if attempt is not None:
+            if attempt.plan_revision != task.current_revision:
+                raise TaskStateError(
+                    "recovery_conflict",
+                    "the unsettled operation belongs to an earlier plan revision",
+                )
+            step_id, ordinal = attempt.step_id, attempt.ordinal
+        else:
+            matches = [
+                binding
+                for binding in bindings
+                if binding.logical_call_id == operation.logical_call_id
+            ]
+            if len(matches) != 1:
+                raise TaskStateError(
+                    "recovery_conflict",
+                    "the unsettled operation has no single bound call",
+                )
+            step_id, ordinal = matches[0].step_id, matches[0].attempt
+
+        same_attempt = [
+            binding
+            for binding in bindings
+            if binding.step_id == step_id and binding.attempt == ordinal
+        ]
+        if len(same_attempt) > 1:
+            raise TaskStateError(
+                "recovery_conflict",
+                "more than one call is bound to the affected step attempt",
+            )
+        if (
+            same_attempt
+            and same_attempt[0].logical_call_id != operation.logical_call_id
+        ):
+            raise TaskStateError(
+                "recovery_conflict",
+                "the affected step attempt is bound to another call",
+            )
+        if attempt is None and len(same_attempt) != 1:
+            raise TaskStateError(
+                "recovery_conflict",
+                "the unsettled operation is not bound to a step attempt",
+            )
+        for binding in same_attempt:
+            if binding.plan_revision != task.current_revision:
+                raise TaskStateError(
+                    "recovery_conflict",
+                    "the call binding belongs to an earlier plan revision",
+                )
+        if step_id not in plan_steps:
+            raise TaskStateError(
+                "recovery_conflict",
+                "the affected step is not in the current plan",
+            )
+        artifacts = _artifact_rows(db, run, task, operation)
+        return (
+            operation,
+            step_id,
+            ordinal,
+            (same_attempt[0] if same_attempt else None),
+            artifacts,
+        )
+
+    pending = _unsettled_bindings(db, task, bindings)
+    if len(pending) != 1:
+        raise TaskStateError(
+            "recovery_conflict",
+            "recovery requires exactly one unsettled operation or bound call",
+        )
+    binding = pending[0]
+    if (
+        binding.plan_revision != task.current_revision
+        or binding.step_id not in plan_steps
+    ):
+        raise TaskStateError(
+            "recovery_conflict",
+            "the bound call does not belong to the current plan",
+        )
+    return None, binding.step_id, binding.attempt, binding, ()
+
+
+def capture_recovery_evidence(db: Session, *, run_id: UUID) -> RecoveryEvidence:
+    """Capture the identities a diagnosis must still match before parking."""
+    run, task, plan_row, plan, bindings = _subject(db, run_id)
+    operation, step_id, ordinal, binding, artifacts = _resolve_target(
+        db, run, task, plan, bindings
+    )
+    return RecoveryEvidence(
+        run_id=run.id,
+        task_fence=task.fence,
+        task_revision=task.current_revision,
+        task_digest=task.digest,
+        plan_digest=plan_row.digest,
+        step_id=step_id,
+        attempt=ordinal,
+        operation_id=None if operation is None else operation.id,
+        operation_status=None if operation is None else operation.status,
+        request_digest=None if operation is None else operation.request_digest,
+        binding_logical_call_id=None if binding is None else binding.logical_call_id,
+        artifacts=tuple(
+            (artifact.id, artifact.sha256, artifact.size_bytes, artifact.media_type)
+            for artifact in artifacts
+        ),
+    )
 
 
 def _execution_config(run: Run) -> ExecutionConfigV5 | None:
@@ -429,7 +570,9 @@ def _repeat_blockers(
             blockers.append("the affected step has no pinned capability")
         else:
             if execution is None:
-                blockers.append("the affected step's pinned capability cannot be verified")
+                blockers.append(
+                    "the affected step's pinned capability cannot be verified"
+                )
             elif step.capability not in execution.allowed_capabilities:
                 blockers.append("the affected step's capability is no longer allowed")
             if (
@@ -479,15 +622,34 @@ def _repeat_blockers(
     return blockers
 
 
+def _durable_evidence_refs(db: Session, task: TaskRecord) -> set[str]:
+    """Evidence a diagnosis may legitimately cite from already-committed rows."""
+    refs: set[str] = set()
+    rows = db.query(TaskStepAttempt).filter(TaskStepAttempt.task_id == task.id).all()
+    for row in rows:
+        raw = _json(row.evidence_json, [])
+        if not isinstance(raw, list):
+            raise TaskStateError(
+                "state_corrupt", "a committed attempt evidence list is unreadable"
+            )
+        refs.update(item for item in raw if isinstance(item, str))
+    accepted = _json(task.accepted_evidence_json, [])
+    if not isinstance(accepted, list):
+        raise TaskStateError(
+            "state_corrupt", "the accepted evidence list is unreadable"
+        )
+    refs.update(item for item in accepted if isinstance(item, str))
+    return refs
+
+
 def _revalidate_assessment(
-    assessment: TaskAssessment | None, *, step_id: str, evidence: tuple[str, ...]
+    assessment: TaskAssessment | None, *, step_id: str, allowed: set[str]
 ) -> None:
-    """Refuse a diagnosis that no longer matches the durable evidence."""
+    """Refuse a diagnosis that cites evidence the durable rows cannot prove."""
     if assessment is None:
         return
-    known = set(evidence)
     for reference in assessment.evidence_refs:
-        if reference not in known:
+        if reference not in allowed:
             raise TaskStateError(
                 "recovery_superseded",
                 "the assessment cites evidence that has changed",
@@ -513,51 +675,81 @@ def prepare_task_recovery(
     run_id: UUID,
     assessment: TaskAssessment | None,
     now: datetime,
+    snapshot: RecoveryEvidence | None = None,
 ) -> TaskRecoveryReport:
     """Build one evidence-backed recovery report without writing or inferring.
 
-    The report binds the one unsettled operation to the current plan revision,
-    step attempt and operation identity. ``abort`` is always offered;
-    ``repeat_step`` is offered only while the command is quiescent and the
-    pinned policy, attempt ceiling and budgets still allow it; ``continue_next``
-    is offered only when no later step depends on the unresolved output. An
-    assessment can label a recommendation, but this function never promotes it
-    into an eligible choice. The caller persists the returned report atomically
-    through ``park_task_wait``.
+    The report binds the one unsettled operation, or the one bound logical call
+    that has no admitted operation, to the current plan revision and step
+    attempt. ``abort`` is always offered. ``repeat_step`` is offered only while
+    the command is quiescent and the pinned policy, attempt ceiling and budgets
+    still allow it; ``continue_next`` is offered only when no later step depends
+    on the unresolved output. When ``snapshot`` is supplied, every identity in
+    it must still match; otherwise the diagnosis is superseded. An assessment
+    can label a recommendation, but this function never promotes it into an
+    eligible choice. The caller persists the returned report atomically through
+    ``park_task_wait``.
     """
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("an aware timestamp is required")
     now = now.astimezone(UTC)
 
+    if snapshot is not None:
+        try:
+            current = capture_recovery_evidence(db, run_id=run_id)
+        except TaskStateError as error:
+            if error.code == "recovery_conflict":
+                raise TaskStateError(
+                    "recovery_superseded",
+                    "recovery evidence moved since the snapshot",
+                ) from error
+            raise
+        if current.digest != snapshot.digest:
+            raise TaskStateError(
+                "recovery_superseded", "recovery evidence moved since the snapshot"
+            )
+
     run, task, plan_row, plan, bindings = _subject(db, run_id)
-    operation = _single_unsettled_operation(db, run)
-    step_id, ordinal = _affected_attempt(db, run, operation, bindings, task.current_revision)
+    operation, step_id, ordinal, _binding, artifacts = _resolve_target(
+        db, run, task, plan, bindings
+    )
     steps = {step.id: step for step in plan.steps}
     step = steps.get(step_id)
     if step is None:
         raise TaskStateError(
             "recovery_conflict", "the affected step is not in the current plan"
         )
-    evidence = _evidence(db, run, task, operation)
-    _revalidate_assessment(assessment, step_id=step_id, evidence=evidence)
+    evidence = _evidence_for(operation, artifacts)
+    _revalidate_assessment(
+        assessment,
+        step_id=step_id,
+        allowed=set(evidence) | _durable_evidence_refs(db, task),
+    )
 
-    progress = reconcile_task_projection(db, run_id=run_id)
-    execution = _execution_config(run)
     eligible: list[RecoveryAction] = ["abort"]
     blockers: list[str] = []
-
-    repeat_blockers = _repeat_blockers(
-        db, run, operation, step, progress, execution, now
-    )
-    if repeat_blockers:
-        blockers.extend(repeat_blockers)
+    if operation is None:
+        blockers.extend(
+            (
+                "the bound call has no admitted operation to repeat",
+                "the bound call has no admitted operation to continue",
+            )
+        )
     else:
-        eligible.append("repeat_step")
+        progress = reconcile_task_projection(db, run_id=run_id)
+        execution = _execution_config(run)
+        repeat_blockers = _repeat_blockers(
+            db, run, operation, step, progress, execution, now
+        )
+        if repeat_blockers:
+            blockers.extend(repeat_blockers)
+        else:
+            eligible.append("repeat_step")
 
-    if any(step_id in candidate.depends_on for candidate in plan.steps):
-        blockers.append("a later step depends on the unresolved step's output")
-    else:
-        eligible.append("continue_next")
+        if any(step_id in candidate.depends_on for candidate in plan.steps):
+            blockers.append("a later step depends on the unresolved step's output")
+        else:
+            eligible.append("continue_next")
 
     if assessment is None:
         explanation = _EVIDENCE_ONLY_EXPLANATION
@@ -579,7 +771,7 @@ def prepare_task_recovery(
         plan_digest=plan_row.digest,
         step_id=step_id,
         attempt=ordinal,
-        operation_id=operation.id,
+        operation_id=None if operation is None else operation.id,
         explanation=explanation,
         evidence_refs=evidence,
         unknowns=unknowns,
