@@ -496,7 +496,26 @@ def apply_decision(
         from ...messaging.models import MessageTransportState
         from ...messaging.outbox import enqueue_run
 
+        if command.action == "continue_next":
+            # The skip is the durable record of the choice: the step is settled
+            # as skipped (never verified, never replayed) inside the same
+            # transaction that re-queues the run, so a crash leaves either both
+            # or neither.
+            skipped = json.loads(task.skipped_steps_json or "[]")
+            if not isinstance(skipped, list):
+                raise _decision_error(409, "state_corrupt")
+            if report.step_id not in skipped:
+                skipped.append(report.step_id)
+            task.skipped_steps_json = json.dumps(skipped, sort_keys=True)
         task.status = "planned" if task.current_revision else "unknown"
+        if command.action in {"repeat_step", "continue_next"}:
+            # The uncertainty now has an owner: the explicit choice is what
+            # says the step runs again (or is skipped), so the ledger's
+            # "uncertain" disposition is answered rather than left to re-open
+            # the question. An unsettled binding still keeps the read honest
+            # until the new attempt settles, and a crash there diagnoses
+            # again from the durable rows.
+            task.last_disposition = "none"
         run.status = "queued"
         run.error_code = None
         job.available_at = now

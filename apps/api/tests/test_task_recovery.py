@@ -15,8 +15,11 @@ import pytest
 from fastapi import HTTPException
 
 from src.openship.artifacts.contracts import ArtifactRef
-from src.openship.execution.models import ToolAttempt
+from src.openship.artifacts.models import Artifact
+from src.openship.execution.models import ToolAttempt, ToolOperation
 from src.openship.providers.errors import ProviderError
+from src.openship.runs.models import Run, RunJob
+from src.openship.runs.queue import claim_next
 from src.openship.runs.tasks.contracts import (
     ExecutionConfigV5,
     TaskAssessment,
@@ -54,6 +57,8 @@ from tests.conftest import TestSessionLocal
 from tests.test_task_decisions import _pinned_execution
 from tests.test_task_graph import (
     Lane,
+    _call,
+    _calls,
     _durable,
     _journey,
     _run_state,
@@ -1125,3 +1130,462 @@ def test_recommendation_and_bare_yes_cannot_choose_recovery():
         assert db.query(TaskDecisionCommandRecord).filter_by(run_id=run.id).count() == 0
         assert run.status == "waiting_input"
         assert not db.new and not db.dirty
+
+
+def _take_back_lease(db, run_id: uuid.UUID, worker_id: str = "recovery-worker"):
+    """Hand this run back through the queue, parking other queued lanes first."""
+    stale = [
+        job.run_id
+        for job in db.query(RunJob)
+        .join(Run, Run.id == RunJob.run_id)
+        .filter(Run.status == "queued", Run.id != run_id)
+        .all()
+    ]
+    if stale:
+        db.query(RunJob).filter(RunJob.run_id.in_(stale)).update(
+            {
+                RunJob.owner_id: "prior-lane",
+                RunJob.lease_until: datetime.now(UTC) + timedelta(minutes=5),
+            },
+            synchronize_session=False,
+        )
+    return claim_next(db, worker_id, lease_seconds=600)
+
+
+def test_repeat_choice_records_the_new_attempt_identity():
+    """The chosen repeat is a fresh attempt: it never reuses the dead call's identity."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _two_step_plan(), expected_revision=0)
+        completed = _operation(db, run, user, status="succeeded")
+        completed.logical_call_id = "model:1:call:0"
+        record_attempt_result(
+            db, claim, step_id="inspect", attempt=1, operation_id=completed.id
+        )
+        dead = _operation(db, run, user, status="admitted", result_digest=None)
+        dead.logical_call_id = "model:1:call:1"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="render",
+                attempt=1,
+                logical_call_id=dead.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        now = datetime.now(UTC)
+        report = prepare_task_recovery(db, run_id=run.id, assessment=None, now=now)
+        assert report.step_id == "render"
+        assert report.attempt == 1
+        assert report.eligible_actions == ("abort", "repeat_step", "continue_next")
+
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="Repeat the render step?",
+            now=now,
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+        before = read_progress(db, run.id).counters
+        identity = apply_decision(
+            db,
+            principal_id=user.id,
+            run_id=run.id,
+            command=TaskDecisionCommand(
+                client_request_id=uuid.uuid4(),
+                request_id=request.request_id,
+                plan_revision=request.plan_revision,
+                expected_digest=request.expected_digest,
+                action="repeat_step",
+            ),
+            now=now,
+        )
+        db.commit()
+
+        # A resumed worker takes the run back through the queue: the choice
+        # re-queued it, and the new attempt is recorded under that lease.
+        taken = _take_back_lease(db, run.id)
+        assert taken is not None and taken.run_id == run.id
+        replay = _operation(db, run, user, status="succeeded")
+        replay.logical_call_id = "model:1:call:2"
+        after = record_attempt_result(
+            db, taken, step_id="render", attempt=2, operation_id=replay.id
+        ).counters
+        db.commit()
+
+        repeat_attempt = (
+            db.query(TaskStepAttempt).filter_by(run_id=run.id, step_id="render").one()
+        )
+        completed_attempt = (
+            db.query(TaskStepAttempt).filter_by(run_id=run.id, step_id="inspect").one()
+        )
+        assert repeat_attempt.operation_id != completed_attempt.operation_id
+        assert repeat_attempt.operation_id != dead.id
+        assert repeat_attempt.ordinal == 2
+        # The completed step keeps exactly one attempt: it was not replayed.
+        assert (
+            db.query(TaskStepAttempt)
+            .filter_by(run_id=run.id, step_id="inspect")
+            .count()
+            == 1
+        )
+        # Counters only ever move forward, so a recovery cannot fund a fresh run.
+        assert after.tool_calls >= before.tool_calls
+        assert after.model_turns >= before.model_turns
+        assert sum(after.repairs_by_step.values()) >= sum(
+            before.repairs_by_step.values()
+        )
+        assert identity.pending_decision is None
+
+
+def test_abort_retains_partial_outputs_and_never_claims_undo():
+    """Aborting stops the task and keeps what already committed."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _two_step_plan(), expected_revision=0)
+        completed = _operation(db, run, user, status="succeeded")
+        completed.logical_call_id = "model:1:call:0"
+        _artifact(db, run, completed)
+        record_attempt_result(
+            db, claim, step_id="inspect", attempt=1, operation_id=completed.id
+        )
+        dead = _operation(db, run, user, status="admitted", result_digest=None)
+        dead.logical_call_id = "model:1:call:1"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="render",
+                attempt=1,
+                logical_call_id=dead.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        now = datetime.now(UTC)
+        report = prepare_task_recovery(db, run_id=run.id, assessment=None, now=now)
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="Stop the run?",
+            now=now,
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+        apply_decision(
+            db,
+            principal_id=user.id,
+            run_id=run.id,
+            command=TaskDecisionCommand(
+                client_request_id=uuid.uuid4(),
+                request_id=request.request_id,
+                plan_revision=request.plan_revision,
+                expected_digest=request.expected_digest,
+                action="abort",
+            ),
+            now=now,
+        )
+        db.commit()
+
+        assert run.status == "cancelled"
+        assert run.error_code == "recovery_aborted"
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state
+            == "rejected"
+        )
+        # Nothing is erased and nothing claims the effects were reversed: the
+        # committed call, its attempt and its artifact all stay on the books.
+        assert db.query(TaskStepAttempt).filter_by(run_id=run.id).count() == 1
+        assert db.query(Artifact).filter_by(originating_run_id=run.id).count() == 1
+        assert db.query(ToolOperation).filter_by(run_id=run.id).count() == 2
+        kept = db.query(TaskStepAttempt).filter_by(run_id=run.id).one()
+        assert kept.operation_id == completed.id
+        assert read_progress(db, run.id).skipped_steps == ()
+
+
+def test_continue_marks_skip_and_requires_dependency_inputs():
+    """A leaf step may be skipped, never as a verified success; a needed one may not."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _two_step_plan(), expected_revision=0)
+        completed = _operation(db, run, user, status="succeeded")
+        completed.logical_call_id = "model:1:call:0"
+        record_attempt_result(
+            db, claim, step_id="inspect", attempt=1, operation_id=completed.id
+        )
+        dead = _operation(db, run, user, status="admitted", result_digest=None)
+        dead.logical_call_id = "model:1:call:1"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="render",
+                attempt=1,
+                logical_call_id=dead.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        now = datetime.now(UTC)
+        report = prepare_task_recovery(db, run_id=run.id, assessment=None, now=now)
+        # Nothing downstream needs the leaf's output, so continuing is offered.
+        assert report.step_id == "render"
+        assert "continue_next" in report.eligible_actions
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="Skip render and finish?",
+            now=now,
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+        result = apply_decision(
+            db,
+            principal_id=user.id,
+            run_id=run.id,
+            command=TaskDecisionCommand(
+                client_request_id=uuid.uuid4(),
+                request_id=request.request_id,
+                plan_revision=request.plan_revision,
+                expected_digest=request.expected_digest,
+                action="continue_next",
+            ),
+            now=now,
+        )
+        db.commit()
+        assert result.pending_decision is None
+        assert result.skipped_steps == ("render",)
+        assert "render" not in result.verified_steps
+        assert run.status == "queued"
+
+    # A step whose output a later step consumes cannot be skipped silently.
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _two_step_plan(), expected_revision=0)
+        dead = _operation(db, run, user, status="admitted", result_digest=None)
+        dead.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=dead.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        now = datetime.now(UTC)
+        report = prepare_task_recovery(db, run_id=run.id, assessment=None, now=now)
+        assert report.step_id == "inspect"
+        assert "continue_next" not in report.eligible_actions
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="Repeat or stop?",
+            now=now,
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+        with pytest.raises(HTTPException) as refused:
+            apply_decision(
+                db,
+                principal_id=user.id,
+                run_id=run.id,
+                command=TaskDecisionCommand(
+                    client_request_id=uuid.uuid4(),
+                    request_id=request.request_id,
+                    plan_revision=request.plan_revision,
+                    expected_digest=request.expected_digest,
+                    action="continue_next",
+                ),
+                now=now,
+            )
+        assert refused.value.status_code == 409
+        assert refused.value.detail["error"]["code"] == "recovery_ineligible"
+        # Refused: the ask stays open and nothing was consumed.
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
+        )
+        assert db.query(TaskDecisionCommandRecord).filter_by(run_id=run.id).count() == 0
+        assert run.status == "waiting_input"
+
+
+def test_uncertain_command_blocks_repeat_until_quiescent():
+    """A dispatch that may still be running offers abort only, until it settles."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _two_step_plan(), expected_revision=0)
+        dead = _operation(db, run, user, status="dispatching", result_digest=None)
+        dead.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=dead.logical_call_id,
+            ),
+        )
+        now = datetime.now(UTC)
+        db.add(
+            WorkflowSandbox(
+                root_run_id=run.id,
+                project_id=run.project_id,
+                conversation_id=run.conversation_id,
+                provider_id="test-provider",
+                requirements_key="l" * 64,
+                status="active",
+                sandbox_id="sandbox-1",
+                expires_at=now + timedelta(hours=1),
+                command_uncertain_until=now + timedelta(hours=1),
+                command_operation_id=dead.id,
+                fence=1,
+            )
+        )
+        db.commit()
+
+        report = prepare_task_recovery(db, run_id=run.id, assessment=None, now=now)
+        assert report.eligible_actions == ("abort",)
+        assert "the sandbox may still be running the earlier command" in report.blockers
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="The call may still be running. Abort?",
+            now=now,
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+
+        for action in ("repeat_step", "continue_next"):
+            with pytest.raises(HTTPException) as refused:
+                apply_decision(
+                    db,
+                    principal_id=user.id,
+                    run_id=run.id,
+                    command=TaskDecisionCommand(
+                        client_request_id=uuid.uuid4(),
+                        request_id=request.request_id,
+                        plan_revision=request.plan_revision,
+                        expected_digest=request.expected_digest,
+                        action=action,
+                    ),
+                    now=now,
+                )
+            assert refused.value.status_code == 409
+            assert refused.value.detail["error"]["code"] == "recovery_ineligible"
+        # The offer, not a probe, is what kept them out: the ask stays open.
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
+        )
+        assert db.query(TaskDecisionCommandRecord).filter_by(run_id=run.id).count() == 0
+        sandbox_row = (
+            db.query(WorkflowSandbox).filter_by(project_id=run.project_id).one()
+        )
+        assert sandbox_row.command_operation_id == dead.id
+        assert sandbox_row.command_uncertain_until is not None
+        assert run.status == "waiting_input"
+
+
+def test_repeat_creates_new_attempt_without_replaying_completed_steps(monkeypatch):
+    """The chosen repeat re-runs only its own step, through the fixed graph."""
+    # The crashed admit's own request is behaviour 3; the repeat turn's request
+    # is the next one, then the untouched step's, because the parked diagnosis
+    # asked the provider nothing at all.
+    lane = Lane(
+        monkeypatch,
+        mode="auto",
+        behaviors=[
+            *_journey()[:3],
+            _call(
+                "provider-repeat",
+                "download_file",
+                {"url": "https://observations.test/day.csv"},
+            ),
+            _journey()[3],
+        ],
+        crash=True,
+    )
+    with pytest.raises(ProviderError) as refused:
+        lane.invoke()
+    assert refused.value.code == "execution_interrupted"
+
+    # The admit is committed and the worker died: nothing settled, and the
+    # uncertainty is owned by the durable ask the next worker run presents.
+    before = _durable(lane.run_id)
+    assert before["attempts"] == []
+    assert len(before["operations"]) == 1
+    dead_operation = before["operations"][0]
+    assert dead_operation.status == "admitted"
+    assert dead_operation.logical_call_id is not None
+    assert before["progress"].pending_decision is None
+
+    lane.rehold()
+    parked = lane.invoke()
+    assert parked["parked"] == "recovery"
+    pending = _durable(lane.run_id)["progress"].pending_decision
+    assert pending is not None and pending.kind == "recovery"
+    assert pending.recovery_report is not None
+    assert pending.recovery_report.step_id == "fetch"
+    assert pending.recovery_report.attempt == 1
+    # The diagnosis asked and dispatched nothing: the sequence never advanced.
+    assert lane.transport.requests == 3
+    dispatches_at_choice = _calls(lane)
+    assert dispatches_at_choice == ["download_file"]
+
+    lane.confirm_pending(action="repeat_step")
+    lane.resume_queue("recovery-worker")
+    # The worker that died is gone; the resumed one is healthy, so the chosen
+    # repeat may settle this time.
+    lane.gateway.crash_after_admission = False
+    lane.rehold()
+    lane.invoke()
+
+    dispatches = _calls(lane)
+    # Only the named step ran again: the step the choice never mentioned ran
+    # exactly once, on its own turn.
+    step_the_choice_never_touched_dispatches = dispatches.count("python_execute")
+    assert step_the_choice_never_touched_dispatches == 1
+    assert dispatches.count("download_file") == 2
+    assert dispatches[len(dispatches_at_choice) :] == [
+        "download_file",
+        "python_execute",
+    ]
+    with lane.sessions() as db:
+        attempts = db.query(TaskStepAttempt).filter_by(run_id=lane.run_id).all()
+        operations = db.query(ToolOperation).filter_by(run_id=lane.run_id).all()
+        task_row = db.query(TaskRecord).filter_by(run_id=lane.run_id).one()
+    assert {(row.step_id, row.ordinal, row.status) for row in attempts} == {
+        ("fetch", 1, "succeeded"),
+        ("analyze", 1, "succeeded"),
+    }
+    repeat_attempt = next(row for row in attempts if row.step_id == "fetch")
+    still_unsettled = {row.id for row in operations if row.status == "admitted"}
+    # The repeat carries its own committed call, never the dead one's identity.
+    assert repeat_attempt.operation_id != dead_operation.id
+    assert repeat_attempt.operation_id not in still_unsettled
+    assert still_unsettled == {dead_operation.id}
+    assert task_row.status == "completed"

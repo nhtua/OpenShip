@@ -9,6 +9,7 @@ one exists. Nothing here reads a checkpoint, a prompt or a provider response.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
@@ -31,7 +32,13 @@ from .contracts import (
     TaskProgress,
     TaskRecoveryReport,
 )
-from .models import TaskPlanRecord, TaskRecord, TaskStepAttempt
+from .models import (
+    TaskDecisionCommandRecord,
+    TaskDecisionRecord,
+    TaskPlanRecord,
+    TaskRecord,
+    TaskStepAttempt,
+)
 from .state import (
     TaskStateError,
     _counters,
@@ -513,6 +520,85 @@ def capture_recovery_evidence(db: Session, *, run_id: UUID) -> RecoveryEvidence:
             for artifact in artifacts
         ),
     )
+
+
+def confirmed_recovery_choice(
+    db: Session, *, run_id: UUID
+) -> tuple[str, str, int] | None:
+    """The recovery choice this run already committed, while it still applies.
+
+    The confirmed decision command is the intent ledger: nothing is remembered
+    in memory. A repeat is spent once a newer attempt exists for that step, a
+    continuation once the skip is recorded, and an abort once the task is
+    cancelled. The read answers only while the durable rows still name the call
+    that diagnosis bound, so a choice cannot drive a later, different one.
+    """
+    run, task, plan_row, plan, bindings = _subject(db, run_id)
+    decisions = (
+        db.query(TaskDecisionRecord)
+        .filter_by(run_id=run_id, kind="recovery", state="confirmed")
+        .all()
+    )
+    if not decisions:
+        return None
+    decision = max(decisions, key=lambda row: row.resolved_at)
+    commands = (
+        db.query(TaskDecisionCommandRecord)
+        .filter_by(run_id=run_id, decision_id=decision.id)
+        .all()
+    )
+    if len(commands) != 1:
+        return None
+    command = commands[0]
+    if command.action not in {"abort", "repeat_step", "continue_next"}:
+        return None
+    if command.expected_digest != decision.expected_digest:
+        return None
+    try:
+        report = TaskRecoveryReport.model_validate_json(
+            json.dumps(_json(decision.request_json, {})["recovery_report"])
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        report.plan_revision != task.current_revision
+        or report.plan_digest != plan_row.digest
+        or report.step_id not in {step.id for step in plan.steps}
+    ):
+        return None
+
+    attempts = (
+        db.query(TaskStepAttempt).filter_by(run_id=run_id, step_id=report.step_id).all()
+    )
+    skipped = [item for item in _json(task.skipped_steps_json, [])]
+    if command.action == "repeat_step":
+        if any(row.ordinal > report.attempt for row in attempts):
+            return None
+    elif command.action == "continue_next":
+        if report.step_id in skipped:
+            return None
+    elif task.status == "cancelled":
+        return None
+
+    # The choice only still applies while its uncertainty is still open, and
+    # only while it names exactly one call: once a second call is bound at the
+    # same attempt ordinal, a repeat crashed again, and the old permission may
+    # not drive it - a fresh diagnosis has to bind the new operation.
+    unsettled = _unsettled_bindings(db, task, bindings)
+    named = [
+        binding
+        for binding in unsettled
+        if (binding.step_id, binding.attempt) == (report.step_id, report.attempt)
+    ]
+    still_open = len(named) == 1
+    if report.operation_id is not None:
+        still_open = still_open and any(
+            operation.id == report.operation_id
+            for operation in _unsettled_operations(db, run)
+        )
+    if not still_open:
+        return None
+    return command.action, report.step_id, report.attempt
 
 
 def _execution_config(run: Run) -> ExecutionConfigV5 | None:

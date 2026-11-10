@@ -59,7 +59,11 @@ from ..runs.tasks.contracts import (
 )
 from ..runs.tasks.decisions import park_task_wait
 from ..runs.tasks.inference import assess_task, evidence_only_assessment, plan_task
-from ..runs.tasks.recovery import capture_recovery_evidence, prepare_task_recovery
+from ..runs.tasks.recovery import (
+    capture_recovery_evidence,
+    confirmed_recovery_choice,
+    prepare_task_recovery,
+)
 from ..runs.tasks.routing import classify_revision, has_open_uncertainty, select_action
 from ..runs.tasks.state import (
     read_plan,
@@ -219,12 +223,17 @@ def _recovery_prompt(report: TaskRecoveryReport) -> str:
 
 
 def _committed_steps(progress: TaskProgress) -> frozenset[str]:
-    """Which plan steps already have a committed terminal attempt outcome."""
+    """Which plan steps durable progress has settled, including a user's skip.
+
+    A skipped step is settled as skipped, not as verified: it stays out of the
+    verified set the verification records build, so a later pass can report the
+    gap while the graph never replays it.
+    """
     return frozenset(
         attempt.step_id
         for attempt in progress.attempts
         if attempt.status in {"succeeded", "failed", "interrupted"}
-    )
+    ) | frozenset(progress.skipped_steps)
 
 
 def _pending_step(
@@ -419,7 +428,10 @@ def build_task_graph(
                     "parked": progress.pending_decision.kind,
                 }
             snapshot = None
-            recovering = has_open_uncertainty(progress)
+            recovery_choice = confirmed_recovery_choice(
+                db, run_id=invocation.claim.run_id
+            )
+            recovering = has_open_uncertainty(progress) and recovery_choice is None
             if recovering:
                 snapshot = capture_recovery_evidence(db, run_id=invocation.claim.run_id)
         if recovering:
@@ -450,6 +462,22 @@ def build_task_graph(
                 db.commit()
             cursor["parked"] = "recovery"
             return {"cursor": cursor, "parked": "recovery"}
+        if has_open_uncertainty(progress) and recovery_choice is not None:
+            # A committed choice already owns this uncertainty: opening another
+            # request would invent a second ask, so the run says what is pending.
+            return {
+                "cursor": {
+                    **cursor,
+                    "stopped": "recovery_choice_pending",
+                    "awaiting": recovery_choice[0],
+                },
+                "finish_reason": "blocked",
+                "assistant_response": (
+                    "A recovery choice is already recorded for the unresolved "
+                    f"step ({recovery_choice[0]}); that step waits for its own "
+                    "result rather than being asked about again."
+                ),
+            }
         assessment = _assessment_of(cursor)
         missing = assessment.missing_information if assessment else ()
         if missing:
@@ -493,6 +521,9 @@ def build_task_graph(
         with invocation.session_factory() as db:
             progress = read_progress(db, invocation.claim.run_id)
             plan = read_plan(db, invocation.claim.run_id)
+            recovery_choice = confirmed_recovery_choice(
+                db, run_id=invocation.claim.run_id
+            )
         if plan is None:
             raise ProviderError(
                 "configuration_error",
@@ -510,6 +541,23 @@ def build_task_graph(
                 "configuration_error", safe_message="no step is eligible to execute."
             )
         index, step_id = target
+        if (
+            recovery_choice is not None
+            and recovery_choice[0] == "repeat_step"
+            and recovery_choice[1] != step_id
+        ):
+            # The authorized repeat names its own step: it is eligible only if
+            # its dependencies are committed, so the choice cannot jump ahead.
+            named = next(
+                (
+                    (idx, item)
+                    for idx, item in enumerate(plan.steps)
+                    if item.id == recovery_choice[1]
+                ),
+                None,
+            )
+            if named is not None and set(named[1].depends_on) <= committed:
+                index, step_id = named
         draft = next((item for item in plan.steps if item.id == step_id), None)
         if draft is None or draft.capability is None:
             raise ProviderError(
@@ -520,8 +568,14 @@ def build_task_graph(
         attempt_ordinal = (
             sum(1 for attempt in progress.attempts if attempt.step_id == step_id) + 1
         )
+        repeating = (
+            recovery_choice is not None
+            and recovery_choice[0] == "repeat_step"
+            and recovery_choice[1] == step_id
+            and recovery_choice[2] >= attempt_ordinal
+        )
         already_bound = _bound_step(progress, step_id, attempt_ordinal)
-        if already_bound is not None:
+        if already_bound is not None and not repeating:
             # The call this step attempted is recorded but has no outcome: the
             # work may have run, so repeating it is not this graph's to decide.
             cursor["stopped"] = "dispatch_uncertain"
@@ -531,6 +585,15 @@ def build_task_graph(
             raise ProviderError(
                 "budget_exceeded",
                 safe_message="this step already carries its bounded attempts.",
+            )
+        if repeating:
+            # The user chose to run this step again: the dead call keeps its
+            # place in the ledger and the transcript as history, and its open
+            # model turn is closed with the interruption the records support
+            # before the same attempt ordinal is re-opened with its own fresh
+            # committed call. Nothing else about the step is decided here.
+            _close_interrupted_calls(
+                invocation, step_id=step_id, below_attempt=attempt_ordinal + 1
             )
 
         enabled = _policy_enabled_ids(invocation, state)
@@ -721,6 +784,9 @@ def build_task_graph(
         cursor = _cursor_of(state)
         with invocation.session_factory() as db:
             progress = read_progress(db, invocation.claim.run_id)
+            recovery_choice = confirmed_recovery_choice(
+                db, run_id=invocation.claim.run_id
+            )
         published = None
         if cursor.get("result_json"):
             try:
@@ -729,7 +795,11 @@ def build_task_graph(
                 )
             except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
                 published = None
-        if published is not None and _failure_for_tool(published) is not None:
+        if (
+            published is not None
+            and _failure_for_tool(published) is not None
+            and recovery_choice is None
+        ):
             # The step's identity is already durable (binding plus committed
             # operation); what is missing is a settled outcome, and this graph
             # must not read that as a call that never ran: the recovery wait
@@ -754,6 +824,18 @@ def build_task_graph(
             budget_allows=True,
             limits=execution.task_limits,
         )
+        if recovery_choice is not None and recovery_choice[0] == "repeat_step":
+            # The user authorized repeating that step, so its open uncertainty
+            # is being resolved by an explicit choice: the switch advances to
+            # the step node instead of parking the same diagnosis again.
+            return {
+                "cursor": {
+                    **cursor,
+                    "next_action": "execute",
+                    "action_step_id": recovery_choice[1],
+                    "awaiting": "the chosen repeat is authorized for that step",
+                }
+            }
         if action.kind == "finish":
             return {"cursor": {**cursor, "next_action": "finish"}}
         return {
@@ -1015,6 +1097,60 @@ def _append_transcript(invocation, ordinal: int, message: ChatMessage) -> None:
     with invocation.session_factory() as db:
         append_transcript(db, invocation.claim, ordinal, message)
         db.commit()
+
+
+def _close_interrupted_calls(invocation, *, step_id: str, below_attempt: int) -> int:
+    """Close transcript calls a chosen repeat is about to supersede.
+
+    A worker that died after admitting a call leaves that call's assistant
+    turn open, and the transcript machinery refuses to continue a model
+    conversation over an unresolved call. The choice says the step runs
+    again, so the open turn is closed with what the records prove: no result
+    was committed, and nothing here states whether the call ran.
+    """
+    with invocation.session_factory() as db:
+        entries = read_transcript(db, invocation.claim.run_id)
+        progress = read_progress(db, invocation.claim.run_id)
+    settled = {(attempt.step_id, attempt.attempt) for attempt in progress.attempts}
+    owed = {
+        binding.logical_call_id
+        for binding in progress.call_bindings
+        if binding.step_id == step_id
+        and binding.attempt < below_attempt
+        and (binding.step_id, binding.attempt) not in settled
+    }
+    if not owed:
+        return 0
+    resolved = {
+        entry.message.tool_call_id
+        for entry in entries
+        if entry.message.role == "tool" and entry.message.tool_call_id
+    }
+    closed = 0
+    for entry in entries:
+        if entry.message.role != "assistant" or not entry.message.tool_calls:
+            continue
+        if not set(entry.logical_call_ids) & owed:
+            continue
+        for call in entry.message.tool_calls:
+            if call.provider_call_id in resolved:
+                continue
+            _append_transcript(
+                invocation,
+                entry.model_turn_ordinal,
+                ChatMessage(
+                    role="tool",
+                    name=call.name,
+                    tool_call_id=call.provider_call_id,
+                    content=(
+                        '{"status":"interrupted","note":"The worker stopped '
+                        "before this call's result was committed; the records "
+                        'do not say whether it ran."}'
+                    ),
+                ),
+            )
+            closed += 1
+    return closed
 
 
 def _step_messages(

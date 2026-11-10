@@ -1588,9 +1588,19 @@ def resume_chat_python(
     db: Session, *, principal_id: uuid.UUID, run_id: uuid.UUID,
     command: ResumeChatPythonRequest,
 ) -> Run:
-    """Explicit python-chat continuation; implementation kept out of chat service."""
-    from .resume import resume_chat_python as admit_resume
+    """Explicit python-chat continuation; implementation kept out of chat service.
 
+    A task-graph v5 root continues through ``resume_task``, which keeps the
+    recovery rules; graphs 2-4 keep the python implementation unchanged.
+    """
+    from .resume import resume_chat_python as admit_resume
+    from .resume import resume_task
+
+    prior = get_run(db=db, user_id=principal_id, run_id=str(run_id))
+    if prior.kind == "chat" and prior.graph_version == 5:
+        return resume_task(
+            db, principal_id=principal_id, run_id=run_id, command=command
+        )
     return admit_resume(db, principal_id=principal_id, run_id=run_id, command=command)
 
 

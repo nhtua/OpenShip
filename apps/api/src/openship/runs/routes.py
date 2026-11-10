@@ -62,10 +62,12 @@ async def resume_chat_python_run(
     run_id: uuid.UUID, req: ResumeChatPythonRequest,
     db: Session = Depends(get_db), user: User = Depends(require_jwt),
 ):
-    from .resume import resume_chat_python
+    from .service import resume_chat_python as admit_resume_chat_python
 
     try:
-        run = resume_chat_python(db, principal_id=user.id, run_id=run_id, command=req)
+        run = admit_resume_chat_python(
+            db, principal_id=user.id, run_id=run_id, command=req
+        )
         db.commit()
         db.refresh(run)
         return project_run_response(run)

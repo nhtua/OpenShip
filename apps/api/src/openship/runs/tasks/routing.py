@@ -41,6 +41,7 @@ def has_open_uncertainty(progress: TaskProgress) -> bool:
     settled = {(attempt.step_id, attempt.attempt) for attempt in progress.attempts}
     return any(
         (binding.step_id, binding.attempt) not in settled
+        and binding.step_id not in progress.skipped_steps
         for binding in progress.call_bindings
     )
 
