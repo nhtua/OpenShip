@@ -5,6 +5,8 @@ import type {
   ArtifactSummary,
   ArchiveListState,
   AuthResponse,
+  AgentPreferences,
+  AgentPreferencesUpdate,
   CapabilitySummary,
   ConnectorKind,
   ConnectorRequestStatus,
@@ -66,6 +68,15 @@ export const authApi = {
     api.post('/auth/register', { username, email, password }),
 
   logout: (): Promise<void> => api.post('/auth/logout'),
+}
+
+// The account's own execution mode: read it, and change it against the
+// revision this browser last saw.
+export const preferencesApi = {
+  get: (): Promise<{ data: AgentPreferences }> => api.get('/auth/preferences'),
+
+  update: (payload: AgentPreferencesUpdate): Promise<{ data: AgentPreferences }> =>
+    api.patch('/auth/preferences', payload),
 }
 
 export const projectsApi = {

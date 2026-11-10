@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { useAgentModeStore } from '@/stores/agentMode'
 import { authApi } from '@/services/api'
 import type { User, AuthResponse, LoginRequest, RegisterRequest } from '@/types'
 
@@ -25,6 +26,9 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = data.access_token
       user.value = data.user
       localStorage.setItem('access_token', data.access_token)
+      // A different account means a different execution mode: nothing the
+      // previous account's preference may still return is kept.
+      useAgentModeStore().reset()
       return { success: true }
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } } }
@@ -50,6 +54,9 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = data.access_token
       user.value = data.user
       localStorage.setItem('access_token', data.access_token)
+      // A fresh account reads its own execution mode rather than inheriting
+      // whatever this browser already saw.
+      useAgentModeStore().reset()
       return { success: true }
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { detail?: string } } }
@@ -66,6 +73,9 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null
     user.value = null
     localStorage.removeItem('access_token')
+    // Signing out leaves no account whose mode this browser could claim, and
+    // any read that was still in flight belongs to the account just left.
+    useAgentModeStore().reset()
   }
 
   return {

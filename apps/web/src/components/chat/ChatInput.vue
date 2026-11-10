@@ -29,6 +29,9 @@ interface Props {
   connectors?: ConnectorUsage[]
   defaultConnectorIds?: Partial<Record<ManagedConnectorKind, string>>
   draftContent?: string | null
+  // The account's execution mode is not settled: a task send would have to
+  // guess it, so only a text-only send stays available.
+  modeSubmissionDisabled?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -45,6 +48,7 @@ const props = withDefaults(defineProps<Props>(), {
   submissionError: null,
   defaultConnectorIds: () => ({}),
   draftContent: null,
+  modeSubmissionDisabled: false,
 })
 
 const emit = defineEmits<{
@@ -105,6 +109,7 @@ const effectiveProfile = computed(() =>
   null,
 )
 const automaticToolDisabledReason = computed(() => {
+  if (props.modeSubmissionDisabled) return 'Confirm the agent execution mode before a task send.'
   if (attachedCapability.value) return 'Remove the attached tool to let the model choose automatically.'
   if (props.capabilityError) return 'The search tool catalog is unavailable.'
   if (props.catalogError) return 'The model profile catalog is unavailable.'

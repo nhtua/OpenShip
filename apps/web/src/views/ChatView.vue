@@ -4,13 +4,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useArtifactsStore } from '@/stores/artifacts'
+import { useAgentModeStore } from '@/stores/agentMode'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
 import { runsApi } from '@/services/api'
-import type { ConnectorSelections } from '@/types'
+import type { AgentMode, ConnectorSelections } from '@/types'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import AgentModeSelector from '@/components/chat/AgentModeSelector.vue'
 import RunCard from '@/components/chat/RunCard.vue'
 import ConversationFiles from '@/components/chat/ConversationFiles.vue'
 import ArchivedConversationsDialog from '@/components/chat/ArchivedConversationsDialog.vue'
@@ -34,6 +36,7 @@ const chat = useChatStore()
 const artifacts = useArtifactsStore()
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
+const agentMode = useAgentModeStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
@@ -471,6 +474,14 @@ function handleSelectProfile(profileId: string | null, fallbackIds: string[]) {
   chat.selectProfile(profileId, fallbackIds)
 }
 
+// Choosing a mode is a preference change and nothing else: it saves the
+// account's choice and sends no run command, so a pending decision stays
+// exactly as it was asked.
+async function handleChooseMode(mode: AgentMode) {
+  if (agentMode.submissionBlocked) return
+  await agentMode.save(mode)
+}
+
 async function handleSignOut() {
   auth.logout()
   chat.clearMessages()
@@ -523,6 +534,10 @@ onMounted(async () => {
   // it is loaded when the page is. A missing catalog is stated by the store
   // rather than guessed at here, and the next turn simply names no profile.
   await chat.loadModelProfiles()
+  // The account's execution mode belongs to whoever is signed in, and a page
+  // reload can carry a token without an in-memory user: the preference is read
+  // again from the account rather than kept in the browser.
+  if (auth.token) await agentMode.load()
   await projects.initialize()
   await connectors.initialize(projects.currentProjectId)
   await loadHistory()
@@ -672,9 +687,21 @@ onBeforeUnmount(() => {
         @cancel="handleCancelOperation"
         @resumed="run => { if (chat.currentConversation?.id === run.conversation_id) void chat.loadConversation(run.conversation_id) }"
       />
+      <AgentModeSelector
+        :mode="agentMode.mode"
+        :pending-mode="agentMode.pendingMode"
+        :revision="agentMode.revision"
+        :loading="agentMode.loading"
+        :saving="agentMode.saving"
+        :conflict="agentMode.conflict"
+        :blocked="agentMode.submissionBlocked"
+        :message="agentMode.error"
+        @choose="handleChooseMode"
+      />
       <ChatInput
         :disabled="conversationBusy"
         :selection-disabled="chat.isSubmitting"
+        :mode-submission-disabled="agentMode.submissionBlocked"
         :profiles="chat.modelProfiles?.profiles ?? []"
         :default-profile-id="chat.modelProfiles?.default_profile_id ?? null"
         :selected-profile-id="chat.selectedProfileId"

@@ -21,6 +21,23 @@ export interface RegisterRequest {
   password: string
 }
 
+// How much the agent may do on its own for new tasks. The account owns this
+// choice, so the browser reads it back rather than assuming one: a stored
+// browser preference is never authority for what the account asked for.
+export type AgentMode = 'auto' | 'copilot'
+
+export interface AgentPreferences {
+  agent_mode: AgentMode
+  revision: number
+}
+
+// The save is a compare-and-swap against the revision this browser last saw:
+// a stale copy is refused, not silently applied over a newer one.
+export interface AgentPreferencesUpdate {
+  agent_mode: AgentMode
+  expected_revision: number
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -107,6 +124,13 @@ export interface TurnSubmitRequest {
   // Automatic tool selection is an opt-in for this submitted turn. The
   // server resolves and pins the exact enabled capability versions.
   enable_tools?: boolean
+  // The exact mode this send was made under, and the preference revision it
+  // was made at. They travel together and stay in the pending payload, so a
+  // retry of a lost response replays the mode that turn asked for rather than
+  // whatever mode the account uses now. Omitting both lets the server capture
+  // the account's current preference exactly once.
+  agent_mode?: AgentMode | null
+  agent_mode_revision?: number | null
   connector_selections?: ConnectorSelections
 }
 

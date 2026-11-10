@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { generateRequestId } from '@/lib/requestId'
 import { lifecycleConflictCode } from '@/lib/lifecycleErrors'
 import api, { runsApi, modelProfilesApi, capabilitiesApi, conversationsApi } from '@/services/api'
+import { useAgentModeStore } from '@/stores/agentMode'
 import type {
   CapabilitySummary,
   ChatMessage,
@@ -938,6 +939,17 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming.value = true
 
     try {
+      // The execution mode a task send runs under belongs to the account, so a
+      // send may name it only while that selection is settled. While the
+      // preference is loading, saving, stale or failed to read, the turn stays
+      // where it is: the browser never picks a mode so a send can proceed.
+      const agentModes = useAgentModeStore()
+      const modeSelection = agentModes.submissionSelection()
+      if (options.enableTools && agentModes.submissionBlocked) {
+        error.value = 'Confirm the agent execution mode before sending a task.'
+        return
+      }
+
       // Generate stable client request UUID
       const requestId = generateRequestId()
 
@@ -949,6 +961,14 @@ export const useChatStore = defineStore('chat', () => {
         provider_profile_id: selectedProfileId.value,
         fallback_profile_ids: [...selectedFallbackIds.value],
         enable_tools: options.enableTools ?? false,
+        // The mode is captured once, with this turn: a retry replays it rather
+        // than re-reading an account preference that may have changed since.
+        ...(modeSelection
+          ? {
+              agent_mode: modeSelection.agent_mode,
+              agent_mode_revision: modeSelection.agent_mode_revision,
+            }
+          : {}),
         ...(options.connectorSelections
           ? { connector_selections: { ...options.connectorSelections } }
           : {}),
