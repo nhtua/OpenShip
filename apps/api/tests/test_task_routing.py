@@ -133,11 +133,23 @@ def test_unknown_unsafe_denied_and_exhausted_states_never_execute():
             progress(status="running", last_disposition=disposition),
             TaskAssessment(classification="task", explanation="Continue."),
         )
-        assert action.kind == "stop"
+        # Task 15 splits the shape: an uncertain disposition parks the durable
+        # recovery choice; a denied, revoked or exhausted one stops outright.
+        if disposition == "uncertain":
+            assert action.kind == "wait"
+        else:
+            assert action.kind == "stop"
+        assert action.kind != "execute"
+        assert action.kind != "repair"
 
     assert select(progress(), policy=False).kind == "stop"
     assert select(progress(), budget=False).kind == "stop"
-    assert select(progress(status="waiting", pending_decision=decision()), policy=False).kind == "stop"
+    assert (
+        select(
+            progress(status="waiting", pending_decision=decision()), policy=False
+        ).kind
+        == "stop"
+    )
 
 
 def test_known_failure_repairs_within_the_bounded_limit():
@@ -169,7 +181,14 @@ def test_uncertain_and_denied_failures_never_repair_or_execute(failure):
         step_id="render",
     )
     action = select(progress(status="running"), assessment)
-    assert action.kind == "stop"
+    # Task 15: an uncertain reading hands the step to the durable abort/repeat/
+    # continue choice, so it waits instead of stopping; a denied, policy or
+    # budget failure has no choice to offer and stops.
+    if failure == "uncertain":
+        assert action.kind == "wait"
+    else:
+        assert action.kind == "stop"
+    assert action.kind not in {"execute", "repair"}
 
 
 def test_material_revision_is_proposed_not_executed():

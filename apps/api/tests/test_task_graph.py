@@ -103,7 +103,9 @@ AVERAGE_BYTES = b'{"averages": {"mean": 3.5}}'
 
 #: The bytes each capability publishes, as the plan's declared outputs name them.
 PUBLISHED_OUTPUTS = {
-    "download_file": ((OBSERVATIONS, "cloud_observation", "text/plain", OBSERVATION_BYTES),),
+    "download_file": (
+        (OBSERVATIONS, "cloud_observation", "text/plain", OBSERVATION_BYTES),
+    ),
     "python_execute": (
         (CHART, "analysis_output", "image/png", CHART_BYTES),
         (AVERAGES, "analysis_output", "application/json", AVERAGE_BYTES),
@@ -121,7 +123,9 @@ def _artifact_volume(monkeypatch) -> LocalArtifactStore:
     return store
 
 
-def _publish(db, store: LocalArtifactStore, *, scope, operation, name, kind, media_type, data) -> str:
+def _publish(
+    db, store: LocalArtifactStore, *, scope, operation, name, kind, media_type, data
+) -> str:
     """Real staged bytes for one declared output, recorded on that operation."""
     project_id, conversation_id, run_id = scope
     artifact_id = uuid.uuid4()
@@ -224,7 +228,9 @@ def _plan_payload() -> dict:
 
 def _answer(payload: dict) -> dict:
     """One inference request answered with this envelope."""
-    return {"chunks": provider_stream("openai", text=[json.dumps(payload)], finish="stop")}
+    return {
+        "chunks": provider_stream("openai", text=[json.dumps(payload)], finish="stop")
+    }
 
 
 def _prose(text: str) -> dict:
@@ -256,7 +262,11 @@ def _journey() -> list[dict]:
     return [
         _answer(_assessment_payload()),
         _answer(_plan_payload()),
-        _call("provider-fetch", "download_file", {"url": "https://observations.test/day.csv"}),
+        _call(
+            "provider-fetch",
+            "download_file",
+            {"url": "https://observations.test/day.csv"},
+        ),
         _call(
             "provider-analyze",
             "python_execute",
@@ -388,7 +398,9 @@ class Lane:
         sessions=None,
     ):
         profile = _tool_profile()
-        declared = profile.model_dump(mode="json", exclude={"limits", "profile_revision"})
+        declared = profile.model_dump(
+            mode="json", exclude={"limits", "profile_revision"}
+        )
         monkeypatch.setattr(settings, "model_profiles_json", json.dumps([declared]))
         monkeypatch.setattr(settings, "model_default_profile_id", profile.id)
         monkeypatch.setenv(profile.credential_ref, "synthetic-model-credential")
@@ -495,8 +507,7 @@ class Lane:
                 db.query(RunJob).filter(RunJob.run_id.in_(stale)).update(
                     {
                         RunJob.owner_id: "prior-lane",
-                        RunJob.lease_until: datetime.now(UTC)
-                        + timedelta(minutes=5),
+                        RunJob.lease_until: datetime.now(UTC) + timedelta(minutes=5),
                     },
                     synchronize_session=False,
                 )
@@ -622,7 +633,9 @@ def _durable(run_id, sessions=TestSessionLocal) -> dict:
                 for row in db.query(ToolOperation).filter_by(run_id=run_id).all()
             ],
             "attempts": [
-                SimpleNamespace(step_id=row.step_id, ordinal=row.ordinal, status=row.status)
+                SimpleNamespace(
+                    step_id=row.step_id, ordinal=row.ordinal, status=row.status
+                )
                 for row in db.query(TaskStepAttempt).filter_by(run_id=run_id).all()
             ],
             "decisions": [
@@ -712,8 +725,14 @@ def test_auto_announces_plan_then_downloads_executes_and_verifies(monkeypatch):
     assert outcome["cursor"]["verification_recorded"] == ["fetch", "analyze"]
 
     durable = _durable(lane.run_id)
-    assert _dispatch_counts(durable["operations"]) == {"download_file": 1, "python_execute": 1}
-    assert _step_attempts(durable["attempts"]) == {"fetch": "succeeded", "analyze": "succeeded"}
+    assert _dispatch_counts(durable["operations"]) == {
+        "download_file": 1,
+        "python_execute": 1,
+    }
+    assert _step_attempts(durable["attempts"]) == {
+        "fetch": "succeeded",
+        "analyze": "succeeded",
+    }
     assert [row.logical_call_id for row in durable["operations"]] == [
         binding.logical_call_id for binding in durable["progress"].call_bindings
     ]
@@ -769,7 +788,10 @@ def test_committed_download_replayed_without_refetch_after_restart(monkeypatch):
 
     after_restart = _durable(lane.run_id)
     assert {row.id for row in after_restart["operations"]} == downloaded_before
-    assert _dispatch_counts(after_restart["operations"]) == {"download_file": 1, "python_execute": 1}
+    assert _dispatch_counts(after_restart["operations"]) == {
+        "download_file": 1,
+        "python_execute": 1,
+    }
     assert _step_attempts(after_restart["attempts"]) == {
         "fetch": "succeeded",
         "analyze": "succeeded",
@@ -845,7 +867,9 @@ def test_lost_uncommitted_approval_shows_same_plan_without_restart(monkeypatch):
     assert after["plan"].revision == before["plan"].revision
     assert len(after["decisions"]) == 1
     assert after["decisions"][0].request_id == before["decisions"][0].request_id
-    assert after["decisions"][0].expected_digest == before["decisions"][0].expected_digest
+    assert (
+        after["decisions"][0].expected_digest == before["decisions"][0].expected_digest
+    )
     assert after["operations"] == []
     assert after["attempts"] == []
     assert after["progress"].call_bindings == ()
@@ -946,14 +970,18 @@ def test_call_binding_survives_dispatch_without_result_checkpoint(monkeypatch):
     assert len(progress.call_bindings) == 1
 
     # The binding is what makes the next reader honest: it asks nothing new,
-    # dispatches nothing, and keeps the identity it could not settle.
+    # dispatches nothing, and parks the durable recovery decision around the
+    # identity it could not settle.
     lane.rehold()
     resumed = lane.invoke()
-    assert resumed["cursor"]["stopped"] == "dispatch_uncertain"
-    assert resumed["cursor"]["logical_call_id"] == unsettled.logical_call_id
+    assert resumed["parked"] == "recovery"
     assert _calls(lane) == ["download_file"]
     assert lane.transport.requests == 3
     durable = _durable(lane.run_id)
     assert durable["attempts"] == []
-    assert durable["task_status"] == "planned"
+    assert durable["task_status"] == "waiting"
     assert len(durable["operations"]) == 1
+    pending = durable["progress"].pending_decision
+    assert pending is not None
+    assert pending.kind == "recovery"
+    assert pending.recovery_report is not None

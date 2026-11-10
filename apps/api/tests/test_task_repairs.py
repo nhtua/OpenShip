@@ -67,7 +67,9 @@ def _digest(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
 
-def _failed_attempts(count: int, *, same_inputs: bool = False) -> tuple[TaskAttempt, ...]:
+def _failed_attempts(
+    count: int, *, same_inputs: bool = False
+) -> tuple[TaskAttempt, ...]:
     """`count` failed attempts of the render step, digest-identical on demand."""
     return tuple(
         TaskAttempt(
@@ -75,7 +77,9 @@ def _failed_attempts(count: int, *, same_inputs: bool = False) -> tuple[TaskAtte
             attempt=ordinal,
             status="failed",
             input_digest=_digest("same" if same_inputs else f"input-{ordinal}"),
-            result_digest=_digest("same-result" if same_inputs else f"result-{ordinal}"),
+            result_digest=_digest(
+                "same-result" if same_inputs else f"result-{ordinal}"
+            ),
         )
         for ordinal in range(1, count + 1)
     )
@@ -254,7 +258,9 @@ def test_plan_revision_classes_split_at_the_review_boundary():
     corrected = reviewed.model_copy(
         update={
             "revision": 2,
-            "steps": (_step(intent="Chart the observations from the corrected column"),),
+            "steps": (
+                _step(intent="Chart the observations from the corrected column"),
+            ),
         }
     )
     assert classify_revision(reviewed, corrected) == "repair"
@@ -274,7 +280,12 @@ def test_plan_revision_classes_split_at_the_review_boundary():
     grown = reviewed.model_copy(
         update={
             "revision": 2,
-            "steps": (_step(), _step(step_id=PUBLISH, depends_on=(RENDER,), expected_outputs=(AVERAGES,))),
+            "steps": (
+                _step(),
+                _step(
+                    step_id=PUBLISH, depends_on=(RENDER,), expected_outputs=(AVERAGES,)
+                ),
+            ),
         }
     )
     assert classify_revision(reviewed, grown) == "expanded_scope"
@@ -285,7 +296,10 @@ def test_plan_revision_classes_split_at_the_review_boundary():
     assert classify_revision(reviewed, extra_output) == "expanded_scope"
 
     outside_profile = reviewed.model_copy(
-        update={"revision": 2, "available_profiles": ("standard", "logs-data", "devops-shell")}
+        update={
+            "revision": 2,
+            "available_profiles": ("standard", "logs-data", "devops-shell"),
+        }
     )
     assert classify_revision(reviewed, outside_profile) == "expanded_scope"
 
@@ -316,7 +330,12 @@ def test_unknown_dispatch_policy_denial_and_cancel_never_repair():
             mode="auto",
         )
         actions.append(action)
-        assert action.kind == "stop"
+        # Task 15 splits the shape: an uncertain reading parks the durable
+        # choice; denied, policy and budget failures still stop outright.
+        if failure == "uncertain":
+            assert action.kind == "wait"
+        else:
+            assert action.kind == "stop"
         assert action.step_id is None
 
     # Even a model that calls an uncertain dispatch a known failure cannot
@@ -329,7 +348,7 @@ def test_unknown_dispatch_policy_denial_and_cancel_never_repair():
         mode="auto",
     )
     actions.append(try_known)
-    assert try_known.kind == "stop"
+    assert try_known.kind == "wait"
     assert try_known.step_id is None
     uncertain_execution_new_dispatches = sum(
         1 for action in actions if action.kind in {"execute", "repair"}
@@ -356,7 +375,9 @@ def test_auto_uncertainty_cannot_use_known_failure_repair():
             budget_allows=True,
             mode=mode,
         )
-        assert action.kind == "stop"
+        # Task 15: the durable uncertainty now parks the recovery ask instead
+        # of stopping; either way the step is not repaired on the model's say.
+        assert action.kind == "wait"
         assert action.step_id is None
     continue_with_missing_required_input_allowed = (
         action.kind == "execute" or action.kind == "repair"

@@ -12,13 +12,9 @@ from typing import Literal
 from .contracts import TaskAction, TaskAssessment, TaskLimits, TaskPlan, TaskProgress
 
 _LIMITS = TaskLimits()
-_TERMINAL_STATUSES = frozenset(
-    {"unknown", "blocked", "failed", "cancelled"}
-)
-_UNSAFE_DISPOSITIONS = frozenset(
-    {"uncertain", "denied", "policy_revoked", "budget_exhausted"}
-)
-_UNSAFE_FAILURES = frozenset({"uncertain", "denied", "policy", "budget"})
+_TERMINAL_STATUSES = frozenset({"unknown", "blocked", "failed", "cancelled"})
+_UNSAFE_DISPOSITIONS = frozenset({"denied", "policy_revoked", "budget_exhausted"})
+_UNSAFE_FAILURES = frozenset({"denied", "policy", "budget"})
 
 
 def _stop(reason: str) -> TaskAction:
@@ -27,6 +23,26 @@ def _stop(reason: str) -> TaskAction:
 
 def _wait(reason: str, *, wait_kind: str = "decision") -> TaskAction:
     return TaskAction(kind="wait", wait_kind=wait_kind, reason=reason)
+
+
+def has_open_uncertainty(progress: TaskProgress) -> bool:
+    """Work may have dispatched without a settled outcome, on durable rows only.
+
+    A bound logical call whose step attempt never settled is uncertainty, not
+    absence: the call may have run, and Task 15's diagnosis plus abort/repeat/
+    continue choice owns that, so no switch here may re-run or skip it. An
+    attempt recorded as uncertain or an uncertain last disposition says the
+    same; a settled interrupted attempt is a known outcome and stays out.
+    """
+    if progress.last_disposition == "uncertain":
+        return True
+    if any(attempt.status == "uncertain" for attempt in progress.attempts):
+        return True
+    settled = {(attempt.step_id, attempt.attempt) for attempt in progress.attempts}
+    return any(
+        (binding.step_id, binding.attempt) not in settled
+        for binding in progress.call_bindings
+    )
 
 
 def _step_action(kind: str, step_id: str, reason: str) -> TaskAction:
@@ -51,7 +67,10 @@ def _repair_made_no_progress(progress: TaskProgress, step_id: str) -> bool:
     if len(attempts) < 2:
         return False
     left, right = attempts[-2], attempts[-1]
-    return left.input_digest == right.input_digest and left.result_digest == right.result_digest
+    return (
+        left.input_digest == right.input_digest
+        and left.result_digest == right.result_digest
+    )
 
 
 def classify_revision(
@@ -176,9 +195,7 @@ def _verify_or_stop(progress: TaskProgress, reason: str) -> TaskAction:
 def _continue(progress: TaskProgress) -> TaskAction:
     result_step = _unverified_result(progress)
     if result_step is not None:
-        return _step_action(
-            "verify", result_step, "verify committed step evidence"
-        )
+        return _step_action("verify", result_step, "verify committed step evidence")
     step_id = _next_unverified(progress)
     if step_id is None:
         if _all_verified(progress):
@@ -261,6 +278,15 @@ def select_action(
 
     if progress.status in _TERMINAL_STATUSES:
         return _stop(f"the task is {progress.status} and cannot advance")
+    # A model that calls the work a denied, policy or budget failure outranks
+    # the durable uncertainty: those failures stop, they do not park a choice.
+    if assessment is not None and assessment.failure in _UNSAFE_FAILURES:
+        return _stop("denied, policy or budget failures never replay")
+    if has_open_uncertainty(progress):
+        return _wait(
+            "work may have dispatched without a settled result",
+            wait_kind="decision",
+        )
     if progress.last_disposition in _UNSAFE_DISPOSITIONS:
         return _stop("the last disposition forbids new dispatch")
 
@@ -268,10 +294,13 @@ def select_action(
         decided = _classification_action(assessment)
         if decided is not None:
             return decided
-        if assessment.failure in _UNSAFE_FAILURES:
-            return _stop(
-                "uncertain, denied, policy or budget failures never replay"
+        if assessment.failure == "uncertain":
+            return _wait(
+                "an uncertain failure needs the durable recovery choice",
+                wait_kind="decision",
             )
+        if assessment.failure in _UNSAFE_FAILURES:
+            return _stop("denied, policy or budget failures never replay")
         if assessment.failure == "known":
             step_id = assessment.step_id or _next_unverified(progress)
             if step_id is None or step_id not in progress.step_ids:
@@ -289,9 +318,7 @@ def select_action(
                 return _stop("the same evidence repeated without progress")
             if not _attempt_ceiling_allows(progress, step_id, ceilings):
                 return _stop("the step attempt ceiling is exhausted")
-            return _step_action(
-                "repair", step_id, "repair a known, bounded failure"
-            )
+            return _step_action("repair", step_id, "repair a known, bounded failure")
         if assessment.failure == "material":
             return TaskAction(
                 kind="revise",
@@ -307,9 +334,7 @@ def select_action(
         return _verify_or_stop(progress, "there is no step left to verify")
     if progress.status == "completed":
         if _all_verified(progress):
-            return TaskAction(
-                kind="finish", reason="all required steps are verified"
-            )
+            return TaskAction(kind="finish", reason="all required steps are verified")
         return _verify_or_stop(progress, "completion is not yet verified")
 
     if progress.last_disposition in {"known_failure", "material_revision"}:

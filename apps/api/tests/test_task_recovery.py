@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from src.openship.artifacts.contracts import ArtifactRef
 from src.openship.execution.models import ToolAttempt
+from src.openship.providers.errors import ProviderError
 from src.openship.runs.tasks.contracts import (
     ExecutionConfigV5,
     TaskAssessment,
@@ -36,6 +37,7 @@ from src.openship.runs.tasks.models import (
     TaskStepAttempt,
 )
 from src.openship.runs.tasks.recovery import (
+    _EVIDENCE_ONLY_EXPLANATION,
     capture_recovery_evidence,
     prepare_task_recovery,
     reconcile_task_projection,
@@ -50,6 +52,12 @@ from src.openship.runs.tasks.state import (
 from src.openship.sandboxes.models import WorkflowSandbox
 from tests.conftest import TestSessionLocal
 from tests.test_task_decisions import _pinned_execution
+from tests.test_task_graph import (
+    Lane,
+    _durable,
+    _journey,
+    _run_state,
+)
 from tests.test_task_state import CAPABILITY, _artifact, _identity, _operation, _plan
 
 
@@ -942,3 +950,178 @@ def test_recovery_choice_is_accepted_when_blockers_name_another_action():
         assert run.status == "queued"
         stored = db.query(TaskDecisionCommandRecord).filter_by(run_id=run.id).one()
         assert stored.action == "repeat_step"
+
+
+@pytest.mark.parametrize("mode", ["auto", "copilot"])
+def test_uncertain_auto_and_copilot_diagnose_before_user_choice(mode, monkeypatch):
+    """A crashed dispatch parks one diagnosis request in both modes, new and alike."""
+    lane = Lane(monkeypatch, mode=mode, behaviors=_journey(), crash=True)
+    if mode == "copilot":
+        assert lane.invoke()["parked"] == "plan_confirmation"
+        assert len(lane.gateway.calls) == 0
+        lane.confirm_pending()
+        lane.resume_queue("copilot-worker")
+    with pytest.raises(ProviderError) as refused:
+        lane.invoke()
+    assert refused.value.code == "execution_interrupted"
+
+    # The admit survived as the only operation; the worker then died. The crashed
+    # admit's own gateway call is recorded in the ledger, so the honest measure of
+    # what the diagnosis added is the delta from the count at the crash.
+    dispatches_at_crash = len(lane.gateway.calls)
+    assert dispatches_at_crash == 1
+
+    lane.rehold()
+    resumed = lane.invoke()
+    assert resumed["parked"] == "recovery"
+    # The diagnosis added no dispatch: not even a probe of the uncertain command.
+    dispatches_before_user_recovery_choice = (
+        len(lane.gateway.calls) - dispatches_at_crash
+    )
+    assert dispatches_before_user_recovery_choice == 0
+
+    durable = _durable(lane.run_id)
+    pending = durable["progress"].pending_decision
+    assert pending is not None
+    assert pending.kind == "recovery"
+    assert pending.plan_revision >= 1
+    report = pending.recovery_report
+    assert report is not None
+    assert report.plan_revision == pending.plan_revision
+    assert report.digest == pending.expected_digest
+    assert "abort" in report.eligible_actions
+    open_requests = [row for row in durable["decisions"] if row.state == "open"]
+    assert len(open_requests) == 1
+    assert open_requests[0].kind == "recovery"
+    assert durable["attempts"] == []
+    assert len(durable["operations"]) == 1
+    assert _run_state(lane.run_id)["status"] == "waiting_input"
+
+
+def test_no_inference_budget_shows_evidence_only_diagnosis():
+    """No diagnosis to reuse and none to infer: the labeled report still parks.
+
+    This is the shape the graph reaches when its diagnosis stage runs out of
+    inference: it falls back to what the durable rows prove, labels that, and
+    recommends nothing. The snapshot path proves the same identities the
+    diagnosis would have read are still the ones being parked.
+    """
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _two_step_plan(), expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        snapshot = capture_recovery_evidence(db, run_id=run.id)
+        report = prepare_task_recovery(
+            db,
+            run_id=run.id,
+            assessment=None,
+            now=datetime.now(UTC),
+            snapshot=snapshot,
+        )
+        # The report says what it is: only durable evidence, no inference.
+        assert report.explanation == _EVIDENCE_ONLY_EXPLANATION
+        assert report.unknowns == ()
+        assert report.risks == ()
+        assert report.recommended_action is None
+        # It still cites the operation identity the rows prove.
+        assert report.evidence_refs == (f"operation:{operation.request_digest}",)
+        assert report.eligible_actions == ("abort", "repeat_step")
+
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="A call may have dispatched without an outcome. Choose.",
+            now=datetime.now(UTC),
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+        assert request.recovery_report == report
+        assert request.expected_digest == report.digest
+        assert run.status == "waiting_input"
+
+
+def test_recommendation_and_bare_yes_cannot_choose_recovery():
+    """A diagnosis recommendation is a label; answering a recovery ask chooses nothing."""
+    with TestSessionLocal() as db:
+        user, project, conversation, run, claim = _identity(db)
+        _pin_recovery_execution(run, user, project, conversation)
+        db.flush()
+        save_plan(db, claim, _two_step_plan(), expected_revision=0)
+        operation = _operation(db, run, user, status="admitted", result_digest=None)
+        operation.logical_call_id = "model:1:call:0"
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        _bind(
+            task,
+            TaskCallBinding(
+                plan_revision=1,
+                step_id="inspect",
+                attempt=1,
+                logical_call_id=operation.logical_call_id,
+            ),
+        )
+        db.commit()
+
+        assessment = TaskAssessment(
+            classification="task",
+            explanation="The admitted call has no committed outcome.",
+            failure="uncertain",
+            step_id="inspect",
+            recommended_recovery_action="repeat_step",
+        )
+        report = prepare_task_recovery(
+            db, run_id=run.id, assessment=assessment, now=datetime.now(UTC)
+        )
+        # The recommendation is carried as a label, never applied for the user.
+        assert report.recommended_action == "repeat_step"
+
+        request = park_task_wait(
+            db,
+            claim,
+            kind="recovery",
+            prompt="A call may have dispatched without an outcome. Choose.",
+            now=datetime.now(UTC),
+            recovery_report=report,
+        ).pending_decision
+        db.commit()
+
+        bare_yes = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=request.request_id,
+            plan_revision=request.plan_revision,
+            expected_digest=request.expected_digest,
+            action="answer",
+            answer="yes",
+        )
+        with pytest.raises(HTTPException) as refused:
+            apply_decision(
+                db,
+                principal_id=user.id,
+                run_id=run.id,
+                command=bare_yes,
+                now=datetime.now(UTC),
+            )
+        assert refused.value.status_code == 409
+        assert refused.value.detail["error"]["code"] == "decision_action_unavailable"
+        # A refused choice consumes nothing: the request stays open and bound.
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
+        )
+        assert db.query(TaskDecisionCommandRecord).filter_by(run_id=run.id).count() == 0
+        assert run.status == "waiting_input"
+        assert not db.new and not db.dirty

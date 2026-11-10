@@ -24,8 +24,8 @@ and an approved plan keeps running without re-prompting; nothing here claims
 a step is verified or a task complete beyond what the verdicts support.
 A plan revision that reaches beyond what this run's pinned plan reviewed is
 classified in ``tasks.routing`` and asks the user again, in either mode.
-An unsettled attempt is never read as absence of work: the graph stops and keeps
-its identity.
+An unsettled call is never read as absence of work: the graph parks a durable
+recovery decision and keeps its identity (Task 15).
 """
 
 from __future__ import annotations
@@ -55,10 +55,12 @@ from ..runs.tasks.contracts import (
     TaskCallBinding,
     TaskPlan,
     TaskProgress,
+    TaskRecoveryReport,
 )
 from ..runs.tasks.decisions import park_task_wait
 from ..runs.tasks.inference import assess_task, evidence_only_assessment, plan_task
-from ..runs.tasks.routing import classify_revision, select_action
+from ..runs.tasks.recovery import capture_recovery_evidence, prepare_task_recovery
+from ..runs.tasks.routing import classify_revision, has_open_uncertainty, select_action
 from ..runs.tasks.state import (
     read_plan,
     read_progress,
@@ -127,7 +129,11 @@ _MAX_STEP_ATTEMPTS = 3
 
 def _cursor_of(state: TaskGraphState) -> dict:
     """Only known cursor keys survive a round trip through a checkpoint."""
-    return {key: value for key, value in (state.get("cursor") or {}).items() if key in _CURSOR_KEYS}
+    return {
+        key: value
+        for key, value in (state.get("cursor") or {}).items()
+        if key in _CURSOR_KEYS
+    }
 
 
 def _execution_of(state: TaskGraphState) -> ExecutionConfigV5:
@@ -162,7 +168,9 @@ def _stage(invocation, state: TaskGraphState, execution) -> Any:
     The snapshots come from the run's own records, never from today's
     installation, so a changed default cannot change what this run executes.
     """
-    model_config = parse_run_model_config(state.get("model_configuration"), invocation.claim.run_id)
+    model_config = parse_run_model_config(
+        state.get("model_configuration"), invocation.claim.run_id
+    )
     stage = invocation
     stage.execution = execution
     stage.model_config = model_config
@@ -177,7 +185,8 @@ def _assessment_of(cursor: dict) -> TaskAssessment | None:
         return TaskAssessment.model_validate_json(raw)
     except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
         raise ProviderError(
-            "configuration_error", safe_message="the published assessment cannot be read back"
+            "configuration_error",
+            safe_message="the published assessment cannot be read back",
         ) from None
 
 
@@ -197,6 +206,16 @@ def _presentation(plan: TaskPlan, intent: str) -> str:
     """The public statement of a plan: intent, ordered steps, expectations."""
     steps = "; ".join(f"{step.id}: {step.intent}" for step in plan.steps)
     return f"Plan revision {plan.revision}: {intent} Steps: {steps}."
+
+
+def _recovery_prompt(report: TaskRecoveryReport) -> str:
+    """The parked recovery ask: what happened and the choices the records offer."""
+    offer = ", ".join(report.eligible_actions)
+    return (
+        f"{report.explanation} Execution may have happened without a settled "
+        f"result; the choices the durable records support are {offer}. Nothing "
+        "runs again until one is chosen explicitly."
+    )
 
 
 def _committed_steps(progress: TaskProgress) -> frozenset[str]:
@@ -231,7 +250,9 @@ def _pending_step(
     return None
 
 
-def _bound_step(progress: TaskProgress, step_id: str, attempt: int) -> TaskCallBinding | None:
+def _bound_step(
+    progress: TaskProgress, step_id: str, attempt: int
+) -> TaskCallBinding | None:
     """The call this step attempt already committed, if any.
 
     A binding without an attempt row means the run dispatched a call whose
@@ -286,7 +307,9 @@ def build_task_graph(
             cursor["stage"] = "resume"
             return {"cursor": cursor, "expected_revision": progress.current_revision}
         try:
-            assessment = assess_task(_stage(invocation, state, execution), progress, corrections=1)
+            assessment = assess_task(
+                _stage(invocation, state, execution), progress, corrections=1
+            )
         except ProviderError:
             assessment = evidence_only_assessment(progress, ())
         cursor["classification"] = assessment.classification
@@ -327,11 +350,15 @@ def build_task_graph(
         cursor = _cursor_of(state)
         plan = _plan_of(cursor)
         if plan is None:
-            raise ProviderError("configuration_error", safe_message="no plan draft was published.")
+            raise ProviderError(
+                "configuration_error", safe_message="no plan draft was published."
+            )
         with invocation.session_factory() as db:
             progress = read_progress(db, invocation.claim.run_id)
             previous = read_plan(db, invocation.claim.run_id)
-            save_plan(db, invocation.claim, plan, expected_revision=progress.current_revision)
+            save_plan(
+                db, invocation.claim, plan, expected_revision=progress.current_revision
+            )
             db.commit()
         intent = execution_of_intent(state)
         return {
@@ -353,7 +380,11 @@ def build_task_graph(
         cursor = _cursor_of(state)
         with invocation.session_factory() as db:
             plan = read_plan(db, invocation.claim.run_id)
-        prompt = _presentation(plan, execution_of_intent(state)) if plan else "Confirm the plan for this task."
+        prompt = (
+            _presentation(plan, execution_of_intent(state))
+            if plan
+            else "Confirm the plan for this task."
+        )
         with invocation.session_factory() as db:
             park_task_wait(
                 db,
@@ -367,15 +398,58 @@ def build_task_graph(
         return {"cursor": cursor, "parked": "plan_confirmation"}
 
     def wait(state: TaskGraphState) -> dict:
-        """A clarification or blocker parks focused input, never a guess."""
+        """Park focused input: a clarification ask, or a recovery decision for unsettled work.
+
+        Uncertain work never guesses and never re-dispatches: the diagnosis runs
+        OUTSIDE any transaction - capture the evidence identities, ask once, fall
+        back to the labeled evidence-only report - and the report plus the request
+        are prepared and parked in one transaction, so a crash leaves either both
+        or neither. Re-entry re-presents the durable request, never a new ask.
+        """
         invocation = _invocation(state)
         cursor = _cursor_of(state)
+        execution = _execution_of(state)
         with invocation.session_factory() as db:
             progress = read_progress(db, invocation.claim.run_id)
-        if progress.pending_decision is not None:
-            # The request is already open and delivered: re-presenting it is
-            # the caller's job, and a second record would invent a new ask.
-            return {"cursor": {**cursor, "parked": progress.pending_decision.kind}, "parked": progress.pending_decision.kind}
+            if progress.pending_decision is not None:
+                # The request is already open and delivered: re-presenting it is
+                # the caller's job, and a second record would invent a new ask.
+                return {
+                    "cursor": {**cursor, "parked": progress.pending_decision.kind},
+                    "parked": progress.pending_decision.kind,
+                }
+            snapshot = None
+            recovering = has_open_uncertainty(progress)
+            if recovering:
+                snapshot = capture_recovery_evidence(db, run_id=invocation.claim.run_id)
+        if recovering:
+            # Budgeted inference happens outside any lock or transaction: the
+            # model may diagnose, but only the durable rows decide eligibility.
+            try:
+                assessment = assess_task(
+                    _stage(invocation, state, execution), progress, corrections=1
+                )
+            except ProviderError:
+                assessment = evidence_only_assessment(progress, ())
+            with invocation.session_factory() as db:
+                report = prepare_task_recovery(
+                    db,
+                    run_id=invocation.claim.run_id,
+                    assessment=assessment,
+                    now=_utcnow(),
+                    snapshot=snapshot,
+                )
+                park_task_wait(
+                    db,
+                    invocation.claim,
+                    kind="recovery",
+                    prompt=_recovery_prompt(report),
+                    now=_utcnow(),
+                    recovery_report=report,
+                )
+                db.commit()
+            cursor["parked"] = "recovery"
+            return {"cursor": cursor, "parked": "recovery"}
         assessment = _assessment_of(cursor)
         missing = assessment.missing_information if assessment else ()
         if missing:
@@ -421,7 +495,8 @@ def build_task_graph(
             plan = read_plan(db, invocation.claim.run_id)
         if plan is None:
             raise ProviderError(
-                "configuration_error", safe_message="no saved plan tells this run what to execute."
+                "configuration_error",
+                safe_message="no saved plan tells this run what to execute.",
             )
         if cursor.get("plan_revision") and cursor["plan_revision"] != plan.revision:
             # A checkpoint drafted for a plan this run is no longer on stopped
@@ -431,7 +506,9 @@ def build_task_graph(
         committed = _committed_steps(progress)
         target = _pending_step(plan, cursor, progress, committed)
         if target is None:
-            raise ProviderError("configuration_error", safe_message="no step is eligible to execute.")
+            raise ProviderError(
+                "configuration_error", safe_message="no step is eligible to execute."
+            )
         index, step_id = target
         draft = next((item for item in plan.steps if item.id == step_id), None)
         if draft is None or draft.capability is None:
@@ -440,7 +517,9 @@ def build_task_graph(
                 safe_message="the step this plan proposed has no authorized capability.",
             )
 
-        attempt_ordinal = sum(1 for attempt in progress.attempts if attempt.step_id == step_id) + 1
+        attempt_ordinal = (
+            sum(1 for attempt in progress.attempts if attempt.step_id == step_id) + 1
+        )
         already_bound = _bound_step(progress, step_id, attempt_ordinal)
         if already_bound is not None:
             # The call this step attempted is recorded but has no outcome: the
@@ -450,12 +529,15 @@ def build_task_graph(
             return {"cursor": cursor}
         if attempt_ordinal > _MAX_STEP_ATTEMPTS:
             raise ProviderError(
-                "budget_exceeded", safe_message="this step already carries its bounded attempts."
+                "budget_exceeded",
+                safe_message="this step already carries its bounded attempts.",
             )
 
         enabled = _policy_enabled_ids(invocation, state)
         definitions = tuple(
-            tool for tool in task_tool_definitions(execution, enabled) if tool.name == draft.capability.id
+            tool
+            for tool in task_tool_definitions(execution, enabled)
+            if tool.name == draft.capability.id
         )
         if not definitions:
             raise ProviderError(
@@ -546,9 +628,16 @@ def build_task_graph(
         capability_id = cursor.get("step_capability")
         step_id = cursor.get("step_id")
         if not step_id or not capability_id or not cursor.get("logical_call_id"):
-            raise ProviderError("configuration_error", safe_message="the dispatched step is not readable.")
+            raise ProviderError(
+                "configuration_error",
+                safe_message="the dispatched step is not readable.",
+            )
         ref = next(
-            (item for item in execution.allowed_capabilities if item.id == capability_id),
+            (
+                item
+                for item in execution.allowed_capabilities
+                if item.id == capability_id
+            ),
             None,
         )
         if ref is None:
@@ -603,7 +692,9 @@ def build_task_graph(
                     role="tool",
                     name=capability_id,
                     tool_call_id=cursor.get("provider_call_id") or f"step:{step_id}",
-                    content=_result_message(published, execution.limits.max_model_result_bytes),
+                    content=_result_message(
+                        published, execution.limits.max_model_result_bytes
+                    ),
                 ),
             )
             record_attempt_result(
@@ -621,9 +712,9 @@ def build_task_graph(
     def switch(state: TaskGraphState) -> dict:
         """Read the durable progress, then let the switcher choose next action.
 
-        Uncertain or interrupted work stops here: Task 15 owns the diagnosis
-        and the durable abort/repeat/continue choice, so this graph neither
-        repeats nor skips it.
+        Uncertain or interrupted work goes to the wait node instead of stopping:
+        Task 15 owns the diagnosis and the durable abort/repeat/continue choice,
+        so this graph neither repeats nor skips work that may still be running.
         """
         invocation = _invocation(state)
         execution = _execution_of(state)
@@ -633,20 +724,23 @@ def build_task_graph(
         published = None
         if cursor.get("result_json"):
             try:
-                published = PublishedToolResult.model_validate_json(cursor["result_json"])
+                published = PublishedToolResult.model_validate_json(
+                    cursor["result_json"]
+                )
             except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
                 published = None
         if published is not None and _failure_for_tool(published) is not None:
             # The step's identity is already durable (binding plus committed
             # operation); what is missing is a settled outcome, and this graph
-            # must not read that as a call that never ran.
+            # must not read that as a call that never ran: the recovery wait
+            # diagnoses from durable rows and never re-dispatches here.
+            cursor.pop("stopped", None)
             return {
-                "cursor": {**cursor, "stopped": "uncertain", "awaiting": "recovery"},
-                "finish_reason": "blocked",
-                "assistant_response": (
-                    "A step stopped without a settled result. Recovery needs the durable "
-                    "choice this run has not been given yet."
-                ),
+                "cursor": {
+                    **cursor,
+                    "next_action": "wait",
+                    "awaiting": "the step stopped without a settled result",
+                }
             }
         # The Copilot confirmation gate is this graph's own: the `gate` node
         # parks a proposed plan before any step can run, and while a decision
@@ -751,7 +845,10 @@ def build_task_graph(
         with invocation.session_factory() as db:
             plan = read_plan(db, invocation.claim.run_id)
         intent = execution_of_intent(state) if plan else ""
-        return {"finish_reason": "stop", "assistant_response": _presentation(plan, intent) if plan else ""}
+        return {
+            "finish_reason": "stop",
+            "assistant_response": _presentation(plan, intent) if plan else "",
+        }
 
     def _after_assess(state: TaskGraphState) -> str:
         cursor = state.get("cursor") or {}
@@ -801,7 +898,9 @@ def build_task_graph(
         return "finish"
 
     def _after_verify(state: TaskGraphState) -> str:
-        return "step" if (state.get("cursor") or {}).get("advance") == "step" else "finish"
+        return (
+            "step" if (state.get("cursor") or {}).get("advance") == "step" else "finish"
+        )
 
     def _after_step(state: TaskGraphState) -> str:
         cursor = state.get("cursor") or {}
@@ -827,12 +926,22 @@ def build_task_graph(
         _after_assess,
         {"switch": "switch", "answer": "answer", "wait": "wait", "propose": "propose"},
     )
-    builder.add_conditional_edges("propose", _after_propose, {"publish": "publish", "finish": "finish"})
-    builder.add_conditional_edges("publish", _after_publish, {"gate": "gate", "switch": "switch"})
+    builder.add_conditional_edges(
+        "propose", _after_propose, {"publish": "publish", "finish": "finish"}
+    )
+    builder.add_conditional_edges(
+        "publish", _after_publish, {"gate": "gate", "switch": "switch"}
+    )
     builder.add_conditional_edges(
         "switch",
         _after_switch,
-        {"step": "step", "verify": "verify", "wait": "wait", "propose": "propose", "finish": "finish"},
+        {
+            "step": "step",
+            "verify": "verify",
+            "wait": "wait",
+            "propose": "propose",
+            "finish": "finish",
+        },
     )
     builder.add_conditional_edges(
         "verify",
@@ -908,7 +1017,9 @@ def _append_transcript(invocation, ordinal: int, message: ChatMessage) -> None:
         db.commit()
 
 
-def _step_messages(invocation, execution, plan: TaskPlan, step_id: str, intent: str) -> tuple[ChatMessage, ...]:
+def _step_messages(
+    invocation, execution, plan: TaskPlan, step_id: str, intent: str
+) -> tuple[ChatMessage, ...]:
     """The recorded transcript plus this step's instruction, nothing invented.
 
     The graph reads the durable transcript instead of the worker's chat state,

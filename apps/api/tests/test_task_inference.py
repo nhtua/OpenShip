@@ -109,7 +109,9 @@ def _create_envelope(text: str):
         "phase": "final_answer",
         "content": [{"type": "output_text", "text": text, "annotations": []}],
     }
-    response = SimpleNamespace(status="completed", output=[item], model=FIXTURE_MODEL, usage=None)
+    response = SimpleNamespace(
+        status="completed", output=[item], model=FIXTURE_MODEL, usage=None
+    )
     transport = StreamTransport(
         [
             SimpleNamespace(type="response.output_text.delta", delta=text),
@@ -128,7 +130,9 @@ def _observations(status: str = "succeeded") -> tuple[PublishedToolResult, ...]:
     """The retained record the stage is shown, as position-labelled evidence."""
     result = json.loads(_fixture("observations_logs.json"))
     error = (
-        ToolFailure(code="execution_interrupted", message="the sandbox stopped mid-write")
+        ToolFailure(
+            code="execution_interrupted", message="the sandbox stopped mid-write"
+        )
         if status == "interrupted"
         else None
     )
@@ -182,7 +186,12 @@ def _validated_plan() -> TaskPlan:
         )
         for name, intent, deps, outputs in (
             ("inspect", "Inspect the supplied observations", (), ("summary.json",)),
-            ("render", "Chart the observations and compute averages", ("inspect",), ("chart.png", "averages.json")),
+            (
+                "render",
+                "Chart the observations and compute averages",
+                ("inspect",),
+                ("chart.png", "averages.json"),
+            ),
         )
     )
     return TaskPlan(
@@ -208,7 +217,10 @@ def _invocation(execution, claim, monkeypatch, behaviors):
             lambda: TestSessionLocal(), claim.run_id, 1, commit_each=True
         ),
         budget=RunBudget(
-            TestSessionLocal, claim, RunLimits(max_attempts=64, max_output_tokens=4_000), execution
+            TestSessionLocal,
+            claim,
+            RunLimits(max_attempts=64, max_output_tokens=4_000),
+            execution,
         ),
         session_factory=TestSessionLocal,
         authorize_profile=authorize_current_profile,
@@ -219,7 +231,10 @@ def _invocation(execution, claim, monkeypatch, behaviors):
 
 
 def _dispatched(db, run_id) -> list[str]:
-    return [row.logical_call_id for row in db.query(ToolOperation).filter_by(run_id=run_id).all()]
+    return [
+        row.logical_call_id
+        for row in db.query(ToolOperation).filter_by(run_id=run_id).all()
+    ]
 
 
 def _decision_rows(db, run_id):
@@ -242,7 +257,9 @@ def _pre_plan() -> TaskProgress:
 
 def test_greeting_answers_without_confirmation(monkeypatch):
     execution, claim = _running_v5_run()
-    invocation, _transport = _invocation(execution, claim, monkeypatch, [_answer("greeting.json")])
+    invocation, _transport = _invocation(
+        execution, claim, monkeypatch, [_answer("greeting.json")]
+    )
     progress = _pre_plan()
     assessment = assess_task(invocation, progress)
     assert assessment.classification == "informational"
@@ -280,21 +297,31 @@ def test_actionable_request_cannot_dispatch_during_planning(monkeypatch):
     assert planned.status == "planned"
     assert gateway_calls == []
 
-    copilot = select_action(planned, None, policy_allows=True, budget_allows=True, mode="copilot")
+    copilot = select_action(
+        planned, None, policy_allows=True, budget_allows=True, mode="copilot"
+    )
     assert copilot.kind == "wait" and copilot.wait_kind == "decision"
-    assert copilot.reason == "a proposed plan requires confirmation before any step runs"
-    auto = select_action(planned, None, policy_allows=True, budget_allows=True, mode="auto")
+    assert (
+        copilot.reason == "a proposed plan requires confirmation before any step runs"
+    )
+    auto = select_action(
+        planned, None, policy_allows=True, budget_allows=True, mode="auto"
+    )
     assert auto.kind == "execute"
     assert transport.requests == 2
 
 
 def test_missing_units_requests_focused_input(monkeypatch):
     execution, claim = _running_v5_run(allowed=(CAPABILITY,))
-    invocation, transport = _invocation(execution, claim, monkeypatch, [_answer("assessment_clarification.json")])
+    invocation, transport = _invocation(
+        execution, claim, monkeypatch, [_answer("assessment_clarification.json")]
+    )
     assessment = assess_task(invocation, _pre_plan(), observations=_observations())
     assert assessment.classification == "clarification"
     assert assessment.missing_information == ("the units the recorded readings use",)
-    action = select_action(_pre_plan(), assessment, policy_allows=True, budget_allows=True)
+    action = select_action(
+        _pre_plan(), assessment, policy_allows=True, budget_allows=True
+    )
     assert action.kind == "wait"
 
     with TestSessionLocal() as db:
@@ -302,7 +329,9 @@ def test_missing_units_requests_focused_input(monkeypatch):
         db.commit()
     prompt = "Which units do the recorded readings use?"
     with TestSessionLocal() as db:
-        park_task_wait(db, claim, kind="clarification", prompt=prompt, now=datetime.now(UTC))
+        park_task_wait(
+            db, claim, kind="clarification", prompt=prompt, now=datetime.now(UTC)
+        )
         db.commit()
         decisions = _decision_rows(db, claim.run_id)
         task = db.query(TaskRecord).filter_by(run_id=claim.run_id).one()
@@ -330,7 +359,10 @@ def test_malformed_envelope_consumes_attempts(monkeypatch):
         assert _attempt_rows(db, claim.run_id) == 2
         entries = read_transcript(db, claim.run_id)
     assert [entry.model_turn_ordinal for entry in entries] == [0, 1]
-    assert entries[0].message.content.strip() == _fixture("envelope_duplicate.json").strip()
+    assert (
+        entries[0].message.content.strip()
+        == _fixture("envelope_duplicate.json").strip()
+    )
 
 
 def test_untrusted_log_instructions_do_not_expand_plan_authority(monkeypatch):
@@ -352,7 +384,9 @@ def test_untrusted_log_instructions_do_not_expand_plan_authority(monkeypatch):
 
     with TestSessionLocal() as db:
         gateway_calls = _dispatched(db, claim.run_id)
-        refused_task_records = len(db.query(TaskRecord).filter_by(run_id=claim.run_id).all())
+        refused_task_records = len(
+            db.query(TaskRecord).filter_by(run_id=claim.run_id).all()
+        )
         refused_plan_revisions = len(
             db.query(TaskPlanRecord).filter_by(run_id=claim.run_id).all()
         )
@@ -366,12 +400,16 @@ def test_untrusted_log_instructions_do_not_expand_plan_authority(monkeypatch):
 
 def test_no_four_model_calls_for_deterministic_progress(monkeypatch):
     execution, claim = _running_v5_run(allowed=(CAPABILITY,))
-    _stage, transport = _invocation(execution, claim, monkeypatch, [_answer("assessment_task.json")])
+    _stage, transport = _invocation(
+        execution, claim, monkeypatch, [_answer("assessment_task.json")]
+    )
     with TestSessionLocal() as db:
         save_plan(db, claim, _validated_plan(), expected_revision=0)
         db.commit()
         planned = read_progress(db, claim.run_id)
-    action = select_action(planned, None, policy_allows=True, budget_allows=True, mode="auto")
+    action = select_action(
+        planned, None, policy_allows=True, budget_allows=True, mode="auto"
+    )
     assert action.kind == "execute" and action.step_id == "inspect"
     with TestSessionLocal() as db:
         no_progress_route_inference_calls = _attempt_rows(db, claim.run_id)
@@ -381,7 +419,9 @@ def test_no_four_model_calls_for_deterministic_progress(monkeypatch):
 
 def test_uncertain_assessment_diagnoses_without_repeating_command(monkeypatch):
     execution, claim = _running_v5_run(allowed=(CAPABILITY,))
-    invocation, transport = _invocation(execution, claim, monkeypatch, [_answer("diagnosis_uncertain.json")])
+    invocation, transport = _invocation(
+        execution, claim, monkeypatch, [_answer("diagnosis_uncertain.json")]
+    )
     diagnosis = TaskProgress(
         current_revision=1,
         status="running",
@@ -396,19 +436,26 @@ def test_uncertain_assessment_diagnoses_without_repeating_command(monkeypatch):
     assert assessment.failure == "uncertain"
     assert assessment.step_id == "inspect"
     assert assessment.recommended_recovery_action == "repeat_step"
-    assert assessment.unknowns == ("whether the sandbox wrote anything before it stopped",)
+    assert assessment.unknowns == (
+        "whether the sandbox wrote anything before it stopped",
+    )
 
-    action = select_action(diagnosis, assessment, policy_allows=True, budget_allows=True)
-    assert action.kind == "stop"
-    assert action.reason == "the last disposition forbids new dispatch"
+    action = select_action(
+        diagnosis, assessment, policy_allows=True, budget_allows=True
+    )
+    assert action.kind == "wait"
+    assert action.reason == "work may have dispatched without a settled result"
     open_diagnosis = TaskProgress(
         current_revision=1,
         status="running",
         step_ids=("inspect", "render"),
         attempts=(TaskAttempt(step_id="inspect", attempt=1, status="interrupted"),),
     )
-    assert select_action(open_diagnosis, assessment, policy_allows=True, budget_allows=True).reason == (
-        "uncertain, denied, policy or budget failures never replay"
+    assert (
+        select_action(
+            open_diagnosis, assessment, policy_allows=True, budget_allows=True
+        ).reason
+        == "an uncertain failure needs the durable recovery choice"
     )
 
     uncertain_diagnosis_gateway_calls = []
@@ -424,7 +471,9 @@ def test_uncertain_assessment_diagnoses_without_repeating_command(monkeypatch):
 
 def test_recovery_recommendation_is_not_user_consent(monkeypatch):
     execution, claim = _running_v5_run(allowed=(CAPABILITY,))
-    invocation, _transport = _invocation(execution, claim, monkeypatch, [_answer("diagnosis_uncertain.json")])
+    invocation, _transport = _invocation(
+        execution, claim, monkeypatch, [_answer("diagnosis_uncertain.json")]
+    )
     diagnosis = TaskProgress(
         current_revision=1,
         status="running",
@@ -432,7 +481,9 @@ def test_recovery_recommendation_is_not_user_consent(monkeypatch):
         attempts=(TaskAttempt(step_id="inspect", attempt=1, status="interrupted"),),
         last_disposition="uncertain",
     )
-    assessment = assess_task(invocation, diagnosis, observations=_observations(status="interrupted"))
+    assessment = assess_task(
+        invocation, diagnosis, observations=_observations(status="interrupted")
+    )
     assert assessment.recommended_recovery_action == "repeat_step"
 
     with TestSessionLocal() as db:
@@ -464,7 +515,9 @@ def test_responses_continuation_is_recorded_once_and_replayed(monkeypatch):
         "openai",
         lambda profile: OpenAIResponsesAdapter(
             client_factory=lambda _config: SimpleNamespace(
-                responses=SimpleNamespace(create=_create_envelope(_fixture("greeting.json")))
+                responses=SimpleNamespace(
+                    create=_create_envelope(_fixture("greeting.json"))
+                )
             )
         ),
     )
@@ -475,9 +528,14 @@ def test_responses_continuation_is_recorded_once_and_replayed(monkeypatch):
     invocation = SimpleNamespace(
         claim=claim,
         control=control(),
-        recorder=DatabaseAttemptRecorder(lambda: TestSessionLocal(), claim.run_id, 1, commit_each=True),
+        recorder=DatabaseAttemptRecorder(
+            lambda: TestSessionLocal(), claim.run_id, 1, commit_each=True
+        ),
         budget=RunBudget(
-            TestSessionLocal, claim, RunLimits(max_attempts=8, max_output_tokens=4_000), execution
+            TestSessionLocal,
+            claim,
+            RunLimits(max_attempts=8, max_output_tokens=4_000),
+            execution,
         ),
         session_factory=TestSessionLocal,
         authorize_profile=authorize_current_profile,
