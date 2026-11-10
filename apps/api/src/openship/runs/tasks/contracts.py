@@ -285,6 +285,9 @@ class TaskAction(FrozenModel):
         return self
 
 
+RecoveryAction = Literal["abort", "repeat_step", "continue_next"]
+
+
 class TaskAssessment(FrozenModel):
     schema_version: Literal[1] = 1
     classification: Literal["informational", "clarification", "task", "blocked"]
@@ -296,11 +299,21 @@ class TaskAssessment(FrozenModel):
     ] = "none"
     step_id: str | None = Field(default=None, pattern=STEP_ID_PATTERN)
     proposed_action: TaskAction | None = None
+    unknowns: tuple[str, ...] = Field(default=(), max_length=16)
+    risks: tuple[str, ...] = Field(default=(), max_length=16)
+    recommended_recovery_action: RecoveryAction | None = None
 
     @field_validator("explanation")
     @classmethod
     def _explanation(cls, value: str) -> str:
         return _public_text(value, 2000)
+
+    @field_validator("unknowns", "risks")
+    @classmethod
+    def _diagnosis_items(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for item in value:
+            _public_text(item, 512)
+        return value
 
     @field_validator("evidence_refs")
     @classmethod
@@ -334,6 +347,8 @@ class TaskAssessment(FrozenModel):
             raise ValueError("known or material failures require a step identifier")
         if self.failure == "none" and self.step_id is not None:
             raise ValueError("a step identifier requires a failure category")
+        if self.recommended_recovery_action is not None and self.failure != "uncertain":
+            raise ValueError("only an uncertain failure carries a recovery recommendation")
         return self
 
 
@@ -361,9 +376,6 @@ class TaskAttempt(FrozenModel):
         if self.status == "succeeded" and self.operation_id is None:
             raise ValueError("a succeeded attempt requires an operation identity")
         return self
-
-
-RecoveryAction = Literal["abort", "repeat_step", "continue_next"]
 
 
 class TaskRecoveryReport(FrozenModel):

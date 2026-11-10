@@ -90,6 +90,25 @@ def _continue(progress: TaskProgress) -> TaskAction:
     return _step_action("execute", step_id, "execute the next verified plan step")
 
 
+def _classification_action(assessment: TaskAssessment) -> TaskAction | None:
+    """What an assessment's classification alone decides.
+
+    A run that has no plan yet (revision 0) is judged by what its first
+    assessment says: a greeting stops, a clarification parks focused input, a
+    blocker asks for what it needs. A run that already has a plan keeps the
+    status-first order, so a cancelled or blocked task is never revived.
+    """
+    if assessment.classification == "blocked":
+        if assessment.missing_information:
+            return _wait("a blocker requires user input")
+        return _stop("the task is blocked by terminal evidence")
+    if assessment.classification == "clarification":
+        return _wait("a clarification is required")
+    if assessment.classification == "informational":
+        return _stop("informational submissions do not execute planned work")
+    return None
+
+
 def select_action(
     progress: TaskProgress,
     assessment: TaskAssessment | None,
@@ -97,13 +116,21 @@ def select_action(
     policy_allows: bool,
     budget_allows: bool,
     limits: TaskLimits | None = None,
+    mode: str | None = None,
 ) -> TaskAction:
     """Select exactly one eligible action without inferring or dispatching.
 
     `limits` lets the caller pass the effective ceilings it validated with the
     budget instead of the contract defaults; it narrows a ceiling only.
+    `mode` is the mode this run captured at admission: a Copilot run must
+    confirm a proposed plan before any step executes, an Auto run advances
+    only because its caller already validated the policy that permits this
+    transition. No mode means the caller owns the gate, which is what every
+    pre-v5 switch does.
     """
     ceilings = limits if limits is not None else _LIMITS
+    if mode is not None and mode not in {"auto", "copilot"}:
+        raise ValueError("mode must be auto or copilot")
     if not policy_allows:
         return _stop("policy does not allow this transition")
     if not budget_allows:
@@ -119,20 +146,20 @@ def select_action(
     if progress.status == "waiting":
         return _wait("the task is waiting for durable input")
 
+    if assessment is not None and progress.current_revision == 0:
+        decided = _classification_action(assessment)
+        if decided is not None:
+            return decided
+
     if progress.status in _TERMINAL_STATUSES:
         return _stop(f"the task is {progress.status} and cannot advance")
     if progress.last_disposition in _UNSAFE_DISPOSITIONS:
         return _stop("the last disposition forbids new dispatch")
 
     if assessment is not None:
-        if assessment.classification == "blocked":
-            if assessment.missing_information:
-                return _wait("a blocker requires user input")
-            return _stop("the task is blocked by terminal evidence")
-        if assessment.classification == "clarification":
-            return _wait("a clarification is required")
-        if assessment.classification == "informational":
-            return _stop("informational submissions do not execute planned work")
+        decided = _classification_action(assessment)
+        if decided is not None:
+            return decided
         if assessment.failure in _UNSAFE_FAILURES:
             return _stop(
                 "uncertain, denied, policy or budget failures never replay"
@@ -175,5 +202,15 @@ def select_action(
 
     if progress.last_disposition in {"known_failure", "material_revision"}:
         return _stop("the recorded disposition requires an assessment")
+
+    if (
+        mode == "copilot"
+        and progress.status == "planned"
+        and _next_unverified(progress) is not None
+    ):
+        return _wait(
+            "a proposed plan requires confirmation before any step runs",
+            wait_kind="decision",
+        )
 
     return _continue(progress)
