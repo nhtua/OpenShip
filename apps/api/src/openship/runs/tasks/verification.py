@@ -28,12 +28,11 @@ from __future__ import annotations
 import hashlib
 from uuid import UUID
 
-from src.openship.artifacts.contracts import ArtifactRef
-from src.openship.artifacts.filesystem import ArtifactStorageError, LocalArtifactStore
-from src.openship.artifacts.models import Artifact
-from src.openship.config import settings
-from src.openship.execution.models import ToolOperation
-
+from ...artifacts.contracts import ArtifactRef
+from ...artifacts.filesystem import ArtifactStorageError, LocalArtifactStore
+from ...artifacts.models import Artifact
+from ...config import settings
+from ...execution.models import ToolOperation
 from .contracts import TaskAssessment, VerificationCheck, VerificationReport
 from .models import TaskStepAttempt
 from .state import _json, read_plan, read_progress

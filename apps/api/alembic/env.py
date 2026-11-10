@@ -6,8 +6,12 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
-# Ensure the src directory is on the Python path
+# Ensure the src directory is on the Python path, so Alembic can load the
+# package as `openship`. The application loads the same package as `src.openship`
+# (the API and worker entry points run with apps/api on the path), and modules
+# inside the package name both roots, so Alembic needs that root too.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), ".."))
 from openship.config import settings
 
 # this is the Alembic Config object, which provides

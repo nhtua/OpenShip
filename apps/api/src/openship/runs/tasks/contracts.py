@@ -15,8 +15,8 @@ from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
-from src.openship.artifacts.contracts import ArtifactRef
-from src.openship.capabilities.contracts import (
+from ...artifacts.contracts import ArtifactRef
+from ...capabilities.contracts import (
     SHA256_PATTERN,
     CapabilityRef,
     ConnectorRef,
@@ -25,7 +25,7 @@ from src.openship.capabilities.contracts import (
     LoopLimits,
     canonical_digest,
 )
-from src.openship.sandboxes.profile_schema import (
+from ...sandboxes.profile_schema import (
     ProfileCatalog,
     ProfileId,
     catalog_digest,
