@@ -432,16 +432,17 @@ physical attempt or uncertain sandbox reservation; previously dispatched
 operations fail closed. The controller adjudicated that old waits without pin
 evidence remain visibly blocked rather than inventing pins; parking replay
 preserves their original identity. The controller reports PostgreSQL concurrency
-after alias reservation: 1 passed, 2 deselected, 2 warnings, and scoped re-review
-found no new critical/important defects. The full PostgreSQL migration lane was
-not rerun in this process; see the 8C report for evidence and the credential-safe
+after alias reservation: 1 passed, 2 deselected, 2 warnings, and the scoped re-review
+found no new critical/important defects, so gates 8C.1–8C.5 are checked. The controller
+reran the complete authorized PostgreSQL Task 8 lane afterwards with 4 passed, 2 warnings.
+See the 8C report for evidence and the credential-safe
 test warning. Task 15 remains responsible for actual recovery graph execution.
 
-- [ ] **8C.1 Write failing tests:** add `test_crash_before_choice_commit_reprompts_same_request`, `test_lost_response_replays_same_decision_once`, `test_conflicting_stale_expired_wrong_actor_and_bare_yes_do_not_release`, `test_cancel_wins_over_confirmation`, `test_configuration_resume_cannot_replace_pins`, `test_confirm_cannot_consume_recovery_request`, and PostgreSQL `test_two_decisions_cannot_enqueue_twice`. Assert rollback leaves request open with zero new outbox rows; replay has one command/dispatch generation; wrong actor is 404, stale/conflicting command 409; abort enqueues nothing; no command handler calls the gateway.
-- [ ] **8C.2 Run red:** `uv run pytest -q tests/test_task_decisions.py`; authorized DB: `uv run pytest -q -m postgres tests/integration/test_task_decisions_postgres.py`.
-- [ ] **8C.3 Implement:** implement `apply_decision` using existing connector-resume transaction/outbox patterns, not its zero-operations-only helper. Authorize owned scope before replay lookup; return an already committed result without another transition. Under locks validate request kind/revision/digest, actor, cancellation and execution eligibility. One local transaction records command/result, consumes request, updates task/run/job, advances dispatch generation, appends event and `enqueue_run` intent. Reject/abort cancel remaining work even when execution configuration is unavailable, without an undo claim or enqueue. Recovery repeat/continue require backend eligibility against the bound report; Task 15 consumes their intent in the recovery-aware graph. Changed eligibility blocks/re-presents a request, never selects a substitute.
-- [ ] **8C.4 Run green:** repeat both red commands and Ruff on `src/openship/runs/tasks/decisions.py`; inspect rollback, replay and concurrent-decision counts separately.
-- [ ] **8C.5 Commit:** use scanned file-based subject `feat: consume task decisions through the existing outbox`, obtain a slice review and record evidence here.
+- [x] **8C.1 Write failing tests:** add `test_crash_before_choice_commit_reprompts_same_request`, `test_lost_response_replays_same_decision_once`, `test_conflicting_stale_expired_wrong_actor_and_bare_yes_do_not_release`, `test_cancel_wins_over_confirmation`, `test_configuration_resume_cannot_replace_pins`, `test_confirm_cannot_consume_recovery_request`, and PostgreSQL `test_two_decisions_cannot_enqueue_twice`. Assert rollback leaves request open with zero new outbox rows; replay has one command/dispatch generation; wrong actor is 404, stale/conflicting command 409; abort enqueues nothing; no command handler calls the gateway.
+- [x] **8C.2 Run red:** `uv run pytest -q tests/test_task_decisions.py`; authorized DB: `uv run pytest -q -m postgres tests/integration/test_task_decisions_postgres.py`.
+- [x] **8C.3 Implement:** implement `apply_decision` using existing connector-resume transaction/outbox patterns, not its zero-operations-only helper. Authorize owned scope before replay lookup; return an already committed result without another transition. Under locks validate request kind/revision/digest, actor, cancellation and execution eligibility. One local transaction records command/result, consumes request, updates task/run/job, advances dispatch generation, appends event and `enqueue_run` intent. Reject/abort cancel remaining work even when execution configuration is unavailable, without an undo claim or enqueue. Recovery repeat/continue require backend eligibility against the bound report; Task 15 consumes their intent in the recovery-aware graph. Changed eligibility blocks/re-presents a request, never selects a substitute.
+- [x] **8C.4 Run green:** repeat both red commands and Ruff on `src/openship/runs/tasks/decisions.py`; inspect rollback, replay and concurrent-decision counts separately.
+- [x] **8C.5 Commit:** use scanned file-based subject `feat: consume task decisions through the existing outbox`, obtain a slice review and record evidence here.
 
 ### Slice 8D — HTTP and delivery/maintenance wiring
 
@@ -449,10 +450,22 @@ test warning. Task 15 remains responsible for actual recovery graph execution.
 
 **8D review follow-up:** Decision event schemas reject undeclared fields, preventing new sensitive extras from being persisted. Added unauthenticated HTTP and consumer-to-single-slot reuse tests, and a PostgreSQL cancellation/confirmation race test (collected only; authorized lane still required). Focused task/delivery/consumer/claim suite: 187 passed; event service/routes/tool events: 27 passed. Previously persisted event payloads are not rewritten by this change. Direct end-to-end restore/cutover and broker-fault qualification remain open.
 
-- [ ] **8D.1 Write failing tests:** create `test_task_wait_delivery.py` tests `test_wait_ack_releases_slot_without_terminal_message`, `test_stale_delivery_cannot_claim_waiting_task`, `test_expiry_runs_without_worker_slot`, `test_cancel_supersedes_pending_decision`. Assert parked wait leaves capacity available, no terminal message, stale deliveries disposed and cancelled requests unable to enqueue.
-- [ ] **8D.2 Run red:** `uv run pytest -q tests/test_task_wait_delivery.py tests/test_task_decisions.py`; expect missing lifecycle behavior.
-- [ ] **8D.3 Implement:** add authenticated route/router registration with no tool dispatch. Worker/delivery/exhaustion distinguish parked waits from completion, retryable failures and delivery exhaustion; acknowledge only after durable parking. Use the existing RecoverySupervisor tick for expiry. Extend cancellation/cutover/restore/active-run predicates while preserving connector behavior. Register needed decision event schemas in `events/schemas.py`; Task 14 later extends public presentation. Recovery choices still require Task 15 before rollout.
-- [ ] **8D.4 Run green:** repeat the red command, Task 8 PostgreSQL lane, `uv run pytest -q tests/test_messaging_consumer.py tests/test_messaging_command_claim.py tests/test_messaging_exhaustion.py tests/test_messaging_maintenance.py`, and separately `uv run pytest -q tests/connectors/test_blockers.py`. Run Ruff on changed modules. Record exact outcomes and remaining broker faults under Task 15, not an all-skipped pass.
+**8D verification pass (2026-11-09):** Cutover/restore is now exercised end to end in
+`tests/test_messaging_cutover_preview.py` (`test_cutover_apply_preserves_a_parked_task_wait`,
+`test_rollback_restore_never_readmits_a_parked_task_wait`,
+`test_cutover_apply_refuses_a_task_wait_with_an_unsettled_operation`): apply preserves the wait,
+creates no command for it, restore rotates the epoch without re-admitting it, and an admitted
+operation beside a wait blocks preview and refuses apply. These passed on first run and are
+descriptive coverage, not new red/green. The committed pool test (`test_task_wait_delivery.py:461-484`)
+already proves real `ExecutionPool` capacity reuse. The controller's authorized PostgreSQL Task 8
+lane now passes 4 tests, 2 existing warnings. Broker faults and live lanes stay Task 15's gate.
+Gates 8D.1–8D.4 are checked; 8D.5 waits for this slice commit plus the whole-branch review, which
+is the review gate for inline execution.
+
+- [x] **8D.1 Write failing tests:** create `test_task_wait_delivery.py` tests `test_wait_ack_releases_slot_without_terminal_message`, `test_stale_delivery_cannot_claim_waiting_task`, `test_expiry_runs_without_worker_slot`, `test_cancel_supersedes_pending_decision`. Assert parked wait leaves capacity available, no terminal message, stale deliveries disposed and cancelled requests unable to enqueue.
+- [x] **8D.2 Run red:** `uv run pytest -q tests/test_task_wait_delivery.py tests/test_task_decisions.py`; expect missing lifecycle behavior.
+- [x] **8D.3 Implement:** add authenticated route/router registration with no tool dispatch. Worker/delivery/exhaustion distinguish parked waits from completion, retryable failures and delivery exhaustion; acknowledge only after durable parking. Use the existing RecoverySupervisor tick for expiry. Extend cancellation/cutover/restore/active-run predicates while preserving connector behavior. Register needed decision event schemas in `events/schemas.py`; Task 14 later extends public presentation. Recovery choices still require Task 15 before rollout.
+- [x] **8D.4 Run green:** repeat the red command, Task 8 PostgreSQL lane, `uv run pytest -q tests/test_messaging_consumer.py tests/test_messaging_command_claim.py tests/test_messaging_exhaustion.py tests/test_messaging_maintenance.py`, and separately `uv run pytest -q tests/connectors/test_blockers.py`. Run Ruff on changed modules. Record exact outcomes and remaining broker faults under Task 15, not an all-skipped pass.
 - [ ] **8D.5 Commit:** use scanned file-based subject `feat: integrate task waits with delivery and maintenance`, obtain a slice review and record evidence here. Task 8 completes only after all four slice gates pass.
 
 ## Task 9: Root budgets, active execution windows and stable tool-call admission

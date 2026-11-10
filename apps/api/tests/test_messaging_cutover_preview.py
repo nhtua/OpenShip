@@ -21,6 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Session
 
 from src.openship.database.models import Base
+from src.openship.execution.models import ToolOperation
 from src.openship.messaging import cli, cutover
 from src.openship.messaging.cutover import (
     apply_cutover,
@@ -38,6 +39,10 @@ from src.openship.messaging.models import (
 )
 from src.openship.messaging.relay import _record_envelope, claim_outbox_batch
 from src.openship.runs.models import Event, Outbox, Run, RunJob
+from src.openship.runs.queue import claim_run
+from src.openship.runs.tasks.decisions import park_task_wait
+from src.openship.runs.tasks.models import TaskDecisionRecord, TaskRecord
+from tests.test_task_state import _identity
 
 
 def _phase5_engine():
@@ -1776,4 +1781,189 @@ def test_apply_refuses_blocked_preview_before_closing_transport_gates():
         assert state.admission_open is True
         assert state.execution_open is True
         assert db.query(MessagingCutover).count() == 0
+    engine.dispose()
+
+
+def _parked_wait_store(*, unsettled_operation=False):
+    """A Phase 6A store holding one durably parked v5 task wait."""
+    engine = _full_phase6a_engine()
+    with Session(engine) as db:
+        user, project, conversation, run, claim = _identity(db)
+        park_task_wait(
+            db,
+            claim,
+            kind="clarification",
+            prompt="Question?",
+            now=datetime.now(UTC),
+        )
+        db.commit()
+        if unsettled_operation:
+            db.add(
+                ToolOperation(
+                    run_id=run.id,
+                    project_id=project.id,
+                    conversation_id=conversation.id,
+                    principal_id=user.id,
+                    logical_call_id="model:1:call:0",
+                    capability_id="python_execute",
+                    capability_version="1",
+                    manifest_digest="0" * 64,
+                    arguments_json="{}",
+                    arguments_digest="0" * 64,
+                    request_digest="0" * 64,
+                    configuration_revision="1",
+                    execution_bundle_digest="0" * 64,
+                    status="admitted",
+                )
+            )
+            db.commit()
+        task = db.query(TaskRecord).filter_by(run_id=run.id).one()
+        decision = (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id, state="open").one()
+        )
+        return engine, run.id, task.id, decision.request_id
+
+
+def test_cutover_apply_preserves_a_parked_task_wait():
+    engine, run_id, task_id, request_id = _parked_wait_store()
+    cutover_id = uuid.uuid4()
+
+    with Session(engine) as db:
+        preview = plan_cutover(db, cutover_id=cutover_id)
+    assert preview.status == "preview"
+    assert preview.run_disposition_counts == {"waiting_preserved": 1}
+
+    with Session(engine) as db:
+        applied = apply_cutover(
+            db,
+            cutover_id=cutover_id,
+            operator="cutover-operator",
+            batch_size=1,
+            legacy_writers_stopped=True,
+        )
+    assert applied.runs_scanned == 1
+    assert applied.commands_created == 0
+
+    with Session(engine) as db:
+        run = db.get(Run, run_id)
+        job = db.query(RunJob).filter(RunJob.run_id == run_id).one()
+        task = db.get(TaskRecord, task_id)
+        decision = (
+            db.query(TaskDecisionRecord).filter_by(request_id=request_id).one()
+        )
+        assert run.status == "waiting_input"
+        assert run.ended_at is None
+        assert (job.owner_id, job.lease_until) == (None, None)
+        assert task.status == "waiting"
+        assert decision.state == "open"
+        assert (
+            db.query(Outbox)
+            .filter(Outbox.destination == "command", Outbox.run_id == run_id)
+            .count()
+            == 0
+        )
+    engine.dispose()
+
+
+def test_rollback_restore_never_readmits_a_parked_task_wait():
+    engine, run_id, _task_id, request_id = _parked_wait_store()
+    cutover_id = uuid.uuid4()
+    with Session(engine) as db:
+        apply_cutover(
+            db,
+            cutover_id=cutover_id,
+            operator="cutover-operator",
+            batch_size=1,
+            legacy_writers_stopped=True,
+        )
+
+    with Session(engine) as db:
+        preview = plan_rollback(db, cutover_id=cutover_id)
+        assert preview.ready is True
+        assert preview.run_disposition_counts == {"waiting_preserved": 1}
+        state = db.get(MessageTransportState, 1)
+        forward_epoch = state.transport_epoch
+        generation = (
+            db.query(RunJob).filter(RunJob.run_id == run_id).one().dispatch_generation
+        )
+
+    with Session(engine) as db:
+        rolled = apply_rollback(
+            db,
+            cutover_id=cutover_id,
+            operator="rollback-operator",
+            batch_size=1,
+            processes_stopped=True,
+            consumers_drained=True,
+        )
+        assert rolled.status == "rolled_back"
+        assert rolled.rollback_epoch != forward_epoch
+
+    with Session(engine) as db:
+        state = db.get(MessageTransportState, 1)
+        run = db.get(Run, run_id)
+        job = db.query(RunJob).filter(RunJob.run_id == run_id).one()
+        decision = db.query(TaskDecisionRecord).filter_by(request_id=request_id).one()
+        assert state.active is False
+        assert state.transport_epoch == rolled.rollback_epoch
+        assert run.status == "waiting_input"
+        assert run.ended_at is None
+        assert job.dispatch_generation == generation
+        assert decision.state == "open"
+        assert (
+            db.query(Outbox)
+            .filter(
+                Outbox.destination == "command",
+                Outbox.transport_epoch == rolled.rollback_epoch,
+            )
+            .count()
+            == 0
+        )
+        disposed = claim_run(
+            db,
+            run_id=run_id,
+            generation=generation,
+            epoch=rolled.rollback_epoch,
+            worker_id="restored-worker",
+            lease_seconds=30,
+        )
+        assert disposed.kind == "disposed"
+    engine.dispose()
+
+
+def test_cutover_apply_refuses_a_task_wait_with_an_unsettled_operation():
+    engine, run_id, _task_id, request_id = _parked_wait_store(
+        unsettled_operation=True
+    )
+    cutover_id = uuid.uuid4()
+
+    with Session(engine) as db:
+        preview = plan_cutover(db, cutover_id=cutover_id)
+    assert preview.status == "blocked"
+    assert preview.run_disposition_counts == {"blocked_active_execution": 1}
+    assert preview.blocked_run_groups == 1
+    assert str(run_id) in preview.blocked_run_ids
+
+    with (
+        Session(engine) as db,
+        pytest.raises(RuntimeError, match="preview is blocked"),
+    ):
+        apply_cutover(
+            db,
+            cutover_id=cutover_id,
+            operator="cutover-operator",
+            batch_size=1,
+            legacy_writers_stopped=True,
+        )
+
+    with Session(engine) as db:
+        state = db.get(MessageTransportState, 1)
+        assert state.active is False
+        assert state.admission_open is True
+        assert state.execution_open is True
+        assert db.query(MessagingCutover).count() == 0
+        assert (
+            db.query(TaskDecisionRecord).filter_by(request_id=request_id).one().state
+            == "open"
+        )
     engine.dispose()
