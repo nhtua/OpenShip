@@ -768,8 +768,26 @@ class Worker:
                 logger.warning(f"Conversation {run.conversation_id} not found")
                 return False
 
+            # A v5 chat run resolves only against its own pinned ExecutionConfigV5
+            # snapshot: the same records the task switcher reads decide which graph
+            # this worker may run, and a missing or legacy snapshot blocks instead
+            # of falling back to older routing. Older graphs keep their snapshot-free
+            # resolution, so the pinned decode is only read for a v5 root.
+            pinned_execution = None
+            if run.kind == "chat" and run.graph_version == 5:
+                try:
+                    pinned_execution = decode_execution_config(
+                        run.execution_configuration or ""
+                    )
+                except Exception:
+                    pinned_execution = None
             try:
-                graph_factory = resolve_graph(run.kind, run.graph_version)
+                if pinned_execution is not None:
+                    graph_factory = resolve_graph(
+                        run.kind, run.graph_version, pinned_execution
+                    )
+                else:
+                    graph_factory = resolve_graph(run.kind, run.graph_version)
             except UnsupportedGraphVersion:
                 safe_message = (
                     "This run uses a graph version this runtime does not support."
@@ -828,7 +846,10 @@ class Worker:
             agent_execution = None
             try:
                 snapshot = bind_run_model_config(job, run, fence)
-                if run.kind == "chat" and run.graph_version in (2, 3, 4):
+                # Graph 5 is the task graph: it runs only against its own
+                # pinned ExecutionConfigV5 snapshot, which the resolver above
+                # already required, so one decode serves both maintained loops.
+                if run.kind == "chat" and run.graph_version in (2, 3, 4, 5):
                     try:
                         agent_execution = decode_execution_config(
                             run.execution_configuration or ""
@@ -1088,6 +1109,19 @@ class Worker:
                     f"[{self.worker_id}] Lease lost for run {run_id}; publishing nothing"
                 )
                 return False
+
+            # A task wait parked inside this graph run already delivered its
+            # own request and moved the run to a waiting status with its task
+            # fence. Publishing an ordinary answer and a completion here would
+            # claim the task finished while it waits for a human decision, so
+            # this turn's disposition is the wait itself.
+            parked = graph_state.get("parked") if failure is None else None
+            if parked:
+                logger.info(
+                    f"[{self.worker_id}] Run {run_id} parked as {parked}; "
+                    "publishing no final message or completion"
+                )
+                return True
 
             # Auto-title the conversation if this is the first message
             new_title = None

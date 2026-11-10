@@ -29,6 +29,7 @@ from ..queue import Claim
 from .contracts import (
     ExecutionConfigV5,
     TaskAttempt,
+    TaskCallBinding,
     TaskCounters,
     TaskDecision,
     TaskPlan,
@@ -173,7 +174,9 @@ def _step_status(
 
 def _project(db, task: TaskRecord | None) -> TaskProgressProjection:
     if task is None:
-        return TaskProgressProjection()
+        # A run with no task record is pre-plan: revision 0, not the contract's
+        # default of revision 1, which belongs to a plan's first revision.
+        return TaskProgressProjection(current_revision=0, status="unknown")
     plan_row = _current_plan(db, task)
     plan = _load_plan(plan_row) if plan_row is not None else None
     verified_steps = _verified_steps(task)
@@ -239,6 +242,23 @@ def read_progress(db, run_id: uuid.UUID) -> TaskProgressProjection:
     """Read the current durable projection without locking or mutating."""
     task = db.query(TaskRecord).filter(TaskRecord.run_id == run_id).one_or_none()
     return _project(db, task)
+
+
+def read_plan(db, run_id: uuid.UUID) -> TaskPlan | None:
+    """The plan this run is on, as its durable record says, without locking.
+
+    A resumed graph invocation has no checkpoint draft to read, so the step
+    machinery needs the same record ``save_plan`` wrote: the current revision,
+    with its step intents, capabilities and expectations. Nothing is rebuilt
+    from a model draft here.
+    """
+    task = db.query(TaskRecord).filter(TaskRecord.run_id == run_id).one_or_none()
+    if task is None:
+        return None
+    row = _current_plan(db, task)
+    if row is None:
+        return None
+    return _load_plan(row)
 
 
 def _claim_state(db, claim: Claim) -> _ClaimState:
@@ -675,5 +695,78 @@ def record_attempt_result(
             "evidence_refs": list(evidence),
         },
     )
+    db.flush()
+    return _project(db, task)
+
+
+def record_task_call(
+    db,
+    claim: Claim,
+    *,
+    binding: TaskCallBinding,
+) -> TaskProgressProjection:
+    """Commit the logical call a step is about to make, before it dispatches.
+
+    The binding is what lets a later reader say "this step may have run": a
+    worker that dies between here and the gateway leaves the call recorded,
+    and the missing result is uncertainty, never absence of work. The
+    identity is checked against the current plan and the step's committed
+    attempts, so a stale checkpoint cannot approve a new plan or re-number
+    an attempt.
+    """
+    if not isinstance(binding, TaskCallBinding):
+        raise TaskStateError("invalid_binding", "a strict call binding is required")
+    state = _claim_state(db, claim)
+    task = state.task
+    if task is None:
+        raise TaskStateError("task_missing", "no plan has been saved for this run")
+    plan_row = _current_plan(db, task)
+    if plan_row is None:
+        raise TaskStateError("plan_missing", "the current plan is missing")
+    plan = _load_plan(plan_row)
+    if binding.plan_revision != task.current_revision:
+        raise TaskStateError(
+            "stale_revision", "the call binds a plan revision the run is not on"
+        )
+    if binding.step_id not in {step.id for step in plan.steps}:
+        raise TaskStateError("step_unknown", "the call binds a step outside the current plan")
+
+    recorded = _json(task.call_bindings_json, [])
+    if not isinstance(recorded, list):
+        raise TaskStateError("state_corrupt", "call bindings are not a list")
+    for item in recorded:
+        try:
+            existing = TaskCallBinding(**item)
+        except (TypeError, ValueError):
+            raise TaskStateError("state_corrupt", "a recorded call binding is unreadable") from None
+        if existing.logical_call_id == binding.logical_call_id:
+            if (
+                existing.step_id == binding.step_id
+                and existing.attempt == binding.attempt
+                and existing.plan_revision == binding.plan_revision
+            ):
+                return _project(db, task)
+            raise TaskStateError(
+                "call_binding_conflict",
+                "that logical call is already bound to another step attempt",
+            )
+
+    attempts = (
+        db.query(TaskStepAttempt)
+        .filter_by(run_id=task.run_id, step_id=binding.step_id)
+        .count()
+    )
+    if binding.attempt != attempts + 1:
+        raise TaskStateError(
+            "attempt_order",
+            "the call would skip or repeat a step attempt ordinal",
+        )
+
+    task.call_bindings_json = json.dumps(
+        [*recorded, binding.model_dump(mode="json")],
+        sort_keys=True,
+    )
+    task.fence = claim.fence
+    task.updated_at = _now()
     db.flush()
     return _project(db, task)
