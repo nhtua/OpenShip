@@ -109,6 +109,50 @@ def test_decision_event_rejects_invalid_payload():
             )
 
 
+@pytest.mark.parametrize(
+    "event_type", ["task.decision_requested", "task.decision_resolved"]
+)
+def test_decision_event_extras_never_reach_public_reads(event_type):
+    import uuid
+
+    from pydantic import ValidationError
+
+    from src.openship.events.routes import _sse_envelope, _sse_format
+    from src.openship.events.service import append_event, read_snapshot, stream_events
+
+    with TestSessionLocal() as db:
+        user, _, conversation, run, _ = _identity(db)
+        payload = {
+            "schema_version": 1,
+            "run_id": str(run.id),
+            "revision": 0,
+            "request_id": str(uuid.uuid4()),
+        }
+        if event_type.endswith("requested"):
+            payload.update(
+                kind="clarification",
+                prompt="Question?",
+                expires_at=datetime.now(UTC).isoformat(),
+            )
+        else:
+            payload.update(state="answered")
+        payload.update(
+            answer="private-answer", configuration={"credential": "private-value"}
+        )
+        with pytest.raises(ValidationError):
+            append_event(db, conversation.id, run.id, event_type, payload)
+        del payload["answer"], payload["configuration"]
+        event = append_event(db, conversation.id, run.id, event_type, payload)
+        db.commit()
+        snapshot = read_snapshot(db, user.id, str(conversation.id))
+        stream = stream_events(db, user.id, str(conversation.id), after_sequence=-1)
+        sse = _sse_format(str(event.id), event.type, _sse_envelope(event))
+        for public in (snapshot.model_dump_json(), stream.model_dump_json(), sse):
+            assert "private-answer" not in public
+            assert "private-value" not in public
+            assert event_type in public
+
+
 def test_wait_ack_releases_slot_without_terminal_message():
     with TestSessionLocal() as db:
         run_id, job_id, row_id = _command(db)
@@ -291,6 +335,42 @@ def test_http_reject_commits_replays_and_hides_from_other_user(client):
             )
     finally:
         client.app.dependency_overrides.pop(require_jwt, None)
+
+
+def test_http_decision_requires_authentication(client):
+    import uuid
+
+    with TestSessionLocal() as db:
+        _, _, _, run, claim = _identity(db)
+        request = park_task_wait(
+            db, claim, kind="clarification", prompt="Question?", now=datetime.now(UTC)
+        ).pending_decision
+        run_id = run.id
+        db.commit()
+    response = client.post(
+        f"/api/runs/{run_id}/task-decisions",
+        json={
+            "client_request_id": str(uuid.uuid4()),
+            "request_id": str(request.request_id),
+            "plan_revision": request.plan_revision,
+            "expected_digest": request.expected_digest,
+            "action": "answer",
+            "answer": "test answer",
+        },
+    )
+    assert response.status_code == 401
+    with TestSessionLocal() as db:
+        assert (
+            db.query(TaskDecisionRecord)
+            .filter_by(request_id=request.request_id)
+            .one()
+            .state
+            == "open"
+        )
+        assert (
+            db.query(Outbox).filter_by(run_id=run_id, destination="command").count()
+            == 0
+        )
 
 
 def test_http_confirmation_commits_one_outbox_intent(client, monkeypatch):

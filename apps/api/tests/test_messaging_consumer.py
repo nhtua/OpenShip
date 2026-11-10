@@ -762,6 +762,62 @@ async def test_loop_acks_committed_state_independently_of_worker_bool(
 
 
 @pytest.mark.asyncio
+async def test_parked_delivery_releases_consumer_slot_for_next_run(monkeypatch):
+    from src.openship.messaging.consumer import _RunResource
+    from src.openship.messaging.executor import ExecutionPool
+    from src.openship.runs.tasks.decisions import park_task_wait
+
+    f = _loop_fixture(monkeypatch, terminal=False)
+    with SessionLocal() as db:
+        db.get(Run, f.run_id).graph_version = 5
+        second_run, _, row_id = _command(db)
+        body, subject = _body(db, row_id)
+    f.message.stop = asyncio.Event()
+    second = _RunMessage(body, subject, f.stop)
+    f.broker.messages.put_nowait(second)
+    calls = []
+
+    class ParkingWorker:
+        Session = SessionLocal
+        worker_id = "consumer-park-test"
+        checkpointer = object()
+
+        def process_job(self, claim, *, supervision=None):
+            calls.append(claim.run_id)
+            with self.Session() as db:
+                if claim.run_id == f.run_id:
+                    park_task_wait(
+                        db,
+                        claim,
+                        kind="clarification",
+                        prompt="Question?",
+                        now=datetime.now(UTC),
+                    )
+                    db.commit()
+                else:
+                    assert finalize(
+                        db, claim.run_id, claim.fence, {"status": "success"}
+                    )
+            return True
+
+        def _ownership_lost(self, db, run_id, fence):
+            return False
+
+        def close(self):
+            pass
+
+    await f.consumer._pool.close()
+    f.consumer._pool = ExecutionPool(1, lambda: _RunResource(ParkingWorker))
+    await asyncio.wait_for(f.consumer.run(f.stop), 5)
+    assert calls == [f.run_id, second_run]
+    assert f.message.acks == second.acks == 1
+    with SessionLocal() as db:
+        assert db.get(Run, f.run_id).status == "waiting_input"
+        assert db.get(Run, f.run_id).ended_at is None
+        assert db.get(Run, second_run).status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_loop_binds_distinct_bounded_subscriptions_and_reserves_before_fetch(
     monkeypatch,
 ):

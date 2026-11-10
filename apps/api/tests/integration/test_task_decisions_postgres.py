@@ -292,3 +292,117 @@ def test_two_decisions_cannot_enqueue_twice(monkeypatch):
             with admin.connect() as connection:
                 connection.execute(text(f'DROP DATABASE "{database}"'))
         admin.dispose()
+
+
+def test_cancel_serializes_before_concurrent_confirmation(
+    recovery_migration_database, monkeypatch
+):
+    """A confirmation blocked behind cancellation cannot consume or enqueue."""
+    from fastapi import HTTPException
+
+    from src.openship.chat.models import Conversation
+    from src.openship.config import settings
+    from src.openship.runs.models import Outbox, Run
+    from src.openship.runs.service import request_cancel
+    from src.openship.runs.tasks.contracts import TaskDecisionCommand
+    from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+    from src.openship.runs.tasks.models import TaskDecisionRecord
+    from src.openship.runs.tasks.state import save_plan
+    from src.openship.sandboxes.profiles import reset_runtime_catalog
+    from src.openship.workspace.models import Project
+    from tests.integration.test_phase7a_task_state_postgres import _identity, _plan
+    from tests.test_task_decisions import _pinned_execution
+
+    engine, ini = recovery_migration_database
+    assert _run_alembic(ini, "upgrade", "head").returncode == 0
+    sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(settings, "sandbox_endpoint", "http://sandbox.test")
+    monkeypatch.setattr(settings, "sandbox_deployment_id", "test-deployment")
+    try:
+        with sessions() as db:
+            user, run, claim = _identity(db)
+            _pinned_execution(
+                run,
+                user,
+                db.get(Project, run.project_id),
+                db.get(Conversation, run.conversation_id),
+            )
+            db.flush()
+            save_plan(db, claim, _plan(), expected_revision=0)
+            now = datetime.now(UTC)
+            decision = park_task_wait(
+                db, claim, kind="plan_confirmation", prompt="Approve?", now=now
+            ).pending_decision
+            db.commit()
+            user_id, run_id, conversation_id = user.id, run.id, run.conversation_id
+        choice = TaskDecisionCommand(
+            client_request_id=uuid.uuid4(),
+            request_id=decision.request_id,
+            plan_revision=decision.plan_revision,
+            expected_digest=decision.expected_digest,
+            action="confirm",
+        )
+        locked, started, release = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+        pids = {}
+
+        def cancel():
+            with sessions() as db:
+                pids["cancel"] = db.execute(
+                    text("SELECT pg_backend_pid()")
+                ).scalar_one()
+                db.query(Conversation).filter_by(
+                    id=conversation_id
+                ).with_for_update().one()
+                locked.set()
+                assert release.wait(20)
+                request_cancel(db, user_id, str(run_id))
+
+        def confirm():
+            assert locked.wait(20)
+            with sessions() as db:
+                pids["confirm"] = db.execute(
+                    text("SELECT pg_backend_pid()")
+                ).scalar_one()
+                started.set()
+                with pytest.raises(HTTPException) as error:
+                    apply_decision(
+                        db, principal_id=user_id, run_id=run_id, command=choice, now=now
+                    )
+                db.rollback()
+                return error.value.status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a, b = pool.submit(cancel), pool.submit(confirm)
+            try:
+                assert locked.wait(20) and started.wait(20)
+                with engine.connect() as observer:
+                    deadline = time.monotonic() + 8
+                    while time.monotonic() < deadline:
+                        if observer.execute(
+                            text("SELECT :first = ANY(pg_blocking_pids(:second))"),
+                            {"first": pids["cancel"], "second": pids["confirm"]},
+                        ).scalar_one():
+                            break
+                        time.sleep(0.05)
+                    else:
+                        pytest.fail("confirmation did not block behind cancellation")
+            finally:
+                release.set()
+            a.result(timeout=30)
+            assert b.result(timeout=30) == 409
+        with sessions() as db:
+            assert db.get(Run, run_id).status == "cancelled"
+            assert (
+                db.query(TaskDecisionRecord).filter_by(run_id=run_id).one().state
+                == "cancelled"
+            )
+            assert (
+                db.query(Outbox).filter_by(run_id=run_id, destination="command").count()
+                == 0
+            )
+    finally:
+        reset_runtime_catalog()

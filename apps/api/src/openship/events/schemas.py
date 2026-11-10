@@ -3,7 +3,7 @@
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifacts.contracts import ArtifactSummary
 from ..execution.projections import OperationSummary
@@ -18,6 +18,8 @@ from ..runs.schemas import (
 
 
 class TaskDecisionRequestedEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     schema_version: Literal[1]
     run_id: UUID
     revision: int = Field(ge=0)
@@ -28,6 +30,8 @@ class TaskDecisionRequestedEvent(BaseModel):
 
 
 class TaskDecisionResolvedEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     schema_version: Literal[1]
     run_id: UUID
     revision: int = Field(ge=0)
