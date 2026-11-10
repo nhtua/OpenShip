@@ -29,6 +29,7 @@ from src.openship.runs.tasks.recovery import reconcile_task_projection
 from src.openship.runs.tasks.state import (
     read_progress,
     record_attempt_result,
+    record_task_call,
     save_plan,
 )
 from tests.conftest import TestSessionLocal
@@ -247,3 +248,39 @@ def test_reconcile_preserves_interrupted_attempt_without_inventing_an_operation(
         assert db.query(TaskStepAttempt).filter_by(run_id=run.id).count() == 0
         assert (operation.status, operation.result_digest) == ("dispatching", None)
         assert not db.new and not db.dirty
+
+
+def test_reconcile_does_not_duplicate_a_settled_binding():
+    """A binding whose attempt row settled is reported once, from that row."""
+    with TestSessionLocal() as db:
+        user, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        operation = _operation(db, run, user)
+        _artifact(db, run, operation)
+        operation.logical_call_id = "model:1:call:0"
+        db.flush()
+
+        binding = TaskCallBinding(
+            plan_revision=1,
+            step_id="inspect",
+            attempt=1,
+            logical_call_id=operation.logical_call_id,
+        )
+        record_task_call(db, claim, binding=binding)
+        record_attempt_result(
+            db, claim, step_id="inspect", attempt=1, operation_id=operation.id
+        )
+        db.commit()
+
+        progress = reconcile_task_projection(db, run_id=run.id)
+
+        assert progress.step_ids == ("inspect",)
+        assert progress.call_bindings == (binding,)
+        assert len(progress.attempts) == 1
+        attempt = progress.attempts[0]
+        assert (attempt.step_id, attempt.attempt) == ("inspect", 1)
+        assert attempt.status == "succeeded"
+        assert attempt.operation_id == operation.id
+        assert not any(
+            candidate.status == "uncertain" for candidate in progress.attempts
+        )
