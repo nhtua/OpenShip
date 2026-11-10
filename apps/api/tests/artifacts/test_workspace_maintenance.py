@@ -107,7 +107,9 @@ def test_purge_plan_is_non_mutating_and_purge_keeps_digest_tombstone(tmp_path):
         store = LocalArtifactStore(tmp_path / "purge-store", uuid.uuid4())
         store.initialize()
         workspace = ensure_workspace(db, user.id, conversation.id, store)
-        artifact = _saved_artifact(db, store, project, conversation, b"keep these bytes")
+        artifact = _saved_artifact(
+            db, store, project, conversation, b"keep these bytes"
+        )
         db.commit()
         digest = artifact.sha256
         key = artifact.relative_storage_key
@@ -163,7 +165,11 @@ def test_workspace_purge_refuses_an_active_run_input_pin(tmp_path, run_status):
                 project_id=project.id,
                 status=run_status,
                 execution_configuration=json.dumps(
-                    {"selected_artifacts": [{"id": str(artifact.id), "sha256": artifact.sha256}]}
+                    {
+                        "selected_artifacts": [
+                            {"id": str(artifact.id), "sha256": artifact.sha256}
+                        ]
+                    }
                 ),
             )
         )
@@ -206,7 +212,9 @@ def test_purge_interruption_leaves_recoverable_tombstone(tmp_path, monkeypatch):
         assert db.get(ConversationWorkspace, workspace.id).status == "deleted"
 
 
-def test_restore_verifies_existing_bytes_and_marks_missing_or_changed_files_unavailable(tmp_path):
+def test_restore_verifies_existing_bytes_and_marks_missing_or_changed_files_unavailable(
+    tmp_path,
+):
     from src.openship.workspace.maintenance import verify_restored_artifacts
 
     with _isolated_session() as db:
@@ -214,9 +222,15 @@ def test_restore_verifies_existing_bytes_and_marks_missing_or_changed_files_unav
         original = LocalArtifactStore(tmp_path / "original", uuid.uuid4())
         original.initialize()
         workspace = ensure_workspace(db, user.id, conversation.id, original)
-        good = _saved_artifact(db, original, project, conversation, b"restored bytes", "good.txt")
-        missing = _saved_artifact(db, original, project, conversation, b"missing", "missing.txt")
-        changed = _saved_artifact(db, original, project, conversation, b"original", "changed.txt")
+        good = _saved_artifact(
+            db, original, project, conversation, b"restored bytes", "good.txt"
+        )
+        missing = _saved_artifact(
+            db, original, project, conversation, b"missing", "missing.txt"
+        )
+        changed = _saved_artifact(
+            db, original, project, conversation, b"original", "changed.txt"
+        )
         ids = (good.id, missing.id, changed.id)
         key_good, key_changed = good.relative_storage_key, changed.relative_storage_key
         original_id = original.storage_id
@@ -233,17 +247,34 @@ def test_restore_verifies_existing_bytes_and_marks_missing_or_changed_files_unav
         original_file = original.root / missing.relative_storage_key
         original_file.unlink()
 
+        # A restore verification must not spend the installation's identity or
+        # fund work: capture what the ledger says before it runs.
+        epoch_before = db.get(MessageTransportState, 1).transport_epoch
+        roots_before = db.query(Run).count()
+        commands_before = db.query(Outbox).count()
+
         report = verify_restored_artifacts(db, restored)
         db.expire_all()
-        statuses = {item.id: item.status for item in db.query(Artifact).filter(Artifact.id.in_(ids))}
+        statuses = {
+            item.id: item.status
+            for item in db.query(Artifact).filter(Artifact.id.in_(ids))
+        }
         assert report.storage_available is True
         assert report.verified == 1
         assert report.unavailable == 2
         assert db.get(ConversationWorkspace, workspace.id).status == "available"
-        assert statuses == {good.id: "ready", missing.id: "unavailable", changed.id: "unavailable"}
+        assert statuses == {
+            good.id: "ready",
+            missing.id: "unavailable",
+            changed.id: "unavailable",
+        }
         # The verifier reports the problem; it does not initialize, replace, or rewrite files.
         assert (restored.root / key_good).read_bytes() == b"restored bytes"
         assert (restored.root / key_changed).read_bytes() == b"changed"
+        # Nor does it churn the installation's identity or fund queued work.
+        assert db.get(MessageTransportState, 1).transport_epoch == epoch_before
+        assert db.query(Run).count() == roots_before
+        assert db.query(Outbox).count() == commands_before
 
 
 def test_restore_with_wrong_storage_identity_fails_closed_without_rebinding(tmp_path):
