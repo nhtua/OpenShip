@@ -186,6 +186,34 @@ describe('ChatView', () => {
     wrapper.unmount()
   })
 
+  it('renders approve and reject for a replayed decision request', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    const chat = useChatStore()
+    const tasks = useTaskProgressStore()
+    chat.messages = [
+      { id: 'ask', role: 'user', content: 'Make a chart', conversation_id: 'c1', run_id: 'run-replay', created_at: '2026-11-01T00:00:00Z' },
+    ]
+    chat.runCards.set('c1', {
+      run_id: 'run-replay', status: 'waiting_plan', started_at: null, ended_at: null, usage: null,
+      model: null, attempts: [], error_code: null, error_message: null,
+    } as RunCardType)
+    tasks.handleSnapshot({ schema_version: 1, run_id: 'run-replay', revision: 1,
+      plan: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart temperatures' }] },
+      status: 'waiting', mode: 'copilot',
+      pending_decision: { request_id: 'request-1', plan_revision: 1, kind: 'plan_confirmation', expected_digest: 'a'.repeat(64) },
+    })
+    tasks.handleEvent({ id: 'plan', conversation_id: 'c1', run_id: 'run-replay', sequence: 1,
+      type: 'task.plan_proposed', payload: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart temperatures' }] }, created_at: '' })
+    tasks.handleEvent({ id: 'decision', conversation_id: 'c1', run_id: 'run-replay', sequence: 5,
+      type: 'task.decision_requested', payload: { revision: 1, kind: 'plan_confirmation', request_id: 'request-1', prompt: 'Approve the chart plan?' }, created_at: '' })
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="task-decision"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="task-decision-confirm"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="task-decision-reject"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('renders conversation history with the active selection', async () => {
     const { wrapper, router } = await mountWithRouter(ChatView, '/')
 

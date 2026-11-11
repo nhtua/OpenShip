@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, Mock } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useChatStore } from '@/stores/chat'
+import { useTaskProgressStore } from '@/stores/taskProgress'
 import api, { conversationsApi, modelProfilesApi, runsApi } from '@/services/api'
 import { buildConversationTimeline } from '@/lib/chatTimeline'
 import {
@@ -691,6 +692,50 @@ describe('chat store', () => {
     expect(mockRunsApi.getRun).toHaveBeenCalledWith('run-blocked')
     expect(chat.runCards.get('c1')?.status).toBe('waiting_connector')
     expect(chat.runCards.get('c1')?.connector_blocker?.connector_id).toBe('connector-aws-1')
+  })
+
+  it('keeps a parked plan approveable when a run read lands its task before the decision replays', async () => {
+    const chat = useChatStore()
+    const tasks = useTaskProgressStore()
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: { conversation_id: 'c1', project_id: 'p1', sequence: 4, events: [], runs: [] },
+    } as never)
+    await chat.loadConversation('c1')
+    expect(chat.cursors.get('c1')).toBe(4)
+
+    // The run read is the only place that states this run's plan, and at the
+    // moment of the read nothing was parked yet: it names no open decision.
+    mockRunsApi.getRun.mockResolvedValueOnce({
+      data: {
+        id: 'run-1', conversation_id: 'c1', status: 'running', created_at: '', attempt: 0,
+        kind: 'chat',
+        task: {
+          schema_version: 1, run_id: 'run-1', mode: 'copilot', revision: 1,
+          plan: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart them' }] },
+          status: 'planned', steps: [], skipped_steps: [], verified_outputs: [],
+          last_disposition: 'none', pending_decision: null,
+        },
+      },
+    } as never)
+    serveStream(frame(5, 'run.succeeded', 'run-1', { message_id: 'msg-1' }))
+    await chat.sendMessage('Chart the temperatures', 'c1')
+
+    expect(tasks.cards.get('run-1')?.pendingDecision).toBeNull()
+
+    // A reconnect replays what the conversation had not folded yet: the request
+    // that parked the plan. It sits above the cursor this conversation reached,
+    // so the card must land it and offer the choice.
+    chat.processDurableEvent({
+      id: 'evt-6', conversation_id: 'c1', run_id: 'run-1', sequence: 6,
+      type: 'task.decision_requested', created_at: '',
+      payload: {
+        schema_version: 1, run_id: 'run-1', revision: 1, request_id: 'request-1',
+        kind: 'plan_confirmation', prompt: 'Approve the plan?',
+        expires_at: '2026-11-12T00:00:00Z',
+      },
+    } as never)
+    expect(tasks.cards.get('run-1')?.pendingDecision?.request_id).toBe('request-1')
+    expect(tasks.buildCommand('run-1', 'confirm')).toBeTypeOf('object')
   })
 
   it('retains operations from every snapshot run and deduplicates durable refreshes per conversation', async () => {

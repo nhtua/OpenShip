@@ -215,6 +215,49 @@ describe('task progress store', () => {
     expect(store.cards.get('run-1')?.resolvedDecisions).toHaveLength(1)
   })
 
+  it('keeps a replayed decision request after a snapshot-only task load', () => {
+    const store = useTaskProgressStore()
+    store.handleSnapshot({ schema_version: 1, run_id: 'run-replay', revision: 1,
+      plan: PLAN_ONE, status: 'waiting',
+      pending_decision: { request_id: 'request-1', plan_revision: 1, kind: 'plan_confirmation', expected_digest: 'a'.repeat(64), prompt: 'Approve?' },
+    }, 5)
+    store.handleEvent(planProposed(1, PLAN_ONE))
+    store.handleEvent(event(5, 'task.decision_requested', { revision: 1, request_id: 'request-1', kind: 'plan_confirmation', prompt: 'Approve?', expires_at: '2026-11-10T00:00:00Z' }))
+    expect(store.cards.get('run-replay')?.pendingDecision?.request_id).toBe('request-1')
+    expect(store.buildCommand('run-replay', 'confirm')).toBeTypeOf('object')
+    expect(store.cards.get('run-replay')?.currentRevision).toBe(1)
+  })
+
+  it('keeps a decision request that arrives after a cursor-less task read', () => {
+    const store = useTaskProgressStore()
+    // The run read is one the browser makes after the stream closed: it says
+    // what the plan was, and the park had not committed yet, so it names no
+    // open decision. The decision event is the next thing the browser learns.
+    store.handleSnapshot({ schema_version: 1, run_id: 'run-1', revision: 1,
+      plan: PLAN_ONE, status: 'running', mode: 'copilot',
+    })
+    store.handleEvent(planProposed(5, PLAN_ONE))
+    store.handleEvent(event(6, 'task.decision_requested', {
+      revision: 1, request_id: 'request-1', kind: 'plan_confirmation',
+      prompt: 'Approve the plan?', expires_at: '2026-11-12T00:00:00Z',
+    }))
+    expect(store.cards.get('run-1')?.pendingDecision?.request_id).toBe('request-1')
+    expect(store.buildCommand('run-1', 'confirm')).toBeTypeOf('object')
+    expect(store.cards.get('run-1')?.currentRevision).toBe(1)
+  })
+
+  it('does not lose a replayed decision request when the task card is snapshot-only', () => {
+    const store = useTaskProgressStore()
+    store.handleSnapshot({ schema_version: 1, run_id: 'run-old-snapshot', revision: 1,
+      plan: PLAN_ONE, status: 'waiting',
+      pending_decision: { request_id: 'request-1', plan_revision: 1, kind: 'plan_confirmation', expected_digest: 'a'.repeat(64) },
+    })
+    store.handleEvent(planProposed(1, PLAN_ONE))
+    store.handleEvent(event(5, 'task.decision_requested', { revision: 1, request_id: 'request-1', kind: 'plan_confirmation', prompt: 'Approve?', expires_at: '2026-11-10T00:00:00Z' }))
+    expect(store.cards.get('run-old-snapshot')?.pendingDecision?.request_id).toBe('request-1')
+    expect(store.buildCommand('run-old-snapshot', 'confirm')).toBeTypeOf('object')
+  })
+
   it('recoveryCommandEchoesTheRecoveryDigestNotThePlanDigest', async () => {
     const store = useTaskProgressStore()
     store.handleEvent(planProposed(1, PLAN_TWO))

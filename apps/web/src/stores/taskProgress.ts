@@ -197,7 +197,10 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
     const runId = task.run_id
     const card = cards.value.get(runId) ?? {
       runId,
-      sequence: cursor ?? Number.MAX_SAFE_INTEGER,
+      // A read that names no sequence says nothing about where the stream
+      // stands, so it claims no bound: locking one here would swallow the
+      // decision event that parks the plan a reader still has to approve.
+      sequence: cursor ?? -1,
       currentRevision: 0,
       planRevisions: [],
       progress: { schema_version: 1, run_id: runId },

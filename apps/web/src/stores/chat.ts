@@ -706,8 +706,10 @@ export const useChatStore = defineStore('chat', () => {
         card.operations_next_cursor = run.operations_next_cursor ?? null
       }
       // The run read carries the same task view the events showed, so a card
-      // hydrated from it lands the same plan and progress.
-      if (run.task) useTaskProgressStore().handleSnapshot(run.task)
+      // hydrated from it lands the same plan and progress. The read names no
+      // sequence, so the bound this conversation had reached is what the fold
+      // may keep; anything the stream has not replayed yet still folds.
+      if (run.task) useTaskProgressStore().handleSnapshot(run.task, cursors.value.get(convId))
       card.usage = run.usage ?? null
       const failure: ErrorSummary | null = run.error ?? null
       card.error_code = failure?.code ?? null

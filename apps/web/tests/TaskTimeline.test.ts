@@ -46,6 +46,20 @@ describe('task entries in the conversation', () => {
     expect(entry.find('button').exists()).toBe(false)
   })
 
+  it('says that an Auto plan asked for no confirmation instead of leaving an actionless plan', () => {
+    const auto: TaskCardState = {
+      ...task(), runId: 'run-1',
+      progress: { schema_version: 1, run_id: 'run-1', status: 'running', revision: 1, mode: 'auto' },
+      pendingDecision: null,
+      resolvedDecisions: [],
+    }
+    const wrapper = mount(ChatStream, { props: { messages, tasks: [auto], activeTaskRunId: 'run-1', isStreaming: false } })
+    const entry = wrapper.get('[data-testid="task-timeline-entry"]')
+    expect(entry.text()).toContain('Auto')
+    expect(entry.text()).toContain('No confirmation was asked')
+    expect(entry.find('button').exists()).toBe(false)
+  })
+
   it('shows an unplanned clarification in the relevant run and not another conversation', () => {
     const clarification: TaskCardState = {
       ...task(), runId: 'run-1', planRevisions: [], currentRevision: 0,
