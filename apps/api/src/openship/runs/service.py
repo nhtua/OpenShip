@@ -51,7 +51,7 @@ from ..messaging.outbox import (
     enqueue_control,
     enqueue_run,
 )
-from ..providers.contracts import RunModelConfig
+from ..providers.contracts import RunLimits, RunModelConfig
 from ..providers.errors import ProviderError
 from ..providers.registry import load_profiles
 from ..resources.models import ConnectorBlocker
@@ -65,7 +65,7 @@ from ..workspace.lifecycle import (
 )
 from .queue import fenced_update_run
 from .schemas import ResumeAnalysisRequest, ResumeChatPythonRequest
-from .tasks.contracts import ExecutionConfigV5, TaskContext
+from .tasks.contracts import ExecutionConfigV5, TaskContext, TaskLimits
 
 _AGENT_MODES = ("auto", "copilot")
 
@@ -174,6 +174,43 @@ def _resolve_selection(
         registry = load_profiles(settings)
         return registry.pin_selection(
             provider_profile_id, tuple(fallback_profile_ids or ())
+        )
+    except ProviderError as refused:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": refused.code, "message": refused.safe_message}},
+        ) from refused
+
+
+def _resolve_task_selection(provider_profile_id, fallback_profile_ids) -> RunModelConfig:
+    """Freeze what a v5 task run executes, pinned to its task ceilings.
+
+    A v5 task bills planning, steps and diagnosis against one shared set of
+    task ceilings, not one generation per turn times a per-loop three: pinning
+    the legacy per-loop defaults for a task would charge the whole task
+    against the legacy three-attempt budget, which is not what the task's own
+    records bound. ``ProviderRegistry.resolve_task`` freezes the declared
+    profile with the deployment's task ceilings as defaults, lowered only by
+    caps the profile actually declared.
+    """
+    ceilings = TaskLimits()
+    try:
+        registry = load_profiles(settings)
+        return registry.resolve_task(
+            provider_profile_id,
+            tuple(fallback_profile_ids or ()),
+            task_limits=RunLimits(
+                max_attempts=min(
+                    ceilings.max_generation_attempts,
+                    settings.agentic_max_generation_attempts,
+                ),
+                max_output_tokens=min(
+                    ceilings.max_output_tokens_per_request,
+                    settings.model_max_tokens,
+                ),
+                run_timeout_seconds=settings.workflow_run_timeout_seconds,
+                max_context_bytes=settings.model_max_context_bytes,
+            ),
         )
     except ProviderError as refused:
         raise HTTPException(
@@ -1051,7 +1088,12 @@ def submit_turn(
     submission_digest = digest_for(captured_mode, captured_revision)
 
     # Resolve and validate the selection before anything is queued
-    config = _resolve_selection(provider_profile_id, fallback_profile_ids)
+    agentic_task = bool(settings.agentic_tasks_enabled and enable_tools)
+    config = (
+        _resolve_task_selection(provider_profile_id, fallback_profile_ids)
+        if agentic_task
+        else _resolve_selection(provider_profile_id, fallback_profile_ids)
+    )
     artifact_refs = _owned_artifact_refs(db, conv, artifact_ids)
     if artifact_refs and not enable_tools:
         raise HTTPException(
@@ -1063,7 +1105,6 @@ def submit_turn(
                 }
             },
         )
-    agentic_task = bool(settings.agentic_tasks_enabled and enable_tools)
     if agentic_task:
         _require_agentic_profile(config)
     run_id = uuid.uuid4()

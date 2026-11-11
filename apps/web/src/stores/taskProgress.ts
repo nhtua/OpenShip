@@ -230,6 +230,10 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
   function markReadOnly(runId: string, readOnly: boolean): void {
     const card = cards.value.get(runId)
     if (!card) return
+    // Marking a card that already says the same thing is not a change. A view
+    // watches this state and marks it back; rewriting the card on a no-op made
+    // that watcher re-fire without end, and the conversation never rendered.
+    if (card.readOnly === readOnly) return
     writeCard(runId, { ...card, readOnly })
   }
 

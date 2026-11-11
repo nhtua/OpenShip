@@ -686,9 +686,13 @@ def resume_task(
             job = RunJob(run_id=prior.id, fence=prior.fence)
             db.add(job)
             db.flush()
-        # Re-admission keeps the fence and every counter: the root resumes where
-        # its durable progress says it stopped.
-        task.fence = job.fence = prior.fence
+        # Re-admission keeps every counter and re-queues at the root's own
+        # fence. The queue claim then bumps the job/run fence by one, so the
+        # task record must already carry that fence: park_task_wait compares
+        # task.fence against the claiming worker's claim.fence, and both must
+        # name the fence this re-admission runs under.
+        job.fence = prior.fence
+        task.fence = prior.fence + 1
         prior.status = "queued"
         prior.error_code = None
         job.available_at = datetime.now(UTC)

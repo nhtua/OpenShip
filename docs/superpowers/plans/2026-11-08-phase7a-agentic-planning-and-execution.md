@@ -663,7 +663,7 @@ is the review gate for inline execution.
 
 **Interfaces:** Consumes ordinary HTTP turn/preference/decision/snapshot APIs and real worker/gateway/event/broker paths. Only model transport and controlled external source service may be synthetic in this lane; record sandbox transport as real or synthetic explicitly. Add `OPENSHIP_FULL_STACK_AGENTIC_TASKS=1` selector; selected lane fails on missing prerequisites. Browser reuses the repository's `playwright.full-stack.config.ts` and API URL selectors.
 
-- [ ] **1. Write failing journey fixtures/tests.** `test_weather_task_copilot_and_auto`, `test_invalid_source_is_honest_blocker`, `test_uploaded_logs_are_not_weather_special_case`, `test_browser_reload_preference_repair_and_revision`, `test_unrecorded_approval_reprompts_without_repeating_download`, `test_uncertain_task_requires_explicit_recovery_in_both_modes`. Browser cases cover all three choices, unavailable repeat while a command may live, and continue blocked by missing inputs. Fixture weather: city/month/temperature_c, London January `[4,6]`, February `[7,9]`, a non-London row that must be excluded, expected `{"January":5,"February":8}` °C. Logs: API durations `[100,200]`, worker `[50]`, expected service averages `{"api":150,"worker":50}` ms. Assert:
+- [x] **1. Write failing journey fixtures/tests.** `test_weather_task_copilot_and_auto`, `test_invalid_source_is_honest_blocker`, `test_uploaded_logs_are_not_weather_special_case`, `test_browser_reload_preference_repair_and_revision`, `test_unrecorded_approval_reprompts_without_repeating_download`, `test_uncertain_task_requires_explicit_recovery_in_both_modes`. Browser cases cover all three choices, unavailable repeat while a command may live, and continue blocked by missing inputs. Fixture weather: city/month/temperature_c, London January `[4,6]`, February `[7,9]`, a non-London row that must be excluded, expected `{"January":5,"February":8}` °C. Logs: API durations `[100,200]`, worker `[50]`, expected service averages `{"api":150,"worker":50}` ms. Assert:
   ```python
   assert retained_averages == {"January": 5, "February": 8}
   assert decoded_png.width > 0 and decoded_png.height > 0
@@ -673,12 +673,109 @@ is the review gate for inline execution.
   assert repeat_branch_download_dispatches == 1  # retain earlier completed download
   assert missing_chart_skip_branch_final_status != "completed"
   ```
-- [ ] **2. Run red:** from `apps/api`, with authorized disposable stack settings, `OPENSHIP_FULL_STACK_AGENTIC_TASKS=1 uv run pytest -q -m full_stack tests/full_stack/test_agentic_tasks.py`. Browser: from `apps/web`, `pnpm exec playwright test -c playwright.full-stack.config.ts tests/full-stack/agentic-tasks.spec.ts` against that harness. Expect the new missing journey behavior to fail before implementation.
+- [x] **2. Run red:** from `apps/api`, with authorized disposable stack settings, `OPENSHIP_FULL_STACK_AGENTIC_TASKS=1 uv run pytest -q -m full_stack tests/full_stack/test_agentic_tasks.py`. Browser: from `apps/web`, `pnpm exec playwright test -c playwright.full-stack.config.ts tests/full-stack/agentic-tasks.spec.ts` against that harness. Expect the new missing journey behavior to fail before implementation.
 - [ ] **3. Implement fixtures and harness integration.** Synthetic model follows the general typed protocol, supplies one known JSON-field repair, and separately proposes a material revision. Exercise Copilot gate before every first side effect and renewed gate for revision, Auto without per-step prompting, focused clarification, persistent account selection in another browser context, partial output and invalid source reporting. Use a controlled resolvable HTTPS fixture via the existing network-test seams; do not contact the illustrative invalid public URL. Independently calculate expected numbers outside generated Python; decode images and fetch retained artifacts through authenticated APIs. Include browser/API restart and event reconnect without duplicated final messages. No product code conditional on weather/log fixture names.
 
   Add deterministic fault points using Task 15's hooks: rollback an approval transaction, lose a committed response, and interrupt after possible Python dispatch. Confirm re-prompt preserves the same plan/request/download and that diagnosis precedes recovery buttons in both modes. Exercise abort with partial outputs retained; repeat with one new operation and no earlier-step replay; continue with an available independent successor and a separate missing-input blocker fixture. Keep skipped work visibly unresolved and final output claims truthful. Normal happy-path confirmation counts above exclude explicit fault-recovery choices. These are controlled fault fixtures, not a requirement to crash an unrelated live provider or stack.
-- [ ] **4. Run green:** repeat journeys/browser lane plus all credential-free regressions below. Expected: explicit passing counts and provenance for every output, not merely an HTTP 200/process exit. Record synthetic versus real sandbox/model scope in `docs/validations.md`.
-- [ ] **5. Commit** with subject `test: qualify continuous agentic task journeys`; record evidence and remaining live checks.
+
+  **Implemented in this lane (verified green):** the selected-lane fixture and
+  harness (real API/worker processes, profile mount, disposable database, real
+  gateway), the six journeys, the fault points (approval rollback via the lost
+  approval journey, lost committed response, interrupt at sandbox create),
+  re-prompt identity preservation, Copilot gate before the first side effect and
+  Auto without per-step prompting, the refused defective envelope plus its
+  corrected second proposal, controlled HTTPS fixture through the existing
+  network seams, independent expected numbers, authenticated artifact fetch and
+  PNG decode, browser sign-in/mode persistence/reload with reconnect, and the
+  recovery diagnosis-and-choice view. No product code branches on fixture names.
+
+  **Not exercised in this lane (this is why box 3 stays unchecked):** focused
+  clarification as its own journey; execution-mode preference persisted and
+  observed from a second browser context (the lane reloads one context); a
+  journey that completes a material plan revision through a renewed Copilot gate
+  (the journeys exercise the refused-envelope repair, and the dependent-step
+  blocker that makes `continue_next` ineligible); successful `repeat_step` and
+  `continue_next` continuation, which are proved in
+  `tests/test_task_decisions.py` and `tests/test_task_recovery.py` and in the
+  Task 15 recovery lanes, not here. These belong to Task 17's live qualification
+  and the remaining unit-to-journey lift, and are recorded as open rather than
+  claimed by the counts below.
+- [x] **4. Run green:** repeat journeys/browser lane plus all credential-free regressions below. Expected: explicit passing counts and provenance for every output, not merely an HTTP 200/process exit. Record synthetic versus real sandbox/model scope in `docs/validations.md`.
+- [x] **5. Commit** with subject `test: qualify continuous agentic task journeys`; record evidence and remaining live checks.
+
+  **Red (2026-11-10, inline execution).** The first lane run
+  `OPENSHIP_FULL_STACK_AGENTIC_TASKS=1 SYNTHETIC_PROFILE_SNAPSHOT=<snapshot> uv run pytest -q -m full_stack tests/full_stack/test_agentic_tasks.py`
+  (lane-built disposable PostgreSQL database, authorized loopback OpenSandbox
+  gateway, operator-built profile snapshot) reported `5 failed, 1 passed` in
+  231.33s: only the Copilot/Auto weather journey passed, while the invalid-source
+  blocker, uploaded-logs, explicit-recovery, lost-approval and browser journeys
+  were red. The Playwright leg was red for a real product defect: opening the
+  completed task conversation raised
+  `Maximum recursive updates exceeded in component <ChatView>` and rendered an
+  empty conversation body. Its unit RED was `pnpm exec vitest run
+  tests/TaskProgressStore.test.ts` → 1 failed / 4 passed, pinning that
+  `markReadOnly` must not rewrite a card whose state already matches.
+
+  **Green.** The same lane command reported `6 passed, 1 warning` in 262.67s, and
+  the browser journey alone reported `1 passed, 1 warning` in 71.50s. The secret
+  scan gate then removed the literal browser credentials from source: the browser
+  journey takes `OPENSHIP_FULL_STACK_BROWSER_USERNAME` and
+  `OPENSHIP_FULL_STACK_BROWSER_PASSWORD` from the environment and mints a fresh
+  pair when unset, and the lane re-ran green with that change — `6 passed,
+  1 warning` in 273.42s, and `1 passed, 5 deselected` in 71.87s for the browser
+  journey alone. What the journeys assert is provenance, not status codes: the retained averages equal
+  `{"January": 5, "February": 8}` read back through the authenticated artifact
+  content API, the chart bytes start with the PNG signature with positive decoded
+  width/height, the downloaded CSV hash equals the fixture bytes, the sandbox
+  create log records exactly one create whose image equals the snapshot's pinned
+  immutable ID for `logs-data`, zero downloads and zero sandbox calls occur on the
+  invalid-source journey, and the recovery journey keeps exactly one completed
+  download across the crash and re-prompt.
+
+  **Product defects the lane surfaced (fixed with the tests).**
+  `runs/service.py::_resolve_task_selection` now admits v5 turns through
+  `ProviderRegistry.resolve_task` with `RunLimits` derived from `TaskLimits`,
+  which the previous resolution path did not supply; `runs/resume.py` restores
+  `job.fence` from the prior claim and advances `task.fence` by one on
+  re-admission, so the re-claim's fence matches the task record;
+  `runs/tasks/projections.py` decodes the stored recovery report with
+  `TaskRecoveryReport.model_validate_json`, because `model_validate` on stored
+  JSON rejects string UUIDs and lists under the frozen contract; and
+  `apps/web/src/stores/taskProgress.ts` makes `markReadOnly` idempotent, which
+  ends the `ChatView` recursion above (RED→GREEN: 1 failed → 5 passed).
+
+  **Regressions.** `uv run pytest -q tests/test_task_admission.py
+  tests/test_task_recovery.py tests/test_agent_mode_preferences.py
+  tests/test_task_budgets.py tests/test_task_graph.py tests/test_task_inference.py
+  tests/test_task_profile_selection.py` passed 67 tests (31.98s) after the
+  backend fixes; the whole credential-free lane
+  `uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream' tests`
+  passed 1958 tests with 170 deselected (the provider_live, full_stack, postgres
+  and jetstream lanes, recorded separately) in 782.50s;
+  `pnpm exec vitest run` passed 384 tests across 41 files,
+  `pnpm exec vue-tsc --noEmit` and `pnpm build` passed, and `uv run ruff check .`
+  is clean. The dev-stack migrate repro (alembic from a working directory with no
+  `src`, absolute `script_location`, console entry point, disposable database)
+  upgraded through `phase7a034` with returncode 0.
+
+  **Scope, stated honestly.** Only the model transport and the controlled HTTPS
+  source are synthetic; the sandbox transport, PostgreSQL, queue, task graph,
+  gateway, artifact store, event/outbox path and browser are real (see
+  `docs/validations.md`). Successful `repeat_step` and `continue_next`
+  continuation, and a material plan revision superseding approval, are proved at
+  unit level (`tests/test_task_decisions.py`, `tests/test_task_recovery.py`); the
+  journeys exercise the refusal side of the same rules, because the decision
+  guard rejects repeat while a `ToolAttempt` exists and rejects continue while a
+  later step depends on the step's output, with `LoopLimits.max_tool_calls = 2`
+  in the lane. Crash legs are meaningful only with exactly one live queue reader,
+  so each journey now stops the workers it started (a straggler claims the next
+  journey's runs; that is what made the browser journey red in the full-lane
+  runs).
+
+  **Owed to Task 17.** Live-manager immutable-ID execution, the explicit
+  tool-capable provider tuple for tasks, real provider fault injection, the
+  operator activation/rollback verification, and the user's inspection and
+  acceptance remain unrun; the live selectors stay absent.
 
 ## Task 17: Authorized real-manager/live qualification and operator handoff
 
@@ -688,13 +785,69 @@ is the review gate for inline execution.
 
 **Interfaces:** New live selector `OPENSHIP_LIVE_AGENTIC_TASKS=1`; explicit `OPENSHIP_LIVE_TOOL_PROFILE_ID` chooses an already supported tool-capable provider tuple, with fallbacks disabled for qualification. Require `OPENSHIP_LIVE_AGENTIC_PROFILES_FILE`, `OPENSHIP_LIVE_OPENSANDBOX_ENDPOINT`, `OPENSHIP_LIVE_OPENSANDBOX_KEY_FILE`, authorized disposable `TEST_POSTGRES_URL` and broker selectors below. Do not infer credentials/endpoints from unrelated installations or echo secret values.
 
-- [ ] **1. Write the failing live assertions before running real calls.** `test_immutable_profile_reference_executes_through_manager`, `test_live_outcome_chart_in_both_modes`, `test_live_known_repair_invalid_source_and_uploaded_logs`. The tests must fail when explicitly selected without the required files/tuple/services, and skip only when unselected. Assert exact immutable image identity through manager response/engine inspection, chart+numeric output/provenance, user mode persistence, known repair and truthful invalid-source blocker. A manager accepting a SHA-shaped string without proving the selected image is insufficient.
+- [x] **1. Write the failing live assertions before running real calls.** `test_immutable_profile_reference_executes_through_manager`, `test_live_outcome_chart_in_both_modes`, `test_live_known_repair_invalid_source_and_uploaded_logs`. The tests must fail when explicitly selected without the required files/tuple/services, and skip only when unselected. Assert exact immutable image identity through manager response/engine inspection, chart+numeric output/provenance, user mode persistence, known repair and truthful invalid-source blocker. A manager accepting a SHA-shaped string without proving the selected image is insufficient.
 - [ ] **2. Obtain authorization and run the enabled live lane.** From `apps/api`: `OPENSHIP_LIVE_AGENTIC_TASKS=1 uv run pytest -q -m provider_live tests/live/test_agentic_task_journey.py`. Run all four descriptor/selection cases offline; actual maintained-image smoke through the manager uses the existing separately authorized `OPENSHIP_LIVE_SANDBOX_PROFILES=1` selector. If the manager cannot execute the pinned engine-local image ID without pulling/retag fallback, block this gate and review the design; do not weaken to a mutable tag. Preserve earlier tag-based evidence as historical, not proof of immutable execution. Task 5's bounded profile-selection immutable-ID probe remains unrun and is claimed by this task.
 - [ ] **3. Write activation and rollback instructions, then verify them in an authorized disposable stack.** Generate only through `sandbox-images build` consent/flag, validate `.gitignore`, drain using existing messaging gates/cutover, preserve DB/checkpoints/artifacts and pending decisions, recreate API/worker together, and verify both mounted file bytes/digests plus worker readiness before reopening execution/admission. API/worker mismatches block v5 dispatch. Writing YAML alone never recreates services. On downgrade/rollback: stop v5 admissions first; use only a runtime that understands existing v5/waits or keep them visibly parked until restored to compatible code/config. Do not downgrade schema with v5 state or restore only the DB without matching checkpoint/artifact/transport identities. Custom host paths and sandbox-disabled empty fallback each get real mount-byte evidence. Do not change credentials/provider lifetime or delete sandboxes as part of activation.
-
   Document the crash decision table: pre-commit approval → re-present current request; committed approval → recover existing outbox; possible tool dispatch → diagnosis and user choice, including in Auto. Runbooks describe disabled recovery options, attempt budgets, retained partial outputs, skip-versus-success and missing dependencies. Preserve migration 033/034, diagnosis request/command records and skipped-step state during coordinated backup/restore. An operator or UI refresh must not silently repin/restart a task. Keep rollout off until Task 15 recovery and Task 16 browser gates pass; pending live immutable-ID qualification still blocks activation. Any real fault injection/provider crash requires separate explicit authorization; record synthetic recovery evidence separately from real-manager/live journey evidence, leaving unrun live fault checks pending.
 - [ ] **4. Run final verification and review evidence.** Use the full command matrix below; record actual tuple/model/API/profile snapshot/engine/platform, immutable image ID and artifact hashes without credentials in validation records. Keep fixture, live-qualified and user-accepted states distinct; add a Phase 7A feature qualification row instead of claiming every adapter now supports tasks. Update roadmap acceptance items only for demonstrated criteria. Have the user inspect chart/progress/known repair/source blocker plus the controlled recovery diagnosis and abort/repeat/continue views, and explicitly accept; leave acceptance pending otherwise.
 - [ ] **5. Commit** verified qualification/docs with subject `docs: record agentic task qualification and rollout`. Whole-branch review must resolve correctness/security findings before integration. No push, PR, merge, worktree removal or deployment is authorized by this plan alone.
+
+  **Live lane written and guarded (box 1, complete).**
+  `apps/api/tests/live/test_agentic_task_journey.py` carries
+  `test_immutable_profile_reference_executes_through_manager`,
+  `test_live_outcome_chart_in_both_modes` and
+  `test_live_known_repair_invalid_source_and_uploaded_logs`, with
+  `tests/live/live_agentic_worker.py` launching the product's own worker loop
+  (profile mount only: no stubbed adapter, tool, client, transport, queue, store
+  or gateway), and
+  `tests/live/test_sandbox_profiles.py::test_pinned_snapshot_image_reference_executes_through_manager`
+  added additively. The manager case sends the profiles file's immutable
+  `image_id`, and fails when the created sandbox's own record reports any other
+  reference: a SHA-shaped string the manager does not prove is not qualification.
+  `OPENSHIP_LIVE_AGENTIC_ENGINE_INSPECTION=1` adds the engine's own
+  `docker image inspect` identity as a separate case.
+  Observed guards: unselected → `4 skipped`
+  (`uv run pytest -q -m provider_live tests/live/test_agentic_task_journey.py`);
+  selected without prerequisites → the same command reports
+  `1 failed, 1 skipped, 2 errors` naming every missing selector
+  (`MODEL_PROFILES_JSON`, the six `OPENSHIP_LIVE_*` names, `TEST_POSTGRES_URL`
+  and the three `TEST_NATS_*` names); the additive case with a named-missing
+  profiles file fails as `OPENSHIP_LIVE_SANDBOX_PROFILES_FILE names a missing
+  profiles file`, and both files `2 skipped` when unselected. Ruff passes on
+  `tests/live`.
+
+  **Not run (boxes 2, 3, 4 stay unchecked).** No live authorization exists in
+  this environment for a paid tool-capable tuple, and the live selectors stay
+  absent, so the live agentic journey, the manager immutable-ID smoke, the
+  descriptor/selection cases against a real tuple, and the disposable-stack
+  activation/rollback verification (stack recreation, drain, mounted-byte
+  equality, worker readiness) are **not performed** and no live claim is made.
+  Task 5's bounded profile-selection immutable-ID probe remains unrun: this task
+  supplies the test that would run it, not its result. User inspection and
+  acceptance are also pending.
+
+  **Written and recorded (the documentation half of box 3, plus roadmap and
+  qualification scope).** `docs/operations/opensandbox.md` gains *Agentic task
+  activation, rollback and crash recovery — 2026-11-10*: consented
+  `sandbox-images build` generation with gitignore validation, drain through the
+  existing messaging gates preserving checkpoints, artifacts, storage identity and
+  pending decisions, API/worker recreated together with byte- and digest-equal
+  mounts and `/ready` eligibility before admission reopens, no v5 dispatch on an
+  API/worker snapshot mismatch, rollback that stops v5 admissions first and
+  refuses schema downgrade while v5 rows/waits exist, no silent repin or restart
+  from an operator command, UI refresh or service restart, the crash decision
+  table (pre-commit approval → same request re-presented; committed approval →
+  outbox recovery; possible dispatch → diagnosis and explicit choice in Auto too,
+  with repeat disabled while a command may live and continue disabled while a
+  later step depends), the attempt budgets, retained partial outputs, and
+  skip-versus-success with missing dependencies. `docs/provider-support.md`
+  states that task execution is a separate claim from the tool-use rows and
+  records the live agentic selector as **not run**; `docs/development.md` names
+  both selected lanes and their prerequisites; `.env.example` and
+  `.env.prod.example` carry the disabled `AGENTIC_TASKS_ENABLED`,
+  `AGENTIC_TASK_PROFILE_IDS` and `AGENTIC_MAX_GENERATION_ATTEMPTS` settings with
+  the activation pointer; `docs/roadmap.md` lists only the demonstrated fixture
+  criteria and keeps live qualification and acceptance pending.
 
 ## Verification Commands and Required Environment
 

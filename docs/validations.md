@@ -82,3 +82,26 @@ This page records community validation of OpenShip concepts; it is not a
 delivery or build record. Implementation evidence belongs with the feature
 runbooks. For Phase 6C sandbox images, see the
 [local image validation record](operations/opensandbox.md#local-image-validation-record-2026-11-07).
+
+### Phase 7A agentic task journeys — qualification boundary (2026-11-10)
+
+What was validated, and where each boundary stays synthetic, for the Phase 7A
+continuous-task journeys in
+`apps/api/tests/full_stack/test_agentic_tasks.py`. Command lines, counts and
+per-journey assertions are recorded with the plan that owns them
+([Phase 7A plan, Task 16](superpowers/plans/2026-11-08-phase7a-agentic-planning-and-execution.md)).
+This is fixture qualification only: it is not live-provider qualification and
+not user acceptance, and the live gates in that plan remain open.
+
+| Boundary | Status in the selected lane |
+| --- | --- |
+| Model transport | Synthetic. A deterministic stage script answers the v5 protocol turns from `apps/api/tests/fixtures/agentic_tasks/`; provider selection, budgets, transcripts and the model-attempt records around it are the product's own. |
+| External source | Synthetic. A canned weather CSV and logs JSON are served to the real `download_file` capture through the real URL policy gate; the illustrative invalid public URL is never contacted. |
+| Sandbox transport | **Real.** The OpenSandbox HTTP client runs against the authorized loopback gateway (`127.0.0.1:18080`) with authenticated preflight, creating one sandbox per chart step from the operator's profile snapshot at its pinned immutable image ID (`logs-data` → `sha256:260308ad02e5…`). Nothing in the lane stubs the sandbox transport, and the lane fails when the gateway is not answering. |
+| Durable runtime | Real. A disposable PostgreSQL database, the run queue, leases and reconciler, the v5 task graph, the tool gateway, the artifact store, the event/outbox path and the authenticated preference door. |
+| Browser | Real. Chromium through the repository's `playwright.full-stack.config.ts` against the vite dev server proxying the same API process. |
+
+Unqualified by these fixtures, and therefore still open: live-manager
+immutable-image execution, the separately authorized provider tuple for tasks,
+real provider fault injection, and the user's inspection and acceptance of the
+chart, progress, known-repair, source-blocker and recovery views.

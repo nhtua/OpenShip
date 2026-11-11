@@ -368,7 +368,9 @@ def read_task_summary(db, run_id: UUID) -> TaskSummary | None:
         request = _json_object(decision_row.request_json)
         report = request.get("recovery_report")
         if report is not None:
-            diagnosis = recovery_summary(TaskRecoveryReport.model_validate(report))
+            diagnosis = recovery_summary(
+                TaskRecoveryReport.model_validate_json(json.dumps(report))
+            )
         expires_at = decision_row.expires_at
         pending = TaskPendingDecisionSummary(
             request_id=decision_row.request_id,

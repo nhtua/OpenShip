@@ -198,4 +198,21 @@ describe('task progress store', () => {
     expect(recovery!.expected_digest).toBe(card!.pendingDecision!.expected_digest)
     expect(recovery!.expected_digest).toBe('d'.repeat(64))
   })
+
+  it('markReadOnlyIsIdempotentSoAViewWatchingTheCardStopsUpdating', () => {
+    // ChatView watches the card's read-only state and marks it on every
+    // change it sees. A mark that rewrote the card when nothing changed made
+    // that watcher re-run forever, and the task conversation never rendered.
+    const store = useTaskProgressStore()
+    store.handleEvent(planProposed(1, PLAN_ONE))
+    const before = store.cards.get('run-1')
+    store.markReadOnly('run-1', false)
+    expect(store.cards.get('run-1')).toBe(before)
+    store.markReadOnly('run-1', true)
+    const marked = store.cards.get('run-1')
+    expect(marked).not.toBe(before)
+    expect(marked!.readOnly).toBe(true)
+    store.markReadOnly('run-1', true)
+    expect(store.cards.get('run-1')).toBe(marked)
+  })
 })
