@@ -314,7 +314,7 @@ OPENAI_MODEL=gpt-4o
 OPENAI_BASE_URL=https://api.openai.com/v1
 
 # Database
-DATABASE_URL=postgresql://user:pass@localhost:5432/openship
+DATABASE_URL=postgresql://user:pass@localhost:5432/openship  # rayloc:ignore
 
 # JWT
 JWT_SECRET=<random_secret>

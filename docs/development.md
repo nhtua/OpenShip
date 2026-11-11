@@ -446,3 +446,14 @@ uvx pre-commit run --all-files
 The [hook configuration](../.pre-commit-config.yaml) includes prototype tests,
 frontend typecheck/tests, API lint/tests when API files change, and a staged
 secret scan. Never commit `.env`, provider credentials, or generated key files.
+
+### Secret scan and reviewed ignores
+
+`rayloc scan .` runs over the whole tree in `scripts/openship-verify`, and the
+staged form runs in the commit hooks. A line whose only match is a reviewed
+false positive carries `# rayloc:ignore` at its end, which is how the dev
+compose's local database password and the two documentation placeholders
+(`change_me`, `user:pass`) stay readable without parking an ID in
+`.rayloc.yaml`. The marker suppresses that one line only, must end the line,
+and is checked in the same scan that gates a release: an unmarked credential
+still fails the gate.

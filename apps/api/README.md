@@ -71,7 +71,7 @@ for retained evidence and storage setup.
 | `WORKFLOW_RUN_TIMEOUT_SECONDS` | `1800` | Overall execution deadline in seconds, including model requests, retries and tools; supported range 1–3600 |
 | `MODEL_CONTEXT_TOKENS` | `128000` | Default declared context window; explicit smaller provider declarations still apply |
 | `MODEL_MAX_CONTEXT_BYTES` | `2097152` | Independent UTF-8 request-size guard, including messages, tool schemas and results |
-| `DATABASE_URL` | `postgresql://postgres:change_me@localhost:5432/openship` | Database connection string |
+| `DATABASE_URL` | `postgresql://postgres:change_me@localhost:5432/openship` | Database connection string  # rayloc:ignore
 | `JWT_SECRET` | `dev-secret-change-in-production` | JWT signing secret |
 | `JWT_EXPIRY_HOURS` | `24` | JWT token expiry |
 | `HOST` | `0.0.0.0` | Server host |

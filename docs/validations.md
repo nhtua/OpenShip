@@ -152,3 +152,43 @@ Every sharded run's summed counts must equal the single-process run's. The
 single process reported `2020 passed, 169 deselected` before the 17
 launcher/mapper tests this branch adds; the final lane reports `2037 passed`.
 A shard that collected nothing exits 5 and is not counted as a failure.
+
+### Agentic task journeys on the dev stack — what the durable doors do (2026-11-11)
+
+Operator QA against the running dev stack (the driver is a scratch script in
+`/tmp`, not a committed tool): sign in, submit one outcome-level request in
+`copilot` mode, watch the parked plan, confirm it through `POST
+/api/runs/{run}/task-decisions`, and read the run back. This is a journey check,
+not acceptance: no `postgres`, `full_stack`, `provider_live` or `jetstream` test
+lane ran, and no user was asked to accept anything.
+
+| Step | Result |
+| --- | --- |
+| Plan stage before the prompt fix | four recorded answers each wrote a sentence into `recommended_recovery_action` and left `step_id` null, so every assessment failed and the chat answered "no plan could be validated" for any request |
+| Replay of those recorded answers through the product's own validators | `PLAN VALID` against the run's own pinned `execution_configuration` - the plan was always fine; only the assessment's field values were refused |
+| After `fb90e74` (the prompt states the contract's rules) | three runs parked a real plan: `find_source/download_data/make_chart/verify_chart`, `download/inspect/chart/confirm`, `download_data/create_chart/confirm_chart`, each at `waiting_plan` with pending kind `plan_confirmation` |
+| Confirming one parked plan | `POST /api/runs/{run}/task-decisions` → HTTP 200, execution started, and the plan's steps moved through `queued`/`running`/settled states in the run view |
+| The `.txt` download plan after the attempt-recording fix | run `completed`: `download_data:failed`, `create_chart:failed`, `confirm_chart:succeeded` - the refused step is recorded and the switcher keeps routing, instead of the worker dying |
+| Before that fix | the same step aborted the run: `TaskStateError: the committed operation has no result digest` at `runs/tasks/state.py`, then `failed`/`internal_error` |
+
+Two real breaks remain open in this area, with their evidence:
+
+- `workspace_read_file` at its ceiling kills a task run. The tool read
+  15,759 bytes and the operation committed `result_json` at exactly
+  `max_model_result_bytes` (16,384), so the envelope `_result_message` adds on
+  top of a payload already allowed at the ceiling made the model-visible
+  message too large: `ProviderError("output_limit_exceeded")` raised inside
+  `dispatch` (`task_graph.py`), which aborts the run instead of leaving a step
+  outcome. The manifest pairs `max_read_bytes` and `max_model_result_bytes` at
+  the same 16 KiB (`capabilities/catalog.py:522-524`).
+- A confirmed plan that finishes publishes no closing turn. Run
+  `e917c027-c321-4443-806f-74b786e6feaa` ended `completed` with only two
+  messages in the conversation - the request and the plan presentation - while
+  its task record stayed `status: running`, `last_disposition: none`. The chat
+  shows a plan and silence, so the durable task's own terminal state is never
+  published. `task.status` reaches `completed` only through the verification
+  path (`runs/tasks/state.py:995`), which a run with no verified output never
+  enters. The plan's own Task 12 evidence already treats durable
+  `task_status == "running"` with `verified_steps == ()` as the honest
+  pre-verification state, so the missing closing turn is the reportable half of
+  this finding, not the status itself.
