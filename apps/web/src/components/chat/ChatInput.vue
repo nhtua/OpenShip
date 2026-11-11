@@ -102,11 +102,14 @@ const awsSelectionValid = computed(() => awsConnectorChoices.value.some(
   (connector) => connector.id === selectedAwsConnectorId.value,
 ))
 
-const inputPlaceholder = computed(() =>
-  showKeyboardHint.value
-    ? 'Message the agent...   Enter to send · Shift+Enter for a new line'
-    : 'Message the agent...',
-)
+const inputPlaceholder = computed(() => {
+  // While the run waits on a decision, the composer is that answer, and the
+  // placeholder says so rather than inviting a new turn.
+  const base = props.replyContext ? 'Answer the waiting request' : 'Message the agent'
+  return showKeyboardHint.value
+    ? `${base}...   Enter to send · Shift+Enter for a new line`
+    : `${base}...`
+})
 
 const effectiveProfile = computed(() =>
   props.profiles.find((profile) => profile.profile_id === props.selectedProfileId) ??

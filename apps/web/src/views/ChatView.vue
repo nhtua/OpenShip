@@ -305,6 +305,18 @@ const conversationTaskCards = computed(() => {
 const decisionReplyContext = computed(
   () => Boolean(taskCard.value) && !taskProgress.decisionActionsDisabled(taskCard.value!.runId),
 )
+// The composer is the only door an answer takes, so a run that waits on a
+// decision a person can answer keeps the composer open even while its stream
+// is still open - the next event depends on this answer, and a composer that
+// waits for the stream waits for the answer. Elsewhere an open stream keeps it
+// closed, and a parked decision never starts a second turn: the reply emits
+// bind to the request, never to a new send.
+const composerBlocked = computed(
+  () =>
+    navigationBusy.value ||
+    chat.currentConversationReadOnly ||
+    (chat.isStreaming && !decisionReplyContext.value),
+)
 const replyNotice = ref<string | null>(null)
 
 watch(
@@ -779,7 +791,7 @@ onBeforeUnmount(() => {
         {{ replyNotice }}
       </p>
       <ChatInput
-        :disabled="conversationBusy"
+        :disabled="composerBlocked"
         :selection-disabled="chat.isSubmitting"
         :mode-submission-disabled="agentMode.submissionBlocked"
         :reply-context="decisionReplyContext"

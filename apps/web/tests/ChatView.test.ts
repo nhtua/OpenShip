@@ -214,6 +214,44 @@ describe('ChatView', () => {
     wrapper.unmount()
   })
 
+  it('answers a parked clarification through the composer while the run stream is still open', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Staging deployed successfully.'), { timeout: wait })
+    const chat = useChatStore()
+    const tasks = useTaskProgressStore()
+    chat.messages = [
+      { id: 'ask', role: 'user', content: 'Chart the weather', conversation_id: 'c1', run_id: 'run-ask', created_at: '2026-11-01T00:00:00Z' },
+    ]
+    chat.runCards.set('c1', {
+      run_id: 'run-ask', status: 'waiting_input', started_at: null, ended_at: null, usage: null,
+      model: null, attempts: [], error_code: null, error_message: null,
+    } as RunCardType)
+    tasks.handleSnapshot({ schema_version: 1, run_id: 'run-ask', revision: 1,
+      plan: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart temperatures' }] },
+      status: 'waiting', mode: 'copilot',
+      pending_decision: { request_id: 'request-ask', plan_revision: 1, kind: 'clarification',
+        expected_digest: 'a'.repeat(64), prompt: 'Which file should I chart?' },
+    })
+    await nextTick()
+    // The stream is still open while the run waits: nothing has ended, and the
+    // answer is exactly the dependency the next event depends on.
+    chat.isStreaming = true
+    await nextTick()
+
+    const composer = wrapper.get('[data-testid="composer"]')
+    const textarea = wrapper.get('textarea')
+    expect(textarea.attributes('disabled')).toBeUndefined()
+    expect(textarea.attributes('placeholder')).toContain('Answer the waiting request')
+    expect(wrapper.get('[data-testid="task-decision-prompt"]').text()).toContain('Which file should I chart?')
+    await textarea.setValue('the daily readings csv')
+    await composer.trigger('submit')
+    expect(mockDecisionApi.submit).toHaveBeenCalledTimes(1)
+    expect(mockDecisionApi.submit.mock.calls[0][1]).toMatchObject({
+      request_id: 'request-ask', action: 'answer', answer: 'the daily readings csv',
+    })
+    wrapper.unmount()
+  })
+
   it('renders conversation history with the active selection', async () => {
     const { wrapper, router } = await mountWithRouter(ChatView, '/')
 
