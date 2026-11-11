@@ -1,7 +1,7 @@
 ---
 type: spec
 summary: Durable conversation inbox, queued follow-up turns, and multi-message agent-judged clarifications.
-status: proposed-awaiting-review
+status: approved-awaiting-implementation-plan
 date: 2026-11-11
 ---
 
@@ -167,5 +167,5 @@ checks, typecheck, and build. PostgreSQL/full-stack/provider-live/JetStream
 gates and `git clean -fdx` are outside the requested verification scope;
 report that limitation rather than claiming a live-browser proof.
 
-This is a design awaiting review, not an implementation authorization. Keep
-the branch local; do not push, open a PR, or merge.
+The user approved this design on 2026-11-11. Implementation still requires
+review of the written plan. Keep the branch local; do not push, open a PR, or merge.
