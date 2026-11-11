@@ -30,6 +30,7 @@ from ...providers.runner import run_model_turn
 from ..transcript import append_transcript, read_transcript
 from .clock import effective_loop_limits
 from .contracts import (
+    STEP_ID_GRAMMAR,
     TaskAssessment,
     TaskPlan,
     TaskProgress,
@@ -137,10 +138,12 @@ def _stage_prompt(purpose: str, execution, observations: tuple[PublishedToolResu
         f"Allowed capabilities: {capabilities}.",
         f"Allowed sandbox profiles: {profiles}.",
         (
-            'Assessment shape: {"classification":"informational|clarification|task|blocked",'
+            'Answer with one JSON object holding the assessment under "assessment":'
+            ' {"assessment":{"classification":"informational|clarification|task|blocked",'
             '"explanation":"public summary, no private reasoning","evidence_refs":["obs:0"],'
             '"missing_information":[],"failure":"none|known|material|uncertain|denied|policy|budget",'
-            '"step_id":null,"unknowns":[],"risks":[],"recommended_recovery_action":null}.'
+            '"step_id":null,"unknowns":[],"risks":[],"recommended_recovery_action":null}}.'
+            " Nothing outside these keys is accepted."
         ),
         (
             "Cite only the evidence refs shown above. A recommendation never selects eligibility"
@@ -149,10 +152,13 @@ def _stage_prompt(purpose: str, execution, observations: tuple[PublishedToolResu
     ]
     if purpose == "assessment_and_plan":
         lines.append(
-            'Add a plan: {"plan":{"intent":"...","constraints":[],"steps":[{"id":"...",'
-            '"intent":"...","depends_on":[],"capability":"one allowed capability id",'
-            '"profile_id":null,"expected_outputs":["..."],"completion_checks":["..."]}]}}.'
-            " Every reference must come from the sets above."
+            'Add the plan under "plan": {"plan":{"intent":"...","constraints":[],"steps":'
+            '[{"id":"step id: '
+            + STEP_ID_GRAMMAR
+            + '","intent":"...","depends_on":[],'
+            '"capability":"one allowed capability id","profile_id":null,"expected_outputs":'
+            '["..."],"completion_checks":["..."]}]}}. Every reference must come from the '
+            "sets above."
         )
     for index, published in enumerate(observations[:_MAX_OBSERVATIONS]):
         lines.append(_observation_block(index, published))

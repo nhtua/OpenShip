@@ -985,3 +985,43 @@ def test_call_binding_survives_dispatch_without_result_checkpoint(monkeypatch):
     assert pending is not None
     assert pending.kind == "recovery"
     assert pending.recovery_report is not None
+
+
+def _refused_plan_payload() -> dict:
+    """A plan draft naming a capability this run was never given."""
+    payload = _plan_payload()
+    payload["plan"]["steps"][0]["capability"] = "send_email"
+    return payload
+
+
+def test_a_refused_plan_answers_the_request_instead_of_completing_in_silence(monkeypatch):
+    """A plan the server refuses must leave the person reading something usable.
+
+    The refusals are real: the dev-stack QA run
+    ``e54c2653-122a-4868-be96-1331899a96b1`` had both plan drafts refused and
+    completed as an empty assistant message with no task, no plan and no visible
+    reason. The graph's answer node is the surface that tells the user what
+    happened; completing in silence is not a result.
+    """
+    lane = Lane(
+        monkeypatch,
+        mode="auto",
+        behaviors=[
+            _answer(_assessment_payload()),
+            _answer(_refused_plan_payload()),
+            _answer(_refused_plan_payload()),
+        ],
+    )
+    outcome = lane.invoke()
+
+    assert outcome["cursor"]["stopped"] == "invalid_response"
+    response = outcome["assistant_response"].strip()
+    assert response
+    assert "plan" in response.lower()
+    assert lane.gateway.calls == []
+    assert lane.transport.requests == 3
+
+    durable = _durable(lane.run_id)
+    assert durable["plan"] is None
+    assert durable["operations"] == []
+    assert durable["task_status"] is None

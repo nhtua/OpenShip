@@ -31,7 +31,16 @@ from ...sandboxes.profile_schema import (
     catalog_digest,
 )
 
-STEP_ID_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+# A step identity is written by a model and validated by this pattern, so the
+# words the stage prompt gives the model come from here too: one source, no
+# prompt that asks for an id the contract refuses. Hyphens are admitted because
+# that is the shape models write ("find-data-source"); ids written under the
+# older grammar stay valid.
+STEP_ID_PATTERN = r"^[a-z][a-z0-9_-]{0,63}$"
+STEP_ID_GRAMMAR = (
+    "one lowercase letter, then lowercase letters, digits, underscores or "
+    "hyphens, 64 characters at most"
+)
 _EVIDENCE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _CONTROL_CHARACTERS = frozenset(
     character for character in map(chr, range(32)) if character not in "\n\t"

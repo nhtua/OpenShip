@@ -130,6 +130,18 @@ _CURSOR_KEYS = frozenset(
 #: run's budget enforce the ceilings; this is the graph's own stop.
 _MAX_STEP_ATTEMPTS = 3
 
+#: What the answer node says when the run has nothing to execute. A plan the
+#: server refused, and a run that reaches an answer with no plan at all, are both
+#: results the person has to be told about in words: an empty assistant message
+#: reads as a completed request, and the QA of run
+#: ``e54c2653-122a-4868-be96-1331899a96b1`` ended exactly that way.
+STOPPED_ANSWER = (
+    "No plan could be validated for this request, so nothing was executed. "
+    "The plan draft was refused ({code}). Narrow the request, enable the "
+    "capabilities it needs, and ask again."
+)
+NO_PLAN_ANSWER = "This run finished without a plan to execute, so nothing was done."
+
 
 def _cursor_of(state: TaskGraphState) -> dict:
     """Only known cursor keys survive a round trip through a checkpoint."""
@@ -507,8 +519,17 @@ def build_task_graph(
     def answer(state: TaskGraphState) -> dict:
         cursor = _cursor_of(state)
         assessment = _assessment_of(cursor)
+        stopped = cursor.get("stopped")
+        if stopped:
+            # A refusal is news the person gets: the words name the code that
+            # stopped the run, so a stopped plan is never an empty message.
+            return {
+                "assistant_response": STOPPED_ANSWER.format(code=stopped),
+                "finish_reason": "stop",
+                "cursor": cursor,
+            }
         return {
-            "assistant_response": assessment.explanation if assessment else "",
+            "assistant_response": assessment.explanation if assessment else NO_PLAN_ANSWER,
             "finish_reason": "stop",
             "cursor": cursor,
         }
@@ -929,7 +950,10 @@ def build_task_graph(
         intent = execution_of_intent(state) if plan else ""
         return {
             "finish_reason": "stop",
-            "assistant_response": _presentation(plan, intent) if plan else "",
+            # Never an empty message: a run that ends with nothing to present has
+            # to say that, not leave the reader with a blank turn.
+            "assistant_response": (_presentation(plan, intent) if plan else NO_PLAN_ANSWER)
+            or NO_PLAN_ANSWER,
         }
 
     def _after_assess(state: TaskGraphState) -> str:
@@ -944,7 +968,13 @@ def build_task_graph(
         return "answer"
 
     def _after_propose(state: TaskGraphState) -> str:
-        return "publish" if (state.get("cursor") or {}).get("plan_json") else "finish"
+        if (state.get("cursor") or {}).get("plan_json"):
+            return "publish"
+        # A plan the server refused is a result the person has to be told about,
+        # so it goes to `answer`, which says so in words. Routing a plan-less
+        # cursor to `finish` completed the run with an empty assistant message,
+        # a null task, and the stop code visible nowhere.
+        return "answer"
 
     def _after_publish(state: TaskGraphState) -> str:
         execution = _execution_of(state)
@@ -1009,7 +1039,7 @@ def build_task_graph(
         {"switch": "switch", "answer": "answer", "wait": "wait", "propose": "propose"},
     )
     builder.add_conditional_edges(
-        "propose", _after_propose, {"publish": "publish", "finish": "finish"}
+        "propose", _after_propose, {"publish": "publish", "answer": "answer"}
     )
     builder.add_conditional_edges(
         "publish", _after_publish, {"gate": "gate", "switch": "switch"}
