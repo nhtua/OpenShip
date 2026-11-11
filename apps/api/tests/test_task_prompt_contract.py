@@ -27,6 +27,7 @@ from src.openship.providers.errors import ProviderError
 from src.openship.runs.tasks.contracts import (
     STEP_ID_GRAMMAR,
     STEP_ID_PATTERN,
+    TaskAssessment,
     TaskProgress,
     TaskStep,
 )
@@ -73,6 +74,12 @@ def _assessment_envelope() -> dict:
         "risks": [],
         "recommended_recovery_action": None,
     }
+
+
+def _assessment_fields(**overrides) -> dict:
+    """The assessment example as the contract stores it: JSON lists become tuples."""
+    fields = {**_assessment_envelope(), **overrides}
+    return {k: (tuple(v) if isinstance(v, list) else v) for k, v in fields.items()}
 
 
 def _plan_steps(step_id: str = "find-data-source") -> list[dict]:
@@ -227,6 +234,61 @@ def test_an_envelope_that_only_echoes_the_published_assessment_is_refused():
 
     with pytest.raises(Exception, match="no plan object"):
         _plan_of(envelope, _execution(), TaskProgress(current_revision=0))
+
+
+def test_the_prompt_states_the_assessment_rules_the_validator_enforces():
+    """A rule the model cannot see is a rule it will break, at every prompt.
+
+    Dev-stack QA on 2026-11-11 made this universal rather than occasional: in run
+    ``34341203-b8f3-4fda-8ddc-e13f67a180ff`` every one of the four recorded
+    answers wrote a sentence into ``recommended_recovery_action`` (a bounded
+    choice) and left ``step_id`` null under a ``known``/``material`` failure, so
+    each answer was refused and the chat answered "no plan could be validated"
+    for any request. The rules below are read off the contract's own validators.
+    """
+    prompt = _stage_prompt("assessment", _execution(), ())
+    for phrase in (
+        "recommended_recovery_action",
+        "abort|repeat_step|continue_next",
+        "uncertain",
+        "step_id",
+        "known|material",
+        "clarification",
+        "missing_information",
+    ):
+        assert phrase in prompt
+
+    # The prompt's rules are the contract's rules, not a paraphrase of them.
+    with pytest.raises(ValidationError, match="recovery recommendation"):
+        TaskAssessment(
+            **_assessment_fields(
+                failure="known",
+                step_id="find-data-source",
+                recommended_recovery_action="abort",
+            )
+        )
+    with pytest.raises(ValidationError, match="step identifier"):
+        TaskAssessment(**_assessment_fields(failure="known"))
+    with pytest.raises(ValidationError, match="clarification requires"):
+        TaskAssessment(**_assessment_fields(classification="clarification"))
+    accepted = TaskAssessment(
+        **_assessment_fields(
+            failure="uncertain",
+            recommended_recovery_action="repeat_step",
+        )
+    )
+    assert accepted.recommended_recovery_action == "repeat_step"
+
+
+def test_advice_written_in_the_recovery_field_is_refused():
+    """Prose belongs in the explanation; the recovery field names a choice."""
+    fields = {
+        **_assessment_envelope(),
+        "recommended_recovery_action": "ask the user where to send the chart",
+    }
+
+    with pytest.raises(ProviderError):
+        _assessment_of({"assessment": fields}, _execution(), TaskProgress(current_revision=0), ())
 
 
 @pytest.mark.parametrize("step_id", ["a", "fetch_1", "find-data-source", "x" * 64])

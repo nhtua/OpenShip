@@ -181,6 +181,17 @@ def _stage_prompt(purpose: str, execution, observations: tuple[PublishedToolResu
             "classification is one of informational|clarification|task|blocked; failure is one"
             " of none|known|material|uncertain|denied|policy|budget."
         ),
+        (
+            "Assessment rules the server enforces, and a draft that breaks one is refused:"
+            ' `failure` is "none" unless the run actually hit an obstacle; when failure is'
+            " known|material, `step_id` must name the step that hit it, and when failure is"
+            ' none `step_id` must be null. `recommended_recovery_action` is one of'
+            " abort|repeat_step|continue_next or null, and only an"
+            ' "uncertain" failure may carry one: write advice in `explanation`, `unknowns`'
+            " or `risks` instead. A"
+            ' "clarification" must name at least one `missing_information`; a "blocked"'
+            " assessment must cite `evidence_refs` or name missing information."
+        ),
         "Assessment shape, exactly this nesting: "
         + json.dumps({"assessment": _ASSESSMENT_EXAMPLE}, ensure_ascii=False),
         (
