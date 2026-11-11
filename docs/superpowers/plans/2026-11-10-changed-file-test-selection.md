@@ -230,9 +230,19 @@ Status (2026-11-10): Tasks 1-5 are landed in `06cc90a feat: run the tests a comm
 - [x] **Step 3: Verify the docs render and link.**
 Run: `grep -n "Changed-file test selection" docs/development.md && grep -n "openship-verify" docs/development.md docs/validations.md`
 Expected: the section heading exists once, and both files name the pre-push command.
+Verified 2026-11-10: heading once (`grep -c` = 1), `openship-verify` named in
+both files (5 and 1 occurrences), and every relative link in the two files
+resolves to an existing path.
 
 - [x] **Step 4: Run the whole credential-free suite once more** so the plan's own tests are inside the lane CI runs.
 Run: `cd apps/api && uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'`
 Expected: all pass; record the pass count and duration, and the delta versus the previous recorded lane count (the new mapper/launcher/wiring tests add to it).
+Verified 2026-11-10: `scripts/openship-verify` ran the lane as 8 shards —
+`2037 passed` in 152.4 s. The single process reported `2020 passed, 169
+deselected` in 851.34 s before the sharding default; the +17 are the
+launcher's shard and guard cases plus the mapper's relative-import case.
+The gate's remaining red leg is its tree-wide secret scan, whose three
+findings exist unchanged at the pre-branch `858b7d0` and are recorded in
+`docs/validations.md` rather than accepted.
 
-- [ ] **Step 5: Commit** (message records the measured numbers, and states explicitly that CI is unchanged and no live lane ran).
+- [x] **Step 5: Commit** (message records the measured numbers, and states explicitly that CI is unchanged and no live lane ran).
