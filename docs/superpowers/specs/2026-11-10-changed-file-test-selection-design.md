@@ -51,8 +51,13 @@ def build_graph(api_root: Path) -> ImportGraph: ...
 
 `build_graph` parses every `apps/api/tests/**/*.py` and `apps/api/src/**/*.py`
 with `ast`, records `test module → src module` edges from `import src.openship…`
-and `from src.openship… import …`, plus `src module → src module` edges, then
-closes each changed src module transitively. Measured cost: 189 `src` files plus
+and `from src.openship… import …`, plus `src module → src module` edges —
+**including relative ones**, resolved against the importing file's own package,
+because `src/openship` is written almost entirely as `from .task_graph import …`
+and `from ...providers.errors import …`. A graph that read only absolute module
+names mapped `runs/task_graph.py` (imported only relatively) to no test module,
+which made every edit to it pay for the full lane. The mapper then closes each
+changed src module transitively. Measured cost: 189 `src` files plus
 223 `tests` files (5582 import statements) in **0.62s**, which is why there is
 no cache and no cache-invalidation logic to get stale.
 

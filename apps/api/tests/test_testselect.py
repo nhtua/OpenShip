@@ -180,3 +180,64 @@ def test_explain_cli_prints_the_plan_and_its_reasons(
     assert "selected" in out
     assert "apps/api/tests/test_plan.py" in out
     assert "src.openship.runs.service" in out
+
+
+RELATIVE_TREE = {
+    "src/openship/tools/inner.py": "VALUE = 1\n",
+    "src/openship/tools/outer.py": "from .inner import VALUE\n\nX = VALUE\n",
+    "src/openship/deep/a/b/c.py": "from ....tools.inner import VALUE\n\nY = VALUE\n",
+    "src/openship/tools/bare.py": "from . import inner\n\nZ = inner.VALUE\n",
+    "tests/test_outer.py": "from src.openship.tools.outer import X\n",
+    "tests/test_c.py": "from src.openship.deep.a.b.c import Y\n",
+}
+
+
+@pytest.fixture
+def relative_root(tmp_path: Path) -> Path:
+    """A tree whose src files import each other the way this one really does."""
+    root = tmp_path / "apps" / "api"
+    for relative, body in {**TREE, **RELATIVE_TREE}.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    return root
+
+
+def test_relative_imports_are_edges_like_any_other_import(relative_root: Path) -> None:
+    """`from .x import y` and `from ...x import y` name a module as surely as an absolute import.
+
+    The src package is written almost entirely in relative imports, so a graph
+    that skipped them would map most src modules to nothing and turn the narrowed
+    gate into the full lane.
+    """
+    graph = testselect.build_graph(relative_root)
+
+    assert graph["src.openship.tools.inner"] >= {
+        "src.openship.tools.outer",
+        "src.openship.tools.bare",
+        "src.openship.deep.a.b.c",
+    }
+
+
+def test_closure_reaches_the_tests_through_a_relative_chain(relative_root: Path) -> None:
+    graph = testselect.build_graph(relative_root)
+
+    assert testselect.tests_for_src(graph, "src.openship.tools.inner", relative_root) == {
+        "apps/api/tests/test_outer.py",
+        "apps/api/tests/test_c.py",
+    }
+
+
+def test_a_module_imported_only_by_a_relative_import_is_not_a_full_lane() -> None:
+    """The real tree's case: `runs/task_graph.py` is imported by `from .task_graph import …`.
+
+    Under a graph that read only absolute imports this module mapped to no test
+    module, so editing it paid for the whole lane. Its importer chain ends in real
+    tests, and the selection has to follow it.
+    """
+    plan = testselect.map_files(
+        ["apps/api/src/openship/runs/task_graph.py"], api_root=APPS_API
+    )
+
+    assert isinstance(plan, testselect.Selected)
+    assert "apps/api/tests/test_task_graph.py" in plan.files

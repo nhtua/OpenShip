@@ -52,13 +52,28 @@ def _module_name(path: Path, api_root: Path) -> str:
     return ".".join(parts)
 
 
-def _imported_names(node: ast.AST) -> set[str]:
-    """Every dotted module an import statement can make this file depend on."""
+def _imported_names(node: ast.AST, package: list[str]) -> set[str]:
+    """Every dotted module an import statement can make this file depend on.
+
+    Relative imports are resolved against ``package`` - the directory the
+    importing file sits in - because `src/openship` is written almost entirely
+    in them: `from .task_graph import …` and `from ...providers.errors import …`
+    name modules as exactly as an absolute import does, and a graph that read
+    only absolute imports would map most of `src` to no test at all.
+    """
     names: set[str] = set()
     if isinstance(node, ast.ImportFrom):
-        if node.module is None:
+        if node.level:
+            base = package[: len(package) - (node.level - 1)]
+            if not base:
+                return names
+            parts = base + (node.module.split(".") if node.module else [])
+            prefix = ".".join(parts)
+            candidates = {prefix, *(f"{prefix}.{alias.name}" for alias in node.names)}
+        elif node.module is None:
             return names
-        candidates = {node.module, *(f"{node.module}.{alias.name}" for alias in node.names)}
+        else:
+            candidates = {node.module, *(f"{node.module}.{alias.name}" for alias in node.names)}
     elif isinstance(node, ast.Import):
         candidates = {alias.name for alias in node.names}
     else:
@@ -83,8 +98,9 @@ def build_graph(api_root: Path) -> dict[str, set[str]]:
             except SyntaxError:
                 continue
             importer = _module_name(path, api_root)
+            package = list(path.relative_to(api_root).with_suffix("").parts)[:-1]
             for node in ast.walk(tree):
-                for imported in _imported_names(node):
+                for imported in _imported_names(node, package):
                     if not imported.startswith(GRAPH_ROOTS):
                         continue
                     graph.setdefault(imported, set()).add(importer)
