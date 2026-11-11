@@ -14,8 +14,6 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import AgentModeSelector from '@/components/chat/AgentModeSelector.vue'
-import TaskPlan from '@/components/chat/TaskPlan.vue'
-import TaskDecision from '@/components/chat/TaskDecision.vue'
 import RunCard from '@/components/chat/RunCard.vue'
 import ConversationFiles from '@/components/chat/ConversationFiles.vue'
 import ArchivedConversationsDialog from '@/components/chat/ArchivedConversationsDialog.vue'
@@ -294,6 +292,14 @@ const taskCard = computed(() => {
   const runId = runCard?.run_id
   return runId ? taskProgress.cards.get(runId) : null
 })
+const conversationTaskCards = computed(() => {
+  const runIds = new Set([
+    ...chat.messages.map((message) => message.run_id).filter(Boolean),
+    ...conversationOperations.value.map((operation) => operation.run_id),
+    taskCard.value?.runId,
+  ])
+  return [...taskProgress.cards.values()].filter((card) => runIds.has(card.runId))
+})
 // A composer reply only counts while the run is parked on a decision this
 // person can answer; elsewhere text is an ordinary turn.
 const decisionReplyContext = computed(
@@ -317,6 +323,11 @@ async function handleDecisionRespond(action: string, answer: string | null): Pro
   if (!command) return
   replyNotice.value = null
   await taskProgress.submitTaskDecision(card.runId, command)
+}
+
+async function handleTimelineDecisionRespond(runId: string, action: string, answer: string | null): Promise<void> {
+  if (taskCard.value?.runId !== runId) return
+  await handleDecisionRespond(action, answer)
 }
 
 async function handleReplyToDecision(text: string): Promise<void> {
@@ -698,6 +709,8 @@ onBeforeUnmount(() => {
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
         <RunCard
           :card="chat.runCards.get(chat.currentConversation.id)!"
+          :task="taskCard"
+          :read-only="chat.currentConversationReadOnly"
           :has-actions="Boolean(pendingSubmissionId || (activeRunId && chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool') || chat.runCards.get(chat.currentConversation.id)!.connector_blocker)"
           :can-resume-connector="canResumeConnector"
           :connector-action-busy="connectorActionBusy"
@@ -706,6 +719,7 @@ onBeforeUnmount(() => {
           @dismiss-connector="handleDismissConnector"
           @setup-connector="handleSetupConnector"
           @resubmit-connector="handleResubmitConnector"
+          @respond="handleDecisionRespond"
         >
           <Button
             v-if="pendingSubmissionId"
@@ -731,21 +745,19 @@ onBeforeUnmount(() => {
           </Button>
         </RunCard>
       </div>
-      <!-- The task card reads the same durable records the events showed: plan,
-           progress, and the open decision never a second local task. -->
-      <TaskPlan
-        v-if="taskCard"
-        :card="taskCard"
-      />
       <!-- The stream/composer components own their data-testid hooks. -->
       <ChatStream
         :messages="chat.messages"
         :operations="conversationOperations"
+        :tasks="conversationTaskCards"
+        :active-task-run-id="taskCard?.runId"
+        :read-only="chat.currentConversationReadOnly"
         :is-streaming="chat.isStreaming"
         :can-resume="Boolean(chat.currentConversation) && !chat.isStreaming && !activeRunId && !pendingSubmissionId"
         @download="handleDownloadArtifact"
         @cancel="handleCancelOperation"
         @resumed="run => { if (chat.currentConversation?.id === run.conversation_id) void chat.loadConversation(run.conversation_id) }"
+        @respond="handleTimelineDecisionRespond"
       />
       <AgentModeSelector
         :mode="agentMode.mode"
@@ -757,12 +769,6 @@ onBeforeUnmount(() => {
         :blocked="agentMode.submissionBlocked"
         :message="agentMode.error"
         @choose="handleChooseMode"
-      />
-      <TaskDecision
-        v-if="taskCard"
-        :card="taskCard"
-        :read-only="chat.currentConversationReadOnly"
-        @respond="handleDecisionRespond"
       />
       <p
         v-if="replyNotice"

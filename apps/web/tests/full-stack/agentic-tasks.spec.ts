@@ -33,11 +33,12 @@ test('the browser drives one durable task across a reload and an explicit recove
   await expect(page.getByTestId('agent-mode-current')).toContainText(/Auto · revision 2/)
   await expect(page.getByTestId('composer')).toBeVisible({ timeout: 20_000 })
 
-  // A completed task folds from the durable records: one plan card, the plan
-  // that survived the refused envelope, verified steps and recorded outputs.
+  // A completed task folds from durable records: the conversation keeps the
+  // plan, and expanding its run card reveals verified steps and outputs.
   await page.goto(`/conversation/${completedConversation}`)
-  await expect(page.locator(testId('task-plan'))).toHaveCount(1)
-  const planCard = page.locator(testId('task-plan')).first()
+  await expect(page.locator(testId('stream')).locator(testId('task-timeline-entry'))).toHaveCount(1)
+  await page.locator(testId('run-summary')).click()
+  const planCard = page.locator(testId('run-details')).locator(testId('task-plan'))
   await expect(planCard).toBeVisible()
   await expect(planCard.locator(testId('task-plan-status')).first()).toContainText(/Completed · Copilot/)
   await expect(planCard.locator(testId('task-plan-revision'))).toHaveCount(1)
@@ -53,8 +54,8 @@ test('the browser drives one durable task across a reload and an explicit recove
   // repeat disabled, and the step that feeds a later step keeps continue
   // disabled, each with the reason the records gave.
   await page.goto(`/conversation/${recoveryConversation}`)
-  await expect(page.locator(testId('task-decision'))).toHaveCount(1)
-  const decision = page.locator(testId('task-decision')).first()
+  await expect(page.locator(testId('run-attention-dot'))).toHaveCount(1)
+  const decision = page.locator(testId('stream')).locator(testId('task-decision'))
   await expect(decision).toBeVisible()
   await expect(decision.locator(testId('task-decision-heading')).first()).toContainText(
     /A recovery choice · plan revision 1/,
@@ -82,7 +83,8 @@ test('the browser drives one durable task across a reload and an explicit recove
   await page.getByRole('button', { name: 'Abort' }).click()
   await page.goto(`/conversation/${recoveryConversation}`)
   await expect(page.locator(testId('task-decision'))).toHaveCount(0)
-  const afterAbort = page.locator(testId('task-plan')).first()
+  await page.locator(testId('run-summary')).click()
+  const afterAbort = page.locator(testId('run-details')).locator(testId('task-plan'))
   await expect(afterAbort).toBeVisible()
   await expect(afterAbort.locator(testId('task-plan-status')).first()).toContainText(
     /Cancelled · Copilot/,

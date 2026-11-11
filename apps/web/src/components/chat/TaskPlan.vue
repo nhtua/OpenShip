@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { TaskCardState, TaskStatus } from '@/types'
+import type { TaskCardState, TaskStatus, TaskStepView } from '@/types'
 
 interface Props {
   card?: TaskCardState | null
@@ -48,6 +48,15 @@ const modeWord = computed(() => {
   const mode = props.card?.progress.mode
   return mode === 'auto' ? 'Auto' : mode === 'copilot' ? 'Copilot' : 'Mode not recorded'
 })
+const currentPlan = computed(() => props.card?.planRevisions.find((plan) => plan.revision === props.card?.currentRevision))
+const visibleSteps = computed<Array<TaskStepView & { intent: string }>>(() => {
+  const progress = props.card?.progress.steps ?? []
+  if (!currentPlan.value) return progress.map((step) => ({ ...step, intent: '' }))
+  return currentPlan.value.steps.map((step) => ({
+    ...(progress.find((entry) => entry.id === step.id) ?? { id: step.id, status: 'pending' as const }),
+    intent: step.intent,
+  }))
+})
 function stepLabel(status: string): string {
   return STEP_WORD[status] ?? 'Recorded'
 }
@@ -83,7 +92,7 @@ function stepLabel(status: string): string {
 
     <ol data-testid="task-plan-steps" class="m-0 p-0">
       <li
-        v-for="step in card.progress.steps ?? []"
+        v-for="step in visibleSteps"
         :key="step.id"
         data-testid="task-plan-step"
         class="flex flex-wrap gap-2 items-center"
@@ -94,7 +103,7 @@ function stepLabel(status: string): string {
           <template v-if="(step.outputs ?? []).length">
             · {{ (step.outputs ?? []).length }} published</template>
         </span>
-        <span class="text-muted-foreground">{{ step.id }}</span>
+        <span class="text-muted-foreground">{{ step.id }}<template v-if="step.intent"> · {{ step.intent }}</template></span>
       </li>
     </ol>
 
@@ -128,15 +137,6 @@ function stepLabel(status: string): string {
         {{ output.name ?? output.id }} · {{ output.status === 'ready' ? 'ready' : output.status }}
       </span>
     </div>
-
-    <p
-      v-if="card.decisionError"
-      data-testid="task-plan-decision-error"
-      aria-live="polite"
-      class="text-xs text-destructive"
-    >
-      {{ card.decisionError }}
-    </p>
 
     <!-- Only a completed task may say it finished: unresolved or skipped
          work keeps the run's own state. -->

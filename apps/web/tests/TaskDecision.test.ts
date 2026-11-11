@@ -65,6 +65,13 @@ describe('TaskDecision', () => {
     setActivePinia(createPinia())
   })
 
+  it('disables both approval buttons while the shared request is submitting', () => {
+    const wrapper = mountDecision({ ...card({ request_id: 'r', kind: 'plan_confirmation', plan_revision: 1 }), submitting: true })
+    expect(wrapper.get('[data-testid="task-decision-confirm"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="task-decision-reject"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Sending choice')
+  })
+
   it('oldRevisionButtonsCannotApproveNewPlan', async () => {
     const store = useTaskProgressStore()
     store.handleEvent({

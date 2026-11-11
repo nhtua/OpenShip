@@ -46,7 +46,7 @@ const eligible = computed(() => {
 })
 
 function blockedFor(action: string): boolean {
-  if (!pending.value || props.readOnly || stale.value) return true
+  if (!pending.value || props.readOnly || props.card?.submitting || stale.value) return true
   if (pending.value.kind === 'recovery') return !eligible.value.includes(action as RecoveryAction)
   return false
 }
@@ -102,6 +102,8 @@ function choose(action: string, answer: string | null = null) {
     >
       This request belongs to a plan revision that was superseded; the card shows the current plan.
     </p>
+    <p v-if="card?.submitting" role="status" class="text-xs text-muted-foreground">Sending choice…</p>
+    <p v-if="card?.decisionError" data-testid="task-decision-error" role="alert" class="text-xs text-destructive">{{ card.decisionError }}</p>
 
     <!-- A recovery states what is known, what is not, and what could go
          wrong before any choice is offered. -->
@@ -159,13 +161,13 @@ function choose(action: string, answer: string | null = null) {
       <button
         type="button"
         data-testid="task-decision-confirm"
-        aria-label="Confirm this plan"
+        aria-label="Approve this plan"
         :aria-disabled="blockedFor('confirm') ? 'true' : undefined"
         :disabled="blockedFor('confirm')"
         @click="choose('confirm')"
         class="rounded-md px-2 py-1 text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
       >
-        Confirm plan
+        Approve plan
       </button>
       <button
         type="button"

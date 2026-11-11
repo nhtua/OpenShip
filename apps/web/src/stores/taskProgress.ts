@@ -164,10 +164,12 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
         // A parked request also says the run is waiting for this person.
         next.progress = { ...card.progress, status: 'waiting', pending_decision: pending }
         next.pendingDecision = pending
+        next.submitting = false
         break
       }
       case 'task.decision_resolved': {
         next.pendingDecision = null
+        next.submitting = false
         next.progress = { ...card.progress, pending_decision: null }
         const previous = card.pendingDecision ?? card.resolvedDecisions.at(-1)
         next.resolvedDecisions = [
@@ -191,11 +193,11 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
   // The snapshot is authoritative over the fold: a reload lands what the
   // records say now, while the plan revisions a reader may still want to see
   // stay on the card.
-  function handleSnapshot(task: TaskSummary): void {
+  function handleSnapshot(task: TaskSummary, cursor?: number): void {
     const runId = task.run_id
     const card = cards.value.get(runId) ?? {
       runId,
-      sequence: Number.MAX_SAFE_INTEGER,
+      sequence: cursor ?? Number.MAX_SAFE_INTEGER,
       currentRevision: 0,
       planRevisions: [],
       progress: { schema_version: 1, run_id: runId },
@@ -208,21 +210,23 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
     const pending = task.pending_decision ?? null
     const known = cards.value.get(runId)
     const carried = known?.pendingDecision ?? null
-    // The snapshot names the open request; the wording it asked with came in
-    // the event that parked it, so a matching request keeps its prompt.
+    // The durable snapshot carries the question; older snapshots may omit it,
+    // so a matching request keeps the wording from its event when needed.
     const withPrompt =
       pending && carried && carried.request_id === pending.request_id
-        ? { ...pending, prompt: carried.prompt }
+        ? { ...pending, prompt: pending.prompt ?? carried.prompt }
         : pending
     writeCard(
       runId,
       {
         ...card,
+        sequence: cursor === undefined ? card.sequence : Math.max(card.sequence, cursor),
         currentRevision: task.revision ?? card.currentRevision,
         planRevisions: planRevisionsFor(card, task.revision ?? 0, task.plan ?? null),
         progress: { ...task, pending_decision: withPrompt },
         pendingDecision: withPrompt,
         decisionError: null,
+        submitting: pending && carried?.request_id === pending.request_id ? card.submitting : false,
       },
     )
   }
@@ -249,7 +253,7 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
     // cannot be approved: the buttons stay, and the newer plan is what the
     // card shows.
     if (pending.plan_revision !== card.currentRevision) return true
-    if (card.readOnly) return true
+    if (card.readOnly || card.submitting) return true
     const allowed = ACTIONS_FOR_KIND[pending.kind]
     return allowed.length === 0
   }
@@ -320,6 +324,7 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
 
   async function submitTaskDecision(runId: string, command: TaskDecisionCommand): Promise<void> {
     const pending = pendingFor(runId)
+    if (cards.value.get(runId)?.submitting) return
     // The card must still show that exact request. A command for a superseded
     // revision, a settled request, or a read-only scope never reaches the
     // server: the recorded state is what the card shows.
@@ -343,6 +348,7 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
       return
     }
 
+    writeCard(runId, { ...cards.value.get(runId)!, submitting: true, decisionError: null })
     try {
       const response = await taskDecisionApi.submit(runId, command)
       const projection = response.data as Record<string, unknown>
@@ -374,6 +380,7 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
         runId,
         {
           ...card,
+          submitting: false,
           decisionError: 'The choice could not be sent. The same request will be asked again.',
         },
       )

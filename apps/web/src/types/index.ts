@@ -427,6 +427,7 @@ export interface TaskCardState {
   resolvedDecisions: TaskResolvedDecision[]
   decisionError: string | null
   readOnly: boolean
+  submitting?: boolean
 }
 
 // Every user response to a parked decision: bound to the exact request, the

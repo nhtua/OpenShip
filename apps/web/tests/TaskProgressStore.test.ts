@@ -167,6 +167,54 @@ describe('task progress store', () => {
     expect(new Set(ids).size).toBe(1)
   })
 
+  it('does not send a second choice while the same decision is being submitted', async () => {
+    const store = useTaskProgressStore()
+    store.handleEvent(planProposed(1, PLAN_ONE))
+    store.handleEvent(event(2, 'task.decision_requested', {
+      revision: 1, request_id: 'request-1', kind: 'plan_confirmation', prompt: 'Approve this plan?',
+    }))
+    let finish!: (result: { data: { status: string } }) => void
+    mockSubmit.submit.mockImplementation(() => new Promise((resolve) => { finish = resolve }) as never)
+
+    const first = store.buildCommand('run-1', 'confirm')!
+    const sending = store.submitTaskDecision('run-1', first)
+    expect(store.cards.get('run-1')?.submitting).toBe(true)
+    expect(store.buildCommand('run-1', 'reject')).toBeNull()
+    await store.submitTaskDecision('run-1', { ...first, action: 'reject' })
+    expect(mockSubmit.submit).toHaveBeenCalledTimes(1)
+
+    finish({ data: { status: 'running' } })
+    await sending
+    expect(store.buildCommand('run-1', 'reject')).toBeNull()
+    store.handleEvent(event(3, 'task.decision_resolved', { request_id: 'request-1', revision: 1, state: 'confirmed' }))
+    expect(store.cards.get('run-1')?.submitting).toBe(false)
+  })
+
+  it('keeps the durable question on a snapshot-only reload or after a partial event', () => {
+    const store = useTaskProgressStore()
+    store.handleEvent(planProposed(1, PLAN_ONE))
+    store.handleEvent(event(2, 'task.decision_requested', {
+      revision: 1, request_id: 'request-1', kind: 'clarification',
+    }))
+    store.handleSnapshot({ schema_version: 1, run_id: 'run-1', revision: 1,
+      pending_decision: { request_id: 'request-1', plan_revision: 1, kind: 'clarification', prompt: 'Which file should I chart?' },
+    })
+    expect(store.cards.get('run-1')?.pendingDecision?.prompt).toBe('Which file should I chart?')
+  })
+
+  it('accepts decision resolution after a snapshot-only reload without replaying older events', () => {
+    const store = useTaskProgressStore()
+    store.handleSnapshot({ schema_version: 1, run_id: 'run-1', revision: 1,
+      plan: PLAN_ONE, status: 'waiting',
+      pending_decision: { request_id: 'request-1', plan_revision: 1, kind: 'plan_confirmation', expected_digest: 'a'.repeat(64), prompt: 'Approve?' },
+    }, 10)
+    store.handleEvent(event(9, 'task.decision_resolved', { request_id: 'request-1', revision: 1, state: 'confirmed' }))
+    expect(store.cards.get('run-1')?.pendingDecision?.request_id).toBe('request-1')
+    store.handleEvent(event(11, 'task.decision_resolved', { request_id: 'request-1', revision: 1, state: 'confirmed' }))
+    expect(store.cards.get('run-1')?.pendingDecision).toBeNull()
+    expect(store.cards.get('run-1')?.resolvedDecisions).toHaveLength(1)
+  })
+
   it('recoveryCommandEchoesTheRecoveryDigestNotThePlanDigest', async () => {
     const store = useTaskProgressStore()
     store.handleEvent(planProposed(1, PLAN_TWO))

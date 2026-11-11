@@ -4,8 +4,9 @@ import { mountWithRouter } from './helpers/mountWithRouter'
 import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { useTaskProgressStore } from '@/stores/taskProgress'
 import { useConnectorsStore } from '@/stores/connectors'
-import api, { connectorsApi, conversationsApi, projectsApi, runsApi, workspaceApi } from '@/services/api'
+import api, { connectorsApi, conversationsApi, projectsApi, runsApi, taskDecisionApi, workspaceApi } from '@/services/api'
 import type { Conversation, RunCard as RunCardType, ToolOperationSummary } from '@/types'
 import { useProjectsStore } from '@/stores/projects'
 import {
@@ -38,6 +39,7 @@ vi.mock('@/services/api', () => ({
     getSnapshot: vi.fn(),
     getRun: vi.fn(),
   },
+  taskDecisionApi: { submit: vi.fn() },
   artifactsApi: { list: vi.fn(), download: vi.fn(), delete: vi.fn() },
   workspaceApi: {
     get: vi.fn().mockResolvedValue({
@@ -61,6 +63,7 @@ const mockConversationsApi = vi.mocked(conversationsApi)
 const mockConnectorsApi = vi.mocked(connectorsApi)
 const mockRunsApi = vi.mocked(runsApi)
 const mockWorkspaceApi = vi.mocked(workspaceApi)
+const mockDecisionApi = vi.mocked(taskDecisionApi)
 
 const wait = 3000
 
@@ -147,6 +150,40 @@ describe('ChatView', () => {
       },
     } as never)
     mockWorkspaceApi.readFile.mockReset()
+  })
+
+  it('keeps the active decision in the timeline and the expandable run status, with one submission path', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Staging deployed successfully.'), { timeout: wait })
+    const chat = useChatStore()
+    chat.messages = [
+      { id: 'ask', role: 'user', content: 'Make a chart', conversation_id: 'c1', run_id: 'run-1', created_at: '2026-11-01T00:00:00Z' },
+    ]
+    chat.runCards.set('c1', {
+      run_id: 'run-1', status: 'paused', started_at: null, ended_at: null, usage: null,
+      model: null, attempts: [], error_code: null, error_message: null,
+    } as RunCardType)
+    const tasks = useTaskProgressStore()
+    tasks.handleEvent({ id: 'plan', conversation_id: 'c1', run_id: 'run-1', sequence: 1,
+      type: 'task.plan_proposed', payload: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart temperatures' }] }, created_at: '' })
+    tasks.handleEvent({ id: 'decision', conversation_id: 'c1', run_id: 'run-1', sequence: 2,
+      type: 'task.decision_requested', payload: { revision: 1, kind: 'plan_confirmation', request_id: 'req-1', prompt: 'Approve the chart plan?' }, created_at: '' })
+    mockDecisionApi.submit.mockResolvedValue({ data: { current_revision: 1, status: 'running' } } as never)
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="stream"] [data-testid="task-timeline-entry"]').text()).toContain('Chart temperatures')
+    expect(wrapper.get('[data-testid="run-summary"]').text()).toContain('Action needed')
+    await wrapper.get('[data-testid="run-summary"]').trigger('click')
+    expect(wrapper.get('[data-testid="run-details"] [data-testid="task-decision"]').text()).toContain('Approve the chart plan?')
+    await wrapper.get('[data-testid="stream"] [data-testid="task-decision-confirm"]').trigger('click')
+    expect(mockDecisionApi.submit).toHaveBeenCalledTimes(1)
+    expect(mockDecisionApi.submit.mock.calls[0][1]).toMatchObject({ request_id: 'req-1', action: 'confirm' })
+    await nextTick()
+    expect(wrapper.find('[data-testid="run-attention-dot"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="run-details"] [data-testid="task-decision-reject"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="run-details"] [data-testid="task-decision-reject"]').trigger('click')
+    expect(mockDecisionApi.submit).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
   })
 
   it('renders conversation history with the active selection', async () => {

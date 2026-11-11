@@ -1,21 +1,26 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ChatMessage, Run, ToolOperationSummary } from '@/types'
+import type { ChatMessage, Run, TaskCardState, ToolOperationSummary } from '@/types'
 import { buildConversationTimeline } from '@/lib/chatTimeline'
 import AgentMessage from './AgentMessage.vue'
 import UserMessage from './UserMessage.vue'
 import ToolOperationCard from './ToolOperationCard.vue'
+import TaskTimelineEntry from './TaskTimelineEntry.vue'
 
 const props = withDefaults(defineProps<{
   messages: ChatMessage[]
   operations?: ToolOperationSummary[]
+  tasks?: TaskCardState[]
+  activeTaskRunId?: string | null
   isStreaming: boolean
   canResume?: boolean
-}>(), { operations: () => [], canResume: false })
+  readOnly?: boolean
+}>(), { operations: () => [], tasks: () => [], canResume: false, readOnly: false })
 const emit = defineEmits<{
   download: [artifactId: string, name: string]
   cancel: [runId: string]
   resumed: [run: Run]
+  respond: [runId: string, action: string, answer: string | null]
 }>()
 
 /**
@@ -30,6 +35,17 @@ const scrollRef = ref<HTMLElement | null>(null)
 const nearBottom = ref(true)
 const initialLoad = ref(true)
 const timeline = computed(() => buildConversationTimeline(props.messages, props.operations))
+const entries = computed(() => {
+  const result: Array<(typeof timeline.value)[number] | { kind: 'task'; id: string; card: TaskCardState }> = [...timeline.value]
+  for (const card of props.tasks) {
+    if (!card.planRevisions.length && !card.pendingDecision && !card.resolvedDecisions.length) continue
+    const anchor = result.map((entry) => entry.kind !== 'task' && entry.runId === card.runId &&
+      (entry.kind === 'tool' || entry.message.role === 'user')).lastIndexOf(true)
+    if (anchor >= 0) result.splice(anchor + 1, 0, { kind: 'task', id: card.runId, card })
+    else if (card.runId === props.activeTaskRunId) result.push({ kind: 'task', id: card.runId, card })
+  }
+  return result
+})
 const awaitingAssistant = computed(() => {
   const latest = timeline.value.at(-1)
   return latest?.kind === 'message' && latest.message.role === 'user'
@@ -70,7 +86,7 @@ function jumpToLatest() {
 }
 
 watch(
-  () => [props.messages, props.operations, props.isStreaming],
+  () => [props.messages, props.operations, props.tasks, props.isStreaming],
   () => { void maybeFollowScroll() },
   { deep: true },
 )
@@ -92,7 +108,7 @@ onBeforeUnmount(() => {
       class="h-full min-h-0 space-y-6 overflow-y-auto p-4 md:p-6"
       data-testid="stream"
     >
-      <template v-for="entry in timeline" :key="`${entry.kind}:${entry.id}`">
+      <template v-for="entry in entries" :key="`${entry.kind}:${entry.id}`">
         <UserMessage v-if="entry.kind === 'message' && entry.message.role === 'user'" :message="entry.message" />
         <AgentMessage
           v-else-if="entry.kind === 'message' && entry.message.role === 'assistant'"
@@ -109,6 +125,12 @@ onBeforeUnmount(() => {
           @cancel="emit('cancel', $event)"
           @resumed="emit('resumed', $event)"
           @layout-change="maybeFollowScroll"
+        />
+        <TaskTimelineEntry
+          v-else-if="entry.kind === 'task'"
+          :card="entry.card"
+          :read-only="readOnly || (activeTaskRunId != null && entry.card.runId !== activeTaskRunId)"
+          @respond="(action, answer) => emit('respond', entry.card.runId, action, answer)"
         />
       </template>
 
@@ -152,13 +174,13 @@ onBeforeUnmount(() => {
       <!-- One standalone status when streaming with no messages at all:
            never a second placeholder. -->
       <AgentMessage
-        v-if="isStreaming && timeline.length === 0"
+        v-if="isStreaming && entries.length === 0"
         :message="standaloneStatus"
         :is-streaming="true"
       />
 
       <div
-        v-if="timeline.length === 0 && !isStreaming"
+        v-if="entries.length === 0 && !isStreaming"
         class="flex min-h-full items-center justify-center"
         data-testid="empty-state"
       >

@@ -119,6 +119,7 @@ def _replayed_task(events):
                 "kind": payload["kind"],
                 "plan_revision": payload["revision"],
                 "expires_at": payload["expires_at"],
+                "prompt": payload["prompt"],
             }
             state["status"] = "waiting"
         elif event.type == "task.decision_resolved":
@@ -182,6 +183,7 @@ def test_snapshot_matches_event_replay_without_private_fields():
         assert task.pending_decision is not None
         assert task.pending_decision.request_id == parked.pending_decision.request_id
         assert task.pending_decision.plan_revision == 2
+        assert task.pending_decision.prompt == "Which source should the chart use?"
 
         replayed = _replayed_task(_task_events(snapshot))
         task_view = task.model_dump(mode="json")
@@ -190,7 +192,7 @@ def test_snapshot_matches_event_replay_without_private_fields():
         pending_view = {
             key: value
             for key, value in pending.items()
-            if key in {"request_id", "kind", "plan_revision", "expires_at"}
+            if key in {"request_id", "kind", "plan_revision", "expires_at", "prompt"}
         }
         assert replayed["pending_decision"] == pending_view
         assert {

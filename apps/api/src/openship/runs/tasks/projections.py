@@ -180,6 +180,7 @@ class TaskPendingDecisionSummary(PublicView):
     ]
     plan_revision: int = Field(ge=0)
     expected_digest: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    prompt: str | None = Field(default=None, max_length=10_000)
     expires_at: str | None = None
     diagnosis: TaskRecoverySummary | None = None
 
@@ -377,6 +378,7 @@ def read_task_summary(db, run_id: UUID) -> TaskSummary | None:
             kind=decision_row.kind,
             plan_revision=decision_row.plan_revision,
             expected_digest=decision_row.expected_digest,
+            prompt=request.get("prompt") if isinstance(request.get("prompt"), str) else None,
             expires_at=(
                 (
                     expires_at.replace(tzinfo=UTC)

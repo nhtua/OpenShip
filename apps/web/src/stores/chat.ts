@@ -325,7 +325,7 @@ export const useChatStore = defineStore('chat', () => {
         // A reload shows the same plan and progress the events already showed,
         // so the snapshot's own task view is folded over the event fold.
         for (const task of snapshot.tasks ?? []) {
-          useTaskProgressStore().handleSnapshot(task)
+          useTaskProgressStore().handleSnapshot(task, snapshot.sequence)
         }
         // Set the cursor to the snapshot's sequence (or the highest event sequence)
         const maxSeq = snapshot.events.reduce(
