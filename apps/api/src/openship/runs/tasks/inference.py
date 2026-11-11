@@ -27,6 +27,7 @@ from ...providers.contracts import ChatMessage, ModelRequest
 from ...providers.errors import ProviderError
 from ...providers.openai_schemas import unique_json_object
 from ...providers.runner import run_model_turn
+from ...sandboxes.profiles import MANAGED_PROFILE_IDS, eligible_profiles
 from ..transcript import append_transcript, read_transcript
 from .clock import effective_loop_limits
 from .contracts import (
@@ -165,10 +166,17 @@ def _observation_block(index: int, published: PublishedToolResult) -> str:
     )
 
 
-def _stage_prompt(purpose: str, execution, observations: tuple[PublishedToolResult, ...]) -> str:
+def _stage_prompt(
+    purpose: str, execution, observations: tuple[PublishedToolResult, ...], context: str = ""
+) -> str:
     """The bounded question this stage asks, with its allowed reference sets."""
     capabilities = ", ".join(sorted({ref.id for ref in execution.allowed_capabilities})) or "none"
-    profiles = ", ".join(sorted(execution.profile_catalog.profiles)) or "none"
+    profile_ids = eligible_profiles(execution.profile_catalog, MANAGED_PROFILE_IDS)
+    profiles = ", ".join(profile_ids) or "none"
+    profile_descriptions = {
+        profile_id: execution.profile_catalog.profiles[profile_id].metadata.model_dump(mode="json")
+        for profile_id in profile_ids
+    }
     lines = [
         (
             "You are one stage of a bounded task run. You have no tools: answer with"
@@ -176,8 +184,11 @@ def _stage_prompt(purpose: str, execution, observations: tuple[PublishedToolResu
         ),
         f"Stage: {purpose}.",
         f"Original request: {execution.task_context.original_intent}",
+        context,
         f"Allowed capabilities: {capabilities}.",
         f"Allowed sandbox profiles: {profiles}.",
+        "Choose a sandbox profile by its purpose and limitations, not its name alone. "
+        "Pinned profile descriptions: " + json.dumps(profile_descriptions, ensure_ascii=False),
         (
             "Answer with exactly one JSON object and nothing around it. Its top-level keys are"
             " the objects named below: the value of each key is that object itself, never a copy"
@@ -207,7 +218,7 @@ def _stage_prompt(purpose: str, execution, observations: tuple[PublishedToolResu
     ]
     if purpose == "assessment_and_plan":
         allowed_ids = sorted({ref.id for ref in execution.allowed_capabilities})
-        allowed_profiles = sorted(execution.profile_catalog.profiles)
+        allowed_profiles = profile_ids
         lines.append(
             "Assessment and plan shape, exactly this nesting: "
             + json.dumps(
@@ -455,7 +466,10 @@ def assess_task(
         effective.max_output_tokens_per_request,
     )
     messages = [
-        ChatMessage(role="user", content=_stage_prompt("assessment", invocation.execution, observations))
+        ChatMessage(role="user", content=_stage_prompt(
+            "assessment", invocation.execution, observations,
+            getattr(invocation, "conversation_context", ""),
+        ))
     ]
     with invocation.session_factory() as db:
         ordinal = _pending_ordinal(db, invocation.claim.run_id)
@@ -511,7 +525,10 @@ def plan_task(
     messages = [
         ChatMessage(
             role="user",
-            content=_stage_prompt("assessment_and_plan", invocation.execution, ())
+            content=_stage_prompt(
+                "assessment_and_plan", invocation.execution, (),
+                getattr(invocation, "conversation_context", ""),
+            )
             + "\nAssessment already published: "
             + json.dumps(assessment.model_dump(mode="json"), ensure_ascii=False),
         )

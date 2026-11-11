@@ -914,6 +914,10 @@ class Worker:
                 history_query = history_query.filter(
                     Message.id.in_(admitted_context_ids)
                 )
+            elif run.graph_version == 5:
+                # Historical v5 runs did not always pin message IDs. Never let
+                # messages submitted after that run become its context on replay.
+                history_query = history_query.filter(Message.created_at < user_msg.created_at)
             history = history_query.order_by(
                 Message.created_at.asc(), Message.id.asc()
             ).all()

@@ -25,6 +25,7 @@ from src.openship.execution.models import ToolOperation
 from src.openship.execution.projections import project_operation
 from src.openship.providers.control import InvocationControl
 from src.openship.runs.tasks.contracts import ExecutionConfigV5, TaskContext
+from src.openship.runs.tasks.inference import _stage_prompt
 from src.openship.sandboxes import tool as sandbox_tool
 from src.openship.sandboxes.profile_schema import ProfileCatalog, catalog_digest
 from src.openship.sandboxes.profiles import (
@@ -186,6 +187,23 @@ def _provider(monkeypatch) -> Provider:
     provider.listing = lambda _path: []
     provider.install(monkeypatch)
     return provider
+
+
+def test_planning_prompt_exposes_enabled_profile_purposes_not_runtime_bindings():
+    entries = _all_profiles()
+    entries["iac-validation"] = _profile(
+        "2", purpose="Disabled unique purpose", enabled=False
+    )
+    execution = _execution(_catalog(entries))
+
+    prompt = _stage_prompt("assessment_and_plan", execution, ())
+
+    assert "Chart and aggregate selected data files." in prompt
+    assert "charts" in prompt
+    assert "Run general Python analysis." in prompt
+    assert "Disabled unique purpose" not in prompt
+    assert "hidden/example" not in prompt
+    assert "test-engine" not in prompt
 
 
 def test_each_maintained_profile_is_selected_by_purpose(monkeypatch):

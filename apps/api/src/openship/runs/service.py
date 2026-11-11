@@ -1147,16 +1147,16 @@ def submit_turn(
         execution_and_policy if execution_and_policy is not None else (None, None)
     )
     admitted_context_ids = ()
-    if execution is not None and getattr(execution, "connector_refs", ()):
-        admitted_context_ids = tuple(
-            row[0]
-            for row in (
-                db.query(Message.id)
-                .filter(Message.conversation_id == conv.id)
-                .order_by(Message.created_at.asc(), Message.id.asc())
-                .all()
+    if execution is not None and (agentic_task or getattr(execution, "connector_refs", ())):
+        history_query = db.query(Message.id).filter(Message.conversation_id == conv.id)
+        if agentic_task and not getattr(execution, "connector_refs", ()):
+            history_query = history_query.order_by(Message.created_at.desc(), Message.id.desc()).limit(20)
+            admitted_context_ids = tuple(reversed([row[0] for row in history_query.all()]))
+        else:
+            admitted_context_ids = tuple(
+                row[0]
+                for row in history_query.order_by(Message.created_at.asc(), Message.id.asc()).all()
             )
-        )
     selection = json.dumps(
         {
             "profile_id": provider_profile_id,
@@ -1198,7 +1198,7 @@ def submit_turn(
     db.add(msg)
     db.flush()
 
-    if admitted_context_ids:
+    if admitted_context_ids or agentic_task:
         execution = execution.model_copy(
             update={"admitted_context_message_ids": (*admitted_context_ids, msg.id)}
         )

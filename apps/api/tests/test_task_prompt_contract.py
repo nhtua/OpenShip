@@ -32,6 +32,7 @@ from src.openship.runs.tasks.contracts import (
     TaskStep,
 )
 from src.openship.runs.tasks.inference import _assessment_of, _plan_of, _stage_prompt
+from tests.test_task_profile_selection import _all_profiles, _catalog
 
 PINNED_CAPABILITIES = ("download_file", "python_execute")
 ASSESSMENT_MARKER = "Assessment shape,"
@@ -51,7 +52,10 @@ def _execution():
     )
     return SimpleNamespace(
         allowed_capabilities=refs,
-        profile_catalog=SimpleNamespace(profiles={"standard": {}, "logs-data": {}}),
+        profile_catalog=_catalog({
+            key: value for key, value in _all_profiles().items()
+            if key in {"standard", "logs-data"}
+        }),
         task_context=SimpleNamespace(original_intent="Chart the observations and average them."),
     )
 

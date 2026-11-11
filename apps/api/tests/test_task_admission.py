@@ -117,6 +117,33 @@ def _counts(db, conversation_id: uuid.UUID) -> tuple[int, int, int]:
     )
 
 
+def test_v5_admission_pins_prior_messages_without_connectors(client, authorized_client, monkeypatch):
+    _agentic_profiles(monkeypatch)
+    _no_managed_search_connectors(monkeypatch)
+    conversation_id = _conversation(client, authorized_client)
+    with SessionLocal() as db:
+        prior = Message(conversation_id=uuid.UUID(conversation_id), role="user", content="Earlier request")
+        db.add(prior)
+        db.commit()
+        prior_id = prior.id
+
+    response = client.post(
+        f"/api/runs/{conversation_id}/turns",
+        json=_turn(conversation_id, str(uuid.uuid4()), enable_tools=True),
+        headers=authorized_client,
+    )
+    assert response.status_code == 202, response.text
+    with SessionLocal() as db:
+        run = db.get(Run, uuid.UUID(response.json()["id"]))
+        ids = json.loads(run.execution_configuration)["admitted_context_message_ids"]
+        current = db.query(Message).filter_by(run_id=run.id, role="user").one()
+        assert ids == [str(prior_id), str(current.id)]
+        later = Message(conversation_id=uuid.UUID(conversation_id), role="user", content="Later message")
+        db.add(later)
+        db.commit()
+        assert str(later.id) not in json.loads(run.execution_configuration)["admitted_context_message_ids"]
+
+
 def test_stale_new_submission_creates_nothing(
     client, authorized_client, monkeypatch
 ):

@@ -1,4 +1,4 @@
-"""The commit-gate launcher: index files in, one pytest command out."""
+"""The commit-gate launcher: index files in, credential-free test commands out."""
 
 from __future__ import annotations
 
@@ -177,16 +177,19 @@ def test_skip_plan_runs_nothing_and_prints_its_reason(repo: Path, capsys: pytest
     assert "no file the test lanes observe" in out
 
 
-def test_a_large_selection_is_one_command_with_no_size_cap(repo: Path, capsys: pytest.CaptureResponse[str]) -> None:
+def test_a_large_selection_keeps_all_modules_when_auto_sharded(repo: Path, capsys: pytest.CaptureResponse[str]) -> None:
     files = tuple(f"apps/api/tests/test_{index:03d}.py" for index in range(120))
     plan = testselect.Selected(files=files, reasons=tuple((f, "src.openship.runs -> f") for f in files))
-    recorder = Recorder()
+    shards = ShardRecorder({index: (0, "30 passed in 5.00s") for index in range(4)})
 
-    launcher.run([], repo_root=repo, changed=["apps/api/src/openship/runs/service.py"], runner=recorder, plan=plan)
+    launcher.run(
+        [], repo_root=repo, changed=["apps/api/src/openship/runs/service.py"],
+        runner=Recorder(), shard_runner=shards, plan=plan, cpus=8,
+    )
     out = capsys.readouterr().out
 
-    assert len(recorder.commands) == 1
-    assert len(recorder.commands[0]) == 6 + 120
+    assert len(shards.calls) == 4
+    assert all(command[8:] == [f"tests/test_{index:03d}.py" for index in range(120)] for command, _ in shards.calls)
     assert "selected 120 test modules" in out
 
 
@@ -440,6 +443,34 @@ def _lane_shard_env(index: int, total: int) -> dict[str, str]:
         "OPENSHIP_TEST_SHARD": str(index),
         "OPENSHIP_TEST_SHARDS": str(total),
     }
+
+
+@pytest.mark.parametrize("count, cpus, expected_shards", [
+    (10, 8, 1),
+    (11, 8, 4),
+    (11, 2, 2),
+])
+def test_auto_shards_selected_plans_only_above_ten_modules(
+    repo: Path, count: int, cpus: int, expected_shards: int
+) -> None:
+    files = tuple(f"apps/api/tests/test_{index:02d}.py" for index in range(count))
+    plan = testselect.Selected(files=files, reasons=())
+    single = Recorder()
+    shards = ShardRecorder({index: (0, "3 passed in 1.00s") for index in range(expected_shards)})
+
+    code = launcher.run(
+        [], repo_root=repo, changed=["apps/api/src/openship/runs/service.py"],
+        runner=single, shard_runner=shards, plan=plan, cpus=cpus,
+    )
+
+    assert code == 0
+    if expected_shards == 1:
+        assert len(single.commands) == 1
+        assert shards.calls == []
+    else:
+        assert single.commands == []
+        assert len(shards.calls) == expected_shards
+        assert {env["OPENSHIP_TEST_SHARDS"] for _, env in shards.calls} == {str(expected_shards)}
 
 
 def test_the_full_lane_splits_into_parallel_shards(

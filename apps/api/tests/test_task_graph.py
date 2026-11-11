@@ -994,6 +994,57 @@ def _refused_plan_payload() -> dict:
     return payload
 
 
+def test_assessment_and_plan_see_prior_conversation_not_system_prompt(monkeypatch):
+    lane = Lane(monkeypatch, behaviors=[_answer(_assessment_payload()), _answer(_plan_payload())])
+    lane.state["messages"] = [
+        {"role": "system", "content": "TITLE GENERATION SECRET"},
+        {"role": "user", "content": "Earlier requested a weather chart"},
+        {"role": "assistant", "content": "Earlier plan downloaded the forecast"},
+        {"role": "user", "content": lane.execution.task_context.original_intent},
+    ]
+
+    lane.invoke()
+
+    for request in lane.transport.seen[:2]:
+        body = json.dumps(request["messages"])
+        assert "Earlier requested a weather chart" in body
+        assert "Earlier plan downloaded the forecast" in body
+        assert "TITLE GENERATION SECRET" not in body
+
+
+def test_step_request_receives_bounded_recent_conversation(monkeypatch):
+    lane = Lane(monkeypatch, behaviors=_journey())
+    lane.state["messages"] = [
+        {"role": "system", "content": "hidden system"},
+        *[{"role": "user", "content": f"older-{i}-" + "é" * 3000} for i in range(25)],
+        {"role": "assistant", "content": "most recent context"},
+        {"role": "user", "content": lane.execution.task_context.original_intent},
+    ]
+
+    lane.invoke()
+
+    body = json.dumps(lane.transport.seen[2]["messages"], ensure_ascii=False)
+    assert "most recent context" in body
+    assert "older-0-" not in body
+    assert "hidden system" not in body
+    assert len(body.encode("utf-8")) < 30000
+
+
+def test_initial_clarification_parks_without_a_prior_plan(monkeypatch):
+    assessment = _assessment_payload()
+    assessment["assessment"].update(
+        classification="clarification",
+        explanation="The requested script is not identified.",
+        missing_information=["Which script?"],
+    )
+    lane = Lane(monkeypatch, behaviors=[_answer(assessment)])
+
+    outcome = lane.invoke()
+
+    assert outcome["parked"] == "clarification"
+    assert lane.gateway.calls == []
+
+
 def test_a_refused_plan_answers_the_request_instead_of_completing_in_silence(monkeypatch):
     """A plan the server refuses must leave the person reading something usable.
 

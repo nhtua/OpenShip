@@ -39,6 +39,8 @@ SHARD_PLUGIN = "scripts.pytest_shard"
 # shards, 152.6 s with 8. Eight is the point where the lane stops being the
 # bottleneck for a developer waiting on a gate; more processes mostly add memory.
 MAX_AUTO_SHARDS = 8
+SELECTED_AUTO_SHARDS = 4
+SELECTED_SHARD_THRESHOLD = 10
 NO_TESTS_EXIT_CODE = 5
 SHARD_ENV = "OPENSHIP_TEST_SHARD"
 _COUNTS = re.compile(r"(\d+) (passed|failed|errors?|skipped|deselected|xfailed|xpassed)")
@@ -115,14 +117,17 @@ def _run_and_capture(command: list[str], env: dict[str, str]) -> tuple[int, str]
 def _shard_count(plan: testselect.Plan, requested: str, cpus: int) -> int:
     """How many processes run this plan.
 
-    Auto shards the full lane only: a narrowed selection of a few dozen modules
-    gains nothing from four process starts. A number forces shards on any plan,
-    capped at the modules it selected - a shard beyond that collects nothing.
+    Auto shards the full lane up to eight ways, and selections of more than ten
+    modules up to four ways. A number forces shards on any plan, capped at the
+    modules it selected - a shard beyond that collects nothing.
     """
     if requested == "auto":
-        if not isinstance(plan, testselect.FullLane):
+        if isinstance(plan, testselect.FullLane):
+            requested = str(min(MAX_AUTO_SHARDS, max(1, cpus)))
+        elif isinstance(plan, testselect.Selected) and len(plan.files) > SELECTED_SHARD_THRESHOLD:
+            requested = str(min(SELECTED_AUTO_SHARDS, max(1, cpus)))
+        else:
             return 1
-        requested = str(min(MAX_AUTO_SHARDS, max(1, cpus)))
     count = int(requested)
     if isinstance(plan, testselect.Selected):
         count = min(count, max(1, len(plan.files)))
@@ -219,7 +224,7 @@ def run(
     args.add_argument(
         "--shards",
         default="auto",
-        help="'auto' runs a full-lane plan as parallel pytest shards; a number forces that many on any plan",
+        help="'auto' shards the full lane or selections over 10 modules; a number forces that many on any plan",
     )
     parsed = args.parse_args(argv)
     inside_shard = os.environ.get(SHARD_ENV)
