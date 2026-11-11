@@ -110,8 +110,14 @@ single-process 14 minutes.
       `.env.example` does not name yet). The default is 8 because 8 was
       measurably faster, capped by `cpu_count` so a small machine keeps its
       cores.
-- [ ] Task 3b: record the feature commit's own hook run (the launcher
+- [x] Task 3b: record the feature commit's own hook run (the launcher
       sharding its own full-lane gate) and the `docs/validations.md` entry.
-- [ ] Task 4: document in `docs/development.md` (gate section) and `.env`
+      `d767fbe`'s own hook ran the 4-shard lane green (`2037` tests, 252.4 s);
+      `26e0907` moved the default to 8; `scripts/openship-verify` then ran the
+      8-shard lane green in 152.4 s. Numbers are in `docs/validations.md`.
+- [x] Task 4: document in `docs/development.md` (gate section) and `.env`
       notes: auto-shard on full lane, `--shards N`, narrowed stays single
-      process.
+      process. Written as `### Parallel shards on the full lane`, including the
+      nested-shard guard and the `--all-files` caveat; the shard control
+      variables are the launcher's own (`OPENSHIP_TEST_SHARD(S)`), so
+      `.env.example` names none of them.

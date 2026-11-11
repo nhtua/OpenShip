@@ -105,3 +105,50 @@ Unqualified by these fixtures, and therefore still open: live-manager
 immutable-image execution, the separately authorized provider tuple for tasks,
 real provider fault injection, and the user's inspection and acceptance of the
 chart, progress, known-repair, source-blocker and recovery views.
+
+### Changed-file test selection — measurement (2026-11-10)
+
+What the narrowed commit gate costs, and what the full lane still costs, measured
+on this tree. Design and rules:
+[the spec](superpowers/specs/2026-11-10-changed-file-test-selection-design.md);
+steps and pinned behaviours:
+[the plan](superpowers/plans/2026-11-10-changed-file-test-selection.md).
+
+| Measurement | Result |
+| --- | --- |
+| Import graph build (`apps/api/src` + `apps/api/tests`, stdlib `ast`, no cache) | 1185 modules, 9039 import edges, 0.63 s (re-measured 2026-11-10 after the relative-import fix) |
+| `apps/api/src/openship/runs/tasks/projections.py` staged alone | 1 selected module, 1 passed, 4.32 s (6.6 s wall) |
+| `apps/api/src/openship/runs/service.py` staged alone | 109 selected modules |
+| `apps/api/src/openship/chat/service.py` (no test imports it) | full lane: "maps to no test module" |
+| `apps/web/src/stores/taskProgress.ts` staged alone | plan `changed`, 13 suites / 201 tests, 4.26 s (5.9 s wall) |
+| `--explain` on both launchers | API: plan, per-file reasons, exact command, nothing run; web: plan `changed`, suites it reaches, exact command, no vitest process started |
+| `uvx pre-commit run --all-files` (new config) | 7 hooks passed in 4 s: ruff, the poc suite, API ruff, `vue-tsc` and the web suite ran over the tree. The two test hooks read the index, so with nothing staged they selected nothing (see the caveat in `docs/development.md`). |
+| `bash scripts/openship-verify` (full lane) | Python lane `2037 passed` in 152.4 s across 8 shards; `vue-tsc --noEmit` clean; web `400 passed` in 42 files (4.54 s). The gate exits 1 at its secret-scan leg on three findings that already exist at the pre-branch commit `858b7d0` (the dev compose's throwaway `openship` password and two documentation placeholders, all unchanged lines); none is introduced by this branch. |
+| Full credential-free lane, in the tool commit's own hook run | 2001 passed, 169 deselected, 853.60 s |
+
+No `postgres`, `full_stack`, `provider_live` or `jetstream` lane ran for these
+numbers, and none was needed: the credential-free lane needs no database,
+provider key, sandbox endpoint, broker or browser. The lanes that need those
+prerequisites are run by the commands named in
+[the testing guide](testing/phase4-acceptance.md) — for the API, `uv run pytest -q -m postgres`
+with a disposable `TEST_POSTGRES_URL`, `-m full_stack` with the full-stack
+launcher, `-m provider_live` with authorized credentials, and `-m jetstream`
+with the qualified broker.
+
+### Parallel shards for the full lane — measurement (2026-11-10)
+
+Same tree, same machine, same minute, one run each. Design:
+[the sharding spec](superpowers/specs/2026-11-10-launcher-test-sharding-design.md).
+
+| Measurement | Result |
+| --- | --- |
+| Full credential-free lane, single process | 851.34 s, `2020 passed, 169 deselected` |
+| Full credential-free lane, 4 shards | 249.1 s (3.4x the single process) |
+| Full credential-free lane, 8 shards | 152.6 s and 152.4 s on two runs (5.6x); per-shard walls 118.7-149.6 s, 254-255 passed each |
+| The sharding commit's own hook run (auto, 4 shards then) | `API Unit Tests` passed, `2037` tests, 252.4 s |
+| `--explain` on a full-lane plan | prints `lane shards: 8`, the plugin command and one env line per shard; runs nothing |
+
+Every sharded run's summed counts must equal the single-process run's. The
+single process reported `2020 passed, 169 deselected` before the 17
+launcher/mapper tests this branch adds; the final lane reports `2037 passed`.
+A shard that collected nothing exits 5 and is not counted as a failure.

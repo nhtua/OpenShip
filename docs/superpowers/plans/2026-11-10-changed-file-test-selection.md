@@ -223,15 +223,15 @@ Status (2026-11-10): Tasks 1-5 are landed in `06cc90a feat: run the tests a comm
 - Consumes: the launcher outputs from Tasks 3–5 and the graph node count from Task 1 Step 5.
 - Produces: nothing consumed by code; the contract text contributors and reviewers read.
 
-- [ ] **Step 1: Write the `docs/development.md` section.** One section, named `Changed-file test selection`, stating: the hook runs `scripts/run_selected_tests.py` and `vitest run --changed`; the full credential-free lane runs in CI and in `scripts/openship-verify`; `git rebase` and `git commit --no-verify` bypass the commit hooks, so `scripts/openship-verify` before pushing is the gate for them; merge commits run the same hooks against the merge's own index, and a merge that touches unmapped code hits the full-lane rule; the selection rules table verbatim from the spec; the blind spots verbatim from the spec (dynamic imports, `config.py` via environment, seed data, compose/`.env` effects, the DB/live/full-stack lanes); and the "unmapped code ⇒ full lane" rule called out as the fail-closed guarantee.
+- [x] **Step 1: Write the `docs/development.md` section.** One section, named `Changed-file test selection`, stating: the hook runs `scripts/run_selected_tests.py` and `vitest run --changed`; the full credential-free lane runs in CI and in `scripts/openship-verify`; `git rebase` and `git commit --no-verify` bypass the commit hooks, so `scripts/openship-verify` before pushing is the gate for them; merge commits run the same hooks against the merge's own index, and a merge that touches unmapped code hits the full-lane rule; the selection rules table verbatim from the spec; the blind spots verbatim from the spec (dynamic imports, `config.py` via environment, seed data, compose/`.env` effects, the DB/live/full-stack lanes); and the "unmapped code ⇒ full lane" rule called out as the fail-closed guarantee.
 
-- [ ] **Step 2: Write the `docs/validations.md` entry** with: graph node count and build time; the selected module count and wall time for the Task 3 Step 5 and Task 4 Step 5 real narrowings; the `pre-commit run --all-files` hook summary; the `scripts/openship-verify` full-lane and web pass counts with their durations; and an explicit line that no `postgres`, `full_stack`, `provider_live` or `jetstream` lane ran, with the command that runs them.
+- [x] **Step 2: Write the `docs/validations.md` entry** with: graph node count and build time; the selected module count and wall time for the Task 3 Step 5 and Task 4 Step 5 real narrowings; the `pre-commit run --all-files` hook summary; the `scripts/openship-verify` full-lane and web pass counts with their durations; and an explicit line that no `postgres`, `full_stack`, `provider_live` or `jetstream` lane ran, with the command that runs them.
 
-- [ ] **Step 3: Verify the docs render and link.**
+- [x] **Step 3: Verify the docs render and link.**
 Run: `grep -n "Changed-file test selection" docs/development.md && grep -n "openship-verify" docs/development.md docs/validations.md`
 Expected: the section heading exists once, and both files name the pre-push command.
 
-- [ ] **Step 4: Run the whole credential-free suite once more** so the plan's own tests are inside the lane CI runs.
+- [x] **Step 4: Run the whole credential-free suite once more** so the plan's own tests are inside the lane CI runs.
 Run: `cd apps/api && uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'`
 Expected: all pass; record the pass count and duration, and the delta versus the previous recorded lane count (the new mapper/launcher/wiring tests add to it).
 

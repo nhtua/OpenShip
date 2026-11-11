@@ -307,6 +307,131 @@ JetStream tests need the real broker qualification launcher. Live-provider tests
 are opt-in and may incur charges. See [Phase 4 acceptance](testing/phase4-acceptance.md),
 [provider support](provider-support.md), and [messaging qualification](operations/messaging.md#qualified-transport-versions).
 
+### Changed-file test selection
+
+The commit hooks run the tests that can observe the commit's files, not the whole
+suite. `apps/api/scripts/run_selected_tests.py` reads the commit's file set from
+the index, maps it through the repository's own imports
+(`apps/api/scripts/testselect.py`), prints its decision, the reason for every
+selected module, and the exact command, then runs
+
+```bash
+uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream' <the selected modules>
+```
+
+`apps/web/scripts/run-changed-tests.mjs` is the same contract in vitest terms:
+`pnpm exec vitest run --changed`, chosen by `vitest list --changed` so the
+decision itself costs no run. Add `--explain` to either script to see the plan,
+its per-file reasons and the command it would issue **without running
+anything**; the hooks run them without the flag.
+
+The full credential-free lane — the Python lane, `pnpm typecheck`,
+`pnpm test:run` and a tree-wide secret scan — runs in CI and in
+`scripts/openship-verify`. Install the push gate alongside the commit hook:
+
+```bash
+uvx pre-commit install --hook-type pre-commit --hook-type pre-push
+uvx pre-commit run --all-files          # the hooks, over the whole tree
+bash scripts/openship-verify            # the full lane, before you push
+```
+
+`--all-files` is a linter and typecheck sweep, not a test sweep: the two test
+hooks decide from the index, so with nothing staged they select nothing and pass
+in seconds. `scripts/openship-verify` is the full-tree test gate.
+
+`git rebase` and `git commit --no-verify` run no commit hook, so
+`scripts/openship-verify` before pushing is the gate for those paths. Merge
+commits run the same hooks against the merge's own index, and a merge that
+touches unmapped code hits the full-lane rule.
+
+The selection rules, verbatim:
+
+| Changed path | Outcome |
+| --- | --- |
+| `apps/api/src/**` | tests importing it, transitively through `src → src` |
+| `apps/api/src/**` with no importer | **full lane** |
+| `apps/api/tests/**.py` | that module, plus modules importing a changed test-support module |
+| `apps/api/alembic/**` | **full lane** (no test imports a migration) |
+| `apps/api/tests/**/conftest.py`, `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`, `apps/api/scripts/**`, `scripts/**` | **full lane** |
+| `apps/api/tests/fixtures/**`, `apps/api/tests/*.json` data | **full lane** (fixtures are reached by data, not by import) |
+| `apps/web/src/**`, `apps/web/tests/**` | `vitest run --changed`; zero related tests for a `src/**` change → full `vitest run` |
+| `docs/**`, `*.md`, `deploy/**`, `poc/**`, root config the lanes never read | ignored; a commit whose files are all ignored → `Skip` |
+
+The graph sees `import`. It does not see: code reached through
+`importlib`/entry points/CLI strings, `apps/api/src/openship/config.py` read from
+the environment by fixtures, seed data, `docker-compose*.yml` and `.env*` effects
+on behavior, or the `postgres`/`full_stack`/`live` lanes. The mitigations are
+structural: the full-lane triggers cover conftest, packaging, scripts, migrations
+and fixtures, and CI and `scripts/openship-verify` run the full lane.
+
+The rule that makes the narrowing safe: **code the graph cannot map runs the
+full lane.** An empty selection is never a pass, a mapper or `git diff` failure
+exits non-zero and blocks the commit, and only prose — a commit the suite cannot
+observe at all — exits 0 without running tests, and it prints why.
+
+### Parallel shards on the full lane
+
+A full-lane plan runs as parallel shards: `min(8, cpu_count)` processes by
+default, through the same partition plugin CI loads
+(`-p scripts.pytest_shard`, `OPENSHIP_TEST_SHARD` / `OPENSHIP_TEST_SHARDS`).
+The launcher prints the plan, then one line per shard and the summed lane:
+
+```
+lane shards: 8
+uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream' -p scripts.pytest_shard
+shard 1/8 exit 0: 255 passed, 1952 deselected, 26 warnings in 120.32s (0:02:00)
+...
+lane total: 2036 passed, in 152.6s across 8 shards
+```
+
+The per-shard `deselected` count is the planner's partition (the items it gave
+to the other shards), so the summed line deliberately does not add it up.
+
+A shard that collected nothing (`exit 5`, which a forced shard count above the
+module count produces) is not a failure; any other failing shard fails the lane
+and has its full output printed, so tracebacks survive. `--shards N` forces a
+count on any plan, `--shards 1` is the single-process behaviour, `--shards 0`
+is refused, and `--explain` announces the shard count and the per-shard
+command without running anything. Narrowed selections — the normal commit —
+stay single-process: a few dozen modules gain nothing from eight process starts.
+
+Sharding changes how the lane runs, never what it contains: every shard command
+carries the same `-m` expression from `LANE_MARKER_EXPRESSION`, and the summed
+report adds up to the same counts as a single process.
+
+Phase 7A adds two explicitly selected lanes. The fixture lane runs the durable
+agentic task journeys and the Playwright qualification against the real
+OpenSandbox gateway, a disposable PostgreSQL database, and the real API, worker
+and browser; only the model transport and the controlled source body are
+synthetic, and a missing prerequisite fails the lane instead of skipping it.
+
+```bash
+# From apps/api (the snapshot path is resolved, never invented):
+OPENSHIP_FULL_STACK_AGENTIC_TASKS=1 \
+SYNTHETIC_PROFILE_SNAPSHOT="$(realpath "$(python3 ../../scripts/sandbox_images.py --root ../.. --engine docker profiles-source)")" \
+  uv run pytest -q -m full_stack tests/full_stack/test_agentic_tasks.py
+```
+
+The live lane (`tests/live/test_agentic_task_journey.py`, selector
+`OPENSHIP_LIVE_AGENTIC_TASKS=1`) is real model, real manager and real source, and
+names its own provider tuple, profiles file, endpoint, key file and broker
+prerequisites; see
+[the agentic task runbook](operations/opensandbox.md#agentic-task-activation-rollback-and-crash-recovery--2026-11-10)
+for the commands. It has not been run: no live agentic claim is made anywhere in
+the docs.
+
+The Playwright leg inside that fixture lane signs in as one fixed account the
+harness registers through the same API. `OPENSHIP_FULL_STACK_BROWSER_USERNAME`
+and `OPENSHIP_FULL_STACK_BROWSER_PASSWORD` choose the credentials you type into
+the real sign-in form; leave them unset and the harness mints a fresh pair for
+the run and passes it to the spec in its environment, so the leg never depends
+on a password written in a file.
+`OPENSHIP_FULL_STACK_BROWSER_CONVERSATION` and
+`OPENSHIP_FULL_STACK_BROWSER_RECOVERY_CONVERSATION` name the two conversations
+the harness created for that account. The spec skips when any of the four is
+absent, and the lane fails on that skip: an enabled selected lane reports
+`1 passed` for the browser journey, never `1 skipped`.
+
 The always-run prototype test hook also needs its own dev dependencies; otherwise
 `uv run pytest` can pick up a host pytest outside the prototype environment.
 Install those dependencies and the hooks for each checkout/worktree, from the
