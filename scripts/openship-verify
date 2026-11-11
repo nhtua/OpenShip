@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# The branch gate: what a narrowed commit hook no longer runs on your machine.
+# CI runs the same lanes in shards; this is the local pre-push equivalent, and
+# the gate the paths that bypass commit hooks fall back on (git rebase and
+# git commit --no-verify run no commit hook at all).
+#
+# Install the hook that calls this with:
+#   pre-commit install --hook-type pre-commit --hook-type pre-push
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+echo "gate: api credential-free lane, full"
+(cd "$ROOT/apps/api" && uv run python scripts/run_selected_tests.py --full-lane)
+
+echo "gate: web typecheck"
+(cd "$ROOT/apps/web" && pnpm typecheck)
+
+echo "gate: web unit tests"
+(cd "$ROOT/apps/web" && pnpm test:run)
+
+echo "gate: secret scan"
+rayloc scan "$ROOT"
+
+echo "gate: all lanes green"
