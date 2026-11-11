@@ -307,12 +307,31 @@ def _usage_projection(recorded: str | None) -> UsageSummary | None:
     return UsageSummary(**json.loads(recorded))
 
 
+#: Copy for failures the run itself raised, kept apart from the provider's own
+#: copy: a run-level code dressed as a provider failure sends the reader to a
+#: component that answered fine, which is what made the QA run unreadable.
+_RUN_SAFE_MESSAGES: dict[str, str] = {
+    "internal_error": (
+        "This run stopped for a reason the runtime could not classify. "
+        "Retry the request; if it repeats, report the run's code to the operator."
+    ),
+    "unsupported_graph_version": (
+        "This installation cannot execute the graph version this run recorded. "
+        "Update the runtime and resume the run."
+    ),
+}
+
+
 def _error_projection(code: str | None) -> ErrorSummary | None:
     if not code:
         return None
     return ErrorSummary(
         code=code,
-        message=SAFE_MESSAGES.get(code, "The model provider reported a failure."),
+        message=(
+            SAFE_MESSAGES.get(code)
+            or _RUN_SAFE_MESSAGES.get(code)
+            or "This run stopped for a reason this installation has no copy for."
+        ),
     )
 
 

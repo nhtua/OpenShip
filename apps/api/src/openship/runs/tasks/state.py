@@ -558,9 +558,12 @@ def _validate_operation(
             "operation_not_committed",
             "only a committed operation can record an attempt outcome",
         )
-    if not operation.result_digest:
+    # Only a succeeded operation has a result to digest. The gateway commits a
+    # refused or cancelled one with no result at all, and reading that outcome -
+    # not losing it - is what lets the switcher diagnose and repair the step.
+    if outcome == "succeeded" and not operation.result_digest:
         raise TaskStateError(
-            "operation_incomplete", "the committed operation has no result digest"
+            "operation_incomplete", "a succeeded operation has no result digest"
         )
 
     artifact_ids = _json(operation.output_artifact_ids, [])

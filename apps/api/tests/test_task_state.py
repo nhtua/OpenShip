@@ -377,6 +377,57 @@ def test_committed_operation_is_only_source_of_attempt_outcome():
         db.close()
 
 
+def test_a_refused_operation_records_an_attempt_with_no_result_to_digest():
+    """A tool that refuses leaves a committed failure and nothing to digest.
+
+    Dev-stack QA on 2026-11-11 made this reachable for the first time: the plan's
+    ``download_data`` step asked ``download_file`` for a ``.txt`` file, which the
+    tool's own contract refuses (only ``.csv`` and ``.json``), so the gateway
+    committed ``status="failed"`` with ``result_json`` and ``result_digest`` null
+    - there is no result to hash. Reading that outcome is the task's job: the
+    switcher turns it into a diagnosis and a bounded repair. Only a succeeded
+    operation can require a digest.
+    """
+    db = TestSessionLocal()
+    try:
+        user, _, _, run, claim = _identity(db)
+        save_plan(db, claim, _plan(), expected_revision=0)
+        db.commit()
+
+        refused = _operation(db, run, user, status="failed", result_digest=None)
+        db.commit()
+        progress = record_attempt_result(
+            db, claim, step_id="inspect", attempt=1, operation_id=refused.id
+        )
+        db.commit()
+        attempt = progress.steps[0].attempts[0]
+        assert attempt.status == "failed"
+        assert attempt.operation_id == refused.id
+        assert attempt.result_digest is None
+        assert attempt.input_digest == refused.arguments_digest
+        assert attempt.evidence_refs
+
+        interrupted = _operation(
+            db,
+            run,
+            user,
+            status="cancelled",
+            result_digest=None,
+            arguments_digest="a" * 64,
+        )
+        db.commit()
+        progress = record_attempt_result(
+            db, claim, step_id="inspect", attempt=2, operation_id=interrupted.id
+        )
+        db.commit()
+        second = progress.steps[0].attempts[1]
+        assert second.status == "failed"
+        assert second.operation_id == interrupted.id
+        assert second.result_digest is None
+    finally:
+        db.close()
+
+
 def test_stale_identity_map_cannot_hide_committed_operation():
     db = TestSessionLocal()
     try:

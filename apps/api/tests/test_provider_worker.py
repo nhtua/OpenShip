@@ -26,12 +26,16 @@ from src.openship.providers.contracts import (
     pin_profile,
 )
 from src.openship.providers.control import InvocationControl
-from src.openship.providers.errors import ProviderError
+from src.openship.providers.errors import SAFE_MESSAGES, ProviderError
 from src.openship.providers.registry import _adapter_factories
 from src.openship.providers.runner import run_model_turn
 from src.openship.runs.models import Event, ProviderAttempt, Run, RunJob
 from src.openship.runs.queue import claim_next, finalize, renew
-from src.openship.runs.schemas import _model_projection, project_run_response
+from src.openship.runs.schemas import (
+    _error_projection,
+    _model_projection,
+    project_run_response,
+)
 from src.openship.runs.service import bind_run_model_config, load_run_model_config
 from src.openship.runs.worker import Worker
 from src.openship.workspace.models import Project
@@ -782,6 +786,30 @@ def test_failure_publication_rolls_back_success_before_recording_failure(
     event_types = [event.type for event in session.query(Event).filter(Event.run_id == run.id)]
     assert "run.failed" in event_types
     assert "run.succeeded" not in event_types
+
+
+def test_a_failed_run_names_the_component_that_actually_failed():
+    """The copy a failed run carries cannot blame a component that answered fine.
+
+    Dev-stack QA on 2026-11-11 ended a task run on ``internal_error`` raised by the
+    task state boundary, and the run view called it "The model provider reported a
+    failure." while every provider call in that run had succeeded - so the only
+    readable clue pointed at a provider that was not at fault. Provider copy stays
+    for provider codes; a code the run itself raised gets run copy, and an
+    unrecognised code gets neither claim.
+    """
+    assert _error_projection("rate_limited").message == SAFE_MESSAGES["rate_limited"], (
+        "a provider code still carries the provider's own copy"
+    )
+    internal = _error_projection("internal_error")
+    assert internal.code == "internal_error"
+    assert "provider" not in internal.message.lower(), (
+        "the run's own failure is never blamed on the provider"
+    )
+    assert "model" not in internal.message.lower(), (
+        "and never on the model either"
+    )
+    assert _error_projection(None) is None, "a healthy run carries no failure"
 
 
 def test_worker_attempt_admission_survives_process_exit(client, authorized_client, monkeypatch):
