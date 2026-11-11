@@ -123,7 +123,7 @@ steps and pinned behaviours:
 | `apps/web/src/stores/taskProgress.ts` staged alone | plan `changed`, 13 suites / 201 tests, 4.26 s (5.9 s wall) |
 | `--explain` on both launchers | API: plan, per-file reasons, exact command, nothing run; web: plan `changed`, suites it reaches, exact command, no vitest process started |
 | `uvx pre-commit run --all-files` (new config) | 7 hooks passed in 4 s: ruff, the poc suite, API ruff, `vue-tsc` and the web suite ran over the tree. The two test hooks read the index, so with nothing staged they selected nothing (see the caveat in `docs/development.md`). |
-| `bash scripts/openship-verify` (full lane) | Python lane `2037 passed` in 152.4 s across 8 shards; `vue-tsc --noEmit` clean; web `400 passed` in 42 files (4.54 s). The gate exits 1 at its secret-scan leg on three findings that already exist at the pre-branch commit `858b7d0` (the dev compose's throwaway `openship` password and two documentation placeholders, all unchanged lines); none is introduced by this branch. |
+| `bash scripts/openship-verify` (full lane, tree at `f787a28`) | Python lane `2051 passed` in 148.6 s across 8 shards (256-257 passed each); `vue-tsc --noEmit` clean; web `400 passed` in 42 files; `rayloc` scan clean (`0 finding(s)`, 48 inline suppressions, 13 accepted). The gate exits 0. Two earlier 8-shard runs of the same lane each failed one case on shard 8 - see the shard-load caveat below. The later `ca45d98` copy fix was gated by its own changed-file lane, not this run. |
 | Full credential-free lane, in the tool commit's own hook run | 2001 passed, 169 deselected, 853.60 s |
 
 No `postgres`, `full_stack`, `provider_live` or `jetstream` lane ran for these
@@ -150,8 +150,19 @@ Same tree, same machine, same minute, one run each. Design:
 
 Every sharded run's summed counts must equal the single-process run's. The
 single process reported `2020 passed, 169 deselected` before the 17
-launcher/mapper tests this branch adds; the final lane reports `2037 passed`.
-A shard that collected nothing exits 5 and is not counted as a failure.
+launcher/mapper tests this branch adds; the last full lane, on the tree at
+`f787a28`, reported `2051 passed`, and the two copy-fix pins (`ca45d98`) were
+added after it. A shard that collected nothing exits 5 and is not counted as a
+failure.
+
+Shard-load caveat (2026-11-11). Two eight-shard runs of the full lane each
+failed exactly one case:
+`tests/execution/test_aws_sdk.py::test_executor_slot_is_held_until_the_first_sdk_call_finishes`
+timed out inside its own one-second wait (`asyncio.wait_for(..., timeout=1)`,
+`tests/execution/test_aws_sdk.py:496`) while eight pytest processes ran. It
+passed twice in isolation (0.81 s and 0.85 s), and the run after the two fix
+commits was clean. This is recorded as load sensitivity in that case's
+one-second budget, not as a branch regression; the case itself is unchanged.
 
 ### Agentic task journeys on the dev stack — what the durable doors do (2026-11-11)
 
@@ -170,18 +181,38 @@ lane ran, and no user was asked to accept anything.
 | Confirming one parked plan | `POST /api/runs/{run}/task-decisions` → HTTP 200, execution started, and the plan's steps moved through `queued`/`running`/settled states in the run view |
 | The `.txt` download plan after the attempt-recording fix | run `completed`: `download_data:failed`, `create_chart:failed`, `confirm_chart:succeeded` - the refused step is recorded and the switcher keeps routing, instead of the worker dying |
 | Before that fix | the same step aborted the run: `TaskStateError: the committed operation has no result digest` at `runs/tasks/state.py`, then `failed`/`internal_error` |
+| A second journey after `77ee949` - run `e8aa2b32-1507-4c3d-8114-b8606f4b0915` | parked a real plan (`download`/`chart`/`verify`) at `waiting_plan` with `plan_confirmation`; `POST /api/runs/{run}/task-decisions` → HTTP 200; steps settled `download:verified`, `chart:failed`, `verify:succeeded`; run `completed` with no error after five provider attempts. The failed chart step is a sandbox `python_execute` provider failure, recorded as a step outcome instead of aborting the run. The scratch driver still reports `INCONCLUSIVE` because the task record stays `running` - the open finding below. |
+| The same run's `download` step | `download_file` succeeded and published `Heathrow.csv` (50,448 bytes, digest recorded) as `download:verified` - the same source CSV whose page the pre-fix run read at the ceiling. The bounded-rendering fix itself is pinned by fixture, not re-proven by a ceiling read in this journey. |
 
-Two real breaks remain open in this area, with their evidence:
+Two real breaks were found this way and both are fixed; one separate gap stays
+open and is recorded honestly.
 
-- `workspace_read_file` at its ceiling kills a task run. The tool read
-  15,759 bytes and the operation committed `result_json` at exactly
-  `max_model_result_bytes` (16,384), so the envelope `_result_message` adds on
+- **Fixed in `77ee949` - a read at the ceiling killed a task run.** The tool
+  read 15,759 bytes and the operation committed `result_json` at exactly
+  `max_model_result_bytes` (16,384), so the envelope `_result_message` added on
   top of a payload already allowed at the ceiling made the model-visible
-  message too large: `ProviderError("output_limit_exceeded")` raised inside
-  `dispatch` (`task_graph.py`), which aborts the run instead of leaving a step
+  message too large: `ProviderError("output_limit_exceeded")` was raised inside
+  `dispatch` (`task_graph.py`), which aborted the run instead of leaving a step
   outcome. The manifest pairs `max_read_bytes` and `max_model_result_bytes` at
-  the same 16 KiB (`capabilities/catalog.py:522-524`).
-- A confirmed plan that finishes publishes no closing turn. Run
+  the same 16 KiB (`capabilities/catalog.py:522-524`). `77ee949` keeps the
+  durable result exact and bounds only the model-visible copy: the largest
+  strings of the tool's own payload are shortened to the longest excerpt that
+  fits, each carrying "OpenShip truncation: k of N bytes kept" and the
+  `next_offset` the contract already publishes; an under-budget result renders
+  byte-identically, and an envelope with nothing left to bound still refuses
+  `output_limit_exceeded`. Pin:
+  `apps/api/tests/test_tool_turn_result_size.py` - its fixture reproduces the QA
+  row (the canonical `result_json` is exactly 16,384 bytes, so the old code
+  raised at `agent_graph.py:127`).
+- **Fixed in `ca45d98` - a failed step blamed the search service.** The second
+  journey's `python_execute` step failed with `provider_unavailable`, and its
+  recorded message read "The search service is temporarily unavailable.": the
+  shared execution maps (`execution/gateway.py`, `execution/publication.py`)
+  carried search wording for a code every capability can produce. The shared
+  copy is now "The service this step depends on is temporarily unavailable.",
+  and the search transport keeps its own wording. Pin:
+  `apps/api/tests/execution/test_failure_copy.py`.
+- **Open - a confirmed plan that finishes publishes no closing turn.** Run
   `e917c027-c321-4443-806f-74b786e6feaa` ended `completed` with only two
   messages in the conversation - the request and the plan presentation - while
   its task record stayed `status: running`, `last_disposition: none`. The chat
@@ -192,3 +223,26 @@ Two real breaks remain open in this area, with their evidence:
   `task_status == "running"` with `verified_steps == ()` as the honest
   pre-verification state, so the missing closing turn is the reportable half of
   this finding, not the status itself.
+
+### Structured-output wiring - what the declaration now means (2026-11-11)
+
+A profile admitted for agentic tasks has always had to declare
+`structured_output` (`runs/service.py:319-322`), but until `f787a28` no request
+ever asked the provider for JSON: the declaration was an admission check with
+no wire meaning, and the two envelope stages (`assess_task`, `plan_task`)
+relied on prompt wording alone. Those stages now add the capability to their
+request, and each adapter asks for JSON mode per its pinned API version:
+`response_format={"type": "json_object"}` for `chat-completions` and
+`text={"format": {"type": "json_object"}}` for `responses`. `validate_request`
+refuses a profile that does not declare the capability before any dispatch, and
+prose chat turns ask for nothing, so their wire request is unchanged.
+
+Pins: `tests/providers/test_openai.py` and
+`tests/providers/test_openai_responses.py` assert both wire forms and that a
+prose turn sends neither; `tests/test_task_inference.py` asserts a stage's own
+request carries the requirement; `tests/providers/test_contracts.py` pins the
+refusal. The RED run showed no wire kwarg and no request requirement before the
+change. JSON mode guarantees valid JSON, not the envelope's shape - the
+contract validators remain the authority - and strict `json_schema` stays a
+proposal because the request contract has no per-request schema carrier. No
+live tuple is claimed from this: the live lanes stay `pending`.

@@ -32,8 +32,8 @@ listed below; no tuple is marked `accepted` until a person reviews the evidence.
 | Tuple | Adapter | Endpoint implementation / API version | Requested model | Observed model | SDK | Effective capabilities | Mandatory test results | Live qualification | User acceptance | State |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `openai` · Chat Completions, fixture tuple | `openai` | `chat-completions` | *not stated* | *not observed* | `openai` 3.24.0 | streaming and usage reporting; other capabilities depend on the exact declared profile | shared conformance, OpenAI adapter tests and tool-call contract fixtures pass | no model tuple claimed | n/a | `fixture-tested` |
-| `openai` · Chat Completions · GPT-6 Luna tool use | `openai` | `chat-completions` | `gpt-6-luna` | `gpt-6-luna` | `openai` 3.24.0 | streaming, usage reporting, one function call per response with parallel calls disabled; no token counting, structured output or attachments | OpenAI adapter/tool contract tests pass; opt-in model → Brave call → final-answer smoke passed | `tests/live/test_tool_provider_smoke.py`, one declared destination, no fallback, two model requests and one bounded Brave invocation; 2026-10-20 UTC | pending | `live-qualified` |
-| `openai` · Responses · GPT-6.1 Sol tool use | `openai` | `responses` | `gpt-6.1-sol` | `gpt-6.1-sol` | `openai` 3.24.0 | streaming, usage reporting (including cached-input and reasoning counts), one function call per response with parallel calls disabled, pinned reasoning effort `low` (`none` is refused for this model at this endpoint); encrypted reasoning stays in a bounded private continuation replayed statelessly; no token counting, structured output or attachments | Responses adapter/continuation and durable-continuation tests pass; opt-in Responses qualification passed | `tests/live/test_responses_qualification.py`, one text turn and one tool-call→local-result→continued-turn journey at `api.openai.com`, `store=False` and no provider-stored state asserted; 2026-11-06 UTC | pending | `live-qualified` |
+| `openai` · Chat Completions · GPT-6 Luna tool use | `openai` | `chat-completions` | `gpt-6-luna` | `gpt-6-luna` | `openai` 3.24.0 | streaming, usage reporting, one function call per response with parallel calls disabled; JSON-mode output when a turn asks for it (fixture-tested; not live-qualified); no token counting or attachments | OpenAI adapter/tool contract tests pass; opt-in model → Brave call → final-answer smoke passed | `tests/live/test_tool_provider_smoke.py`, one declared destination, no fallback, two model requests and one bounded Brave invocation; 2026-10-20 UTC | pending | `live-qualified` |
+| `openai` · Responses · GPT-6.1 Sol tool use | `openai` | `responses` | `gpt-6.1-sol` | `gpt-6.1-sol` | `openai` 3.24.0 | streaming, usage reporting (including cached-input and reasoning counts), one function call per response with parallel calls disabled, pinned reasoning effort `low` (`none` is refused for this model at this endpoint); encrypted reasoning stays in a bounded private continuation replayed statelessly; JSON-mode output when a turn asks for it (fixture-tested; not live-qualified); no token counting or attachments | Responses adapter/continuation and durable-continuation tests pass; opt-in Responses qualification passed | `tests/live/test_responses_qualification.py`, one text turn and one tool-call→local-result→continued-turn journey at `api.openai.com`, `store=False` and no provider-stored state asserted; 2026-11-06 UTC | pending | `live-qualified` |
 | `openai` · Responses · GPT-6.1 Terra tool use | `openai` | `responses` | `gpt-6.1-terra` | `gpt-6.1-terra` | `openai` 3.24.0 | as above with pinned reasoning effort `low` | as above | as above; 2026-11-06 UTC | pending | `live-qualified` |
 | `openai` · Responses · GPT-6 Luna tool use | `openai` | `responses` | `gpt-6-luna` | `gpt-6-luna` | `openai` 3.24.0 | as above with pinned reasoning effort `low` | as above | as above; 2026-11-06 UTC | pending | `live-qualified` |
 | `brave_web_search` · Brave Search API | maintained OpenShip capability | `GET /res/v1/web/search` | n/a | n/a | none (`httpx` transport) | one fixed query, at most one normalized result, fixed HTTPS destination, immutable result artifact in full-stack lane | contract and provider conformance pass; live bounded request passed | `tests/live/test_search_tools.py`; 2026-10-20 UTC; manifest `93b2e49bdd5962ca6af25b6e05f9ced5e2c73843d87bdbf837f83700eaa00414`; implementation `9baf5986aa371c037dedc4cb9b4076926b3c7cb3235a7e5a83c0df7bf90ccf8d` | pending | `live-qualified` |
@@ -126,6 +126,34 @@ calls require this setting ([model documentation](https://developers.openai.com/
 `automatic_function_calling`, and `openai_compatible` needs
 `endpoint_implementation`, `authentication`, `stream_usage_supported` and
 `output_limit_parameter`.
+
+## What `structured_output` means on the wire (2026-11-11)
+
+`structured_output` is a request-level capability, not a profile-wide mode: a
+turn asks for it by adding the name to its capability requirements, and
+`validate_request` refuses a profile that does not declare it before any
+dispatch - the same rule that already governs `tool_calls`. Prose chat turns
+ask for nothing, so their wire request is unchanged.
+
+| API version | Wire form when a turn asks | What it buys |
+| --- | --- | --- |
+| `chat-completions` | `response_format={"type": "json_object"}` | the provider is asked for one JSON object |
+| `responses` | `text={"format": {"type": "json_object"}}` | the provider is asked for one JSON object |
+
+JSON mode guarantees valid JSON, not the envelope's shape: a truncated answer
+is still an output-limit failure, and the run's own validators remain the only
+authority on which keys and values a task stage may publish. Strict
+`json_schema` output would additionally constrain that shape, but the request
+contract has no per-request schema carrier yet, so it is a proposal rather than
+an implemented claim.
+
+Evidence: the adapter pins (`tests/providers/test_openai.py`,
+`tests/providers/test_openai_responses.py`) assert both wire forms and that a
+prose turn sends neither; the stage pin (`tests/test_task_inference.py`)
+asserts a task stage's own request carries the requirement;
+`tests/providers/test_contracts.py` pins the refusal for a profile that does
+not declare it. None of this live-qualifies a tuple: the live lanes above stay
+`pending`.
 
 ## Environment mapping
 
