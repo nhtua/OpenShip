@@ -16,6 +16,18 @@ import run_selected_tests as launcher  # repo precedent for script-directory mod
 import testselect
 
 
+@pytest.fixture(autouse=True)
+def _not_inside_a_shard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module pins the top-level decision; a lane's own shard env must not leak in.
+
+    The hook runs this suite inside a shard, so OPENSHIP_TEST_SHARD is set in the
+    process environment. A launcher invoked from inside a shard must not fan out
+    again; the two guard tests below set the variables back on purpose.
+    """
+    monkeypatch.delenv("OPENSHIP_TEST_SHARD", raising=False)
+    monkeypatch.delenv("OPENSHIP_TEST_SHARDS", raising=False)
+
+
 class Recorder:
     """The runner seam: records each command the launcher issues."""
 
@@ -129,7 +141,10 @@ def test_full_lane_plan_runs_the_lane_without_file_arguments(repo: Path) -> None
     recorder = Recorder()
     plan = testselect.FullLane("apps/api/alembic/versions/z.py maps to no test module")
 
-    code = launcher.run([], repo_root=repo, changed=["apps/api/alembic/versions/z.py"], runner=recorder, plan=plan)
+    # cpus=1: this pins the single-process lane path, which --shards 1 selects.
+    code = launcher.run(
+        [], repo_root=repo, changed=["apps/api/alembic/versions/z.py"], runner=recorder, plan=plan, cpus=1
+    )
 
     assert code == 0
     assert recorder.commands == [
@@ -141,7 +156,8 @@ def test_the_full_lane_flag_runs_the_lane_even_when_the_files_would_skip(repo: P
     """The pre-push gate asks for the whole lane; the expression lives in the launcher."""
     recorder = Recorder()
 
-    code = launcher.run(["--full-lane"], repo_root=repo, changed=["docs/x.md"], runner=recorder)
+    # cpus=1: pins the single-process lane path, which --shards 1 selects.
+    code = launcher.run(["--full-lane"], repo_root=repo, changed=["docs/x.md"], runner=recorder, cpus=1)
 
     assert code == 0
     assert recorder.commands == [
@@ -386,6 +402,392 @@ def test_the_lane_runs_when_explain_is_absent(repo: Path) -> None:
         changed=["apps/api/alembic/versions/z.py"],
         runner=recorder,
         plan=testselect.FullLane("apps/api/alembic/versions/z.py maps to no test module"),
+        cpus=1,
     )
 
     assert len(recorder.commands) == 1
+
+
+class ShardRecorder:
+    """The shard seam: records each shard's command and environment, returns canned results.
+
+    Results are keyed by the shard index the launcher asks the environment to
+    run, so the fake answers identically however the shards are scheduled.
+    """
+
+    def __init__(self, results: dict[int, tuple[int, str]]) -> None:
+        self.results = dict(results)
+        self.calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def __call__(self, command: list[str], env: dict[str, str]) -> tuple[int, str]:
+        self.calls.append((command, env))
+        return self.results[int(env["OPENSHIP_TEST_SHARD"])]
+
+
+def _calls_in_shard_order(
+    shards: ShardRecorder,
+) -> list[tuple[list[str], dict[str, str]]]:
+    """Shards run concurrently: their *calls* arrive in any order, their report does not."""
+    return sorted(shards.calls, key=lambda pair: int(pair[1]["OPENSHIP_TEST_SHARD"]))
+
+
+def _shard_prefix() -> list[str]:
+    return [*launcher.PYTEST_PREFIX, "-p", launcher.SHARD_PLUGIN]
+
+
+def _lane_shard_env(index: int, total: int) -> dict[str, str]:
+    return {
+        "OPENSHIP_TEST_SHARD": str(index),
+        "OPENSHIP_TEST_SHARDS": str(total),
+    }
+
+
+def test_the_full_lane_splits_into_parallel_shards(
+    repo: Path, capsys: pytest.CaptureResponse[str]
+) -> None:
+    """CI already runs the lane as shards; a local full-lane run is one process today.
+
+    The launcher drives the same shard plugin the workflow uses, in parallel, so
+    the pre-commit and pre-push lane stops being one 14-minute process.
+    """
+    shards = ShardRecorder({index: (0, "500 passed in 210.00s") for index in range(4)})
+    single = Recorder()
+
+    code = launcher.run(
+        ["--full-lane"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=single,
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=8,
+    )
+
+    assert code == 0
+    assert single.commands == []
+    calls = _calls_in_shard_order(shards)
+    assert [command for command, _ in calls] == [_shard_prefix()] * 4
+    assert [env["OPENSHIP_TEST_SHARD"] for _, env in calls] == ["0", "1", "2", "3"]
+    assert {env["OPENSHIP_TEST_SHARDS"] for _, env in calls} == {"4"}
+
+
+def test_auto_sharding_leaves_a_narrowed_plan_single_process(
+    repo: Path, capsys: pytest.CaptureResponse[str]
+) -> None:
+    """A few dozen modules are not worth four process starts: the ruling is auto-shard the full lane only."""
+    shards = ShardRecorder({})
+    single = Recorder()
+    plan = testselect.Selected(
+        files=("apps/api/tests/test_plan.py",),
+        reasons=(("apps/api/tests/test_plan.py", "src.openship.runs.service -> x"),),
+    )
+
+    code = launcher.run(
+        [],
+        repo_root=repo,
+        changed=["apps/api/src/openship/runs/service.py"],
+        runner=single,
+        plan=plan,
+        shard_runner=shards,
+        cpus=8,
+    )
+
+    assert code == 0
+    assert shards.calls == []
+    assert len(single.commands) == 1
+    assert launcher.SHARD_PLUGIN not in single.commands[0]
+
+
+def test_the_shards_flag_forces_shards_on_a_narrowed_plan(repo: Path) -> None:
+    shards = ShardRecorder({index: (0, "10 passed in 5.00s") for index in range(3)})
+    single = Recorder()
+    plan = testselect.Selected(
+        files=(
+            "apps/api/tests/test_plan.py",
+            "apps/api/tests/test_runs_service.py",
+            "apps/api/tests/test_tasks.py",
+        ),
+        reasons=(
+            ("apps/api/tests/test_plan.py", "src.openship.runs.service -> x"),
+            ("apps/api/tests/test_runs_service.py", "src.openship.runs.service -> y"),
+            ("apps/api/tests/test_tasks.py", "src.openship.runs.service -> z"),
+        ),
+    )
+
+    code = launcher.run(
+        ["--shards", "3"],
+        repo_root=repo,
+        changed=["apps/api/src/openship/runs/service.py"],
+        runner=single,
+        plan=plan,
+        shard_runner=shards,
+        cpus=8,
+    )
+
+    assert code == 0
+    assert single.commands == []
+    calls = _calls_in_shard_order(shards)
+    assert [command for command, _ in calls] == [
+        [
+            *_shard_prefix(),
+            "tests/test_plan.py",
+            "tests/test_runs_service.py",
+            "tests/test_tasks.py",
+        ]
+    ] * 3
+    assert [env["OPENSHIP_TEST_SHARD"] for _, env in calls] == ["0", "1", "2"]
+
+
+def test_auto_shards_never_exceed_the_processors_available(repo: Path) -> None:
+    shards = ShardRecorder({index: (0, "700 passed in 250.00s") for index in range(2)})
+
+    launcher.run(
+        ["--full-lane"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=Recorder(),
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=2,
+    )
+
+    assert len(shards.calls) == 2
+    assert {env["OPENSHIP_TEST_SHARDS"] for _, env in shards.calls} == {"2"}
+
+
+def test_the_shard_count_stops_at_the_modules_selected(repo: Path) -> None:
+    shards = ShardRecorder({index: (0, "8 passed in 4.00s") for index in range(2)})
+    plan = testselect.Selected(
+        files=("apps/api/tests/test_plan.py", "apps/api/tests/test_runs_service.py"),
+        reasons=(
+            ("apps/api/tests/test_plan.py", "src.openship.runs.service -> x"),
+            ("apps/api/tests/test_runs_service.py", "src.openship.runs.service -> y"),
+        ),
+    )
+
+    launcher.run(
+        ["--shards", "9"],
+        repo_root=repo,
+        changed=["apps/api/src/openship/runs/service.py"],
+        runner=Recorder(),
+        plan=plan,
+        shard_runner=shards,
+        cpus=8,
+    )
+
+    assert len(shards.calls) == 2
+
+
+def test_any_failing_shard_fails_the_lane(repo: Path) -> None:
+    shards = ShardRecorder(
+        {
+            0: (0, "500 passed in 210.00s"),
+            1: (1, "498 passed, 2 failed in 214.00s\nFAILED tests/test_x.py::test_y\n"),
+        }
+    )
+
+    code = launcher.run(
+        ["--full-lane", "--shards", "2"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=Recorder(),
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=8,
+    )
+
+    assert code == 1
+
+
+def test_a_shard_that_collects_nothing_is_not_a_failure(repo: Path) -> None:
+    """A shard capped above the module count collects nothing: pytest exits 5, the lane did not fail."""
+    shards = ShardRecorder(
+        {
+            0: (0, "100 passed in 40.00s"),
+            1: (0, "99 passed in 41.00s"),
+            2: (5, "no tests ran in 2.00s"),
+        }
+    )
+
+    code = launcher.run(
+        ["--full-lane", "--shards", "3"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=Recorder(),
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=8,
+    )
+
+    assert code == 0
+
+
+def test_the_shard_report_adds_the_shards_up(
+    repo: Path, capsys: pytest.CaptureResponse[str]
+) -> None:
+    shards = ShardRecorder(
+        {
+            0: (0, "500 passed, 40 deselected in 211.10s"),
+            1: (0, "503 passed, 42 deselected in 214.02s"),
+            2: (0, "500 passed, 43 deselected in 210.90s"),
+            3: (0, "497 passed, 44 deselected in 213.10s"),
+        }
+    )
+
+    code = launcher.run(
+        ["--full-lane"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=Recorder(),
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=8,
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "2000 passed" in out
+    assert "4 shards" in out
+    total = next(line for line in out.splitlines() if line.startswith("lane total"))
+    assert "deselected" not in total
+
+
+def test_a_failing_shard_prints_what_it_reported(
+    repo: Path, capsys: pytest.CaptureResponse[str]
+) -> None:
+    shards = ShardRecorder(
+        {
+            0: (0, "500 passed in 210.00s"),
+            1: (1, "498 passed, 2 failed in 214.00s\nFAILED tests/test_x.py::test_y\nassert 1 == 2\n"),
+        }
+    )
+
+    launcher.run(
+        ["--full-lane", "--shards", "2"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=Recorder(),
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=8,
+    )
+    out = capsys.readouterr().out
+
+    assert "assert 1 == 2" in out
+
+
+def test_explain_announces_the_shards_without_running_anything(
+    repo: Path, capsys: pytest.CaptureResponse[str]
+) -> None:
+    shards = ShardRecorder({})
+    single = Recorder()
+
+    code = launcher.run(
+        ["--full-lane", "--explain"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=single,
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=8,
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert single.commands == []
+    assert shards.calls == []
+    assert "lane shards: 4" in out
+    assert launcher.SHARD_PLUGIN in out
+
+
+def test_shards_below_one_is_refused(repo: Path, capsys: pytest.CaptureResponse[str]) -> None:
+    code = launcher.run(
+        ["--shards", "0"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=Recorder(),
+        plan=testselect.FullLane("maps to no test module"),
+        cpus=8,
+    )
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "shards" in out
+
+
+def test_two_real_shards_partition_the_lane() -> None:
+    """The plugin the workflow already loads, driven locally: one shard runs the module, the other collects nothing."""
+    plan = testselect.Selected(
+        files=(
+            "apps/api/tests/test_pytest_shard.py",
+            "apps/api/tests/test_precommit_wiring.py",
+        ),
+        reasons=(
+            ("apps/api/tests/test_pytest_shard.py", "scripts/pytest_shard.py -> x"),
+            ("apps/api/tests/test_precommit_wiring.py", "scripts/openship-verify -> y"),
+        ),
+    )
+
+    code = launcher.run(
+        ["--shards", "2"],
+        repo_root=APPS_API.parents[1],
+        changed=[],
+        plan=plan,
+    )
+
+    assert code == 0
+
+
+def test_a_lane_inside_a_shard_does_not_fan_out(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A launcher running inside a shard must not start shards of its own.
+
+    Every shard runs this suite, so an unguarded auto-shard forks itself: a real
+    full lane inside a real full lane, each nesting level running every test
+    again. Measured as a 35-deep chain before the guard, 2026-11-10.
+    """
+    monkeypatch.setenv("OPENSHIP_TEST_SHARD", "1")
+    monkeypatch.setenv("OPENSHIP_TEST_SHARDS", "4")
+    shards = ShardRecorder({})
+    single = Recorder()
+
+    code = launcher.run(
+        ["--full-lane"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=single,
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=8,
+    )
+
+    assert code == 0
+    assert shards.calls == []
+    assert single.commands == [launcher.PYTEST_PREFIX]
+
+
+def test_a_sharded_request_from_inside_a_shard_is_refused(
+    repo: Path, capsys: pytest.CaptureResponse[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shard that asks for shards is a mistake; refuse it and say why."""
+    monkeypatch.setenv("OPENSHIP_TEST_SHARD", "1")
+    monkeypatch.setenv("OPENSHIP_TEST_SHARDS", "4")
+    shards = ShardRecorder({})
+    single = Recorder()
+
+    code = launcher.run(
+        ["--full-lane", "--shards", "4"],
+        repo_root=repo,
+        changed=["docs/x.md"],
+        runner=single,
+        plan=testselect.FullLane("maps to no test module"),
+        shard_runner=shards,
+        cpus=8,
+    )
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "already running inside a shard" in out
+    assert shards.calls == []
+    assert single.commands == []
