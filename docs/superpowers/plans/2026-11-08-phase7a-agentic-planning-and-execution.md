@@ -921,3 +921,69 @@ Before handing this plan off, verify file references, task dependencies, named i
 **Revision validation:** The read-only documentation validator checks all local links/anchors, ordered task dependencies, unchanged historical Tasks 1–7, existing-or-declared test paths, Python assertion syntax, shared contract names and preserved limits. Remaining Task 8 slices and Tasks 9–17 acceptance remain unchecked. Whitespace and secret scans cover all four changed documents; these checks do not establish product-test or live acceptance evidence.
 
 **Pending user gate:** review the revised Tasks 8–17 and aligned recovery spec. **Subagent-driven** execution remains selected, with GPT-6.1 Terra for subsequent subagents; do not ask for the execution method again. After review, resume at Slice 8A from committed `5d2ec7b`, preserving delivered Tasks 1–7 and Task 8's partial work. No push, PR, merge, real build, stack recreation or paid/live call is authorized by this documentation revision.
+### 17.x Shipped UI contract — Copilot plan gate, decisions, recovery controls, mode chip
+
+**Status: shipped and qualified by unit tests, the fixture lane and the
+Playwright leg. No live UI claim: the live lane is unrun. This section is the
+contract a contributor implements against; the per-task text above describes
+when each surface landed.**
+
+**Execution mode chip.** The chat header carries
+`data-testid="agent-mode-current"` with the mode and its revision
+(`Copilot · revision 1`), `agent-mode-scope` stating the scope
+("Applies to new tasks"), Auto and Copilot choices, and a pending marker while
+the `PATCH /api/auth/preferences` is in flight. The setting is per account: it
+survives a reload, a fresh account starts in Copilot, and a stale
+`expected_revision` is refused by the API rather than applied. The Playwright
+leg drives it through the real form (`Copilot · revision 1` →
+`Auto · revision 2`, marker cleared, same revision after reload).
+
+**Copilot is the gate, Auto is not.** In Copilot a task plan parks the run
+(`waiting_plan`) and presents the plan revision for confirmation; in Auto the
+plan is admitted and execution starts. `data-testid="task-plan"` renders the
+status with the mode (`Completed · Copilot`), the revision, per-step status
+(`task-plan-step-<id>`), the outputs (`task-plan-output`), skipped steps
+(`task-plan-skipped`) and the completion banner.
+
+**One door for every choice.** A decision posts exactly one
+`POST /api/runs/{run}/task-decisions` request carrying `request_id`,
+`plan_revision`, `expected_digest`, a fresh `client_request_id` and the action.
+The store never posts for itself: the request is sent only when a person
+clicked, and a reconnect or a reload reads back the same durable state instead
+of creating a second local copy (`apps/web/tests/TaskProgressStore.test.ts`
+pins that a card whose state already matches is not rewritten).
+
+**The decision card presents the evidence with the choice.**
+`data-testid="task-decision"` renders the heading and prompt
+(`task-decision-heading`, `task-decision-prompt`), the diagnosis —
+explanation, unknowns, risks and the suggested action
+(`task-decision-diagnosis`, `task-decision-explanation`,
+`task-decision-unknowns`, `task-decision-risks`, `task-decision-recommended`) —
+and then only the actions its kind allows: `task-decision-confirm` and
+`task-decision-reject` for a plan revision,
+`task-decision-resume-configuration` for a parked configuration,
+`task-decision-answer-in-composer` for a question, and
+`task-decision-choice-<action>` for a recovery, labelled **Abort**,
+**Repeat the step** and **Continue to the next step** with a reason line each
+(`task-decision-reason-<action>`). A choice the durable records do not allow is
+not offered; a choice that is blocked shows why ("This step has reached its
+attempt limit"), and Aborting is always available.
+`task-decision-stale` marks a decision left over from a plan revision that is
+no longer under review, and approval is disabled while it shows.
+
+**Recovery is a named choice, never an automatic retry.** After a worker stop
+the run reports the parked, uncertain execution, the same three choices, and
+the evidence behind them: the plan revision under review, the tool attempt that
+ended uncertain, and the artifacts already published. A restart reads the same
+durable recovery record and fence, so the browser shows the same state and the
+same choices; a consumed decision request cannot be decided twice
+(`apps/api/tests/test_task_decision_routes.py`,
+`apps/api/tests/test_task_recovery.py`, journeys 5 and 6 of
+`apps/api/tests/full_stack/test_agentic_tasks.py`).
+
+**Deferred, recorded as a proposal (not shipped).** "Sol plans, then Luna or
+Terra executes" is not supported by the current model binding: a run pins one
+model configuration at admission (`run.model_configuration`) and plan
+revisions are immutable. The proposal is a confirmation action that admits a
+**new run** under the chosen executing profile as a fresh revision with a
+renewed Copilot gate. Not implemented; not authorized.

@@ -50,6 +50,31 @@ from a tuple's own evidence** — a ceiling an operator declared is a
 declaration, not a qualification, and it stays marked as such until a live
 turn confirms it.
 
+## Task execution is a separate claim from tool use
+
+The tool-use rows above qualify **one model request → one tool call → one
+continued answer**. Phase 7A's agentic tasks are a different claim: a plan the
+server validates, several admitted steps, pinned sandbox profiles, verification
+against recorded evidence, and explicit recovery choices. Nothing in the matrix
+above says a tuple can run tasks, and no tuple may be offered for tasks until
+its own live agentic journey passes.
+
+That claim has its own selector and its own evidence:
+`OPENSHIP_LIVE_AGENTIC_TASKS=1` with an explicitly named tool-capable profile
+(`OPENSHIP_LIVE_TOOL_PROFILE_ID`), fallbacks disabled, the operator's pinned
+profiles file, the authorized OpenSandbox endpoint and key file, and a
+disposable PostgreSQL service and broker. The command is in the
+[agentic task runbook](operations/opensandbox.md#agentic-task-activation-rollback-and-crash-recovery--2026-11-10).
+
+**Status: not run.** The Phase 7A fixture journeys qualify the product's
+behaviour against a scripted model transport; they qualify no tuple here, and
+they are recorded as fixture evidence in
+[validations](validations.md#phase-7a-agentic-task-journeys--qualification-boundary-2026-11-10).
+Task admission stays disabled per deployment (`AGENTIC_TASKS_ENABLED`,
+`AGENTIC_TASK_PROFILE_IDS`) until a tuple earns the row. A profile that
+declares `tool_calls` is **not** thereby qualified for tasks, and enabling a
+profile for tasks is an operator decision with its own cost shape: one turn
+bills planning, per-step, verification and repair calls.
 ## Declaring a profile (redacted)
 
 Profile configuration is non-secret. `MODEL_PROFILES_JSON` is a JSON array;

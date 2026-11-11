@@ -532,3 +532,112 @@ deterministic fixtures, not real-model evidence (no real-model demonstration is
 claimed); the analysis-parser journeys (upload → captured parser →
 `summary.json`/`report.txt`) and their Task 6 acceptance remain pending; host
 probes are not isolation certification.
+
+## Agentic task activation, rollback and crash recovery — 2026-11-10
+
+Phase 7A puts continuous agentic tasks behind two switches that stay **off** by
+default: `AGENTIC_TASKS_ENABLED` (with `AGENTIC_TASK_PROFILE_IDS` naming the
+qualified tool-capable profiles) and the pinned profile snapshot the API and
+worker mount. Activation is a coordinated operation, not a file write.
+
+### Activation
+
+1. Build the profile snapshot only through the consented build command, e.g.
+   `scripts/openship-stack -e dev sandbox-images build logs-data`, and confirm
+   `deploy/sandbox/sandbox-profiles.yaml` stays gitignored. The tracked empty
+   example remains the disabled fallback; a custom `SANDBOX_PROFILES_FILE`
+   requires the operator's own path.
+2. Drain in-flight work through the existing messaging gates and cutover
+   (see [messaging qualification](messaging.md#qualified-transport-versions)).
+   Task runs parked on a plan confirmation, an input request or a recovery
+   request are **preserved**: the drain never cancels a waiting task, and the
+   database, LangGraph checkpoints, artifact store, storage identity and pending
+   decision records are carried over unchanged.
+3. Recreate the API and the worker **together** from the same image/build.
+   Writing YAML alone never recreates services; `openship-stack` restart of one
+   service is not activation.
+4. Verify before reopening admission: the mounted snapshot bytes and digest are
+   identical in both containers (`sha256sum` of the mounted file inside API and
+   worker), `/ready` reports the configured `SANDBOX_PROFILE_ID` as eligible,
+   and the worker is consuming its queue. If the API and worker resolve
+   different snapshots, the profile catalog digest differs, v5 dispatch stays
+   blocked, and admission is not reopened.
+5. Reopen admission only after the qualification gates that own this feature
+   passed. The fixture gates are recorded in the
+   [Phase 7A qualification boundary](../validations.md) and the plan; the live
+   immutable-ID and live-journey gates in this file's commands below are **not
+   run yet**, so rollout remains off.
+
+### Rollback and downgrade
+
+- Stop v5 admissions first: clear `AGENTIC_TASKS_ENABLED`, drain, then restore
+  the API/worker pair. A run already on a v5 plan is served only by a runtime
+  that understands v5 records and the three waiting statuses; with older code it
+  stays visibly parked and reported, never silently rewritten.
+- Never downgrade the schema while task, plan, attempt, decision or recovery
+  rows exist. Migration `phase7a033` and `phase7a034` data (recovery reports,
+  skipped-step and call-binding state) must survive coordinated backup/restore
+  together with the matching checkpoints, artifact store identity and transport
+  identities. Restoring the database without them is not a restore.
+- An operator command, a UI refresh, or a service restart must never repin a
+  profile, restart a task, or re-issue a tool call. A restarted worker resumes
+  from the durable queue claim; a restarted browser reads the same card.
+
+### Crash decision table
+
+| What the records show | What the operator sees | What the product does |
+| --- | --- | --- |
+| An approval transaction never committed | The same ask, with the same plan revision, request id and digest | Re-presents the open request; no new dispatch, no new plan revision |
+| A choice committed, its HTTP response lost | The same settled card after reconnect | Recovers from the decision-command record and the existing outbox |
+| A tool command may have been dispatched | A diagnosis (plan revision, step, attempt, unknowns, risks) before any button | Parks and asks for an explicit choice — in Auto as well as Copilot. Repeat is disabled while a command may still be running; continue is disabled while a later step depends on the step's output |
+| A completed plan gate and an unsettled run | The plan card in its parked state | Leaves the task queued; the reconciler extends the wait, it never re-dispatches |
+
+Choices, budgets and honesty: attempt budgets (`TaskLimits`: 8 steps, 3 attempts
+per step, 2 repairs, 24 generation attempts, lowered only by operator caps) are
+recorded and reported; a budget stop is a budget disposition, not a completion.
+Partial outputs stay retained and listed. A user skip is recorded as skipped,
+never as a verified step, and a step that depends on skipped work stays blocked
+until its required inputs exist independently. Final output claims are computed
+from verified outputs only.
+
+### Commands for the gates that remain
+
+Nothing below runs in a normal test lane: each one is opt-in and names its own
+prerequisites. From `apps/api` (credentials and URLs come from files/env, never
+arguments):
+
+```sh
+# Fixture journeys: real gateway + disposable PostgreSQL + real browser.
+# Model transport and the source body are synthetic; the sandbox transport is not.
+OPENSHIP_FULL_STACK_AGENTIC_TASKS=1 \
+SYNTHETIC_PROFILE_SNAPSHOT="$(python3 ../../scripts/sandbox_images.py --root ../.. --engine docker profiles-source)" \
+  uv run pytest -q -m full_stack tests/full_stack/test_agentic_tasks.py
+
+# Live qualification: real model tuple, real manager, real source. Not run;
+# selected-without-prerequisites fails by design.
+OPENSHIP_LIVE_AGENTIC_TASKS=1 \
+OPENSHIP_LIVE_TOOL_PROFILE_ID=<tool-capable profile id> \
+OPENSHIP_LIVE_AGENTIC_PROFILES_FILE=<operator profiles file> \
+OPENSHIP_LIVE_OPENSANDBOX_ENDPOINT=<authorized endpoint> \
+OPENSHIP_LIVE_OPENSANDBOX_KEY_FILE=<protected key file, 0600> \
+OPENSHIP_LIVE_OPENSANDBOX_PROFILE_ID=<pinned profile> \
+OPENSHIP_LIVE_OPENSANDBOX_DEPENDENCY_IDENTITY=<identity from the profiles file> \
+OPENSHIP_LIVE_AGENTIC_SOURCE_URL=<controlled CSV> \
+OPENSHIP_LIVE_AGENTIC_DEFECTIVE_SOURCE_URL=<same data, one known defect> \
+OPENSHIP_LIVE_AGENTIC_INVALID_SOURCE_URL=<refused source> \
+OPENSHIP_LIVE_AGENTIC_EXPECTED_AVERAGES='{"January":5,"February":8}' \
+TEST_POSTGRES_URL=<disposable service> TEST_NATS_URL=<disposable broker> \
+TEST_NATS_AUTH_FILE=<broker auth file> TEST_NATS_SERVER_CONFIG=<broker config> \
+  uv run pytest -q -m provider_live tests/live/test_agentic_task_journey.py
+
+# Immutable-reference smoke through the manager (separately authorized selector):
+OPENSHIP_LIVE_SANDBOX_PROFILES=1 \
+OPENSHIP_LIVE_SANDBOX_PROFILES_FILE=<operator profiles file> \
+OPENSHIP_LIVE_SANDBOX_PROFILE_ID=<pinned profile> \
+  uv run pytest -q -m provider_live tests/live/test_sandbox_profiles.py
+```
+
+`OPENSHIP_LIVE_AGENTIC_ENGINE_INSPECTION=1` additionally checks the pinned image
+id against the manager's own engine. Where the manager executes the pinned
+engine-local id only by pulling or retagging, this gate blocks and the design is
+reviewed: qualification is never weakened to a mutable tag.
