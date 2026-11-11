@@ -35,7 +35,10 @@ PYTEST_PREFIX = ["uv", "run", "pytest", "-q", "-m", LANE_MARKER_EXPRESSION]
 # The shard plugin the CI workflow already loads. Sharding reuses that
 # partition: deterministic, one module per shard, greedy-balanced by test count.
 SHARD_PLUGIN = "scripts.pytest_shard"
-MAX_AUTO_SHARDS = 4
+# Measured on this tree (2026-11-10): 851.34 s single process, 249.1 s with 4
+# shards, 152.6 s with 8. Eight is the point where the lane stops being the
+# bottleneck for a developer waiting on a gate; more processes mostly add memory.
+MAX_AUTO_SHARDS = 8
 NO_TESTS_EXIT_CODE = 5
 SHARD_ENV = "OPENSHIP_TEST_SHARD"
 _COUNTS = re.compile(r"(\d+) (passed|failed|errors?|skipped|deselected|xfailed|xpassed)")

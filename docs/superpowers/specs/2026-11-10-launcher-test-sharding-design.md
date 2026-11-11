@@ -30,7 +30,7 @@ single-process 14 minutes.
 2. **Auto-shard the full lane only** (ruling 2026-11-10). A narrowed selection
    of a few dozen modules gains nothing from four process starts, so
    auto-shard applies when the plan is `FullLane` and the shard count is
-   `min(4, cpu_count)`. `--shards N` forces any number on any plan;
+   `min(8, cpu_count)`. `--shards N` forces any number on any plan;
    `--shards 1` is today's behaviour. A forced N is capped at the number of
    modules in a narrowed plan — a shard beyond that collects nothing.
 3. **The lane definition stays one string.** `LANE_MARKER_EXPRESSION` remains
@@ -40,7 +40,7 @@ single-process 14 minutes.
 4. **Aggregation is explicit.** Shards run concurrently, each with its output
    captured. The launcher prints one line per shard (`shard 1/4 exit 0: 503
    passed, 42 deselected in 214.02s`), then the summed lane
-   (`2000 passed, 169 deselected in 4 shards, 231.4s`). A shard that failed has
+   (`2000 passed in 8 shards, 152.6s`). A shard that failed has
    its full output printed so tracebacks survive.
 5. **Exit codes are read with their meaning.** `0` = passed, `5` = collected
    nothing (a shard above the module count; not a failure), anything else
@@ -88,7 +88,7 @@ single-process 14 minutes.
 ## Plan
 
 - [x] Task 1: launcher shard tests (RED). `tests/test_run_selected_tests.py`
-      gains: full lane auto-splits into `min(4, cpu)` shard commands naming the
+      gains: full lane auto-splits into `min(8, cpu)` shard commands naming the
       plugin; narrowed stays single process; `--shards N` forces and is capped
       by module count; any failing shard fails the lane; exit 5 is not a
       failure; per-shard and summed report lines; failing shard prints its
@@ -102,11 +102,14 @@ single-process 14 minutes.
       the `_shard_via` seam (an injected runner serves shards too). Launcher
       suite: 31 passed, including one real two-shard run over two module files.
 - [x] Task 3a: measure the lane both ways on this tree.
-      Single process `851.34 s` (853 s in the earlier gate run). A first manual
-      4-shard run measured `437.83 s`; the sharding commit's own hook then ran
-      the same 4-shard lane in `252.4 s` (`252.4 s`, 2037 tests: `1 failed,
-      2036 passed`), so the earlier figure was measured under stale load and is
-      superseded. The shard ranges were `500-510` passed each.
+      Single process `851.34 s` (853 s in the earlier gate run). Same tree,
+      same machine, minutes apart:
+      `249.1 s` with 4 shards (3.4x), `152.6 s` with 8 (5.6x). Both shard runs
+      reported the same `2036 passed` plus the known docs failure
+      (`test_packaging` asks for the three `AGENTIC_*` bindings the in-progress
+      `.env.example` does not name yet). The default is 8 because 8 was
+      measurably faster, capped by `cpu_count` so a small machine keeps its
+      cores.
 - [ ] Task 3b: record the feature commit's own hook run (the launcher
       sharding its own full-lane gate) and the `docs/validations.md` entry.
 - [ ] Task 4: document in `docs/development.md` (gate section) and `.env`

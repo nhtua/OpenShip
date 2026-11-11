@@ -450,7 +450,7 @@ def test_the_full_lane_splits_into_parallel_shards(
     The launcher drives the same shard plugin the workflow uses, in parallel, so
     the pre-commit and pre-push lane stops being one 14-minute process.
     """
-    shards = ShardRecorder({index: (0, "500 passed in 210.00s") for index in range(4)})
+    shards = ShardRecorder({index: (0, "500 passed in 210.00s") for index in range(8)})
     single = Recorder()
 
     code = launcher.run(
@@ -466,9 +466,9 @@ def test_the_full_lane_splits_into_parallel_shards(
     assert code == 0
     assert single.commands == []
     calls = _calls_in_shard_order(shards)
-    assert [command for command, _ in calls] == [_shard_prefix()] * 4
-    assert [env["OPENSHIP_TEST_SHARD"] for _, env in calls] == ["0", "1", "2", "3"]
-    assert {env["OPENSHIP_TEST_SHARDS"] for _, env in calls} == {"4"}
+    assert [command for command, _ in calls] == [_shard_prefix()] * 8
+    assert [env["OPENSHIP_TEST_SHARD"] for _, env in calls] == [str(i) for i in range(8)]
+    assert {env["OPENSHIP_TEST_SHARDS"] for _, env in calls} == {"8"}
 
 
 def test_auto_sharding_leaves_a_narrowed_plan_single_process(
@@ -626,12 +626,7 @@ def test_the_shard_report_adds_the_shards_up(
     repo: Path, capsys: pytest.CaptureResponse[str]
 ) -> None:
     shards = ShardRecorder(
-        {
-            0: (0, "500 passed, 40 deselected in 211.10s"),
-            1: (0, "503 passed, 42 deselected in 214.02s"),
-            2: (0, "500 passed, 43 deselected in 210.90s"),
-            3: (0, "497 passed, 44 deselected in 213.10s"),
-        }
+        {index: (0, "250 passed, 40 deselected in 211.10s") for index in range(8)}
     )
 
     code = launcher.run(
@@ -647,7 +642,7 @@ def test_the_shard_report_adds_the_shards_up(
 
     assert code == 0
     assert "2000 passed" in out
-    assert "4 shards" in out
+    assert "8 shards" in out
     total = next(line for line in out.splitlines() if line.startswith("lane total"))
     assert "deselected" not in total
 
@@ -696,7 +691,7 @@ def test_explain_announces_the_shards_without_running_anything(
     assert code == 0
     assert single.commands == []
     assert shards.calls == []
-    assert "lane shards: 4" in out
+    assert "lane shards: 8" in out
     assert launcher.SHARD_PLUGIN in out
 
 
