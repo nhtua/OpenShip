@@ -3,15 +3,18 @@
 The planning stages are a contract with a model: the prompt is the only text a
 real provider ever sees, and the validators are what the run accepts. When the
 two disagree, a real model is refused on every attempt while a lane that answers
-in the validators' own shape stays green. The dev-stack QA of an agentic task hit
-exactly that (run ``e54c2653-122a-4868-be96-1331899a96b1``): every real envelope
-was refused for "carries no assessment object", and every plan for its hyphenated
-step ids, and the run completed with an empty assistant message. These cases pin
-the two sides of the contract against each other.
+in the validators' own shape stays green. Two dev-stack QA runs of the same
+request hit exactly that: run ``e54c2653-122a-4868-be96-1331899a96b1`` (a flat
+assessment shape, underscores-only step ids) and run
+``a99aa6de-3d41-4d0a-99b9-e6c56649c43b`` (both objects wrapped one level too
+deep). These cases pin the two sides against each other: the envelope shown in
+the prompt is parsed and handed to the validators, so a shape that is shown and
+refused cannot survive a test run.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from types import SimpleNamespace
 
@@ -20,6 +23,7 @@ from pydantic import ValidationError
 
 from src.openship.capabilities.catalog import list_capability_manifests
 from src.openship.capabilities.contracts import CapabilityRef
+from src.openship.providers.errors import ProviderError
 from src.openship.runs.tasks.contracts import (
     STEP_ID_GRAMMAR,
     STEP_ID_PATTERN,
@@ -29,6 +33,8 @@ from src.openship.runs.tasks.contracts import (
 from src.openship.runs.tasks.inference import _assessment_of, _plan_of, _stage_prompt
 
 PINNED_CAPABILITIES = ("download_file", "python_execute")
+ASSESSMENT_MARKER = "Assessment shape,"
+PLAN_MARKER = "Assessment and plan shape,"
 
 
 def _execution():
@@ -47,6 +53,12 @@ def _execution():
         profile_catalog=SimpleNamespace(profiles={"standard": {}, "logs-data": {}}),
         task_context=SimpleNamespace(original_intent="Chart the observations and average them."),
     )
+
+
+def _envelope_shown(prompt: str, marker: str) -> dict:
+    """The example envelope the prompt shows, as the model would read it."""
+    line = next(line for line in prompt.splitlines() if line.startswith(marker))
+    return json.loads(line.split(": ", 1)[1])
 
 
 def _assessment_envelope() -> dict:
@@ -108,19 +120,41 @@ def _step_fields(step_id: str) -> dict:
     }
 
 
-def test_the_assessment_prompt_shows_the_nested_assessment_object():
-    """The stage accepts ``{"assessment": {...}}``; that is the shape it must show."""
+def _wrapped(envelope: dict) -> dict:
+    """Each object wrapped in a copy of its own key - what the real model wrote."""
+    return {key: {key: value} for key, value in envelope.items()}
+
+
+def test_the_assessment_example_the_prompt_shows_is_accepted_by_the_validator():
+    """The shape a model is shown has to be the shape the stage reads. Parse it, hand it to the validator."""
     prompt = _stage_prompt("assessment", _execution(), ())
+    shown = _envelope_shown(prompt, ASSESSMENT_MARKER)
 
-    assert '"assessment":' in prompt
-    assert '"plan":' not in prompt
+    assert set(shown) == {"assessment"}
+    assessment = _assessment_of(shown, _execution(), TaskProgress(current_revision=0), ())
+    assert assessment.classification in {"informational", "clarification", "task", "blocked"}
 
 
-def test_the_plan_prompt_shows_both_nested_objects():
+def test_the_plan_example_the_prompt_shows_is_accepted_by_both_validators():
+    prompt = _stage_prompt("assessment_and_plan", _execution(), ())
+    shown = _envelope_shown(prompt, PLAN_MARKER)
+    execution = _execution()
+    progress = TaskProgress(current_revision=0)
+
+    assert set(shown) == {"assessment", "plan"}
+    _assessment_of(shown, execution, progress, ())
+    plan = _plan_of(shown, execution, progress)
+    assert plan.steps, "the example plan the prompt shows must be a plan the stage accepts"
+
+
+def test_the_prompt_shows_the_envelope_once_not_nested_in_itself():
+    """The QA run ``a99aa6de`` answered ``{"assessment":{"assessment":{…}}}`` because the prompt showed a nested object without saying what holds it."""
     prompt = _stage_prompt("assessment_and_plan", _execution(), ())
 
-    assert '"assessment":' in prompt
-    assert '"plan":' in prompt
+    assert "never a copy of this envelope" in prompt
+    shown = _envelope_shown(prompt, PLAN_MARKER)
+    for key, value in shown.items():
+        assert set(value) != {key}, f'"{key}" is shown wrapped in itself'
 
 
 def test_the_plan_prompt_states_the_step_identity_grammar():
@@ -151,6 +185,36 @@ def test_an_envelope_answered_per_the_prompt_validates():
     assert [step.id for step in plan.steps] == ["find-data-source", "chart_and_average"]
 
 
+def test_an_envelope_that_wraps_each_object_once_is_understood():
+    """Real models write this: run ``a99aa6de-3d41-4d0a-99b9-e6c56649c43b`` answered every stage this way.
+
+    ``{"assessment": {"assessment": {…}}, "plan": {"plan": {…}}}`` asks the same
+    question one layer deeper. The stage reads through the redundant wrapper
+    rather than refusing an answer that says what it means.
+    """
+    envelope = _wrapped({"assessment": _assessment_envelope(), "plan": _plan_envelope()})
+    execution = _execution()
+
+    assessment = _assessment_of(envelope, execution, TaskProgress(current_revision=0), ())
+    plan = _plan_of(envelope, execution, TaskProgress(current_revision=0))
+
+    assert assessment.classification == "task"
+    assert [step.id for step in plan.steps] == ["find-data-source", "chart_and_average"]
+
+
+def test_a_second_wrapper_is_still_refused():
+    """Reading through one wrapper is leniency about a shape, not a parser."""
+    envelope = {
+        "assessment": {"assessment": {"assessment": _assessment_envelope()}},
+        "plan": {"plan": {"plan": _plan_envelope()}},
+    }
+
+    with pytest.raises(ProviderError):
+        _assessment_of(envelope, _execution(), TaskProgress(current_revision=0), ())
+    with pytest.raises(ProviderError):
+        _plan_of(envelope, _execution(), TaskProgress(current_revision=0))
+
+
 def test_an_envelope_that_only_echoes_the_published_assessment_is_refused():
     """The plan stage shows the published assessment as data; echoing it is not a plan.
 
@@ -160,10 +224,9 @@ def test_an_envelope_that_only_echoes_the_published_assessment_is_refused():
     accept a plan-less draft.
     """
     envelope = {"assessment": _assessment_envelope()}
-    execution = _execution()
 
     with pytest.raises(Exception, match="no plan object"):
-        _plan_of(envelope, execution, TaskProgress(current_revision=0))
+        _plan_of(envelope, _execution(), TaskProgress(current_revision=0))
 
 
 @pytest.mark.parametrize("step_id", ["a", "fetch_1", "find-data-source", "x" * 64])

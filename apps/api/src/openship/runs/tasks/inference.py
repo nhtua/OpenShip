@@ -45,6 +45,41 @@ _MAX_CORRECTIONS = 2
 _MAX_OBSERVATIONS = 8
 _OBSERVATION_BYTES = 2000
 
+#: The envelope the stage prompt shows. It is assembled from the contract's own
+#: keys, and `tests/test_task_prompt_contract.py` parses the line the prompt
+#: prints and hands the result to the same validators the run uses - so a shape
+#: that is shown and refused cannot survive a test run.
+_ASSESSMENT_EXAMPLE = {
+    "classification": "task",
+    "explanation": "What this run can do with the evidence it was shown.",
+    "evidence_refs": [],
+    "missing_information": [],
+    "failure": "none",
+    "step_id": None,
+    "unknowns": [],
+    "risks": [],
+    "recommended_recovery_action": None,
+}
+
+
+def _plan_example(capability_id: str | None, profile_id: str | None) -> dict:
+    """One step the run can actually be given: the ids come from its own snapshot."""
+    return {
+        "intent": "Do the work the request asks for.",
+        "constraints": [],
+        "steps": [
+            {
+                "id": "gather",
+                "intent": "Get the inputs the request names.",
+                "depends_on": [],
+                "capability": capability_id,
+                "profile_id": profile_id,
+                "expected_outputs": ["the input the request named"],
+                "completion_checks": ["the input is available to the run"],
+            }
+        ],
+    }
+
 _ASSESSMENT_KEYS = frozenset(
     {
         "classification",
@@ -138,27 +173,39 @@ def _stage_prompt(purpose: str, execution, observations: tuple[PublishedToolResu
         f"Allowed capabilities: {capabilities}.",
         f"Allowed sandbox profiles: {profiles}.",
         (
-            'Answer with one JSON object holding the assessment under "assessment":'
-            ' {"assessment":{"classification":"informational|clarification|task|blocked",'
-            '"explanation":"public summary, no private reasoning","evidence_refs":["obs:0"],'
-            '"missing_information":[],"failure":"none|known|material|uncertain|denied|policy|budget",'
-            '"step_id":null,"unknowns":[],"risks":[],"recommended_recovery_action":null}}.'
-            " Nothing outside these keys is accepted."
+            "Answer with exactly one JSON object and nothing around it. Its top-level keys are"
+            " the objects named below: the value of each key is that object itself, never a copy"
+            " of this envelope inside it. Nothing outside these keys is accepted."
         ),
+        (
+            "classification is one of informational|clarification|task|blocked; failure is one"
+            " of none|known|material|uncertain|denied|policy|budget."
+        ),
+        "Assessment shape, exactly this nesting: "
+        + json.dumps({"assessment": _ASSESSMENT_EXAMPLE}, ensure_ascii=False),
         (
             "Cite only the evidence refs shown above. A recommendation never selects eligibility"
             " and never consumes a decision."
         ),
     ]
     if purpose == "assessment_and_plan":
+        allowed_ids = sorted({ref.id for ref in execution.allowed_capabilities})
+        allowed_profiles = sorted(execution.profile_catalog.profiles)
         lines.append(
-            'Add the plan under "plan": {"plan":{"intent":"...","constraints":[],"steps":'
-            '[{"id":"step id: '
-            + STEP_ID_GRAMMAR
-            + '","intent":"...","depends_on":[],'
-            '"capability":"one allowed capability id","profile_id":null,"expected_outputs":'
-            '["..."],"completion_checks":["..."]}]}}. Every reference must come from the '
-            "sets above."
+            "Assessment and plan shape, exactly this nesting: "
+            + json.dumps(
+                {
+                    "assessment": _ASSESSMENT_EXAMPLE,
+                    "plan": _plan_example(
+                        allowed_ids[0] if allowed_ids else None,
+                        allowed_profiles[0] if allowed_profiles else None,
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        )
+        lines.append(
+            "A step id is " + STEP_ID_GRAMMAR + ". Every reference must come from the sets above."
         )
     for index, published in enumerate(observations[:_MAX_OBSERVATIONS]):
         lines.append(_observation_block(index, published))
@@ -223,6 +270,23 @@ def _tuples(value):
     return value
 
 
+def _unwrap(value: object, key: str) -> dict | None:
+    """Read through one redundant wrapper - the shape real models write.
+
+    ``{"assessment": {"assessment": {…}}}`` asks the same question one layer
+    deeper than ``{"assessment": {…}}``: dev-stack QA run
+    ``a99aa6de-3d41-4d0a-99b9-e6c56649c43b`` answered every stage that way. One
+    wrapper is read through; a second is not a shape anyone writes, and stays
+    refused.
+    """
+    if not isinstance(value, dict):
+        return None
+    inner = value.get(key)
+    if isinstance(inner, dict) and set(value) == {key}:
+        return inner
+    return value
+
+
 def _assessment_of(
     payload: dict,
     execution,
@@ -237,7 +301,7 @@ def _assessment_of(
     published elsewhere: a planning stage carries an assessment whose evidence
     the run showed at an earlier stage.
     """
-    data = payload.get("assessment")
+    data = _unwrap(payload.get("assessment"), "assessment")
     if not isinstance(data, dict):
         raise ProviderError("invalid_response", safe_message="The envelope carries no assessment object.")
     if not set(data) <= _ASSESSMENT_KEYS:
@@ -259,7 +323,7 @@ def _plan_of(payload: dict, execution, progress: TaskProgress) -> TaskPlan:
     including its version and manifest digest, always comes from the run's
     snapshot, so a model cannot smuggle a stale or invented identity.
     """
-    data = payload.get("plan")
+    data = _unwrap(payload.get("plan"), "plan")
     if not isinstance(data, dict):
         raise ProviderError("invalid_response", safe_message="The envelope carries no plan object.")
     if not set(data) <= _PLAN_KEYS:
