@@ -309,7 +309,7 @@ def profile_spec(
             "max_output_tokens": 4096,
             "token_counting": False,
             "tool_calls": False,
-            "structured_output": False,
+            "structured_output": True,
             "attachment_types": [],
             "parallel_tool_calls": False,
         },

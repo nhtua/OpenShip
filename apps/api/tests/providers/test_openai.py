@@ -63,6 +63,43 @@ async def test_usage_is_requested_explicitly():
 
 
 @pytest.mark.asyncio
+async def test_a_contract_shaped_turn_asks_the_chat_endpoint_for_json_output():
+    """A stage that needs one JSON object gets JSON mode; prose chat does not."""
+    capabilities = {
+        "streaming": True,
+        "usage_reporting": True,
+        "context_tokens": 32768,
+        "max_output_tokens": 4096,
+        "token_counting": False,
+        "tool_calls": False,
+        "structured_output": True,
+        "attachment_types": [],
+        "parallel_tool_calls": False,
+    }
+    shaped_request = conversation(
+        ("user", "Answer with exactly one JSON object.")
+    ).model_copy(
+        update={"required_capabilities": frozenset({"streaming", "structured_output"})}
+    )
+    shaped = adapter_case(
+        chunks=[sdk_chunk(content='{"ok": true}', finish_reason="stop")],
+        profile_kwargs={"capabilities": capabilities},
+    )
+
+    _events, failure = await drain(shaped.adapter, shaped_request, shaped.profile, control())
+
+    assert failure is None
+    assert shaped.transport.seen_kwargs["response_format"] == {"type": "json_object"}
+
+    prose = adapter_case(
+        chunks=[sdk_chunk(content="hello", finish_reason="stop")],
+        profile_kwargs={"capabilities": capabilities},
+    )
+    await drain(prose.adapter, conversation(("user", "hi")), prose.profile, control())
+    assert "response_format" not in prose.transport.seen_kwargs
+
+
+@pytest.mark.asyncio
 async def test_the_output_parameter_belongs_to_the_profile():
     """A profile that needs max_completion_tokens is not sent max_tokens."""
     for parameter in ("max_tokens", "max_completion_tokens"):

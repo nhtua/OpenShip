@@ -38,6 +38,44 @@ async def test_response_text_stream_is_mapped_and_closes():
 
 
 @pytest.mark.asyncio
+async def test_a_contract_shaped_turn_asks_the_responses_endpoint_for_json_output():
+    """The stage that needs one JSON object gets the Responses JSON text format."""
+    from src.openship.providers.openai_responses import OpenAIResponsesAdapter
+
+    item = {
+        "type": "message",
+        "id": "msg_1",
+        "role": "assistant",
+        "status": "completed",
+        "phase": "final_answer",
+        "content": [{"type": "output_text", "text": '{"ok": true}', "annotations": []}],
+    }
+    response = SimpleNamespace(
+        status="completed", output=[item], model="fixture-model", usage=None
+    )
+    transport = StreamTransport([
+        SimpleNamespace(type="response.output_text.delta", delta='{"ok": true}'),
+        SimpleNamespace(type="response.completed", response=response),
+    ])
+    client = SimpleNamespace(responses=SimpleNamespace(create=transport.create))
+    profile = response_profile().model_copy(update={
+        "capabilities": response_profile().capabilities.model_copy(
+            update={"structured_output": True}
+        )
+    })
+    request = conversation(
+        ("user", "Answer with exactly one JSON object.")
+    ).model_copy(
+        update={"required_capabilities": frozenset({"streaming", "structured_output"})}
+    )
+    adapter = OpenAIResponsesAdapter(client_factory=lambda _profile: client)
+
+    _events = [event async for event in adapter.stream(request, profile, control())]
+
+    assert transport.seen_kwargs["text"] == {"format": {"type": "json_object"}}
+
+
+@pytest.mark.asyncio
 async def test_response_tool_call_is_not_executed_before_terminal_completion():
     from src.openship.providers.contracts import ToolDefinition
     from src.openship.providers.openai_responses import OpenAIResponsesAdapter

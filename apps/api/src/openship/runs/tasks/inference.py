@@ -45,6 +45,12 @@ _MAX_CORRECTIONS = 2
 _MAX_OBSERVATIONS = 8
 _OBSERVATION_BYTES = 2000
 
+#: An inference stage answers with one contract-shaped JSON object, so its
+#: request asks the profile for JSON mode. `validate_request` refuses a
+#: profile that does not declare `structured_output`; agentic admission
+#: already requires one that does (`runs/service.py`).
+_ENVELOPE_CAPABILITIES = frozenset({"streaming", "structured_output"})
+
 #: The envelope the stage prompt shows. It is assembled from the contract's own
 #: keys, and `tests/test_task_prompt_contract.py` parses the line the prompt
 #: prints and hands the result to the same validators the run uses - so a shape
@@ -459,6 +465,7 @@ def assess_task(
             tools=(),
             tool_choice="none",
             max_output_tokens=max_output_tokens,
+            required_capabilities=_ENVELOPE_CAPABILITIES,
         )
         try:
             text = _turn(invocation, request, ordinal + step)
@@ -517,6 +524,7 @@ def plan_task(
             tools=(),
             tool_choice="none",
             max_output_tokens=max_output_tokens,
+            required_capabilities=_ENVELOPE_CAPABILITIES,
         )
         try:
             text = _turn(invocation, request, ordinal + step)

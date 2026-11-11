@@ -301,6 +301,11 @@ class OpenAIAdapter:
                 kwargs["reasoning_effort"] = (
                     config.adapter_options.tool_call_reasoning_effort
                 )
+        if "structured_output" in request.required_capabilities:
+            # A stage asked for one contract-shaped object. `validate_request`
+            # has already refused any profile that does not qualify JSON mode,
+            # so this is the wire form of a declared capability, not a guess.
+            kwargs["response_format"] = {"type": "json_object"}
         try:
             stream = await client.chat.completions.create(**kwargs)
         except _SDK_ERRORS as error:

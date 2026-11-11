@@ -83,7 +83,7 @@ def _responses_spec(profile_id: str = "responses-fixture") -> dict:
             "max_output_tokens": 4096,
             "token_counting": False,
             "tool_calls": False,
-            "structured_output": False,
+            "structured_output": True,
             "attachment_types": [],
             "parallel_tool_calls": False,
         },
@@ -253,6 +253,23 @@ def _attempt_rows(db, run_id) -> int:
 
 def _pre_plan() -> TaskProgress:
     return TaskProgress(current_revision=0, status="unknown")
+
+
+def test_stages_ask_for_the_json_output_their_contracts_require(monkeypatch):
+    """A stage that must answer one JSON object asks the profile for JSON mode.
+
+    The stage prompt has always demanded exactly one JSON object, but nothing
+    in the request told the provider so; the profile's `structured_output`
+    qualification was only an admission check. This pins the wire request.
+    """
+    execution, claim = _running_v5_run()
+    invocation, transport = _invocation(
+        execution, claim, monkeypatch, [_answer("greeting.json")]
+    )
+
+    assess_task(invocation, _pre_plan())
+
+    assert transport.seen_kwargs["response_format"] == {"type": "json_object"}
 
 
 def test_greeting_answers_without_confirmation(monkeypatch):

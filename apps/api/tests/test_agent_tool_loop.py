@@ -52,7 +52,7 @@ def _tool_profile(**overrides):
         "max_output_tokens": 4096,
         "token_counting": False,
         "tool_calls": True,
-        "structured_output": False,
+        "structured_output": True,
         "attachment_types": [],
         "parallel_tool_calls": False,
     }

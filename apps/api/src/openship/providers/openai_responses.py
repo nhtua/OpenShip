@@ -62,6 +62,11 @@ class OpenAIResponsesAdapter(OpenAIAdapter):
         if tool_definitions:
             kwargs["tools"] = tool_definitions
             kwargs["tool_choice"] = request.tool_choice
+        if "structured_output" in request.required_capabilities:
+            # A stage asked for one contract-shaped object. `validate_request`
+            # has already refused any profile that does not qualify JSON mode,
+            # so this is the wire form of a declared capability, not a guess.
+            kwargs["text"] = {"format": {"type": "json_object"}}
         try:
             stream = await client.responses.create(**kwargs)
         except _SDK_ERRORS as error:
