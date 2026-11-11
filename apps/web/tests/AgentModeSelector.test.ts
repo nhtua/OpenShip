@@ -11,12 +11,15 @@ function mountSelector(props: Record<string, unknown> = {}) {
 }
 
 describe('AgentModeSelector', () => {
+  it('offers the mode in a compact dropdown', () => {
+    const wrapper = mountSelector({ mode: 'copilot' })
+    expect(wrapper.find('button[aria-haspopup="menu"]').exists()).toBe(true)
+  })
   it('names itself for a screen reader', () => {
     const wrapper = mountSelector({ mode: 'copilot' as AgentMode, revision: 4 })
     const selector = wrapper.find('[data-testid="agent-mode-selector"]')
 
-    expect(selector.attributes('role')).toBe('radiogroup')
-    expect(selector.attributes('aria-label')).toBe('Agent execution mode')
+    expect(wrapper.get('[data-testid="agent-mode-current"]').attributes('aria-label')).toBe('Agent execution mode')
     expect(selector.attributes('aria-live')).toBe('polite')
     wrapper.unmount()
   })
@@ -30,18 +33,12 @@ describe('AgentModeSelector', () => {
     wrapper.unmount()
   })
 
-  it('labels the other mode as the account default until it is chosen', () => {
-    const wrapper = mountSelector({ mode: 'copilot' as AgentMode, revision: 4 })
-    const choices = wrapper.findAll('button')
-
-    expect(choices).toHaveLength(2)
-    expect(choices.map((button) => button.attributes('aria-label'))).toEqual([
-      'Use Copilot for new tasks',
-      'Use Auto for new tasks',
-    ])
-    expect(choices[0].attributes('aria-current')).toBe('true')
-    expect(choices[1].attributes('aria-current')).toBe(undefined)
-    wrapper.unmount()
+  it('offers both modes and selects the committed mode', async () => {
+    const wrapper = mountSelector({ mode: 'copilot' as AgentMode })
+    await wrapper.get('[data-testid="agent-mode-current"]').trigger('click')
+    const choices = wrapper.findAll('[role="menuitemradio"]')
+    expect(choices.map(option => option.text())).toEqual(['CopilotSelected', 'Auto'])
+    expect(choices[0].attributes('aria-checked')).toBe('true')
   })
 
   it('marks a choice the browser asked for but the server has not confirmed', () => {
@@ -74,34 +71,24 @@ describe('AgentModeSelector', () => {
   it('states an unavailable preference instead of guessing a mode', () => {
     const wrapper = mountSelector({ revision: 0, blocked: true, message: 'The agent mode could not be loaded. Retry before a task send.' })
 
-    expect(wrapper.get('[data-testid="agent-mode-current"]').text()).toBe('Mode unknown')
+    expect(wrapper.get('[data-testid="agent-mode-current"]').text()).toContain('Mode unknown')
     expect(wrapper.get('[data-testid="agent-mode-message"]').text()).toBe('The agent mode could not be loaded. Retry before a task send.')
     wrapper.unmount()
   })
 
-  it('refuses a choice while the mode is unresolved, without dropping keyboard access', async () => {
+  it('refuses a choice while the mode is unresolved', async () => {
     const wrapper = mountSelector({ blocked: true })
-    const choices = wrapper.findAll('button')
-
-    expect(choices.map((button) => button.attributes('aria-disabled'))).toEqual(['true', 'true'])
+    await wrapper.get('[data-testid="agent-mode-current"]').trigger('click')
+    expect(wrapper.get('[data-testid="agent-mode-auto-choice"]').attributes('disabled')).toBeDefined()
     await wrapper.get('[data-testid="agent-mode-auto-choice"]').trigger('click')
-    expect(wrapper.emitted('choose')).toBe(undefined)
-
-    // A keyboard user can still reach both controls: disabling a control is not
-    // removing it.
-    expect(wrapper.find('[data-testid="agent-mode-copilot-choice"]').exists()).toBe(true)
-    wrapper.unmount()
+    expect(wrapper.emitted('choose')).toBeUndefined()
   })
 
-  it('asks for a choice a listener can save, and only for one control', async () => {
-    const wrapper = mountSelector({ mode: 'copilot' as AgentMode, revision: 4 })
-
+  it('emits a selected mode for saving', async () => {
+    const wrapper = mountSelector({ mode: 'copilot' as AgentMode })
+    await wrapper.get('[data-testid="agent-mode-current"]').trigger('click')
     await wrapper.get('[data-testid="agent-mode-auto-choice"]').trigger('click')
     expect(wrapper.emitted('choose')).toEqual([['auto']])
-
-    await wrapper.get('[data-testid="agent-mode-copilot-choice"]').trigger('click')
-    expect(wrapper.emitted('choose')).toEqual([['auto'], ['copilot']])
-    wrapper.unmount()
   })
 
   it('shows the recorded history after a conflict, beside the current mode', () => {

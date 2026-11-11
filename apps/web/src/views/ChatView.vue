@@ -771,17 +771,6 @@ onBeforeUnmount(() => {
         @resumed="run => { if (chat.currentConversation?.id === run.conversation_id) void chat.loadConversation(run.conversation_id) }"
         @respond="handleTimelineDecisionRespond"
       />
-      <AgentModeSelector
-        :mode="agentMode.mode"
-        :pending-mode="agentMode.pendingMode"
-        :revision="agentMode.revision"
-        :loading="agentMode.loading"
-        :saving="agentMode.saving"
-        :conflict="agentMode.conflict"
-        :blocked="agentMode.submissionBlocked"
-        :message="agentMode.error"
-        @choose="handleChooseMode"
-      />
       <p
         v-if="replyNotice"
         data-testid="chat-reply-notice"
@@ -814,7 +803,14 @@ onBeforeUnmount(() => {
         @search="handleSearch"
         @select="handleSelectProfile"
         @draft-consumed="handleComposerDraftConsumed"
-      />
+      >
+        <template #mode>
+          <AgentModeSelector :mode="agentMode.mode" :pending-mode="agentMode.pendingMode"
+            :revision="agentMode.revision" :loading="agentMode.loading" :saving="agentMode.saving"
+            :conflict="agentMode.conflict" :blocked="agentMode.submissionBlocked" :message="agentMode.error"
+            @choose="handleChooseMode" />
+        </template>
+      </ChatInput>
     </div>
 
     <Sheet

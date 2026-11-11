@@ -498,7 +498,8 @@ onBeforeUnmount(() => {
         class="inline-flex h-8 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-3 text-xs text-foreground hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         @click="disableAutomaticToolMode"
       >
-        <span>Automatic tools</span>
+        <Icon name="wrench" aria-hidden="true" />
+        <span>ON</span>
         <span aria-hidden="true">×</span>
       </button>
 
@@ -583,6 +584,7 @@ onBeforeUnmount(() => {
       </span>
 
       <div class="ml-auto flex min-w-0 items-center gap-2">
+        <slot name="mode" />
         <ProviderSelector
           :profiles="props.profiles"
           :default-profile-id="props.defaultProfileId"

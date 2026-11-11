@@ -406,7 +406,6 @@ def build_task_graph(
                 db, invocation.claim, plan, expected_revision=progress.current_revision
             )
             db.commit()
-        intent = execution_of_intent(state)
         return {
             "cursor": {
                 **cursor,
@@ -416,7 +415,6 @@ def build_task_graph(
                     classify_revision(previous, plan) if previous is not None else ""
                 ),
             },
-            "assistant_response": _presentation(plan, intent),
             "expected_revision": plan.revision,
         }
 
@@ -970,18 +968,24 @@ def build_task_graph(
         }
 
     def finish(state: TaskGraphState) -> dict:
-        if state.get("finish_reason") or state.get("assistant_response"):
+        if state.get("finish_reason"):
             return {}
         invocation = _invocation(state)
         with invocation.session_factory() as db:
             plan = read_plan(db, invocation.claim.run_id)
-        intent = execution_of_intent(state) if plan else ""
+            progress = read_progress(db, invocation.claim.run_id)
         return {
             "finish_reason": "stop",
-            # Never an empty message: a run that ends with nothing to present has
-            # to say that, not leave the reader with a blank turn.
-            "assistant_response": (_presentation(plan, intent) if plan else NO_PLAN_ANSWER)
-            or NO_PLAN_ANSWER,
+            # The plan already has its own durable event. Report only what the
+            # task projection can substantiate, not a repeated plan or a model's
+            # unverified assertion that a deliverable exists.
+            "assistant_response": (
+                "Task completed; all plan steps were verified."
+                if plan and progress.status == "completed"
+                else "The task ended; not all plan steps were verified."
+                if plan
+                else NO_PLAN_ANSWER
+            ),
         }
 
     def _after_assess(state: TaskGraphState) -> str:

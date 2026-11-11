@@ -700,9 +700,10 @@ def test_copilot_no_dispatch_before_exact_confirmation(monkeypatch):
     request_id, plan_revision, expected_digest, kind = lane.confirm_pending()
     assert (plan_revision, kind) == (1, "plan_confirmation")
     lane.resume_queue("copilot-worker")
-    lane.invoke()
+    outcome = lane.invoke()
 
     assert _calls(lane) == list(CAPABILITY_IDS)
+    assert outcome["assistant_response"] == "Task completed; all plan steps were verified."
     after = _durable(lane.run_id)
     assert after["progress"].pending_decision is None
     assert len(after["decisions"]) == 1
@@ -721,7 +722,7 @@ def test_auto_announces_plan_then_downloads_executes_and_verifies(monkeypatch):
 
     capability_calls = _calls(lane)
     assert capability_calls == ["download_file", "python_execute"]
-    assert outcome["assistant_response"].startswith("Plan revision 1:")
+    assert outcome["assistant_response"] == "Task completed; all plan steps were verified."
     assert outcome["cursor"]["verification_recorded"] == ["fetch", "analyze"]
 
     durable = _durable(lane.run_id)
@@ -839,7 +840,7 @@ def test_assistant_final_text_does_not_complete_missing_outputs(monkeypatch):
     assert durable["progress"].verified_steps == ("fetch",)
     assert durable["progress"].skipped_steps == ()
     assert durable["task_status"] == "verification_pending"
-    assert outcome["assistant_response"].startswith("Plan revision 1:")
+    assert outcome["assistant_response"] == "The task ended; not all plan steps were verified."
     assert "The chart is finished." not in outcome["assistant_response"]
 
 

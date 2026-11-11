@@ -25,6 +25,18 @@ function task(pending = true): TaskCardState {
 }
 
 describe('task entries in the conversation', () => {
+  it('shows streaming activity as a compact thinking row', () => {
+    const wrapper = mount(ChatStream, { props: { messages, isStreaming: true } })
+    expect(wrapper.get('[data-testid="typing-indicator"]').text()).toContain('Thinking')
+    expect(wrapper.get('[data-testid="typing-indicator"]').element.tagName).toBe('DETAILS')
+  })
+  it('places the plan before tools from the same run', () => {
+    const operation = { id: 'tool-1', run_id: 'run-1', conversation_id: 'c1', capability_id: 'download_file', status: 'succeeded', created_at: '2026-11-01T00:02:00Z', result: null, artifacts: [], attempts: [] } as unknown as import('@/types').ToolOperationSummary
+    const wrapper = mount(ChatStream, { props: { messages, operations: [operation], tasks: [task()], isStreaming: false } })
+    const stream = wrapper.get('[data-testid="stream"]')
+    const nodes = stream.element.querySelectorAll('[data-testid="task-timeline-entry"], [data-testid="tool-operation-card"]')
+    expect(nodes[0]?.getAttribute('data-testid')).toBe('task-timeline-entry')
+  })
   it('places the durable plan and approval immediately after its run, not in a separate pane', async () => {
     const wrapper = mount(ChatStream, { props: { messages, tasks: [task()], isStreaming: false } })
     const stream = wrapper.get('[data-testid="stream"]')

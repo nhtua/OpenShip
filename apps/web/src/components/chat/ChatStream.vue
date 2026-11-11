@@ -39,8 +39,7 @@ const entries = computed(() => {
   const result: Array<(typeof timeline.value)[number] | { kind: 'task'; id: string; card: TaskCardState }> = [...timeline.value]
   for (const card of props.tasks) {
     if (!card.planRevisions.length && !card.pendingDecision && !card.resolvedDecisions.length) continue
-    const anchor = result.map((entry) => entry.kind !== 'task' && entry.runId === card.runId &&
-      (entry.kind === 'tool' || entry.message.role === 'user')).lastIndexOf(true)
+    const anchor = result.findIndex((entry) => entry.kind === 'message' && entry.runId === card.runId && entry.message.role === 'user')
     if (anchor >= 0) result.splice(anchor + 1, 0, { kind: 'task', id: card.runId, card })
     else if (card.runId === props.activeTaskRunId) result.push({ kind: 'task', id: card.runId, card })
   }
@@ -134,42 +133,13 @@ onBeforeUnmount(() => {
         />
       </template>
 
-      <!-- Typing indicator: agent is working (streaming but no assistant message yet) -->
-      <div
-        v-if="isStreaming && awaitingAssistant"
-        class="message flex min-w-0 items-start gap-4"
-        data-testid="typing-indicator"
-      >
-        <div
-          class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground"
-          aria-hidden="true"
-        >
-          OS
-        </div>
-        <div class="min-w-0 max-w-full flex-1 space-y-3 md:max-w-2xl">
-          <div
-            class="flex items-center gap-2 text-xs font-medium text-muted-foreground"
-            role="status"
-          >
-            <span>Agent</span>
-            <span
-              class="flex gap-1"
-              data-testid="thinking-dots"
-              aria-hidden="true"
-            >
-              <span class="size-1.5 animate-bounce rounded-full bg-muted-foreground"></span>
-              <span
-                class="size-1.5 animate-bounce rounded-full bg-muted-foreground"
-                style="animation-delay: 150ms"
-              ></span>
-              <span
-                class="size-1.5 animate-bounce rounded-full bg-muted-foreground"
-                style="animation-delay: 300ms"
-              ></span>
-            </span>
-          </div>
-        </div>
-      </div>
+      <details v-if="isStreaming && awaitingAssistant" data-testid="typing-indicator"
+        class="text-xs text-muted-foreground">
+        <summary class="cursor-pointer rounded-md py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" role="status">
+          Thinking <span data-testid="thinking-dots" aria-hidden="true">…</span>
+        </summary>
+        <p class="pl-4">The agent is working.</p>
+      </details>
 
       <!-- One standalone status when streaming with no messages at all:
            never a second placeholder. -->

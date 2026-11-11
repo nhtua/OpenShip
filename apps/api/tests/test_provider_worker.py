@@ -934,6 +934,8 @@ def test_the_requests_a_turn_made_are_stated_in_the_record(
         assert "content" not in facts, "no prompt and no answer belongs here"
 
     terminal = json.loads(stated["run.succeeded"].payload)
+    message = session.query(Message).filter_by(run_id=run.id, role="assistant").one()
+    assert terminal["message_id"] == str(message.id)
     assert terminal["model"]["profile_id"] == "primary-fixture", (
         "a terminal event can be read on its own, after the events beside it "
         "were pruned"

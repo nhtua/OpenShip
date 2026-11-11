@@ -1201,6 +1201,7 @@ class Worker:
                         content=cleaned_response,
                     )
                     job.add(assistant_msg)
+                    job.flush()
 
                     # Update conversation title if this was the first message
                     if is_first and new_title:
