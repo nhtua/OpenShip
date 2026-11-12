@@ -10,7 +10,7 @@
 
 **Spec:** [Conversation inbox and clarification design](../specs/2026-11-11-conversation-inbox-and-clarification-design.md). Read it before implementing this plan.
 
-**Status:** Plan approved; implementation in progress inline in the current isolated worktree, with no subagents, push, PR, or merge. Tasks 1–3 are committed and their hooks passed. Task 4 is in progress; Tasks 5–8 remain open.
+**Status:** Superseded by `docs/superpowers/plans/2026-11-12-inbox-deferred-routing.md`, which routes inbox messages at processing time instead of binding them at admission. The 2026-11-11 plan's delivered evidence (tasks 1–8 commits, test coverage, hooks) is preserved for history; its routing behavior is replaced by the deferred-routing plan.
 
 ## Global Constraints
 

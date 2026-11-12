@@ -7,6 +7,12 @@ date: 2026-11-11
 
 # Conversation inbox and clarification flow
 
+> **Superseded:** routing decisions are now made at processing time, not admission. See
+> `docs/superpowers/specs/2026-11-12-conversation-inbox-deferred-routing-design.md`.
+> Durability, idempotent admission, FIFO promotion, fenced workers, provider-pinned
+> execution, explicit approvals, and recorded-only usage from this design remain in
+> force; only the routing point moved.
+
 ## Intent and scope
 
 OpenShip conversations are multi-turn collaborations, not a sequence of locked
