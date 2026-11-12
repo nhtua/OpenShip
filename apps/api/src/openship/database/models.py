@@ -39,6 +39,7 @@ from ..resources.models import (
     ResourceObject,
     ResourceObservation,
 )
+from ..runs.inbox.models import ConversationInboxEntry
 from ..runs.models import (
     Event,
     Outbox,
@@ -47,6 +48,7 @@ from ..runs.models import (
     RunJob,
     RunTranscriptRecord,
 )
+from ..runs.tasks import models as _task_models  # noqa: F401
 from ..sandboxes.models import WorkflowSandbox
 from ..workspace.models import ConversationWorkspace, Project
 
@@ -61,6 +63,7 @@ __all__ = [
     "ConnectorRequestLedger",
     "ConnectorRevision",
     "Conversation",
+    "ConversationInboxEntry",
     "ConversationWorkspace",
     "CredentialVersion",
     "Environment",

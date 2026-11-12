@@ -46,6 +46,7 @@ class ConversationInboxEntry(Base):
         nullable=True,
     )
     request_json = Column(Text, nullable=False)
+    failure_code = Column(String(100), nullable=True)
 
     __table_args__ = (
         UniqueConstraint(

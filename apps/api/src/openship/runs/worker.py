@@ -47,7 +47,7 @@ from ..runs.service import bind_run_model_config
 from ..sandboxes.profiles import startup_catalog
 from .dispatch import UnsupportedGraphVersion, resolve_graph
 from .graph import ModelResult
-from .models import ProviderAttempt, Run, RunJob
+from .models import ACTIVE_RUN_STATUSES, ProviderAttempt, Run, RunJob
 from .queue import (
     begin_execution_window,
     claim_next,
@@ -705,11 +705,19 @@ class Worker:
 
     def _is_first_message(self, db, conversation, user_msg):
         """Check if this is the first message in the conversation."""
+        from .inbox.models import ConversationInboxEntry
+
+        pending = db.query(ConversationInboxEntry.message_id).filter(
+            ConversationInboxEntry.conversation_id == conversation.id,
+            ConversationInboxEntry.disposition == "queued",
+            ConversationInboxEntry.status.in_(("queued", "failed")),
+        )
         existing = (
             db.query(Message)
             .filter(
                 Message.conversation_id == conversation.id,
                 Message.id != user_msg.id,
+                ~Message.id.in_(pending),
             )
             .count()
         )
@@ -901,9 +909,17 @@ class Worker:
             is_first = self._is_first_message(job, conv, user_msg)
 
             # Load conversation history for context
+            from .inbox.models import ConversationInboxEntry
+
+            not_admitted = job.query(ConversationInboxEntry.message_id).filter(
+                ConversationInboxEntry.conversation_id == conv.id,
+                ConversationInboxEntry.disposition == "queued",
+                ConversationInboxEntry.status.in_(("queued", "failed")),
+            )
             history_query = job.query(Message).filter(
                 Message.conversation_id == conv.id,
                 Message.id != user_msg.id,
+                ~Message.id.in_(not_admitted),
             )
             admitted_context_ids = tuple(
                 getattr(agent_execution, "admitted_context_message_ids", ())
@@ -1310,6 +1326,18 @@ class Worker:
                 supervisor_thread.join()
             if job is not None:
                 job.close()
+            # Promotion runs after the terminal transaction releases its locks.
+            # Recovery also scans the queue if this best-effort attempt fails.
+            try:
+                from .inbox.promotion import promote_next_message
+
+                with self.Session() as promotion_db:
+                    finished = promotion_db.get(Run, run_id)
+                    if finished is not None and finished.status not in ACTIVE_RUN_STATUSES:
+                        promote_next_message(promotion_db, conversation_id=finished.conversation_id)
+                        promotion_db.commit()
+            except Exception:
+                logger.exception("inbox promotion after run %s failed", run_id)
 
     def run(self):
         """Main worker loop with automatic reconciliation and resource cleanup."""
@@ -1354,6 +1382,10 @@ class Worker:
                         logger.info(
                             f"[{self.worker_id}] Reclaimed {reclaimed} expired leases"
                         )
+                    from .inbox.promotion import reconcile_queued_messages
+
+                    reconcile_queued_messages(db)
+                    db.commit()
                 except Exception as e:
                     logger.warning(
                         f"[{self.worker_id}] Error during reconciliation: {e}"

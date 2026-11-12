@@ -170,4 +170,8 @@ def submit_message(
     )
     db.add(entry)
     db.flush()
+    if decision is None and active is None:
+        from .promotion import promote_next_message
+
+        promote_next_message(db, conversation_id=conversation_id)
     return _response(db, entry)

@@ -5,6 +5,7 @@ All mutations happen within a single database transaction for atomicity.
 """
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -68,6 +69,7 @@ from .schemas import ResumeAnalysisRequest, ResumeChatPythonRequest
 from .tasks.contracts import ExecutionConfigV5, TaskContext, TaskLimits
 
 _AGENT_MODES = ("auto", "copilot")
+logger = logging.getLogger(__name__)
 
 
 def require_owned_conversation(
@@ -862,6 +864,8 @@ def submit_turn(
     resource_binding_selections=(),
     agent_mode: str | None = None,
     agent_mode_revision: int | None = None,
+    *,
+    _inbox_entry=None,
 ) -> Run:
     """Submit a chat turn as a durable, queued run.
 
@@ -1050,6 +1054,15 @@ def submit_turn(
     # order so an archive and admission serialize on the same rows.
     conv = _lock_active_conversation_scope(db, user_id=user_id, conversation_id=conv.id)
 
+    from .inbox.models import ConversationInboxEntry
+
+    if _inbox_entry is None and db.query(ConversationInboxEntry.id).filter_by(
+        conversation_id=conv.id, disposition="queued", status="queued"
+    ).first():
+        raise HTTPException(status_code=409, detail={"error": {
+            "code": "conversation_queue_pending", "message": "Earlier messages are waiting in the conversation queue"
+        }})
+
     # Check for an active run on this conversation (one active run per
     # conversation). Durable waits stay active: a task waiting for approval
     # must not be bypassed by a second execution admission.
@@ -1078,13 +1091,16 @@ def submit_turn(
     # a concurrent PATCH either commits before this admission (and is seen
     # here) or waits for it. A supplied pair must match exactly; an omitted
     # pair captures the current server value.
-    current_mode, current_revision = _locked_agent_preference(db, user_id)
-    if agent_mode is not None:
-        if (agent_mode, agent_mode_revision) != (current_mode, current_revision):
-            raise _stale_agent_preference(current_mode, current_revision)
+    if _inbox_entry is not None:
         captured_mode, captured_revision = agent_mode, agent_mode_revision
     else:
-        captured_mode, captured_revision = current_mode, current_revision
+        current_mode, current_revision = _locked_agent_preference(db, user_id)
+        if agent_mode is not None:
+            if (agent_mode, agent_mode_revision) != (current_mode, current_revision):
+                raise _stale_agent_preference(current_mode, current_revision)
+            captured_mode, captured_revision = agent_mode, agent_mode_revision
+        else:
+            captured_mode, captured_revision = current_mode, current_revision
     submission_digest = digest_for(captured_mode, captured_revision)
 
     # Resolve and validate the selection before anything is queued
@@ -1148,7 +1164,14 @@ def submit_turn(
     )
     admitted_context_ids = ()
     if execution is not None and (agentic_task or getattr(execution, "connector_refs", ())):
-        history_query = db.query(Message.id).filter(Message.conversation_id == conv.id)
+        queued_ids = db.query(ConversationInboxEntry.message_id).filter(
+            ConversationInboxEntry.conversation_id == conv.id,
+            ConversationInboxEntry.disposition == "queued",
+            ConversationInboxEntry.status.in_(("queued", "failed")),
+        )
+        history_query = db.query(Message.id).filter(
+            Message.conversation_id == conv.id, ~Message.id.in_(queued_ids)
+        )
         if agentic_task and not getattr(execution, "connector_refs", ()):
             history_query = history_query.order_by(Message.created_at.desc(), Message.id.desc()).limit(20)
             admitted_context_ids = tuple(reversed([row[0] for row in history_query.all()]))
@@ -1189,13 +1212,12 @@ def submit_turn(
     db.flush()
 
     # Create user message linked to the run
-    msg = Message(
-        conversation_id=conv.id,
-        run_id=run.id,
-        role="user",
-        content=content,
-    )
-    db.add(msg)
+    if _inbox_entry is None:
+        msg = Message(conversation_id=conv.id, run_id=run.id, role="user", content=content)
+        db.add(msg)
+    else:
+        msg = db.get(Message, _inbox_entry.message_id)
+        msg.run_id = run.id
     db.flush()
 
     if admitted_context_ids or agentic_task:
@@ -1224,8 +1246,9 @@ def submit_turn(
         payload={"content": content, "client_request_id": client_request_id},
     )
 
-    db.commit()
-    db.refresh(run)
+    if _inbox_entry is None:
+        db.commit()
+        db.refresh(run)
     return run
 
 
@@ -1346,6 +1369,13 @@ def submit_tool_run(
             "run_already_active",
             "Another run is already active on this conversation",
         )
+
+    from .inbox.models import ConversationInboxEntry
+
+    if db.query(ConversationInboxEntry.id).filter_by(
+        conversation_id=conversation.id, disposition="queued", status="queued"
+    ).first():
+        raise _tool_command_error(409, "conversation_queue_pending", "Earlier messages are waiting in the conversation queue")
 
     check_submission_capacity(db)
 
@@ -1845,6 +1875,14 @@ def request_cancel(db: Session, user_id: uuid.UUID, run_id: str) -> Run:
 
     db.commit()
     db.refresh(run)
+    try:
+        from .inbox.promotion import promote_next_message
+
+        promote_next_message(db, conversation_id=conv.id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("inbox promotion after cancellation failed")
     return run
 
 

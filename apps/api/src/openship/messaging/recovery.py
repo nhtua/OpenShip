@@ -42,7 +42,14 @@ class _RecoveryResource:
         self._with_session(expire)
 
     def reconcile_expired_leases(self) -> None:
-        self._with_session(reconcile_expired)
+        def reconcile(db):
+            from ..runs.inbox.promotion import reconcile_queued_messages
+
+            reconcile_expired(db)
+            reconcile_queued_messages(db)
+            db.commit()
+
+        self._with_session(reconcile)
 
     def _with_session(self, operation) -> None:
         db: Session = self.session_factory()

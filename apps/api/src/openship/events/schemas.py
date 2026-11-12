@@ -135,8 +135,19 @@ class MessageAdmittedEvent(BaseModel):
     request_id: UUID | None = None
 
 
+class MessageStatusChangedEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    message_id: UUID
+    status: Literal["promoted", "failed"]
+    run_id: UUID | None = None
+    reason: str | None = Field(default=None, max_length=100)
+
+
 TASK_EVENT_SCHEMAS = {
     "message.admitted": MessageAdmittedEvent,
+    "message.status_changed": MessageStatusChangedEvent,
     "task.decision_requested": TaskDecisionRequestedEvent,
     "task.decision_resolved": TaskDecisionResolvedEvent,
     "task.plan_proposed": TaskPlanProposedEvent,

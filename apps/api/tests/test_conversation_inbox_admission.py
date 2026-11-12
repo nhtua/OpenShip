@@ -116,28 +116,41 @@ def test_open_clarification_binds_under_lock():
         assert result.disposition == "clarification"
         assert result.request_id == progress.pending_decision.request_id
         assert result.run_id == run.id
-        assert db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
+        assert (
+            db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
+        )
 
 
 def test_queued_messages_keep_order_even_without_active_run(client, authorized_client):
     from src.openship.runs.inbox.models import ConversationInboxEntry
+    from src.openship.runs.models import Run
 
     conversation = client.post(
         "/api/conversations", json={"title": "FIFO"}, headers=authorized_client
     ).json()["id"]
     url = f"/api/runs/{conversation}/messages"
-    replies = [
-        client.post(
-            url,
-            json={"content": text, "client_request_id": str(uuid.uuid4())},
-            headers=authorized_client,
-        )
-        for text in ("first", "second")
-    ]
-    assert all(
-        reply.status_code == 202 and reply.json()["status"] == "queued"
-        for reply in replies
+    initial = client.post(
+        f"/api/runs/{conversation}/turns",
+        json={"content": "running", "client_request_id": str(uuid.uuid4())},
+        headers=authorized_client,
     )
+    assert initial.status_code == 202
+    first = client.post(
+        url,
+        json={"content": "first", "client_request_id": str(uuid.uuid4())},
+        headers=authorized_client,
+    )
+    assert first.status_code == 202 and first.json()["status"] == "queued"
+    with SessionLocal() as db:
+        db.get(Run, uuid.UUID(initial.json()["id"])).status = "completed"
+        db.commit()
+    second = client.post(
+        url,
+        json={"content": "second", "client_request_id": str(uuid.uuid4())},
+        headers=authorized_client,
+    )
+    assert second.status_code == 202 and second.json()["status"] == "queued"
+    replies = [first, second]
     with SessionLocal() as db:
         rows = (
             db.query(ConversationInboxEntry)

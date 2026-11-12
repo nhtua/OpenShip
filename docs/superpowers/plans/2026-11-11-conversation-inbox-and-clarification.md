@@ -10,7 +10,7 @@
 
 **Spec:** [Conversation inbox and clarification design](../specs/2026-11-11-conversation-inbox-and-clarification-design.md). Read it before implementing this plan.
 
-**Status:** Plan approved; implementation in progress inline in the current isolated worktree, with no subagents, push, PR, or merge. Task 1 is committed and its hook passed. Task 2 admission, migration and targeted tests are implemented; full verification and commit remain. Tasks 3–8 remain open.
+**Status:** Plan approved; implementation in progress inline in the current isolated worktree, with no subagents, push, PR, or merge. Tasks 1 and 2 are committed and their hooks passed. Task 3 promotion and focused regressions are in progress; Tasks 4–8 remain open.
 
 ## Global Constraints
 
@@ -66,7 +66,7 @@
 - [x] **Step 1 — admission tests:** Added replay, blank/conflict, clarification binding, concurrent sends, foreign/archive, non-clarification wait, backlog ordering and frozen-default coverage.
 - [x] **Step 2 — red:** Initial test run: 3 failed and 1 passed for missing inbox model/route/admission. Archive replay regression also failed before its fix.
 - [x] **Step 3 — implementation:** Added migration, contracts, transactional admission and authenticated endpoint; preserved the old `/turns` behavior. Replay and fresh admission follow existing ownership and archive rules.
-- [ ] **Step 4 — green/commit:** Admission and existing turn tests: 24 passed; Ruff passed. The first eight-shard credential-free lane exposed a hard-coded old migration-head assertion (1 failed, 2,077 passed); after updating that assertion, the lane passed 2,078 tests across eight shards. Commit remains.
+- [x] **Step 4 — green/commit:** Admission and existing turn tests: 24 passed; Ruff passed. The first eight-shard credential-free lane exposed a hard-coded old migration-head assertion (1 failed, 2,077 passed); after updating that assertion, the lane passed 2,078 tests across eight shards. Commit `24479e4` passed applicable hooks; the admission suite then passed 14 tests.
 
 ### Task 3: Promote FIFO turns through existing run creation, even after crashes
 
@@ -74,10 +74,10 @@
 
 **Interfaces:** `promote_next_message(db: Session, *, conversation_id: UUID) -> Run | None` runs inside the caller's transaction and the conversation lock. `reconcile_queued_messages(db: Session, *, batch_size: int = 100) -> int` reuses the installed recovery loop. Share an internal turn builder with `submit_turn`; it accepts a persisted user `Message` and frozen selection rather than creating a duplicate user message. `ConversationInboxEntry.status` becomes `promoted` or `failed` with a public reason; `message.status_changed` carries the message ID, status, run ID/reason (when present), not the full request.
 
-- [ ] **Step 1 — failing tests:** `test_fifo_promotion_after_completion`: assert promoted message IDs are `[A.id, B.id, C.id]` and `active_run_count <= 1`; `test_recovery_does_not_duplicate_run`: assert two reconciliation passes keep the same `run_id`. Cover success, failure, cancellation, rejection and expiry, but not open waits; archive pauses pending entries visibly and restore resumes FIFO; unavailable profile/connector blocks visibly without fallback, while a captured mode remains unchanged across later preference edits. Assert legacy direct chat/tool cannot jump a backlog and a prior run's prompt excludes unpromoted messages.
-- [ ] **Step 2 — red:** Run `cd apps/api && uv run pytest tests/test_conversation_inbox_promotion.py -q` and record failing cases.
-- [ ] **Step 3 — implementation:** Extract the existing validated run creation/pinning path as a no-commit helper; keep the direct `/turns` wrapper's commit behavior but call the helper with the queued persisted message inside the promotion transaction. Revalidate frozen selections, emit promotion/failure events, and enqueue via the existing outbox. Wire terminal/expiry/cancel/archive transitions and the installed recovery supervisor; on restore, resume queued FIFO. Filter run history by admitted/promoted context so queued messages do not appear early; retain fence/uncertain-dispatch behavior.
-- [ ] **Step 4 — green/commit:** Rerun this test, `tests/test_task_admission.py` and `tests/test_task_wait_delivery.py`, plus Ruff on changed API paths; commit after verification with a scanned message file.
+- [x] **Step 1 — tests:** Added FIFO, recovery, idle admission, terminal outcomes, rejected/expired decisions, open waits, archive/restore scheduling, unavailable profile/connector, captured mode, direct chat/tool backlog, competing promoters and active-run context regressions.
+- [x] **Step 2 — red:** Initial FIFO and recovery tests failed for the missing promotion module. Idle promotion, installed recovery, active-run context, cancellation, racing promoters and recovery starvation also failed before their respective changes.
+- [x] **Step 3 — implementation:** Added no-commit promotion through the existing turn creation path, persisted safe failure reason, status events, idle/worker/cancel/restore and periodic recovery scheduling, FIFO backlog guard, and active context filtering. Rejection and expiry release the slot for recovery to promote.
+- [ ] **Step 4 — green/commit:** Focused promotion, admission, task admission and task wait suites: 63 passed; Ruff passed. Earlier full lane: 2,097 passed across eight shards; commit hook and final task verification remain.
 
 ### Task 4: Keep clarification open while replies arrive and close the legacy bypass
 
