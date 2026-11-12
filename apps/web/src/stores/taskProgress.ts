@@ -285,7 +285,7 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
     // cannot be approved: the buttons stay, and the newer plan is what the
     // card shows.
     if (pending.plan_revision !== card.currentRevision) return true
-    if (card.readOnly || card.submitting) return true
+    if (card.readOnly || (card.submitting && pending.kind !== 'clarification')) return true
     const allowed = ACTIONS_FOR_KIND[pending.kind]
     return allowed.length === 0
   }
@@ -402,7 +402,7 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
           ? { pending_decision: (projection.pending_decision as TaskPendingDecision | null) }
           : {}),
       }
-      writeCard(runId, { ...card, progress, pendingDecision: card.pendingDecision, decisionError: null })
+      writeCard(runId, { ...card, progress, pendingDecision: card.pendingDecision, decisionError: null, submitting: true })
     } catch (failure: unknown) {
       const card = cards.value.get(runId)
       if (!card) return
