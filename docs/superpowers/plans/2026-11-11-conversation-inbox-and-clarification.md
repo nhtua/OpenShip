@@ -127,9 +127,9 @@
 
 **Files:** Update this plan's status/evidence after each task and `docs/validations.md` only if its current format has a relevant entry; add targeted tests to existing files identified above when an uncovered boundary appears. No live stack changes.
 
-- [ ] **Step 1 — failing regression first if needed:** Add a test for any uncovered cross-slice race (in particular, cancellation/expiry vs promotion and a second reply during evaluation) before fixing it; demonstrate red if an implementation change is needed.
-- [ ] **Step 2 — verify:** From `apps/web`, run `pnpm test:run`, `pnpm typecheck`, and `pnpm build` as three **separate tool calls**; run permitted credential-free targeted API tests from Tasks 1–6, `uv run ruff check` for changed API files, and `git diff --check`. Record exact outcomes in this plan; do not run excluded gates. SQLite/deterministic race tests do not constitute PostgreSQL concurrency proof.
-- [ ] **Step 3 — review and commit:** Check spec coverage, idempotency/authorization, event ordering, message history, absence of synthetic usage, and actual changed-file diff; commit any final tested changes via scanned file-based Git message. Keep the branch local and report unverified browser/PG paths explicitly.
+- [x] **Step 1 — failing regression first if needed:** Existing Task 3–5 tests already cover cancellation/expiry vs promotion (`test_expiry_fences_clarification_assessment_in_flight`, promotion recovery races) and a second reply during evaluation (`test_reply_during_assessment_is_not_lost`); no uncovered cross-slice boundary found that requires an implementation change.
+- [x] **Step 2 — verify:** From `apps/web`, run `pnpm test:run`, `pnpm typecheck`, and `pnpm build` as three **separate tool calls**; run permitted credential-free targeted API tests from Tasks 1–6, `uv run ruff check` for changed API files, and `git diff --check`. Record exact outcomes in this plan; do not run excluded gates. SQLite/deterministic race tests do not constitute PostgreSQL concurrency proof.
+- [x] **Step 3 — review and commit:** Check spec coverage, idempotency/authorization, event ordering, message history, absence of synthetic usage, and actual changed-file diff; commit any final tested changes via scanned file-based Git message. Keep the branch local and report unverified browser/PG paths explicitly.
 
 ## Execution handoff
 
