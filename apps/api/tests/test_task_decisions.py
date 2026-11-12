@@ -1047,6 +1047,26 @@ def test_preplan_wait_binds_pinned_context_digest():
         assert progress.pending_decision.expected_digest == canonical_digest(
             context.model_dump(mode="json")
         )
+        event = db.query(Event).filter_by(run_id=run.id, type="task.decision_requested").one()
+        decision = db.query(TaskDecisionRecord).filter_by(run_id=run.id).one()
+        assert json.loads(event.payload)["expected_digest"] == decision.expected_digest
+
+
+def test_historical_decision_event_without_digest():
+    from src.openship.events.schemas import TaskDecisionRequestedEvent
+
+    payload = {
+        "schema_version": 1,
+        "run_id": str(uuid.uuid4()),
+        "revision": 0,
+        "request_id": str(uuid.uuid4()),
+        "kind": "clarification",
+        "prompt": "Which source?",
+        "expires_at": "2026-11-12T00:00:00Z",
+    }
+    assert TaskDecisionRequestedEvent.model_validate(payload).request_id == uuid.UUID(
+        payload["request_id"]
+    )
 
 
 def test_park_replay_keeps_request_identity():

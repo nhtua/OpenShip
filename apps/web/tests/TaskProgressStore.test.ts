@@ -78,6 +78,19 @@ describe('task progress store', () => {
     mockSubmit.submit.mockResolvedValue({ data: { current_revision: 1, status: 'running' } } as never)
   })
 
+  it('binds a live revision-zero clarification to its durable digest', () => {
+    const store = useTaskProgressStore()
+    const payload = {
+      revision: 0, request_id: 'request-1', kind: 'clarification',
+      prompt: 'Which source?', expected_digest: 'd'.repeat(64),
+    }
+    store.handleEvent(event(1, 'task.decision_requested', payload))
+    expect(store.buildCommand('run-1', 'answer', 'use the morning CSV')?.expected_digest).toBe('d'.repeat(64))
+
+    store.handleEvent(event(2, 'task.decision_requested', { ...payload, request_id: 'request-2', expected_digest: null }))
+    expect(store.buildCommand('run-1', 'answer', 'use the morning CSV')).toBeNull()
+  })
+
   it('reconnectDoesNotDuplicatePlanOrFinalMessage', async () => {
     const store = useTaskProgressStore()
     const publish = planProposed(5, PLAN_ONE)

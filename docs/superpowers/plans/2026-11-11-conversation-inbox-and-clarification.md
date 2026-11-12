@@ -10,7 +10,7 @@
 
 **Spec:** [Conversation inbox and clarification design](../specs/2026-11-11-conversation-inbox-and-clarification-design.md). Read it before implementing this plan.
 
-**Status:** Awaiting plan review; no implementation tasks started. Work inline in the current isolated worktree, with no subagents, push, PR, or merge.
+**Status:** Plan approved; implementation in progress inline in the current isolated worktree, with no subagents, push, PR, or merge. Task 1's API and web regressions have passed; its commit and final task verification remain. Tasks 2–8 remain open.
 
 ## Global Constraints
 
@@ -52,10 +52,10 @@
 
 **Interfaces:** `TaskDecisionRequestedEvent.expected_digest: str | None` (old persisted v1 event may omit it; all newly emitted events carry the persisted value). The web fold prefers `payload.expected_digest`, falls back to an existing review/diagnosis only for historical events, and does not enable a revision-0 request without either source or snapshot.
 
-- [ ] **Step 1 — failing API/web tests:** `test_revision_zero_event_digest`: assert `event.payload['expected_digest'] == decision.expected_digest`; `test_historical_decision_event_without_digest`: assert it still decodes; web `it('binds a live revision-zero clarification')`: assert `store.buildCommand(runId, 'answer', 'use the morning CSV')?.expected_digest === digest`, but a missing digest and missing snapshot return `null`.
-- [ ] **Step 2 — red:** Run `cd apps/api && uv run pytest tests/test_task_decisions.py -q` and `cd apps/web && pnpm test:run -- TaskProgressStore.test.ts`; record the expected failing assertions.
-- [ ] **Step 3 — implementation:** Emit the stored digest, validate its SHA-256 format when present, and prefer the event field in the store. Do not synthesize a missing digest.
-- [ ] **Step 4 — green/commit:** Rerun both commands; commit this backward-compatible slice using the file-based Git procedure above.
+- [x] **Step 1 — failing API/web tests:** Added revision-0 event/digest and historical decode assertions and a web store binding/unbound regression.
+- [x] **Step 2 — red:** API: 1 failed, 46 passed (missing event digest). Web: 1 failed, 427 passed (unbound live digest). The planned pnpm command ran all tests because of `--` argument handling.
+- [x] **Step 3 — implementation:** Emit the stored digest, validate its SHA-256 format when present, and prefer the event field in the store. Do not synthesize a missing digest.
+- [ ] **Step 4 — green/commit:** API task tests: 47 passed; focused web test: 12 passed; API Ruff and web typecheck passed. Four-shard hook failed with 13 pool-exhaustion failures and 1,604 passes. Tracing identified retained `Lane` sessions from integration tests; moving its cleanup fixture to shared conftest fixed a regression (red: 1 failed, 1 passed; green: 2 passed). The eight-shard credential-free API lane passed 2,064 tests; four-shard selection shard 0 passed 405 tests (new tests changed shard assignments). Commit and final task verification remain.
 
 ### Task 2: Persist and accept conversation messages under one routing lock
 

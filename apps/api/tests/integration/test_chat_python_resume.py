@@ -121,6 +121,15 @@ def _lane(monkeypatch, tmp_path):
     return lane, gateway, provider, fetches
 
 
+def test_lane_session_is_used(monkeypatch, tmp_path):
+    lane, *_ = _lane(monkeypatch, tmp_path)
+    assert lane.db.query(Run).filter_by(id=lane.run.id).one() is lane.run
+
+
+def test_previous_lane_session_was_released():
+    assert Lane.sessions == []
+
+
 async def _execute_ops(lane, gateway, claim, context, *, lost=False):
     """Run the download then python tool calls the way the agent graph does."""
     download = await gateway.execute_tool(

@@ -33,6 +33,7 @@ class TaskDecisionRequestedEvent(BaseModel):
     revision: int = Field(ge=0)
     request_id: UUID
     kind: Literal["plan_confirmation", "clarification", "configuration", "recovery"]
+    expected_digest: str | None = Field(default=None, pattern=SHA256_PATTERN)
     prompt: str = Field(min_length=1, max_length=10000)
     expires_at: str
     # A recovery names the diagnosis behind its three choices, so a

@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -25,6 +26,18 @@ test_engine = create_engine(
     connect_args={"check_same_thread": False},
 )
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+
+
+@pytest.fixture(autouse=True)
+def close_lane_sessions():
+    """Release Lane sessions for every test module that uses the helper."""
+    yield
+    lane_module = sys.modules.get("tests.sandboxes.test_tool")
+    if lane_module is not None:
+        for session in lane_module.Lane.sessions:
+            session.close()
+        lane_module.Lane.sessions.clear()
+
 
 # Patch the module so that get_db() uses our test engine.
 db_session.engine = test_engine

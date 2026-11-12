@@ -156,9 +156,10 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
           prompt: payload.prompt === undefined || payload.prompt === null ? null : String(payload.prompt),
           diagnosis: (payload.diagnosis as unknown as TaskPendingDecision['diagnosis']) ?? null,
           expires_at: payload.expires_at === undefined || payload.expires_at === null ? null : String(payload.expires_at),
-          // The digest a response must echo: a recovery repeats its own
-          // diagnosis, anything else repeats the review that made the plan.
+          // New events carry the durable binding; older ones may have only
+          // the recovery diagnosis or reviewed plan to bind a decision.
           expected_digest:
+            (payload.expected_digest as string | null | undefined) ??
             (payload.diagnosis as { digest?: string } | undefined)?.digest ?? review?.review_digest ?? null,
         }
         // A parked request also says the run is waiting for this person.

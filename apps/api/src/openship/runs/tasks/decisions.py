@@ -871,6 +871,7 @@ def park_task_wait(
             "revision": task.current_revision,
             "request_id": str(decision.request_id),
             "kind": kind,
+            "expected_digest": decision.expected_digest,
             "prompt": prompt,
             "expires_at": decision.expires_at.isoformat(),
             # A recovery carries its diagnosis so a reconnect can show the
