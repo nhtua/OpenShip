@@ -459,8 +459,8 @@ export interface Snapshot {
 // became of it. Status comes from the server; the browser never guesses one.
 export interface InboxMessageSummary {
   message_id: string
-  disposition: 'clarification' | 'queued'
-  status: 'attached' | 'queued' | 'promoted' | 'failed'
+  disposition: 'clarification' | 'queued' | null
+  status: 'awaiting' | 'attached' | 'queued' | 'promoted' | 'failed'
   run_id?: string | null
   request_id?: string | null
   sequence: number
@@ -469,8 +469,8 @@ export interface InboxMessageSummary {
 
 export interface MessageAdmissionResponse {
   message_id: string
-  disposition: 'clarification' | 'queued'
-  status: 'attached' | 'queued' | 'promoted' | 'failed'
+  disposition: 'clarification' | 'queued' | null
+  status: 'awaiting' | 'attached' | 'queued' | 'promoted' | 'failed'
   run_id?: string | null
   request_id?: string | null
 }

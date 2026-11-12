@@ -30,7 +30,32 @@
 
 ---
 
+## Retiring the superseded design
+
+The old design (`docs/superpowers/specs/2026-11-11-conversation-inbox-and-clarification-design.md` + `docs/superpowers/plans/2026-11-11-conversation-inbox-and-clarification.md`) made the **binding decision at admission**: `submit_message` probed the active run for an open clarification and stamped the entry with `disposition='clarification', status='attached'`, set `messages.message_kind='clarification_reply'`, and scheduled the clarification reply or promoted an idle message inside the admission transaction. Removing that behavior is a deliberate, reviewable change — not incidental fallout. Each artifact below is touched exactly once by the task named; nothing is silently left behind.
+
+| Old-design artifact | Current location | Action | Task |
+| --- | --- | --- | --- |
+| `disposition` bound at admission (`'clarification' if decision else 'queued'`, `admission.py:144–145`) | `apps/api/src/openship/runs/inbox/admission.py` | delete the active-run/decision probe from `submit_message`; every fresh admission is `disposition='pending', status='awaiting'` | 2 |
+| `message_kind='clarification_reply'` and `run_id` set at admission (`admission.py:137–139`) | same | delete; kind/run are set only when `assign_next_message` attaches an entry | 2 |
+| `message.admitted` payload carrying a bound disposition | `admission.py:146–161`, `events/schemas.py:144–152` | widen to `pending`/`awaiting`; binding transitions move to `message.assigned` | 1–2 |
+| Admission-time scheduling tail: `enqueue_clarification_reply(...)` and `promote_next_message(...)` called inside admission (`admission.py:176–183`) | same | remove from admission; the pump supplies both at the existing scheduling opportunities | 2–3 |
+| `MessageAdmissionResponse(disposition ∈ {'clarification','queued'})` promising a final destination | `inbox/contracts.py:20–25` | widen with `pending`/`awaiting`; response reports "admitted, unassigned" | 1 |
+| Inbox CHECK enums without `awaiting`/`pending` | `inbox/models.py:58–64`, migration `035` | additive migration `038`; migrations 035–037 stay untouched | 1 |
+| Chat composer branching on `decisionReplyContext` to choose `/messages` vs `/turns` | `ChatView.vue:264–268`, `composerBlocked:324–329` | one inbox path; `decisionReplyContext`/`isSubmitting` no longer gate a plain-text send | 6 |
+| `replyContext` disjuncts disabling Send during a clarification | `ChatInput.vue:239–242` | delete; plain text is never blocked by tool state | 6 |
+| `decisionActionsDisabled` clarification exemption added to re-open the old composer (`taskProgress.ts:288`) | `apps/web/src/stores/taskProgress.ts` | revert to `readOnly || submitting`; the inbox path never consults it | 6 |
+| `chat.submitMessage` leaving no retry state (`chat.ts:1188–1221`) | `apps/web/src/stores/chat.ts` | register pending request and draft restoration on admission failure | 6 |
+| Test pins that assert binding at admission (`test_open_clarification_binds_under_lock`, `test_non_clarification_active_run_does_not_claim_message`, `test_idle_message_is_promoted_in_admission_transaction`, `test_reply_during_worker_claim_remains_bound`, `test_expired_clarification_does_not_claim_new_message`, `test_typed_yes_does_not_confirm_plan`, `test_snapshot_binds_clarification_reply_to_the_open_request`) | four inbox test files | rewrite each to the unbound outcome driven through the pump (keep the behavior coverage, flip the expectation); do not delete a test to dodge a pin | 2–4 |
+| Old plan/spec status headers presenting binding as the rule | the two 2026-11-11 docs | supersede banner + pointer to the 2026-11-12 pair; keep them as history | 7 |
+
+Historical data written under the old design (rows with `disposition='clarification', status='attached'`, `message_kind='clarification_reply') stays valid: the new pump only handles `awaiting`/`pending` entries, and assessment reads attached entries by the same rules. There is no data migration — only vocabulary widening.
+
+---
+
 ### Task 1: Inbox vocabulary and contracts for unassigned entries
+
+**Progress:** Contract and migration implementation uses `null` disposition as specified by the design, rather than the plan's `pending` literal. RED: two contract tests failed before implementation. GREEN: 46 inbox tests passed, the existing-history migration test passed, Ruff and web typecheck passed. A SQLite migration test preserves an old attached row and refuses downgrade with an awaiting row. Remaining: full applicable verification, commit and task completion. The Dev Stack database has not been migrated.
 
 **Files:**
 - Create: `apps/api/alembic/versions/038_inbox_deferred_routing.py` (`inbox038` ← `inbox037`)
@@ -59,7 +84,7 @@
 
 - [ ] **Step 1: failing tests** — extend `test_conversation_inbox_routing.py` (or a new `test_conversation_inbox_admission_unbound.py`): fresh admission against an open clarification returns `status='awaiting'`/`disposition='pending'`, leaves the decision `open`, and creates no Outbox row; idle fresh admission is not promoted at admission (entry stays `awaiting`); replay returns identical stored values; conflicting replay still 409. Update now-obsolete pins in `test_conversation_inbox_admission.py`: `test_open_clarification_binds_under_lock`, `test_non_clarification_active_run_does_not_claim_message`, `test_idle_message_is_promoted_in_admission_transaction` — flip them to the unbound outcome (do not delete coverage).
 - [ ] **Step 2: red** — `cd apps/api && uv run pytest tests/test_conversation_inbox_routing.py tests/test_conversation_inbox_admission.py -q` (expect binding-era failures).
-- [ ] **Step 3: implement** — strip the active-run/decision probe and tail scheduling from `submit_message`; keep lock order (conversation scope → write-lock) intact.
+- [ ] **Step 3: implement** — retire the old admission design in `submit_message`: delete the active-`Run` query and open-clarification `TaskDecisionRecord` probe (`admission.py:92–115`), the binding writes (`disposition`/`status`, `message_kind='clarification_reply'`, `run_id` on the `Message`) and the tail `enqueue_clarification_reply` / `promote_next_message` calls; keep the replay/conflict lookup, ownership/archive checks, lock order, frozen `request_json` capture, `message.admitted` event and inbox row (now `pending`/`awaiting`). Keep `enqueue_clarification_reply` itself in `tasks/clarification.py` — Task 3 calls it from the pump; deleting it belongs to no task.
 - [ ] **Step 4: green** — rerun both files; `uv run ruff check src/openship/runs/inbox/admission.py tests/test_conversation_inbox_admission.py tests/test_conversation_inbox_routing.py`.
 - [ ] **Step 5: commit** — `fix: admit inbox messages without claiming a destination`.
 
@@ -134,8 +159,9 @@
 **Files:** update this plan's checkboxes/evidence after each task; `docs/validations.md` only if its format has a relevant entry.
 
 - [ ] **Step 1: regression sweep** — credential-free lanes as separate calls: `cd apps/api && uv run pytest tests/test_conversation_inbox_admission.py tests/test_conversation_inbox_promotion.py tests/test_conversation_inbox_assignment.py tests/test_conversation_inbox_clarification.py tests/test_conversation_inbox_snapshot.py tests/test_task_graph.py tests/test_task_decisions.py tests/test_task_wait_delivery.py tests/test_agent_tool_loop.py -q`; `uv run ruff check` on every changed module; `cd apps/web && pnpm exec vue-tsc --noEmit`, `pnpm test:run`, `pnpm build`; `git diff --check`.
-- [ ] **Step 2: review gates** — check the Review Focus list against actual code paths (not only tests): admitted-then-resolved, two-sends-while-open, reply-during-assessment, crash rescue, automatic-tool composer send.
-- [ ] **Step 3: commit** final evidence updates with a scanned file-based message; keep branch local. Report exactly: lanes run with counts, and that PostgreSQL, full-stack browser, provider-live and JetStream gates were **not run or qualified**, so the live stuck-conversation `6782d9e4…` is not yet re-verified end to end.
+- [ ] **Step 2: review gates** — check the Review Focus list and the **Retiring the superseded design** table against actual code paths (not only tests): every old-design artifact in the table is gone or rewritten, and no second binding-at-admission path survives (`grep -n "disposition = \"clarification\" if decision else" apps/api/src/openship/runs/inbox/admission.py` is empty; no admission-path call of `enqueue_clarification_reply`; no `replyContext` disjunct in `ChatInput.submitDisabled`; `decisionActionsDisabled` has no `clarification` exemption).
+- [ ] **Step 3: supersede the old documents** — in `docs/superpowers/specs/2026-11-11-conversation-inbox-and-clarification-design.md` (status already `superseded-by-2026-11-12-deferred-routing-design`) add a one-line note under the H1 pointing at the 2026-11-12 spec; in `docs/superpowers/plans/2026-11-11-conversation-inbox-and-clarification.md` set its header status/first line to `superseded: see docs/superpowers/plans/2026-11-12-inbox-deferred-routing.md` while keeping its delivered evidence intact. Commit both doc updates with a scanned file-based message, subject `docs: supersede the admission-binding inbox design`; keep the branch local.
+- [ ] **Step 4: commit** final evidence updates with a scanned file-based message; keep branch local. Report exactly: lanes run with counts, and that PostgreSQL, full-stack browser, provider-live and JetStream gates were **not run or qualified**, so the live stuck-conversation `6782d9e4…` is not yet re-verified end to end.
 
 ## Execution handoff
 

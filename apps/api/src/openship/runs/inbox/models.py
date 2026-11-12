@@ -35,7 +35,7 @@ class ConversationInboxEntry(Base):
     client_request_id = Column(String(255), nullable=False)
     request_digest = Column(String(64), nullable=False)
     sequence = Column(Integer, nullable=False)
-    disposition = Column(String(24), nullable=False)
+    disposition = Column(String(24), nullable=True)
     status = Column(String(24), nullable=False)
     run_id = Column(
         UUID(as_uuid=True), ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
@@ -59,7 +59,7 @@ class ConversationInboxEntry(Base):
             "disposition IN ('clarification', 'queued')", name="ck_inbox_disposition"
         ),
         CheckConstraint(
-            "status IN ('attached', 'queued', 'promoted', 'failed')",
+            "status IN ('awaiting', 'attached', 'queued', 'promoted', 'failed')",
             name="ck_inbox_status",
         ),
         Index(

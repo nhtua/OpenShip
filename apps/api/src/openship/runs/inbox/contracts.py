@@ -19,7 +19,7 @@ class MessageAdmissionRequest(TurnSubmitRequest):
 
 class MessageAdmissionResponse(BaseModel):
     message_id: UUID
-    disposition: Literal["clarification", "queued"]
-    status: Literal["attached", "queued", "promoted", "failed"]
+    disposition: Literal["clarification", "queued"] | None
+    status: Literal["awaiting", "attached", "queued", "promoted", "failed"]
     run_id: UUID | None = None
     request_id: UUID | None = None
