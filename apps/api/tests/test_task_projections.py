@@ -9,18 +9,16 @@ browser will echo is the reviewed plan's own digest.
 """
 
 import json
-import uuid
 from datetime import UTC, datetime
 
 import pytest
 
 from src.openship.events.service import read_snapshot
 from src.openship.runs.tasks.contracts import (
-    TaskDecisionCommand,
     VerificationCheck,
     VerificationReport,
 )
-from src.openship.runs.tasks.decisions import apply_decision, park_task_wait
+from src.openship.runs.tasks.decisions import park_task_wait
 from src.openship.runs.tasks.models import TaskPlanRecord
 from src.openship.runs.tasks.projections import read_task_summary
 from src.openship.runs.tasks.state import (
@@ -218,21 +216,17 @@ def test_snapshot_matches_event_replay_without_private_fields():
         for private in PRIVATE_KEYS:
             assert private not in carried
 
-        # A committed approval shows its recorded outcome on the next read.
-        apply_decision(
-            db,
-            principal_id=user.id,
-            run_id=run.id,
-            command=TaskDecisionCommand(
-                client_request_id=uuid.uuid4(),
-                request_id=pending["request_id"],
-                plan_revision=task.plan.revision,
-                expected_digest=task.plan.review_digest,
-                action="answer",
-                answer="The CSV file from the morning shift",
-            ),
-            now=datetime.now(UTC),
-        )
+        # Historical resolved clarification records remain readable.
+        from src.openship.events.service import append_event
+        from src.openship.runs.tasks.models import TaskDecisionRecord
+
+        recorded = db.query(TaskDecisionRecord).filter_by(run_id=run.id, state="open").one()
+        recorded.state = "answered"
+        recorded.resolved_at = datetime.now(UTC)
+        append_event(db, conversation.id, run.id, "task.decision_resolved", {
+            "schema_version": 1, "run_id": str(run.id), "revision": recorded.plan_revision,
+            "request_id": str(recorded.request_id), "state": "answered",
+        })
         db.commit()
 
         after = read_task_summary(db, run.id)

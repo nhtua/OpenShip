@@ -205,6 +205,11 @@ def apply_decision(
             )
             db.flush()
         return TaskProgressProjection.model_validate_json(existing.result_json)
+    if decision.kind == "clarification" and command.action == "answer":
+        raise HTTPException(
+            status_code=409,
+            detail={"error": {"code": "clarification_requires_message", "message": "Submit a conversation message to answer this clarification."}},
+        )
     deadline = decision.expires_at
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=UTC)
@@ -957,6 +962,12 @@ def expire_task_decisions(db: Session, *, now: datetime, batch_size: int = 100) 
         deadline = decision.expires_at
         if deadline.tzinfo is None:  # SQLite returns naive UTC timestamps.
             deadline = deadline.replace(tzinfo=UTC)
+        parked = (
+            run.status == _WAIT_STATUS.get(decision.kind)
+            and job.owner_id is None
+            and job.lease_until is None
+        )
+        evaluating = decision.kind == "clarification" and run.status in ("queued", "running")
         if (
             decision.state != "open"
             or deadline > now
@@ -967,9 +978,7 @@ def expire_task_decisions(db: Session, *, now: datetime, batch_size: int = 100) 
             or task.conversation_id != conversation.id
             or decision.task_id != task.id
             or task.status != "waiting"
-            or run.status != _WAIT_STATUS.get(decision.kind)
-            or job.owner_id is not None
-            or job.lease_until is not None
+            or not (parked or evaluating)
         ):
             continue
         decision.state = "expired"
@@ -981,6 +990,8 @@ def expire_task_decisions(db: Session, *, now: datetime, batch_size: int = 100) 
         run.ended_at = now
         run.fence = max(run.fence, job.fence) + 1
         job.fence = run.fence
+        job.owner_id = None
+        job.lease_until = None
         task.fence = run.fence
         append_event(
             db,

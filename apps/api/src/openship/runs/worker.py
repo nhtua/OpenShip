@@ -842,6 +842,7 @@ class Worker:
                 .filter(
                     Message.run_id == run_id,
                     Message.role == "user",
+                    Message.message_kind == "primary",
                 )
                 .first()
             )

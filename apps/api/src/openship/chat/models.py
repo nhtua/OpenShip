@@ -1,6 +1,16 @@
 import uuid
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 
 from ..auth.models import Base
@@ -49,5 +59,14 @@ class Message(Base):
         nullable=True,
     )
     role = Column(String(20), nullable=False)
+    message_kind = Column(String(24), nullable=False, server_default="primary")
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index(
+            "ix_messages_run_id_role", "run_id", "role", unique=True,
+            sqlite_where=text("run_id IS NOT NULL AND message_kind = 'primary'"),
+            postgresql_where=text("run_id IS NOT NULL AND message_kind = 'primary'"),
+        ),
+    )

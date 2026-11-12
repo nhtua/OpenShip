@@ -152,7 +152,7 @@ def test_replayed_client_id_cannot_authorize_a_later_decision():
         save_plan(db, claim, _plan(), expected_revision=0)
         now = datetime.now(UTC)
         first = park_task_wait(
-            db, claim, kind="clarification", prompt="First?", now=now
+            db, claim, kind="plan_confirmation", prompt="First?", now=now
         ).pending_decision
         db.commit()
         cmd = TaskDecisionCommand(
@@ -160,8 +160,7 @@ def test_replayed_client_id_cannot_authorize_a_later_decision():
             request_id=first.request_id,
             plan_revision=first.plan_revision,
             expected_digest=first.expected_digest,
-            action="answer",
-            answer="first answer",
+            action="confirm",
         )
         apply_decision(db, principal_id=user.id, run_id=run.id, command=cmd, now=now)
         db.commit()
@@ -305,7 +304,6 @@ def test_conflicting_stale_expired_wrong_actor_and_bare_yes_do_not_release():
 @pytest.mark.parametrize(
     ("kind", "action", "answer"),
     [
-        ("clarification", "answer", "Additional details"),
         ("configuration", "resume_configuration", None),
     ],
 )

@@ -10,7 +10,7 @@
 
 **Spec:** [Conversation inbox and clarification design](../specs/2026-11-11-conversation-inbox-and-clarification-design.md). Read it before implementing this plan.
 
-**Status:** Plan approved; implementation in progress inline in the current isolated worktree, with no subagents, push, PR, or merge. Tasks 1 and 2 are committed and their hooks passed. Task 3 promotion and focused regressions are in progress; Tasks 4–8 remain open.
+**Status:** Plan approved; implementation in progress inline in the current isolated worktree, with no subagents, push, PR, or merge. Tasks 1–3 are committed and their hooks passed. Task 4 is in progress; Tasks 5–8 remain open.
 
 ## Global Constraints
 
@@ -77,7 +77,7 @@
 - [x] **Step 1 — tests:** Added FIFO, recovery, idle admission, terminal outcomes, rejected/expired decisions, open waits, archive/restore scheduling, unavailable profile/connector, captured mode, direct chat/tool backlog, competing promoters and active-run context regressions.
 - [x] **Step 2 — red:** Initial FIFO and recovery tests failed for the missing promotion module. Idle promotion, installed recovery, active-run context, cancellation, racing promoters and recovery starvation also failed before their respective changes.
 - [x] **Step 3 — implementation:** Added no-commit promotion through the existing turn creation path, persisted safe failure reason, status events, idle/worker/cancel/restore and periodic recovery scheduling, FIFO backlog guard, and active context filtering. Rejection and expiry release the slot for recovery to promote.
-- [ ] **Step 4 — green/commit:** Focused promotion, admission, task admission and task wait suites: 63 passed; Ruff passed. Earlier full lane: 2,097 passed across eight shards; commit hook and final task verification remain.
+- [x] **Step 4 — green/commit:** Focused promotion, admission, task admission and task wait suites: 63 passed; Ruff passed. Earlier full lane: 2,097 passed across eight shards. Commit `13154c1` passed hooks; post-commit promotion/task suites: 49 passed.
 
 ### Task 4: Keep clarification open while replies arrive and close the legacy bypass
 
@@ -85,10 +85,10 @@
 
 **Interfaces:** `enqueue_clarification_reply(db: Session, *, run_id: UUID, decision_id: UUID, message_id: UUID, now: datetime) -> None` schedules the same fenced run only when the bound reply high-water exceeds the assessed high-water; it never resolves the decision. `clarification_replies(db: Session, *, decision_id: UUID) -> tuple[ConversationInboxEntry, ...]` returns **all** ordered request-bound messages, including earlier insufficient replies. A fresh old `TaskDecisionCommand(action='answer')` returns an actionable 409 instructing the client to submit a message instead; previously committed historical idempotent replays remain readable. Button commands are unchanged.
 
-- [ ] **Step 1 — failing tests:** `test_multiple_replies_keep_request_open`: assert `first.request_id == second.request_id`, `decision.state == 'open'`, `len(clarification_replies(...)) == 2`, and only one assessment job is enqueued, including while queued/running. Exact retry does not enqueue twice; fresh legacy one-shot answer returns 409. Reject expired, cancelled, foreign and stale replies; typed text cannot confirm/abort/repeat recovery.
-- [ ] **Step 2 — red:** Run `cd apps/api && uv run pytest tests/test_conversation_inbox_clarification.py tests/test_task_decisions.py -q`; record failures for new behavior.
-- [ ] **Step 3 — implementation:** Schedule evaluation through the existing run job/outbox when waiting, preserve the open request across queue/running states, and separate explicit button commands from free text. Adjust wait projection/expiry/fencing checks for evaluation in flight, without making an open decision actionable after expiry.
-- [ ] **Step 4 — green/commit:** Rerun both files and `tests/test_task_resume.py`, Ruff changed API paths; commit with the file-based procedure.
+- [x] **Step 1 — tests:** Added multiple replies, retry, in-flight claim, expiry/fencing, expired-request routing, typed-plan-control safety, fresh legacy refusal, historical replay and primary-message uniqueness coverage. Task 2 covers foreign ownership and Task 3 covers non-clarification waits and cancellation.
+- [x] **Step 2 — red:** New tests initially failed on missing clarification module and on the legacy answer bypass; in-flight expiry and claim regressions also failed before their respective fixes. Multiple replies exposed the existing one-message-per-run-role unique index.
+- [x] **Step 3 — implementation:** Added durable scheduling and ordered replies, refused fresh legacy answers, extended expiry fencing, selected the primary run message explicitly, and added migration `inbox037` to classify clarification messages while preserving primary message uniqueness.
+- [ ] **Step 4 — green/commit:** Focused clarification and compatibility suites: 99 passed. The credential-free lane passed 2,110 tests across eight shards; commit and final task verification remain. Assessment itself is Task 5.
 
 ### Task 5: Evaluate accumulated clarification, then park or continue
 

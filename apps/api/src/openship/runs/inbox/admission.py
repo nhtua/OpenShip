@@ -12,7 +12,7 @@ from ...capabilities.contracts import canonical_digest
 from ...chat.models import Conversation, Message
 from ...config import settings
 from ...events.service import append_event
-from ..models import ACTIVE_RUN_STATUSES, Run
+from ..models import ACTIVE_RUN_STATUSES, Run, RunJob
 from ..service import (
     _lock_active_conversation_scope,
     _locked_agent_preference,
@@ -21,7 +21,7 @@ from ..service import (
     _stale_agent_preference,
     require_owned_conversation,
 )
-from ..tasks.models import TaskDecisionRecord
+from ..tasks.models import TaskDecisionRecord, TaskRecord
 from .contracts import MessageAdmissionRequest, MessageAdmissionResponse
 from .models import ConversationInboxEntry
 
@@ -100,6 +100,8 @@ def submit_message(
     )
     decision = None
     if active is not None:
+        db.query(RunJob).filter_by(run_id=active.id).with_for_update().populate_existing().one_or_none()
+        db.query(TaskRecord).filter_by(run_id=active.id).with_for_update().populate_existing().one_or_none()
         decision = (
             db.query(TaskDecisionRecord)
             .filter(
@@ -134,6 +136,7 @@ def submit_message(
         conversation_id=conversation_id,
         run_id=active.id if decision else None,
         role="user",
+        message_kind="clarification_reply" if decision else "primary",
         content=request.content,
     )
     db.add(message)
@@ -170,6 +173,10 @@ def submit_message(
     )
     db.add(entry)
     db.flush()
+    if decision is not None:
+        from ..tasks.clarification import enqueue_clarification_reply
+
+        enqueue_clarification_reply(db, run_id=active.id, decision_id=decision.id, message_id=message.id, now=datetime.now(UTC))
     if decision is None and active is None:
         from .promotion import promote_next_message
 
