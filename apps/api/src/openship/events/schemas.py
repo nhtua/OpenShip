@@ -42,6 +42,21 @@ class TaskDecisionRequestedEvent(BaseModel):
     diagnosis: TaskRecoverySummary | None = None
 
 
+class TaskDecisionUpdatedEvent(BaseModel):
+    """The same open request asks again, with a follow-up the run recorded."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    run_id: UUID
+    revision: int = Field(ge=0)
+    request_id: UUID
+    kind: Literal["clarification"]
+    prompt: str = Field(min_length=1, max_length=10000)
+    message_id: UUID
+    expires_at: str
+
+
 class TaskDecisionResolvedEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -92,7 +107,9 @@ class TaskProgressEvent(BaseModel):
     ]
     steps: list[TaskStepSummary] = Field(default_factory=list, max_length=8)
     skipped_steps: list[str] = Field(default_factory=list, max_length=8)
-    verified_outputs: list[TaskArtifactLink] = Field(default_factory=list, max_length=64)
+    verified_outputs: list[TaskArtifactLink] = Field(
+        default_factory=list, max_length=64
+    )
     last_disposition: Literal[
         "none",
         "known_failure",
@@ -149,6 +166,7 @@ TASK_EVENT_SCHEMAS = {
     "message.admitted": MessageAdmittedEvent,
     "message.status_changed": MessageStatusChangedEvent,
     "task.decision_requested": TaskDecisionRequestedEvent,
+    "task.decision_updated": TaskDecisionUpdatedEvent,
     "task.decision_resolved": TaskDecisionResolvedEvent,
     "task.plan_proposed": TaskPlanProposedEvent,
     "task.progress": TaskProgressEvent,

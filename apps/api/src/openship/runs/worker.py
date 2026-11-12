@@ -18,7 +18,7 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_
 from sqlalchemy.orm import sessionmaker
 
 from ..artifacts.filesystem import ArtifactStorageError
@@ -79,6 +79,52 @@ USAGE_SCHEMA_VERSION = 1
 def _run_outcome(error_code: str) -> str:
     """The run status a normalized provider failure shows."""
     return _OUTCOME.get(error_code, "failed")
+
+
+def _conversation_history(
+    db,
+    *,
+    conversation,
+    user_msg,
+    run,
+    admitted_context_ids: tuple,
+):
+    """The prior messages this run may read, in durable order.
+
+    A pinned snapshot admits only its recorded context, except for replies
+    bound to this run's clarification: those arrived after the pin and are
+    still the turn the run must answer.
+    """
+    from .inbox.models import ConversationInboxEntry
+
+    not_admitted = db.query(ConversationInboxEntry.message_id).filter(
+        ConversationInboxEntry.conversation_id == conversation.id,
+        ConversationInboxEntry.disposition == "queued",
+        ConversationInboxEntry.status.in_(("queued", "failed")),
+    )
+    history_query = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.id != user_msg.id,
+        ~Message.id.in_(not_admitted),
+    )
+    if admitted_context_ids:
+        if user_msg.id not in admitted_context_ids:
+            raise ProviderError("configuration_error")
+        clarification_reply_ids = db.query(Message.id).filter(
+            Message.run_id == run.id,
+            Message.message_kind == "clarification_reply",
+        )
+        history_query = history_query.filter(
+            or_(
+                Message.id.in_(admitted_context_ids),
+                Message.id.in_(clarification_reply_ids),
+            )
+        )
+    elif run.graph_version == 5:
+        # Historical v5 runs did not always pin message IDs. Never let
+        # messages submitted after that run become its context on replay.
+        history_query = history_query.filter(Message.created_at < user_msg.created_at)
+    return history_query.order_by(Message.created_at.asc(), Message.id.asc()).all()
 
 
 def _chat_system_prompt(
@@ -910,34 +956,16 @@ class Worker:
             is_first = self._is_first_message(job, conv, user_msg)
 
             # Load conversation history for context
-            from .inbox.models import ConversationInboxEntry
-
-            not_admitted = job.query(ConversationInboxEntry.message_id).filter(
-                ConversationInboxEntry.conversation_id == conv.id,
-                ConversationInboxEntry.disposition == "queued",
-                ConversationInboxEntry.status.in_(("queued", "failed")),
-            )
-            history_query = job.query(Message).filter(
-                Message.conversation_id == conv.id,
-                Message.id != user_msg.id,
-                ~Message.id.in_(not_admitted),
-            )
             admitted_context_ids = tuple(
                 getattr(agent_execution, "admitted_context_message_ids", ())
             )
-            if admitted_context_ids:
-                if user_msg.id not in admitted_context_ids:
-                    raise ProviderError("configuration_error")
-                history_query = history_query.filter(
-                    Message.id.in_(admitted_context_ids)
-                )
-            elif run.graph_version == 5:
-                # Historical v5 runs did not always pin message IDs. Never let
-                # messages submitted after that run become its context on replay.
-                history_query = history_query.filter(Message.created_at < user_msg.created_at)
-            history = history_query.order_by(
-                Message.created_at.asc(), Message.id.asc()
-            ).all()
+            history = _conversation_history(
+                job,
+                conversation=conv,
+                user_msg=user_msg,
+                run=run,
+                admitted_context_ids=admitted_context_ids,
+            )
 
             # Build graph state with checkpoint namespace
             messages = []
@@ -1334,8 +1362,13 @@ class Worker:
 
                 with self.Session() as promotion_db:
                     finished = promotion_db.get(Run, run_id)
-                    if finished is not None and finished.status not in ACTIVE_RUN_STATUSES:
-                        promote_next_message(promotion_db, conversation_id=finished.conversation_id)
+                    if (
+                        finished is not None
+                        and finished.status not in ACTIVE_RUN_STATUSES
+                    ):
+                        promote_next_message(
+                            promotion_db, conversation_id=finished.conversation_id
+                        )
                         promotion_db.commit()
             except Exception:
                 logger.exception("inbox promotion after run %s failed", run_id)

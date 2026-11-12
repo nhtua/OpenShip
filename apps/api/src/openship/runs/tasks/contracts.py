@@ -438,6 +438,27 @@ class TaskCallBinding(FrozenModel):
     logical_call_id: str = Field(pattern=r"^model:[0-9]+:call:[0-9]+$")
 
 
+class ClarificationAssessment(FrozenModel):
+    """Whether accumulated replies answer the open clarification.
+
+    A model may judge sufficiency and phrase a follow-up, but only recorded
+    replies and the durable request decide whether anything is resolved.
+    """
+
+    verdict: Literal["sufficient", "insufficient"]
+    follow_up: str | None = None
+
+    @model_validator(mode="after")
+    def _follow_up_matches_verdict(self) -> ClarificationAssessment:
+        if self.verdict == "insufficient":
+            if self.follow_up is None:
+                raise ValueError("an insufficient assessment requires a follow-up")
+            _public_text(self.follow_up, 10_000)
+        elif self.follow_up is not None:
+            raise ValueError("a sufficient assessment carries no follow-up")
+        return self
+
+
 class TaskDecision(FrozenModel):
     schema_version: Literal[1] = 1
     request_id: UUID

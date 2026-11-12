@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC
 from typing import Any
 
 from fastapi import HTTPException
@@ -45,10 +46,16 @@ from ..capabilities.policy import (
     policy_changed_for_capabilities_since,
     read_effective_tool_policy,
 )
+from ..chat.models import Message
 from ..providers.contracts import ChatMessage, ModelRequest
 from ..providers.errors import ProviderError
 from ..providers.runner import run_model_turn
 from ..runs.service import parse_run_model_config
+from ..runs.tasks.clarification import (
+    apply_clarification_assessment,
+    clarification_replies,
+    release_clarification_claim,
+)
 from ..runs.tasks.contracts import (
     ExecutionConfigV5,
     TaskAssessment,
@@ -57,8 +64,14 @@ from ..runs.tasks.contracts import (
     TaskProgress,
     TaskRecoveryReport,
 )
-from ..runs.tasks.decisions import park_task_wait
-from ..runs.tasks.inference import assess_task, evidence_only_assessment, plan_task
+from ..runs.tasks.decisions import expire_task_decisions, park_task_wait
+from ..runs.tasks.inference import (
+    assess_clarification,
+    assess_task,
+    evidence_only_assessment,
+    plan_task,
+)
+from ..runs.tasks.models import TaskDecisionRecord
 from ..runs.tasks.recovery import (
     capture_recovery_evidence,
     confirmed_recovery_choice,
@@ -200,7 +213,10 @@ def _conversation_context(state: TaskGraphState) -> str:
     for message in reversed((state.get("messages") or [])[:-1]):
         if len(history) == 20:
             break
-        if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+        if not isinstance(message, dict) or message.get("role") not in {
+            "user",
+            "assistant",
+        }:
             continue
         content = message.get("content")
         if not isinstance(content, str):
@@ -340,13 +356,139 @@ def build_task_graph(
             raise ProviderError("lease_lost")
         return invocation
 
+    def _open_clarification(db, run_id):
+        """The one open clarification, its recorded replies, and general progress."""
+        progress = read_progress(db, run_id)
+        pending = progress.pending_decision
+        row = None
+        if pending is not None and pending.kind == "clarification":
+            row = (
+                db.query(TaskDecisionRecord)
+                .filter_by(run_id=run_id, state="open")
+                .one_or_none()
+            )
+        entries = (
+            clarification_replies(db, decision_id=row.id) if row is not None else ()
+        )
+        return progress, row, entries
+
     def assess(state: TaskGraphState) -> dict:
         """Classify this request against the evidence this run holds."""
         invocation = _invocation(state)
         execution = _execution_of(state)
-        with invocation.session_factory() as db:
-            progress = read_progress(db, invocation.claim.run_id)
         cursor = _cursor_of(state)
+        with invocation.session_factory() as db:
+            progress, open_row, replies = _open_clarification(
+                db, invocation.claim.run_id
+            )
+        if open_row is not None:
+            now = _utcnow()
+            if _deadline_passed(open_row, now):
+                # Expiry is a durable end, never a stale yes: the recovery
+                # routine fences the claim and the run says it timed out.
+                with invocation.session_factory() as db:
+                    expire_task_decisions(db, now=now)
+                    db.commit()
+                with invocation.session_factory() as db:
+                    expired = (
+                        db.query(TaskDecisionRecord.state)
+                        .filter_by(id=open_row.id)
+                        .scalar()
+                    )
+                    if expired != "expired":
+                        release_clarification_claim(
+                            db,
+                            invocation.claim,
+                            decision_id=open_row.id,
+                            now=now,
+                        )
+                        db.commit()
+                return {
+                    "cursor": {**cursor, "parked": "clarification"},
+                    "parked": "clarification",
+                }
+            while True:
+                with invocation.session_factory() as db:
+                    progress, open_row, replies = _open_clarification(
+                        db, invocation.claim.run_id
+                    )
+                    if open_row is None:
+                        break
+                    latest = replies[-1].sequence if replies else -1
+                    if latest <= _assessed_sequence(open_row):
+                        # Nothing new to judge: re-present the same request and
+                        # release this claim instead of leaving it running.
+                        release_clarification_claim(
+                            db,
+                            invocation.claim,
+                            decision_id=open_row.id,
+                            now=_utcnow(),
+                        )
+                        db.commit()
+                        return {
+                            "cursor": {**cursor, "parked": "clarification"},
+                            "parked": "clarification",
+                        }
+                    question = json.loads(open_row.request_json).get("prompt")
+                    if not isinstance(question, str) or not question.strip():
+                        raise ProviderError(
+                            "configuration_error",
+                            safe_message="The clarification request records no question.",
+                        )
+                    reply_texts = tuple(
+                        db.get(Message, entry.message_id).content for entry in replies
+                    )
+                stage = _stage(invocation, state, execution)
+                try:
+                    assessment = assess_clarification(
+                        stage,
+                        progress,
+                        question=question,
+                        replies=reply_texts,
+                    )
+                except ProviderError as refused:
+                    # Only a transient inference failure is retried in place.
+                    # A hard limit, refused credential or invalid answer ends
+                    # the run visibly instead of waiting for a turn that can
+                    # never succeed.
+                    if not refused.retryable:
+                        raise
+                    # The request and every reply stay; only the claim is
+                    # released so another turn can judge the same replies.
+                    with invocation.session_factory() as db:
+                        release_clarification_claim(
+                            db,
+                            invocation.claim,
+                            decision_id=open_row.id,
+                            now=_utcnow(),
+                        )
+                        db.commit()
+                    return {
+                        "cursor": {**cursor, "parked": "clarification"},
+                        "parked": "clarification",
+                    }
+                with invocation.session_factory() as db:
+                    applied = apply_clarification_assessment(
+                        db,
+                        invocation.claim,
+                        decision_id=open_row.id,
+                        included_sequence=latest,
+                        assessment=assessment,
+                        now=_utcnow(),
+                    )
+                    db.commit()
+                if not applied:
+                    # A newer reply beat this verdict: reload and judge again
+                    # rather than resolve from a stale high-water mark.
+                    continue
+                if assessment.verdict == "insufficient":
+                    return {
+                        "cursor": {**cursor, "parked": "clarification"},
+                        "parked": "clarification",
+                    }
+                with invocation.session_factory() as db:
+                    progress = read_progress(db, invocation.claim.run_id)
+                break
         if progress.current_revision >= 1:
             # A resumed or re-admitted run already has a plan: it rebuilds
             # from durable state instead of asking the model to plan again.
@@ -555,7 +697,9 @@ def build_task_graph(
                 "cursor": cursor,
             }
         return {
-            "assistant_response": assessment.explanation if assessment else NO_PLAN_ANSWER,
+            "assistant_response": assessment.explanation
+            if assessment
+            else NO_PLAN_ANSWER,
             "finish_reason": "stop",
             "cursor": cursor,
         }
@@ -660,7 +804,9 @@ def build_task_graph(
         ordinal = _next_model_turn_ordinal(invocation)
         stage = _stage(invocation, state, execution)
         request = ModelRequest(
-            messages=_step_messages(invocation, execution, plan, step_id, draft.intent, state),
+            messages=_step_messages(
+                invocation, execution, plan, step_id, draft.intent, state
+            ),
             tools=definitions,
             tool_choice="auto",
             max_output_tokens=min(
@@ -1117,6 +1263,26 @@ def _utcnow():
     return _now()
 
 
+def _assessed_sequence(row) -> int:
+    """The reply sequence this request has already judged, or -1."""
+    try:
+        request = json.loads(row.request_json)
+    except (TypeError, ValueError):
+        return -1
+    value = request.get("assessed_sequence", -1) if isinstance(request, dict) else -1
+    return value if isinstance(value, int) else -1
+
+
+def _deadline_passed(row, now) -> bool:
+    """Whether this request's own expiry has passed (SQLite stores naive UTC)."""
+    deadline = row.expires_at
+    if deadline is None:
+        return True
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=UTC)
+    return deadline <= now
+
+
 def _policy_enabled_ids(invocation, state: TaskGraphState) -> frozenset[str]:
     """Re-read enablement before every model request: policy may have moved.
 
@@ -1216,7 +1382,12 @@ def _close_interrupted_calls(invocation, *, step_id: str, below_attempt: int) ->
 
 
 def _step_messages(
-    invocation, execution, plan: TaskPlan, step_id: str, intent: str, state: TaskGraphState
+    invocation,
+    execution,
+    plan: TaskPlan,
+    step_id: str,
+    intent: str,
+    state: TaskGraphState,
 ) -> tuple[ChatMessage, ...]:
     """The recorded transcript plus this step's instruction, nothing invented.
 

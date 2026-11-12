@@ -97,6 +97,46 @@ def _uncertain_root(db):
     return user, project, conversation, run, request
 
 
+def test_pinned_context_includes_clarification_replies():
+    """Replies that arrived after the snapshot pinned are still this turn's context."""
+    from src.openship.chat.models import Message
+    from src.openship.runs.worker import _conversation_history
+    from tests.test_task_decisions import _pinned_execution
+
+    with TestSessionLocal() as db:
+        user, project, conversation, run, _claim = _identity(db)
+        _pinned_execution(run, user, project, conversation)
+        primary = Message(
+            conversation_id=conversation.id,
+            run_id=run.id,
+            role="user",
+            content="the original request",
+        )
+        reply = Message(
+            conversation_id=conversation.id,
+            run_id=run.id,
+            role="user",
+            message_kind="clarification_reply",
+            content="the morning CSV",
+        )
+        unrelated = Message(
+            conversation_id=conversation.id,
+            run_id=None,
+            role="assistant",
+            content="not part of this run",
+        )
+        db.add_all([primary, reply, unrelated])
+        db.flush()
+        history = _conversation_history(
+            db,
+            conversation=conversation,
+            user_msg=primary,
+            run=run,
+            admitted_context_ids=(primary.id,),
+        )
+    assert [message.content for message in history] == ["the morning CSV"]
+
+
 def test_a_cannot_bypass_recovery_and_retains_root_budget(monkeypatch):
     """A re-admits the same root and never answers or re-funds it."""
     with TestSessionLocal() as db:
