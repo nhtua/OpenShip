@@ -35,6 +35,15 @@ vi.mock('@/services/api', () => ({
   // cancelling asks, and the read answers with what the cancellation left.
   runsApi: {
     submitTurn: vi.fn(),
+    submitMessage: vi.fn().mockResolvedValue({
+      data: {
+        message_id: 'msg-reply-1',
+        disposition: 'clarification',
+        status: 'attached',
+        run_id: 'run-ask',
+        request_id: 'request-ask',
+      },
+    }),
     cancelRun: vi.fn(),
     getSnapshot: vi.fn(),
     getRun: vi.fn(),
@@ -245,9 +254,10 @@ describe('ChatView', () => {
     expect(wrapper.get('[data-testid="task-decision-prompt"]').text()).toContain('Which file should I chart?')
     await textarea.setValue('the daily readings csv')
     await composer.trigger('submit')
-    expect(mockDecisionApi.submit).toHaveBeenCalledTimes(1)
-    expect(mockDecisionApi.submit.mock.calls[0][1]).toMatchObject({
-      request_id: 'request-ask', action: 'answer', answer: 'the daily readings csv',
+    expect(mockRunsApi.submitMessage).toHaveBeenCalledTimes(1)
+    expect(mockRunsApi.submitMessage.mock.calls[0][0]).toBe('c1')
+    expect(mockRunsApi.submitMessage.mock.calls[0][1]).toMatchObject({
+      content: 'the daily readings csv',
     })
     wrapper.unmount()
   })

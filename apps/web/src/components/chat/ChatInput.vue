@@ -57,7 +57,6 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   send: [content: string, options?: { enableTools: boolean; connectorSelections?: ConnectorSelections }]
-  reply: [content: string]
   search: [command: Omit<ToolCommandRequest, 'client_request_id'>]
   select: [profileId: string | null, fallbackIds: string[]]
   'draft-consumed': []
@@ -236,7 +235,11 @@ const submitDisabled = computed(() =>
   (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value || connectorSelectionMissing.value)) ||
   (isS3ReadTool.value && !bucketName.value.trim()) ||
   (automaticToolMode.value && awsSelectionRequired.value && !awsSelectionValid.value) ||
-  (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value),
+  (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value) ||
+  // During an open clarification, plain text is the answer: attached tools
+  // and automatic mode do not travel with the bound reply.
+  (props.replyContext && Boolean(attachedCapability.value)) ||
+  (props.replyContext && automaticToolMode.value),
 )
 
 function forwardSelect(profileId: string | null, fallbackIds: string[]) {
@@ -347,7 +350,9 @@ async function handleSubmit() {
   } else {
     // A parked decision's context turns text into a reply: the run is
     // waiting on an exact request, so nothing here starts another task.
-    if (props.replyContext) emit('reply', text)
+    // Text always travels through `send` through `runsApi.submitMessage`;
+    // explicit decision buttons stay on `taskProgress.submitTaskDecision`.
+    if (props.replyContext) emit('send', text)
     else if (automaticToolMode.value) {
       const connectorSelections: ConnectorSelections = {}
       if (awsSelectionRequired.value && selectedAwsConnectorId.value) {

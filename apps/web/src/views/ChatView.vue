@@ -251,12 +251,22 @@ async function handleSend(content: string, options?: {
   enableTools: boolean
   connectorSelections?: ConnectorSelections
 }) {
-  if (conversationBusy.value) return
+  // During an open clarification, the composer stays available even while the
+  // stream is open: the next event depends on this answer. Only navigation,
+  // read-only scope, or a submission in flight blocks it.
+  if (navigationBusy.value || chat.currentConversationReadOnly || chat.isSubmitting) return
+  if (!decisionReplyContext.value && chat.isStreaming) return
   chat.error = null
 
   const conversationId = chat.currentConversation?.id
     ?? await createAndOpenConversation('New Conversation')
-  if (conversationId) await chat.sendMessage(content, conversationId, options)
+  if (conversationId) {
+    if (decisionReplyContext.value) {
+      await chat.submitMessage(content, conversationId)
+    } else {
+      await chat.sendMessage(content, conversationId, options)
+    }
+  }
 }
 
 // A run that has reached an end has nothing left to stop, and a run that has
@@ -317,8 +327,6 @@ const composerBlocked = computed(
     chat.currentConversationReadOnly ||
     (chat.isStreaming && !decisionReplyContext.value),
 )
-const replyNotice = ref<string | null>(null)
-
 watch(
   (): [string, boolean] => [taskCard.value?.runId ?? '', chat.currentConversationReadOnly],
   ([runId, readOnly]) => {
@@ -333,28 +341,12 @@ async function handleDecisionRespond(action: string, answer: string | null): Pro
   // revision and digest; the store refuses one it cannot bind.
   const command = taskProgress.buildCommand(card.runId, action, answer)
   if (!command) return
-  replyNotice.value = null
   await taskProgress.submitTaskDecision(card.runId, command)
 }
 
 async function handleTimelineDecisionRespond(runId: string, action: string, answer: string | null): Promise<void> {
   if (taskCard.value?.runId !== runId) return
   await handleDecisionRespond(action, answer)
-}
-
-async function handleReplyToDecision(text: string): Promise<void> {
-  const card = taskCard.value
-  if (!card) return
-  const command = taskProgress.replyToDecision(card.runId, text)
-  if (!command) {
-    // Wording that does not name one of the options is not a choice: the
-    // words stay in the composer, and nothing is sent.
-    composerDraft.value = text
-    replyNotice.value = 'That wording does not choose. For a recovery, write Abort, Repeat the step or Continue to the next step; for a question, answer in your own words.'
-    return
-  }
-  replyNotice.value = null
-  await taskProgress.submitTaskDecision(card.runId, command)
 }
 
 async function handleResumeConnector(): Promise<void> {
@@ -771,14 +763,6 @@ onBeforeUnmount(() => {
         @resumed="run => { if (chat.currentConversation?.id === run.conversation_id) void chat.loadConversation(run.conversation_id) }"
         @respond="handleTimelineDecisionRespond"
       />
-      <p
-        v-if="replyNotice"
-        data-testid="chat-reply-notice"
-        aria-live="polite"
-        class="text-xs text-muted-foreground"
-      >
-        {{ replyNotice }}
-      </p>
       <ChatInput
         :disabled="composerBlocked"
         :selection-disabled="chat.isSubmitting"
@@ -799,7 +783,6 @@ onBeforeUnmount(() => {
         :tool-submission-disabled="hasActiveRun"
         :submission-error="chat.error"
         @send="handleSend"
-        @reply="handleReplyToDecision"
         @search="handleSearch"
         @select="handleSelectProfile"
         @draft-consumed="handleComposerDraftConsumed"

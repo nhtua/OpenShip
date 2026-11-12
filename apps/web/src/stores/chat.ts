@@ -12,6 +12,7 @@ import type {
   DurableEvent,
   ErrorSummary,
   InboxMessageSummary,
+  MessageAdmissionResponse,
   ModelProfileCatalog,
   Run,
   RunCard,
@@ -565,6 +566,12 @@ export const useChatStore = defineStore('chat', () => {
 
   function hasQueuedInbox(conversationId: string): boolean {
     return inboxFor(conversationId).some((entry) => entry.status === 'queued')
+  }
+
+  function hasOpenClarification(conversationId: string): boolean {
+    return inboxFor(conversationId).some(
+      (entry) => entry.disposition === 'clarification' && entry.status === 'attached',
+    )
   }
 
   function processDurableEvent(event: DurableEvent): void {
@@ -1175,6 +1182,44 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // One message through the durable inbox: it joins an open clarification or
+  // queues behind the active run. The server assigns the message ID and
+  // disposition; the browser repeats what it states rather than guessing.
+  async function submitMessage(content: string, conversationId: string): Promise<void> {
+    error.value = null
+    const requestId = generateRequestId()
+    const payload: TurnSubmitRequest = {
+      content,
+      client_request_id: requestId,
+    }
+    pendingRequests.value.set(requestId, {
+      conversation_id: conversationId,
+      payload,
+    })
+    try {
+      const response = await runsApi.submitMessage(conversationId, payload)
+      const admission = response.data as unknown as MessageAdmissionResponse
+      // The server admitted the message and assigned its ID. Add it to the
+      // message timeline so the reply is visible; the admission event updates
+      // the inbox fold through the stream.
+      if (!messages.value.some((m) => m.id === String(admission.message_id))) {
+        messages.value.push({
+          id: String(admission.message_id),
+          role: 'user',
+          content,
+          conversation_id: conversationId,
+          run_id: admission.run_id ?? null,
+          created_at: new Date().toISOString(),
+        })
+      }
+      pendingRequests.value.delete(requestId)
+    } catch (err: unknown) {
+      pendingRequests.value.delete(requestId)
+      error.value = safeMessage(err, 'Failed to send message. Please try again.')
+      if (lifecycleConflictCode(err)) await refreshLifecycleAfterConflict(conversationId)
+    }
+  }
+
   async function submitPendingRequest(requestId: string): Promise<void> {
     const pending = pendingRequests.value.get(requestId)
     if (!pending?.conversation_id) return
@@ -1386,7 +1431,10 @@ export const useChatStore = defineStore('chat', () => {
     inboxMessages,
     inboxFor,
     hasQueuedInbox,
+    hasOpenClarification,
     applySnapshotInbox,
+    sendMessage,
+    submitMessage,
     modelProfiles,
     profileError,
     searchCapabilities,
@@ -1403,7 +1451,6 @@ export const useChatStore = defineStore('chat', () => {
     loadCapabilities,
     selectProfile,
     loadConversation,
-    sendMessage,
     retrySubmission,
     submitToolSearch,
     retryToolSubmission,

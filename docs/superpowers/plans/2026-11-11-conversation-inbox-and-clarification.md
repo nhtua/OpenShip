@@ -118,10 +118,10 @@
 
 **Interfaces:** Composer text always uses `chat.sendMessage` through `runsApi.submitMessage` for an existing conversation; display server disposition, not a locally guessed reply command. Explicit decision buttons remain `taskProgress.submitTaskDecision`. During an open clarification, tool attachment/automatic tool restrictions are not allowed to reinterpret or block plain text; the selected tool does not travel with the bound reply.
 
-- [ ] **Step 1 — failing tests:** `it('sends text during streaming')`: assert the composer stays enabled and `submitMessage` returns `queued`; `it('sends plain text from an attached-tool composer during clarification')`: assert no tool command and one inbox send with text; `it('does not approve from typed text')`: assert no decision command during a plan wait. Test status change during send, duplicate response/retry, read-only/stale request, FIFO timeline, draft restoration and independent buttons.
-- [ ] **Step 2 — red:** Run `cd apps/web && pnpm test:run -- ChatInput.test.ts ChatView.test.ts ChatComponents.test.ts`; confirm failing assertions.
-- [ ] **Step 3 — implementation:** Remove composer dependence on `isStreaming` for ordinary text, route text to inbox, preserve stable retry IDs and drafts, show queued/clarification labels and approval blockers, and leave attached tool commands explicitly unavailable while a run owns the slot. Show server-bound message status and assistant follow-ups without duplicate optimistic entries.
-- [ ] **Step 4 — green/commit:** Rerun those web tests, `pnpm typecheck`, `pnpm build` in `apps/web`; commit with a scanned message file.
+- [x] **Step 1 — failing tests:** `it('sends text during streaming')`: assert the composer stays enabled and `submitMessage` returns `queued`; `it('sends plain text from an attached-tool composer during clarification')`: assert no tool command and one inbox send with text; `it('does not approve from typed text')`: assert no decision command during a plan wait. Test status change during send, duplicate response/retry, read-only/stale request, FIFO timeline, draft restoration and independent buttons.
+- [x] **Step 2 — red:** Run `cd apps/web && pnpm test:run -- ChatInput.test.ts ChatView.test.ts ChatComponents.test.ts`; confirm failing assertions.
+- [x] **Step 3 — implementation:** Remove composer dependence on `isStreaming` for ordinary text, route text to inbox, preserve stable retry IDs and drafts, show queued/clarification labels and approval blockers, and leave attached tool commands explicitly unavailable while a run owns the slot. Show server-bound message status and assistant follow-ups without duplicate optimistic entries.
+- [x] **Step 4 — green/commit:** Rerun those web tests, `pnpm typecheck`, `pnpm build` in `apps/web`; commit with a scanned message file.
 
 ### Task 8: Cross-slice regression and honest qualification
 
