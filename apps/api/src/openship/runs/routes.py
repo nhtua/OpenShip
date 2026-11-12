@@ -20,6 +20,7 @@ from ..connectors.blockers import (
 )
 from ..database.session import SessionLocal, get_db
 from ..execution.reads import OperationPage, read_operation_page
+from .inbox.contracts import MessageAdmissionRequest, MessageAdmissionResponse
 from .models import ProviderAttempt
 from .schemas import (
     ConnectorDismissRequest,
@@ -35,6 +36,28 @@ from .tasks.projections import read_task_summary
 
 logger = logging.getLogger("runs.routes")
 router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+
+@router.post(
+    "/{conversation_id}/messages", status_code=202, response_model=MessageAdmissionResponse
+)
+async def admit_conversation_message(
+    conversation_id: uuid.UUID,
+    req: MessageAdmissionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    from .inbox.admission import submit_message
+
+    try:
+        response = submit_message(
+            db, user_id=user.id, conversation_id=conversation_id, request=req
+        )
+        db.commit()
+        return response
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post("/{run_id}/resume-analysis", status_code=202, response_model=RunResponse)

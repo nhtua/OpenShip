@@ -124,7 +124,19 @@ class TaskDispositionEvent(BaseModel):
     ]
 
 
+class MessageAdmittedEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    message_id: UUID
+    disposition: Literal["clarification", "queued"]
+    status: Literal["attached", "queued", "promoted", "failed"]
+    run_id: UUID | None = None
+    request_id: UUID | None = None
+
+
 TASK_EVENT_SCHEMAS = {
+    "message.admitted": MessageAdmittedEvent,
     "task.decision_requested": TaskDecisionRequestedEvent,
     "task.decision_resolved": TaskDecisionResolvedEvent,
     "task.plan_proposed": TaskPlanProposedEvent,

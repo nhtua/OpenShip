@@ -10,7 +10,7 @@
 
 **Spec:** [Conversation inbox and clarification design](../specs/2026-11-11-conversation-inbox-and-clarification-design.md). Read it before implementing this plan.
 
-**Status:** Plan approved; implementation in progress inline in the current isolated worktree, with no subagents, push, PR, or merge. Task 1's API and web regressions have passed; its commit and final task verification remain. Tasks 2–8 remain open.
+**Status:** Plan approved; implementation in progress inline in the current isolated worktree, with no subagents, push, PR, or merge. Task 1 is committed and its hook passed. Task 2 admission, migration and targeted tests are implemented; full verification and commit remain. Tasks 3–8 remain open.
 
 ## Global Constraints
 
@@ -55,7 +55,7 @@
 - [x] **Step 1 — failing API/web tests:** Added revision-0 event/digest and historical decode assertions and a web store binding/unbound regression.
 - [x] **Step 2 — red:** API: 1 failed, 46 passed (missing event digest). Web: 1 failed, 427 passed (unbound live digest). The planned pnpm command ran all tests because of `--` argument handling.
 - [x] **Step 3 — implementation:** Emit the stored digest, validate its SHA-256 format when present, and prefer the event field in the store. Do not synthesize a missing digest.
-- [ ] **Step 4 — green/commit:** API task tests: 47 passed; focused web test: 12 passed; API Ruff and web typecheck passed. Four-shard hook failed with 13 pool-exhaustion failures and 1,604 passes. Tracing identified retained `Lane` sessions from integration tests; moving its cleanup fixture to shared conftest fixed a regression (red: 1 failed, 1 passed; green: 2 passed). The eight-shard credential-free API lane passed 2,064 tests; four-shard selection shard 0 passed 405 tests (new tests changed shard assignments). Commit and final task verification remain.
+- [x] **Step 4 — green/commit:** API task tests: 47 passed; focused web test: 12 passed; API Ruff and web typecheck passed. Four-shard hook failed with 13 pool-exhaustion failures and 1,604 passes. Tracing identified retained `Lane` sessions from integration tests; moving its cleanup fixture to shared conftest fixed a regression (red: 1 failed, 1 passed; green: 2 passed). The eight-shard credential-free API lane passed 2,064 tests; four-shard selection shard 0 passed 405 tests (new tests changed shard assignments). Commit `dde2f20` passed all applicable hooks.
 
 ### Task 2: Persist and accept conversation messages under one routing lock
 
@@ -63,10 +63,10 @@
 
 **Interfaces:** `MessageAdmissionRequest` retains every `TurnSubmitRequest` field, with the same stable `client_request_id`; `MessageAdmissionResponse(message_id, disposition: 'clarification'|'queued', status: 'attached'|'queued'|'promoted'|'failed', run_id?, request_id?)`. `submit_message(db: Session, *, user_id: UUID, conversation_id: UUID, request: MessageAdmissionRequest) -> MessageAdmissionResponse` does not commit. `ConversationInboxEntry` owns `message_id`, `conversation_id`, `client_request_id`, canonical request digest, monotonic event sequence, immutable disposition, `run_id?`, `decision_id?`, selected request JSON, and status. `message.admitted` carries the IDs/disposition/status but not full content or selection. Endpoint: `POST /api/runs/{conversation_id}/messages` (202). An attached clarification uses text only; other request fields do not change its run or authorize tools.
 
-- [ ] **Step 1 — failing tests:** `test_exact_replay_has_one_message_and_one_event`: assert `first.message_id == replay.message_id` and `count(inbox_rows) == 1`; `test_blank_or_conflicting_submission`: assert blank returns 422 and changed payload with the same ID returns 409; `test_open_clarification_binds_under_lock`: assert `result.request_id == decision.request_id` and `result.disposition == 'clarification'`. Cover concurrent sends, foreign/read-only/archive, active non-clarification waits, and a no-active-run backlog: the new result stays queued behind its predecessor.
-- [ ] **Step 2 — red:** Run `cd apps/api && uv run pytest tests/test_conversation_inbox_admission.py -q`; expect missing inbox/route assertions to fail.
-- [ ] **Step 3 — implementation:** Add migration after `phase7a034`; use existing conversation→project→run lock order. Capture effective omitted defaults once, persist the accepted user message and row/event in the same transaction, and return the stored disposition on replay. Keep the old `/turns` endpoint's active-run 409 behavior.
-- [ ] **Step 4 — green/commit:** Rerun the new tests and `uv run ruff check src/openship/runs src/openship/events` from `apps/api`; commit the additive storage/admission slice with a scanned message file.
+- [x] **Step 1 — admission tests:** Added replay, blank/conflict, clarification binding, concurrent sends, foreign/archive, non-clarification wait, backlog ordering and frozen-default coverage.
+- [x] **Step 2 — red:** Initial test run: 3 failed and 1 passed for missing inbox model/route/admission. Archive replay regression also failed before its fix.
+- [x] **Step 3 — implementation:** Added migration, contracts, transactional admission and authenticated endpoint; preserved the old `/turns` behavior. Replay and fresh admission follow existing ownership and archive rules.
+- [ ] **Step 4 — green/commit:** Admission and existing turn tests: 24 passed; Ruff passed. The first eight-shard credential-free lane exposed a hard-coded old migration-head assertion (1 failed, 2,077 passed); after updating that assertion, the lane passed 2,078 tests across eight shards. Commit remains.
 
 ### Task 3: Promote FIFO turns through existing run creation, even after crashes
 
