@@ -648,8 +648,8 @@ describe('chat store', () => {
       payload: {
         schema_version: 1,
         message_id: 'msg-1',
-        disposition: 'queued',
-        status: 'queued',
+        disposition: null,
+        status: 'awaiting',
         run_id: null,
         request_id: null,
       },
@@ -660,8 +660,8 @@ describe('chat store', () => {
     expect(entries).toHaveLength(1)
     expect(entries[0]).toMatchObject({
       message_id: 'msg-1',
-      disposition: 'queued',
-      status: 'queued',
+      disposition: null,
+      status: 'awaiting',
       run_id: null,
       request_id: null,
       error_code: null,
@@ -691,6 +691,89 @@ describe('chat store', () => {
       error_code: null,
     })
     expect(chat.hasQueuedInbox('c1')).toBe(false)
+  })
+
+  it('folds awaiting admission then assignment', () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    chat.messages = []
+
+    chat.processDurableEvent({
+      id: 'evt-admit',
+      conversation_id: 'c1',
+      run_id: null,
+      sequence: 1,
+      type: 'message.admitted',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: null,
+        status: 'awaiting',
+        run_id: null,
+        request_id: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+
+    let entries = chat.inboxFor('c1')
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      message_id: 'msg-1',
+      disposition: null,
+      status: 'awaiting',
+      run_id: null,
+      request_id: null,
+      error_code: null,
+    })
+    expect(chat.hasQueuedInbox('c1')).toBe(true)
+
+    chat.processDurableEvent({
+      id: 'evt-assign',
+      conversation_id: 'c1',
+      run_id: 'run-1',
+      sequence: 2,
+      type: 'message.assigned',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: 'clarification',
+        status: 'attached',
+        run_id: 'run-1',
+        request_id: 'request-1',
+      },
+      created_at: '2026-10-04T00:00:01Z',
+    })
+
+    expect(chat.inboxFor('c1')[0]).toMatchObject({
+      message_id: 'msg-1',
+      disposition: 'clarification',
+      status: 'attached',
+      run_id: 'run-1',
+      request_id: 'request-1',
+      error_code: null,
+    })
+    expect(chat.hasQueuedInbox('c1')).toBe(false)
+    expect(chat.hasOpenClarification('c1')).toBe(true)
+
+    // Replay of the same assignment sequence never rewinds the state.
+    chat.processDurableEvent({
+      id: 'evt-assign-replay',
+      conversation_id: 'c1',
+      run_id: 'run-1',
+      sequence: 2,
+      type: 'message.assigned',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: 'clarification',
+        status: 'attached',
+        run_id: 'run-1',
+        request_id: 'request-1',
+      },
+      created_at: '2026-10-04T00:00:01Z',
+    })
+    expect(chat.inboxFor('c1')[0].status).toBe('attached')
+    expect(chat.inboxFor('c1')[0].request_id).toBe('request-1')
   })
 
   it('a later admission event does not rewind an older state', () => {
@@ -741,8 +824,8 @@ describe('chat store', () => {
       payload: {
         schema_version: 1,
         message_id: 'msg-1',
-        disposition: 'queued',
-        status: 'queued',
+        disposition: null,
+        status: 'awaiting',
         run_id: null,
         request_id: null,
       },

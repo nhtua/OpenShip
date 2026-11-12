@@ -924,7 +924,10 @@ describe('ChatView', () => {
     expect((newButton.element as HTMLButtonElement).disabled).toBe(false)
     const row = findByText(wrapper, 'Deploy pipeline')!
     expect((row.element as HTMLButtonElement).disabled).toBe(false)
-    expect((wrapper.get('#message').element as HTMLTextAreaElement).disabled).toBe(true)
+    // During streaming the composer stays open: a plain-text send is admitted
+    // and routed by the server (clarification reply or queued turn), never
+    // blocked by an open stream or an in-flight submission flag.
+    expect((wrapper.get('#message').element as HTMLTextAreaElement).disabled).toBe(false)
 
     await row.trigger('click')
     await vi.waitFor(

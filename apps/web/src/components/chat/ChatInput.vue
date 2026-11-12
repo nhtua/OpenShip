@@ -235,11 +235,7 @@ const submitDisabled = computed(() =>
   (Boolean(attachedCapability.value) && (props.toolSubmissionDisabled || toolUnavailable.value || connectorSelectionMissing.value)) ||
   (isS3ReadTool.value && !bucketName.value.trim()) ||
   (automaticToolMode.value && awsSelectionRequired.value && !awsSelectionValid.value) ||
-  (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value) ||
-  // During an open clarification, plain text is the answer: attached tools
-  // and automatic mode do not travel with the bound reply.
-  (props.replyContext && Boolean(attachedCapability.value)) ||
-  (props.replyContext && automaticToolMode.value),
+  (automaticToolMode.value && !attachedCapability.value && automaticToolDisabled.value),
 )
 
 function forwardSelect(profileId: string | null, fallbackIds: string[]) {

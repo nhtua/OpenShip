@@ -285,7 +285,7 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
     // cannot be approved: the buttons stay, and the newer plan is what the
     // card shows.
     if (pending.plan_revision !== card.currentRevision) return true
-    if (card.readOnly || (card.submitting && pending.kind !== 'clarification')) return true
+    if (card.readOnly || card.submitting) return true
     const allowed = ACTIONS_FOR_KIND[pending.kind]
     return allowed.length === 0
   }

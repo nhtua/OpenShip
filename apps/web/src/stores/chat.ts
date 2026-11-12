@@ -476,9 +476,9 @@ export const useChatStore = defineStore('chat', () => {
   // is promoted behind the active run or fails to be admitted.
 
   function inboxStatus(value: unknown): InboxMessageSummary['status'] {
-    return value === 'attached' || value === 'promoted' || value === 'failed'
+    return value === 'attached' || value === 'promoted' || value === 'failed' || value === 'awaiting'
       ? value
-      : 'queued'
+      : 'awaiting'
   }
 
   function inboxDisposition(
@@ -487,7 +487,8 @@ export const useChatStore = defineStore('chat', () => {
   ): InboxMessageSummary['disposition'] {
     if (value === 'clarification') return 'clarification'
     if (value === 'queued') return 'queued'
-    return previous?.disposition ?? 'queued'
+    if (value === null) return null
+    return previous?.disposition ?? null
   }
 
   function writeInbox(
@@ -565,7 +566,9 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function hasQueuedInbox(conversationId: string): boolean {
-    return inboxFor(conversationId).some((entry) => entry.status === 'queued')
+    return inboxFor(conversationId).some(
+      (entry) => entry.status === 'awaiting' || entry.status === 'queued',
+    )
   }
 
   function hasOpenClarification(conversationId: string): boolean {
@@ -584,7 +587,7 @@ export const useChatStore = defineStore('chat', () => {
     const convId = event.conversation_id
     // Admission and queue transitions rebuild the durable inbox state. They
     // are not chat messages and never start, resume, or approve work.
-    if (event.type === 'message.admitted' || event.type === 'message.status_changed') {
+    if (event.type === 'message.admitted' || event.type === 'message.assigned' || event.type === 'message.status_changed') {
       applyInboxEvent(event)
       return
     }
@@ -1185,12 +1188,23 @@ export const useChatStore = defineStore('chat', () => {
   // One message through the durable inbox: it joins an open clarification or
   // queues behind the active run. The server assigns the message ID and
   // disposition; the browser repeats what it states rather than guessing.
-  async function submitMessage(content: string, conversationId: string): Promise<void> {
+  async function submitMessage(
+    content: string,
+    conversationId: string,
+    options: {
+      enableTools?: boolean
+      connectorSelections?: TurnSubmitRequest['connector_selections']
+    } = {},
+  ): Promise<void> {
     error.value = null
     const requestId = generateRequestId()
     const payload: TurnSubmitRequest = {
       content,
       client_request_id: requestId,
+      enable_tools: options.enableTools ?? false,
+      ...(options.connectorSelections
+        ? { connector_selections: { ...options.connectorSelections } }
+        : {}),
     }
     pendingRequests.value.set(requestId, {
       conversation_id: conversationId,
@@ -1214,7 +1228,8 @@ export const useChatStore = defineStore('chat', () => {
       }
       pendingRequests.value.delete(requestId)
     } catch (err: unknown) {
-      pendingRequests.value.delete(requestId)
+      // Keep the pending request so the draft can be retried; ChatInput
+      // restores it from pendingDraft when submissionError is set.
       error.value = safeMessage(err, 'Failed to send message. Please try again.')
       if (lifecycleConflictCode(err)) await refreshLifecycleAfterConflict(conversationId)
     }

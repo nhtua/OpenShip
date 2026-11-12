@@ -251,21 +251,17 @@ async function handleSend(content: string, options?: {
   enableTools: boolean
   connectorSelections?: ConnectorSelections
 }) {
-  // During an open clarification, the composer stays available even while the
-  // stream is open: the next event depends on this answer. Only navigation,
-  // read-only scope, or a submission in flight blocks it.
-  if (navigationBusy.value || chat.currentConversationReadOnly || chat.isSubmitting) return
-  if (!decisionReplyContext.value && chat.isStreaming) return
+  // Every composer send travels through one durable admission path. The server
+  // decides whether the text answers an open clarification or queues a new
+  // turn; the browser never guesses the route. Only navigation or read-only
+  // scope blocks a plain-text send.
+  if (navigationBusy.value || chat.currentConversationReadOnly) return
   chat.error = null
 
   const conversationId = chat.currentConversation?.id
     ?? await createAndOpenConversation('New Conversation')
   if (conversationId) {
-    if (decisionReplyContext.value) {
-      await chat.submitMessage(content, conversationId)
-    } else {
-      await chat.sendMessage(content, conversationId, options)
-    }
+    await chat.submitMessage(content, conversationId, options)
   }
 }
 
@@ -302,6 +298,12 @@ const taskCard = computed(() => {
   const runId = runCard?.run_id
   return runId ? taskProgress.cards.get(runId) : null
 })
+// The composer's plain-text answer targets the open clarification on the
+// current run; the server binds it to that request. Explicit buttons keep
+// their own request-bound path.
+const clarificationReplyContext = computed(
+  () => Boolean(taskCard.value) && taskCard.value?.pendingDecision?.kind === 'clarification',
+)
 const conversationTaskCards = computed(() => {
   const runIds = new Set([
     ...chat.messages.map((message) => message.run_id).filter(Boolean),
@@ -310,22 +312,14 @@ const conversationTaskCards = computed(() => {
   ])
   return [...taskProgress.cards.values()].filter((card) => runIds.has(card.runId))
 })
-// A composer reply only counts while the run is parked on a decision this
-// person can answer; elsewhere text is an ordinary turn.
-const decisionReplyContext = computed(
-  () => Boolean(taskCard.value) && !taskProgress.decisionActionsDisabled(taskCard.value!.runId),
-)
-// The composer is the only door an answer takes, so a run that waits on a
-// decision a person can answer keeps the composer open even while its stream
-// is still open - the next event depends on this answer, and a composer that
-// waits for the stream waits for the answer. Elsewhere an open stream keeps it
-// closed, and a parked decision never starts a second turn: the reply emits
-// bind to the request, never to a new send.
+// The composer stays open while a run streams or waits: the next event may
+// depend on this answer (an open clarification), and a composer that waits
+// for the stream waits for the answer. Only navigation or read-only scope
+// blocks it. The server decides whether the text answers an open clarification
+// or queues a new turn.
 const composerBlocked = computed(
   () =>
-    navigationBusy.value ||
-    chat.currentConversationReadOnly ||
-    (chat.isStreaming && !decisionReplyContext.value),
+    navigationBusy.value || chat.currentConversationReadOnly,
 )
 watch(
   (): [string, boolean] => [taskCard.value?.runId ?? '', chat.currentConversationReadOnly],
@@ -767,7 +761,7 @@ onBeforeUnmount(() => {
         :disabled="composerBlocked"
         :selection-disabled="chat.isSubmitting"
         :mode-submission-disabled="agentMode.submissionBlocked"
-        :reply-context="decisionReplyContext"
+        :reply-context="clarificationReplyContext"
         :profiles="chat.modelProfiles?.profiles ?? []"
         :default-profile-id="chat.modelProfiles?.default_profile_id ?? null"
         :selected-profile-id="chat.selectedProfileId"
