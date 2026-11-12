@@ -11,6 +11,7 @@ import type {
   Conversation,
   DurableEvent,
   ErrorSummary,
+  InboxMessageSummary,
   ModelProfileCatalog,
   Run,
   RunCard,
@@ -55,6 +56,13 @@ export const useChatStore = defineStore('chat', () => {
   const appliedEventIds = ref<Set<string>>(new Set())
   // Cursor per conversation (last committed sequence)
   const cursors = ref<Map<string, number>>(new Map())
+  // Durable inbox states per conversation, keyed by message ID. Admission and
+  // status events fold into this map, and a reload replaces it with the
+  // snapshot's own bounded projection. It is a fold, never a second authority.
+  const inboxMessages = ref<Map<string, Map<string, InboxMessageSummary>>>(new Map())
+  // The last event sequence folded per message, so a replay never regresses a
+  // promoted or failed state back to queued.
+  const inboxEventSequences = ref<Map<string, Map<string, number>>>(new Map())
 
   // What this installation offers, and what the next turn will use. A browser
   // names a profile only: never an endpoint, adapter, or credential.
@@ -327,6 +335,9 @@ export const useChatStore = defineStore('chat', () => {
         for (const task of snapshot.tasks ?? []) {
           useTaskProgressStore().handleSnapshot(task, snapshot.sequence)
         }
+        // The snapshot's inbox is authoritative over the admission events
+        // replayed above: it states what is queued now, not what was queued.
+        applySnapshotInbox(conversationId, snapshot.inbox, snapshot.sequence)
         // Set the cursor to the snapshot's sequence (or the highest event sequence)
         const maxSeq = snapshot.events.reduce(
           (max, e) => Math.max(max, e.sequence),
@@ -369,9 +380,11 @@ export const useChatStore = defineStore('chat', () => {
       conversationMetadataReady.value = Boolean(loadedMetadata)
       messages.value = res.data as unknown as ChatMessage[]
 
-      // If there's an active run for this conversation, subscribe to events
+      // If there's an active run for this conversation, subscribe to events.
+      // A queued message with no active run also needs the stream: promotion
+      // may happen after the read, and its own terminal event ends the wait.
       const card = runCards.value.get(conversationId)
-      if (card && ['queued', 'running', 'paused'].includes(card.status)) {
+      if ((card && ['queued', 'running', 'paused'].includes(card.status)) || hasQueuedInbox(conversationId)) {
         const cursor = cursors.value.get(conversationId) ?? -1
         // Subscribe in background (don't block loadConversation)
         subscribeToEvents(conversationId, cursor, (event) => {
@@ -455,6 +468,105 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // --- Durable inbox fold ----------------------------------------------------
+  //
+  // One message becomes one entry keyed by its server message ID. The status
+  // is whatever the server last said; a queued message stays visible until it
+  // is promoted behind the active run or fails to be admitted.
+
+  function inboxStatus(value: unknown): InboxMessageSummary['status'] {
+    return value === 'attached' || value === 'promoted' || value === 'failed'
+      ? value
+      : 'queued'
+  }
+
+  function inboxDisposition(
+    value: unknown,
+    previous?: InboxMessageSummary,
+  ): InboxMessageSummary['disposition'] {
+    if (value === 'clarification') return 'clarification'
+    if (value === 'queued') return 'queued'
+    return previous?.disposition ?? 'queued'
+  }
+
+  function writeInbox(
+    conversationId: string,
+    entries: Map<string, InboxMessageSummary>,
+    sequences: Map<string, number>,
+  ): void {
+    const inbox = new Map(inboxMessages.value)
+    inbox.set(conversationId, entries)
+    inboxMessages.value = inbox
+    const seen = new Map(inboxEventSequences.value)
+    seen.set(conversationId, sequences)
+    inboxEventSequences.value = seen
+  }
+
+  function applyInboxEvent(event: DurableEvent): void {
+    const payload = event.payload
+    const messageId = String(payload.message_id ?? '')
+    if (!messageId) return
+    const conversationId = event.conversation_id
+    const entries = new Map(inboxMessages.value.get(conversationId) ?? [])
+    const sequences = new Map(inboxEventSequences.value.get(conversationId) ?? [])
+    // Older or duplicate sequences never rewind a message's state.
+    if (event.sequence <= (sequences.get(messageId) ?? -1)) return
+    const previous = entries.get(messageId)
+    const status = inboxStatus(payload.status)
+    const runId =
+      payload.run_id === undefined || payload.run_id === null
+        ? previous?.run_id ?? null
+        : String(payload.run_id)
+    const requestId =
+      payload.request_id === undefined || payload.request_id === null
+        ? previous?.request_id ?? null
+        : String(payload.request_id)
+    const errorCode =
+      status === 'failed'
+        ? String(payload.reason ?? payload.error_code ?? previous?.error_code ?? 'admission_failed')
+        : null
+    entries.set(messageId, {
+      message_id: messageId,
+      disposition: inboxDisposition(payload.disposition, previous),
+      status,
+      run_id: runId,
+      request_id: requestId,
+      // The admission sequence is stable; a status change moves only the
+      // event watermark, not where the message sits in the queue.
+      sequence: previous?.sequence ?? event.sequence,
+      error_code: errorCode,
+    })
+    sequences.set(messageId, event.sequence)
+    writeInbox(conversationId, entries, sequences)
+  }
+
+  function applySnapshotInbox(
+    conversationId: string,
+    inbox: InboxMessageSummary[] | undefined,
+    sequence: number,
+  ): void {
+    if (inbox === undefined) return
+    const entries = new Map<string, InboxMessageSummary>()
+    const sequences = new Map<string, number>()
+    for (const entry of inbox) {
+      entries.set(entry.message_id, { ...entry })
+      // The snapshot is authoritative through its own committed sequence, so
+      // an older replayed event cannot overwrite it.
+      sequences.set(entry.message_id, sequence)
+    }
+    writeInbox(conversationId, entries, sequences)
+  }
+
+  function inboxFor(conversationId: string): InboxMessageSummary[] {
+    return [...(inboxMessages.value.get(conversationId)?.values() ?? [])].sort(
+      (left, right) => left.sequence - right.sequence,
+    )
+  }
+
+  function hasQueuedInbox(conversationId: string): boolean {
+    return inboxFor(conversationId).some((entry) => entry.status === 'queued')
+  }
+
   function processDurableEvent(event: DurableEvent): void {
     // Deduplicate by event ID
     if (appliedEventIds.value.has(event.id)) {
@@ -463,6 +575,12 @@ export const useChatStore = defineStore('chat', () => {
     appliedEventIds.value.add(event.id)
 
     const convId = event.conversation_id
+    // Admission and queue transitions rebuild the durable inbox state. They
+    // are not chat messages and never start, resume, or approve work.
+    if (event.type === 'message.admitted' || event.type === 'message.status_changed') {
+      applyInboxEvent(event)
+      return
+    }
     // Task events fold into the task card, which owns plan, progress and the
     // open decision. They never become messages, and the card is a fold of
     // the same records the snapshot reports - not a second authority.
@@ -772,6 +890,14 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function streamShouldStop(conversationId: string, type: string): boolean {
+    if (!['run.succeeded', 'run.failed', 'run_cancelled'].includes(type)) return false
+    // A queued message is the next turn, already admitted and waiting for the
+    // execution slot. The stream must stay open through this run's terminal
+    // event so its promotion and own outcome arrive without a refetch.
+    return !hasQueuedInbox(conversationId)
+  }
+
   async function subscribeToEvents(
     conversationId: string,
     afterSequence: number,
@@ -886,11 +1012,7 @@ export const useChatStore = defineStore('chat', () => {
             if (sequence > lastSeenSequence) {
               lastSeenSequence = sequence
             }
-            if (
-              type === 'run.succeeded' ||
-              type === 'run.failed' ||
-              type === 'run_cancelled'
-            ) {
+            if (streamShouldStop(conversationId, type)) {
               shouldStop = true
             }
           } catch {
@@ -917,21 +1039,18 @@ export const useChatStore = defineStore('chat', () => {
           if (event.sequence <= lastSeenSequence) continue
           onEvent(event)
           lastSeenSequence = event.sequence
-          if (
-            event.type === 'run.succeeded' ||
-            event.type === 'run.failed' ||
-            event.type === 'run_cancelled'
-          ) {
+          if (streamShouldStop(conversationId, event.type)) {
             shouldStop = true
           }
         }
+        applySnapshotInbox(conversationId, snapshot.inbox, snapshot.sequence)
         lastSeenSequence = Math.max(lastSeenSequence, snapshot.sequence)
         cursors.value.set(conversationId, lastSeenSequence)
         const activeRunStatuses = ['created', 'queued', 'running', 'waiting_connector']
         const hasActiveRun = snapshot.runs?.some((run) =>
           activeRunStatuses.includes(run.status),
         ) ?? false
-        if (!hasActiveRun && !shouldStop) {
+        if (!hasActiveRun && !hasQueuedInbox(conversationId) && !shouldStop) {
           shouldStop = true
         }
       } catch (err) {
@@ -1247,6 +1366,8 @@ export const useChatStore = defineStore('chat', () => {
     pendingRequests.value.clear()
     pendingToolRequests.value.clear()
     cursors.value.clear()
+    inboxMessages.value.clear()
+    inboxEventSequences.value.clear()
   }
 
   return {
@@ -1262,6 +1383,10 @@ export const useChatStore = defineStore('chat', () => {
     runCards,
     toolOperationsByConversation,
     cursors,
+    inboxMessages,
+    inboxFor,
+    hasQueuedInbox,
+    applySnapshotInbox,
     modelProfiles,
     profileError,
     searchCapabilities,

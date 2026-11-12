@@ -91,6 +91,49 @@ describe('task progress store', () => {
     expect(store.buildCommand('run-1', 'answer', 'use the morning CSV')).toBeNull()
   })
 
+  it('updates only the matching open request and keeps its durable binding', () => {
+    const store = useTaskProgressStore()
+    const request = {
+      revision: 0,
+      request_id: 'request-1',
+      kind: 'clarification',
+      prompt: 'Which source?',
+      expected_digest: 'd'.repeat(64),
+      expires_at: '2026-11-12T10:00:00Z',
+    }
+    store.handleEvent(event(1, 'task.decision_requested', request))
+    store.handleEvent(
+      event(2, 'task.decision_updated', {
+        revision: 0,
+        request_id: 'request-1',
+        kind: 'clarification',
+        prompt: 'Which file in that source?',
+        message_id: 'message-follow-up',
+        expires_at: '2026-11-12T10:00:00Z',
+      }),
+    )
+
+    const pending = store.pendingFor('run-1')
+    expect(pending?.prompt).toBe('Which file in that source?')
+    expect(pending?.expected_digest).toBe('d'.repeat(64))
+    expect(store.buildCommand('run-1', 'answer', 'the morning CSV')?.expected_digest).toBe('d'.repeat(64))
+    expect(store.cards.get('run-1')?.progress.pending_decision?.prompt).toBe('Which file in that source?')
+
+    // An update for a request this card no longer shows never rewrites it and
+    // never resurrects a settled one.
+    store.handleEvent(
+      event(3, 'task.decision_updated', {
+        revision: 0,
+        request_id: 'request-old',
+        kind: 'clarification',
+        prompt: 'Something else entirely?',
+        message_id: 'message-old',
+        expires_at: '2026-11-12T10:00:00Z',
+      }),
+    )
+    expect(store.pendingFor('run-1')?.prompt).toBe('Which file in that source?')
+  })
+
   it('reconnectDoesNotDuplicatePlanOrFinalMessage', async () => {
     const store = useTaskProgressStore()
     const publish = planProposed(5, PLAN_ONE)

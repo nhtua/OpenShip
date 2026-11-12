@@ -25,6 +25,7 @@ const TASK_EVENT_TYPES = new Set([
   'task.progress',
   'task.disposition',
   'task.decision_requested',
+  'task.decision_updated',
   'task.decision_resolved',
 ])
 
@@ -165,6 +166,33 @@ export const useTaskProgressStore = defineStore('taskProgress', () => {
         // A parked request also says the run is waiting for this person.
         next.progress = { ...card.progress, status: 'waiting', pending_decision: pending }
         next.pendingDecision = pending
+        next.submitting = false
+        break
+      }
+      case 'task.decision_updated': {
+        // The same open request asks a new, narrower question. Only the
+        // request the card is showing may change: an update for a settled or
+        // superseded request never resurrects it.
+        const requestId = String(payload.request_id ?? '')
+        if (!card.pendingDecision || card.pendingDecision.request_id !== requestId) {
+          break
+        }
+        const prompt =
+          payload.prompt === undefined || payload.prompt === null
+            ? card.pendingDecision.prompt
+            : String(payload.prompt)
+        const updated: TaskPendingDecision = {
+          ...card.pendingDecision,
+          prompt,
+          // The durable digest and revision do not change: only the wording
+          // of the same request was updated.
+          expires_at:
+            payload.expires_at === undefined || payload.expires_at === null
+              ? card.pendingDecision.expires_at
+              : String(payload.expires_at),
+        }
+        next.progress = { ...card.progress, status: 'waiting', pending_decision: updated }
+        next.pendingDecision = updated
         next.submitting = false
         break
       }

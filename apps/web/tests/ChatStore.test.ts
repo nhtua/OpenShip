@@ -634,6 +634,144 @@ describe('chat store', () => {
     expect(chat.messages.filter((m) => m.role === 'user').length).toBe(1)
   })
 
+  it('admission and status events fold into the inbox', () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    chat.messages = []
+
+    chat.processDurableEvent({
+      id: 'evt-admit',
+      conversation_id: 'c1',
+      run_id: null,
+      sequence: 1,
+      type: 'message.admitted',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: 'queued',
+        status: 'queued',
+        run_id: null,
+        request_id: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+
+    const entries = chat.inboxFor('c1')
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      message_id: 'msg-1',
+      disposition: 'queued',
+      status: 'queued',
+      run_id: null,
+      request_id: null,
+      error_code: null,
+    })
+    expect(chat.hasQueuedInbox('c1')).toBe(true)
+
+    chat.processDurableEvent({
+      id: 'evt-promote',
+      conversation_id: 'c1',
+      run_id: 'run-1',
+      sequence: 2,
+      type: 'message.status_changed',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        status: 'promoted',
+        run_id: 'run-1',
+        reason: null,
+      },
+      created_at: '2026-10-04T00:00:01Z',
+    })
+
+    expect(chat.inboxFor('c1')[0]).toMatchObject({
+      message_id: 'msg-1',
+      status: 'promoted',
+      run_id: 'run-1',
+      error_code: null,
+    })
+    expect(chat.hasQueuedInbox('c1')).toBe(false)
+  })
+
+  it('a later admission event does not rewind an older state', () => {
+    const chat = useChatStore()
+    chat.processDurableEvent({
+      id: 'evt-promo',
+      conversation_id: 'c1',
+      run_id: 'run-1',
+      sequence: 5,
+      type: 'message.status_changed',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        status: 'promoted',
+        run_id: 'run-1',
+        reason: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+    chat.processDurableEvent({
+      id: 'evt-admit',
+      conversation_id: 'c1',
+      run_id: null,
+      sequence: 3,
+      type: 'message.admitted',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: 'queued',
+        status: 'queued',
+        run_id: null,
+        request_id: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+
+    expect(chat.inboxFor('c1')[0].status).toBe('promoted')
+  })
+
+  it('a snapshot with inbox replaces the fold', () => {
+    const chat = useChatStore()
+    chat.processDurableEvent({
+      id: 'evt-admit',
+      conversation_id: 'c1',
+      run_id: null,
+      sequence: 1,
+      type: 'message.admitted',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: 'queued',
+        status: 'queued',
+        run_id: null,
+        request_id: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+
+    chat.applySnapshotInbox(
+      'c1',
+      [
+        {
+          message_id: 'msg-2',
+          disposition: 'clarification',
+          status: 'attached',
+          run_id: 'run-1',
+          request_id: 'request-1',
+          sequence: 4,
+          error_code: null,
+        },
+      ],
+      4,
+    )
+
+    const entries = chat.inboxFor('c1')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].message_id).toBe('msg-2')
+    expect(entries[0].disposition).toBe('clarification')
+    expect(chat.hasQueuedInbox('c1')).toBe(false)
+  })
+
   it('loadConversation fetches snapshot and rebuilds state', async () => {
     // Mock snapshot response
     const snapshotEvents = [

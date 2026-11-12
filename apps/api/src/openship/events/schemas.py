@@ -204,6 +204,18 @@ class MessageSummary(BaseModel):
     created_at: str
 
 
+class InboxMessageSummary(BaseModel):
+    """One durable message admission, as both events and snapshots report it."""
+
+    message_id: UUID
+    disposition: Literal["clarification", "queued"]
+    status: Literal["attached", "queued", "promoted", "failed"]
+    run_id: UUID | None = None
+    request_id: UUID | None = None
+    sequence: int
+    error_code: str | None = None
+
+
 class RunSummary(BaseModel):
     """Summary of a run. Only the public projection: no credential, no SDK setting."""
 
@@ -238,6 +250,10 @@ class SnapshotResponse(BaseModel):
     runs: list[RunSummary]
     # A reload shows the same plan and progress the events already showed.
     tasks: list[TaskSummary] = Field(default_factory=list)
+    # The same bounded inbox states the admission events announced, so a
+    # reload reconstructs queued messages and open clarifications without a
+    # local pending-request map as the source of truth.
+    inbox: list[InboxMessageSummary] = Field(default_factory=list)
     artifacts: list[ArtifactSummary] = Field(default_factory=list)
     artifacts_next_cursor: str | None = None
 

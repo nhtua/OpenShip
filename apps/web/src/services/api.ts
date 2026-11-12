@@ -129,6 +129,15 @@ export const runsApi = {
   ): Promise<{ data: Run }> =>
     api.post(`/runs/${conversationId}/turns`, request),
 
+  // One message through the durable inbox: it joins an open clarification or
+  // queues behind the active run. The response says which, and the browser
+  // repeats it instead of deciding locally.
+  submitMessage: (
+    conversationId: string,
+    request: TurnSubmitRequest,
+  ): Promise<{ data: import('@/types').MessageAdmissionResponse }> =>
+    api.post(`/runs/${encodeURIComponent(conversationId)}/messages`, request),
+
   cancelRun: (runId: string): Promise<{ data: Run }> =>
     api.post(`/runs/${runId}/cancel`, {}),
 

@@ -16,6 +16,7 @@ from ..chat.models import Conversation, Message
 from ..execution.pagination import decode_cursor, encode_cursor
 from ..execution.reads import read_operation_page
 from ..resources.models import ConnectorBlocker
+from ..runs.inbox.projection import read_inbox_summaries
 from ..runs.models import Event, ProviderAttempt, Run
 from ..runs.schemas import (
     _attempt_projection,
@@ -477,6 +478,7 @@ def read_snapshot(
         messages=[_message_to_summary(msg) for msg in messages],
         runs=run_summaries,
         tasks=task_summaries,
+        inbox=read_inbox_summaries(db, conversation_id=conv_id),
         artifacts=artifact_summaries,
         artifacts_next_cursor=(
             encode_cursor(artifact_rows[-1].created_at, artifact_rows[-1].id)

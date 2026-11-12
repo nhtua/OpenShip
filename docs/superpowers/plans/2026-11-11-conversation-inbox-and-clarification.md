@@ -107,10 +107,10 @@
 
 **Interfaces:** `InboxMessageSummary(message_id, disposition, status, run_id?, request_id?, sequence, error_code?)`; `SnapshotResponse.inbox: list[InboxMessageSummary]`, bounded and paginated consistently with message history. `runsApi.submitMessage(conversationId: string, request: TurnSubmitRequest): Promise<{data: MessageAdmissionResponse}>`. The chat store merges idempotently by message ID and event sequence, and can resume event delivery across successive queued runs.
 
-- [ ] **Step 1 — failing tests:** `test_snapshot_matches_inbox_events`: assert snapshot status/request bindings equal the last folded event for each message; `it('keeps the queue after run A finishes')`: assert message B remains queued, then transitions when promoted after A's terminal event. Test prompt update/reload, actionable digest, historical digestless event and `usage === null` when provider supplied none.
-- [ ] **Step 2 — red:** Run `cd apps/api && uv run pytest tests/test_conversation_inbox_snapshot.py -q` and `cd apps/web && pnpm test:run -- TaskProgressStore.test.ts`; record failures.
-- [ ] **Step 3 — implementation:** Add bounded inbox projection and event schemas, fold `task.decision_updated` only for matching open request, reconcile snapshot after reconnect, and keep web messages keyed by durable IDs/statuses. Preserve historical task cards and old events.
-- [ ] **Step 4 — green/commit:** Rerun both tests, `pnpm typecheck` in `apps/web`, and Ruff for API changes; commit after verification.
+- [x] **Step 1 — failing tests:** `test_snapshot_matches_inbox_events`: assert snapshot status/request bindings equal the last folded event for each message; `it('keeps the queue after run A finishes')`: assert message B remains queued, then transitions when promoted after A's terminal event. Test prompt update/reload, actionable digest, historical digestless event and `usage === null` when provider supplied none.
+- [x] **Step 2 — red:** Run `cd apps/api && uv run pytest tests/test_conversation_inbox_snapshot.py -q` and `cd apps/web && pnpm test:run -- TaskProgressStore.test.ts`; record failures.
+- [x] **Step 3 — implementation:** Add bounded inbox projection and event schemas, fold `task.decision_updated` only for matching open request, reconcile snapshot after reconnect, and keep web messages keyed by durable IDs/statuses. Preserve historical task cards and old events.
+- [x] **Step 4 — green/commit:** Rerun both tests, `pnpm typecheck` in `apps/web`, and Ruff for API changes; commit after verification.
 
 ### Task 7: Make the composer conversational, with safe plain-text clarification replies
 

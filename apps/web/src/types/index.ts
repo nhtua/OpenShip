@@ -449,8 +449,30 @@ export interface Snapshot {
   runs?: SnapshotRun[]
   // A reload shows the same plan and progress the events already showed.
   tasks?: TaskSummary[]
+  // The same bounded admission states the message events announced.
+  inbox?: InboxMessageSummary[]
   artifacts?: ArtifactSummary[]
   artifacts_next_cursor?: string | null
+}
+
+// One durable message admission: which run or clarification owns it and what
+// became of it. Status comes from the server; the browser never guesses one.
+export interface InboxMessageSummary {
+  message_id: string
+  disposition: 'clarification' | 'queued'
+  status: 'attached' | 'queued' | 'promoted' | 'failed'
+  run_id?: string | null
+  request_id?: string | null
+  sequence: number
+  error_code?: string | null
+}
+
+export interface MessageAdmissionResponse {
+  message_id: string
+  disposition: 'clarification' | 'queued'
+  status: 'attached' | 'queued' | 'promoted' | 'failed'
+  run_id?: string | null
+  request_id?: string | null
 }
 
 export interface SnapshotRun {
