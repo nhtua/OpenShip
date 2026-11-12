@@ -1,6 +1,7 @@
 """Promote durable messages without bypassing the conversation execution slot."""
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import update
@@ -11,6 +12,7 @@ from ...events.service import append_event
 from ...workspace.models import Project
 from ..models import ACTIVE_RUN_STATUSES, Run
 from ..service import _lock_active_conversation_scope, submit_turn
+from .assignment import assign_next_message
 from .contracts import MessageAdmissionRequest
 from .models import ConversationInboxEntry
 
@@ -111,6 +113,12 @@ def promote_next_message(db: Session, *, conversation_id: uuid.UUID) -> Run | No
 
 
 def reconcile_queued_messages(db: Session, *, batch_size: int = 100) -> int:
+    """Rescue awaiting and queued entries for conversations with no active run.
+
+    Assigns the oldest awaiting entry first (to an open clarification or as a
+    queued turn), then promotes the oldest queued entry. Idempotent across
+    retries and workers.
+    """
     active_run = (
         db.query(Run.id)
         .filter(
@@ -119,14 +127,17 @@ def reconcile_queued_messages(db: Session, *, batch_size: int = 100) -> int:
         )
         .exists()
     )
+    # Conversations holding awaiting or queued entries with no active run.
     conversation_ids = [
         row[0]
         for row in db.query(ConversationInboxEntry.conversation_id)
         .join(Conversation, Conversation.id == ConversationInboxEntry.conversation_id)
         .join(Project, Project.id == Conversation.project_id)
         .filter(
-            ConversationInboxEntry.disposition == "queued",
-            ConversationInboxEntry.status == "queued",
+            ConversationInboxEntry.status.in_(("awaiting", "queued")),
+            ConversationInboxEntry.disposition.in_(
+                (None, "clarification", "queued")
+            ),
             Conversation.archived_at.is_(None),
             Project.archived_at.is_(None),
             ~active_run,
@@ -137,6 +148,15 @@ def reconcile_queued_messages(db: Session, *, batch_size: int = 100) -> int:
     ]
     count = 0
     for conversation_id in conversation_ids:
+        conversation = db.get(Conversation, conversation_id)
+        if conversation is None:
+            continue
+        assign_next_message(
+            db,
+            conversation_id=conversation_id,
+            user_id=conversation.user_id,
+            now=datetime.now(UTC),
+        )
         if promote_next_message(db, conversation_id=conversation_id) is not None:
             count += 1
     return count

@@ -1,4 +1,4 @@
-"""Serialize durable conversation messages and bind their disposition once."""
+"""Serialize durable conversation messages without guessing their destination."""
 
 import json
 import uuid
@@ -12,7 +12,6 @@ from ...capabilities.contracts import canonical_digest
 from ...chat.models import Conversation, Message
 from ...config import settings
 from ...events.service import append_event
-from ..models import ACTIVE_RUN_STATUSES, Run, RunJob
 from ..service import (
     _lock_active_conversation_scope,
     _locked_agent_preference,
@@ -21,7 +20,8 @@ from ..service import (
     _stale_agent_preference,
     require_owned_conversation,
 )
-from ..tasks.models import TaskDecisionRecord, TaskRecord
+from ..tasks.models import TaskDecisionRecord
+from .assignment import assign_next_message
 from .contracts import MessageAdmissionRequest, MessageAdmissionResponse
 from .models import ConversationInboxEntry
 
@@ -54,7 +54,7 @@ def submit_message(
             status_code=422, detail="Invalid client_request_id"
         ) from exc
 
-    conversation = require_owned_conversation(db, user_id, str(conversation_id))
+    require_owned_conversation(db, user_id, str(conversation_id))
     # SQLite ignores FOR UPDATE; acquire its write lock before the replay and
     # routing reads. PostgreSQL already holds the row lock from scope admission.
     if db.get_bind().dialect.name == "sqlite":
@@ -86,75 +86,50 @@ def submit_message(
             )
         return _response(db, existing)
 
-    conversation = _lock_active_conversation_scope(
+    _lock_active_conversation_scope(
         db, user_id=user_id, conversation_id=conversation_id
     )
-    active = (
-        db.query(Run)
-        .filter(
-            Run.conversation_id == conversation.id, Run.status.in_(ACTIVE_RUN_STATUSES)
-        )
-        .with_for_update()
-        .populate_existing()
-        .one_or_none()
-    )
-    decision = None
-    if active is not None:
-        db.query(RunJob).filter_by(run_id=active.id).with_for_update().populate_existing().one_or_none()
-        db.query(TaskRecord).filter_by(run_id=active.id).with_for_update().populate_existing().one_or_none()
-        decision = (
-            db.query(TaskDecisionRecord)
-            .filter(
-                TaskDecisionRecord.run_id == active.id,
-                TaskDecisionRecord.kind == "clarification",
-                TaskDecisionRecord.state == "open",
-                TaskDecisionRecord.expires_at > datetime.now(UTC),
-            )
-            .with_for_update()
-            .one_or_none()
-        )
 
     frozen = dict(submitted)
-    if decision is None:
-        mode, revision = _locked_agent_preference(db, user_id)
-        if request.agent_mode is not None and (
-            request.agent_mode,
-            request.agent_mode_revision,
-        ) != (mode, revision):
-            raise _stale_agent_preference(mode, revision)
-        frozen["agent_mode"], frozen["agent_mode_revision"] = mode, revision
-        resolver = (
-            _resolve_task_selection
-            if settings.agentic_tasks_enabled and request.enable_tools
-            else _resolve_selection
-        )
-        selection = resolver(request.provider_profile_id, request.fallback_profile_ids)
-        frozen["provider_profile_id"] = selection.primary.id
-        frozen["fallback_profile_ids"] = [profile.id for profile in selection.fallbacks]
+    mode, revision = _locked_agent_preference(db, user_id)
+    if request.agent_mode is not None and (
+        request.agent_mode,
+        request.agent_mode_revision,
+    ) != (mode, revision):
+        raise _stale_agent_preference(mode, revision)
+    frozen["agent_mode"], frozen["agent_mode_revision"] = mode, revision
+    resolver = (
+        _resolve_task_selection
+        if settings.agentic_tasks_enabled and request.enable_tools
+        else _resolve_selection
+    )
+    selection = resolver(request.provider_profile_id, request.fallback_profile_ids)
+    frozen["provider_profile_id"] = selection.primary.id
+    frozen["fallback_profile_ids"] = [profile.id for profile in selection.fallbacks]
 
     message = Message(
         conversation_id=conversation_id,
-        run_id=active.id if decision else None,
+        run_id=None,
         role="user",
-        message_kind="clarification_reply" if decision else "primary",
+        message_kind="primary",
         content=request.content,
     )
     db.add(message)
     db.flush()
-    disposition = "clarification" if decision else "queued"
-    status = "attached" if decision else "queued"
+    disposition = None
+    status = "awaiting"
     payload = {
         "schema_version": 1,
         "message_id": str(message.id),
         "disposition": disposition,
         "status": status,
-        "run_id": str(active.id) if decision else None,
-        "request_id": str(decision.request_id) if decision else None,
+        "run_id": None,
+        "request_id": None,
     }
     event = append_event(
         db,
         conversation_id,
-        active.id if decision else None,
+        None,
         "message.admitted",
         payload,
         actor_id=user_id,
@@ -167,18 +142,24 @@ def submit_message(
         sequence=event.sequence,
         disposition=disposition,
         status=status,
-        run_id=active.id if decision else None,
-        decision_id=decision.id if decision else None,
+        run_id=None,
+        decision_id=None,
         request_json=json.dumps(frozen, sort_keys=True),
     )
     db.add(entry)
     db.flush()
-    if decision is not None:
-        from ..tasks.clarification import enqueue_clarification_reply
 
-        enqueue_clarification_reply(db, run_id=active.id, decision_id=decision.id, message_id=message.id, now=datetime.now(UTC))
-    if decision is None and active is None:
+    # Assign the awaiting message now so it cannot be stranded. Assignment
+    # binds it to the open clarification (if one exists on the active run) or
+    # queues it as a turn; if queued and the conversation is idle, promotion
+    # creates its run in the same transaction. When a run is mid-assessment,
+    # assignment defers until that claim releases.
+    assigned = assign_next_message(
+        db, conversation_id=conversation_id, user_id=user_id, now=datetime.now(UTC)
+    )
+    if assigned is not None and assigned.status == "queued":
         from .promotion import promote_next_message
 
         promote_next_message(db, conversation_id=conversation_id)
+
     return _response(db, entry)

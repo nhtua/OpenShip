@@ -1358,6 +1358,7 @@ class Worker:
             # Promotion runs after the terminal transaction releases its locks.
             # Recovery also scans the queue if this best-effort attempt fails.
             try:
+                from .inbox.assignment import assign_next_message
                 from .inbox.promotion import promote_next_message
 
                 with self.Session() as promotion_db:
@@ -1366,6 +1367,19 @@ class Worker:
                         finished is not None
                         and finished.status not in ACTIVE_RUN_STATUSES
                     ):
+                        # Assign any awaiting message before promoting: a
+                        # waiting_input run's open clarification owns the next
+                        # reply; otherwise the oldest awaiting entry becomes a
+                        # queued turn that promotion picks up.
+                        conversation = promotion_db.get(
+                            Conversation, finished.conversation_id
+                        )
+                        assign_next_message(
+                            promotion_db,
+                            conversation_id=finished.conversation_id,
+                            user_id=conversation.user_id,
+                            now=datetime.now(UTC),
+                        )
                         promote_next_message(
                             promotion_db, conversation_id=finished.conversation_id
                         )

@@ -74,6 +74,8 @@ Historical data written under the old design (rows with `disposition='clarificat
 
 ### Task 2: Admission admits only — no binding, no scheduling
 
+**Progress:** Added `test_open_clarification_admission_remains_unassigned`; RED confirms existing admission still binds it. An isolated admission-only implementation passed that test but caused 26 failures across admission, promotion and snapshot tests; promotion/reconciliation and the direct-turn backlog guard still assume admission-bound entries. The experimental production change was removed to avoid stranding messages in the hot-reloading Dev Stack. The original three test files pass again (42 passed); the new regression intentionally remains red. Admission and the assignment/recovery/backlog changes must be delivered together. At the user's explicit request the Dev Stack Compose migration service was run alone and the database revision was verified as `inbox038`; this is not PostgreSQL test-gate evidence.
+
 **Files:**
 - Modify: `apps/api/src/openship/runs/inbox/admission.py` (rewrite `submit_message`:42–184)
 - Modify: `apps/api/tests/test_conversation_inbox_admission.py` (pins flip)
@@ -89,6 +91,8 @@ Historical data written under the old design (rows with `disposition='clarificat
 - [ ] **Step 5: commit** — `fix: admit inbox messages without claiming a destination`.
 
 ### Task 3: Assignment pump at every scheduling opportunity
+
+**Progress:** An unconnected `assignment.py` prototype and focused tests cover assigning a waiting message to a busy run's queue and attaching only one message to an open clarification before assessment. A direct-turn backlog guard regression failed before the guard was extended to include awaiting messages, and then passed alongside the legacy guard regression (2 passed). The normal admission and scheduling paths do not call the prototype yet. FIFO transitions after assessment, recovery, old attached entries, locking, and all call sites remain unverified; this task is not complete.
 
 **Files:**
 - Create: `apps/api/src/openship/runs/inbox/assignment.py`

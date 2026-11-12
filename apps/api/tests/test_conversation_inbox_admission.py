@@ -85,7 +85,7 @@ def test_blank_or_conflicting_submission(client, authorized_client):
     )
 
 
-def test_open_clarification_binds_under_lock():
+def test_open_clarification_admission_attaches_to_open_request():
     from src.openship.runs.inbox.admission import submit_message
     from src.openship.runs.inbox.contracts import MessageAdmissionRequest
     from src.openship.runs.tasks.decisions import park_task_wait
@@ -114,6 +114,7 @@ def test_open_clarification_binds_under_lock():
             ),
         )
         assert result.disposition == "clarification"
+        assert result.status == "attached"
         assert result.request_id == progress.pending_decision.request_id
         assert result.run_id == run.id
         assert (
@@ -140,6 +141,7 @@ def test_queued_messages_keep_order_even_without_active_run(client, authorized_c
         json={"content": "first", "client_request_id": str(uuid.uuid4())},
         headers=authorized_client,
     )
+    # Admitted while a run owns the slot: queued behind it, not yet promoted.
     assert first.status_code == 202 and first.json()["status"] == "queued"
     with SessionLocal() as db:
         db.get(Run, uuid.UUID(initial.json()["id"])).status = "completed"
@@ -149,6 +151,9 @@ def test_queued_messages_keep_order_even_without_active_run(client, authorized_c
         json={"content": "second", "client_request_id": str(uuid.uuid4())},
         headers=authorized_client,
     )
+    # Admitted to an idle conversation: assignment queues "second", promotion
+    # picks the oldest queued entry ("first") and starts its run; "second"
+    # stays queued behind it.
     assert second.status_code == 202 and second.json()["status"] == "queued"
     replies = [first, second]
     with SessionLocal() as db:
@@ -160,6 +165,15 @@ def test_queued_messages_keep_order_even_without_active_run(client, authorized_c
         )
         assert [str(row.message_id) for row in rows] == [
             reply.json()["message_id"] for reply in replies
+        ]
+        # FIFO: the older entry was promoted to a run; the newer one waits.
+        promoted = [row for row in rows if row.status == "promoted"]
+        queued = [row for row in rows if row.status == "queued"]
+        assert [row.message_id for row in promoted] == [
+            uuid.UUID(first.json()["message_id"])
+        ]
+        assert [row.message_id for row in queued] == [
+            uuid.UUID(second.json()["message_id"])
         ]
 
 
@@ -186,6 +200,7 @@ def test_non_clarification_active_run_does_not_claim_message(client, authorized_
     )
     assert reply.status_code == 202
     assert reply.json()["disposition"] == "queued"
+    assert reply.json()["status"] == "queued"
     assert reply.json()["run_id"] is None
 
 

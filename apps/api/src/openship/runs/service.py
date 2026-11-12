@@ -1056,8 +1056,9 @@ def submit_turn(
 
     from .inbox.models import ConversationInboxEntry
 
-    if _inbox_entry is None and db.query(ConversationInboxEntry.id).filter_by(
-        conversation_id=conv.id, disposition="queued", status="queued"
+    if _inbox_entry is None and db.query(ConversationInboxEntry.id).filter(
+        ConversationInboxEntry.conversation_id == conv.id,
+        ConversationInboxEntry.status.in_(("awaiting", "queued")),
     ).first():
         raise HTTPException(status_code=409, detail={"error": {
             "code": "conversation_queue_pending", "message": "Earlier messages are waiting in the conversation queue"
@@ -1372,8 +1373,9 @@ def submit_tool_run(
 
     from .inbox.models import ConversationInboxEntry
 
-    if db.query(ConversationInboxEntry.id).filter_by(
-        conversation_id=conversation.id, disposition="queued", status="queued"
+    if db.query(ConversationInboxEntry.id).filter(
+        ConversationInboxEntry.conversation_id == conversation.id,
+        ConversationInboxEntry.status.in_(("awaiting", "queued")),
     ).first():
         raise _tool_command_error(409, "conversation_queue_pending", "Earlier messages are waiting in the conversation queue")
 

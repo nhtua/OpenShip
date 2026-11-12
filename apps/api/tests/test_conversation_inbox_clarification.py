@@ -13,6 +13,7 @@ from src.openship.chat.models import Message
 from src.openship.providers.contracts import ProviderTurnResult
 from src.openship.runs.inbox.admission import submit_message
 from src.openship.runs.inbox.contracts import MessageAdmissionRequest
+from src.openship.runs.inbox.models import ConversationInboxEntry
 from src.openship.runs.models import Outbox, Run, RunJob
 from src.openship.runs.tasks.clarification import (
     apply_clarification_assessment,
@@ -72,10 +73,11 @@ def test_multiple_replies_keep_request_open():
         )
         db.commit()
         row = db.query(TaskDecisionRecord).filter_by(run_id=run.id).one()
-        assert first.request_id == second.request_id == decision.request_id
+        assert first.request_id == decision.request_id
+        assert second.request_id is None
         assert replay.message_id == second.message_id
         assert row.state == "open"
-        assert len(clarification_replies(db, decision_id=row.id)) == 2
+        assert len(clarification_replies(db, decision_id=row.id)) == 1
         assert (
             db.query(RunJob).filter_by(run_id=run.id).one().dispatch_generation
             == original_generation + 1
@@ -120,7 +122,8 @@ def test_reply_during_worker_claim_remains_bound():
                 content="second", client_request_id=str(uuid.uuid4())
             ),
         )
-        assert first.request_id == second.request_id == decision.request_id
+        assert first.request_id == decision.request_id
+        assert second.request_id is None
         assert (
             db.query(TaskDecisionRecord).filter_by(run_id=run.id).one().state == "open"
         )
@@ -441,7 +444,7 @@ def test_reply_during_assessment_is_not_lost():
             db, with_plan=False
         )
         first_sequence = clarification_replies(db, decision_id=row.id)[-1].sequence
-        submit_message(
+        submitted = submit_message(
             db,
             user_id=user.id,
             conversation_id=conversation.id,
@@ -451,6 +454,11 @@ def test_reply_during_assessment_is_not_lost():
             ),
         )
         db.commit()
+        # A reply submitted while another is under assessment stays durable
+        # awaiting (not yet bound) so the in-progress assessment can finish.
+        assert submitted.request_id is None
+        assert submitted.status == "awaiting"
+        assert len(clarification_replies(db, decision_id=row.id)) == 1
         assert (
             apply_clarification_assessment(
                 db,
@@ -460,10 +468,18 @@ def test_reply_during_assessment_is_not_lost():
                 assessment=ClarificationAssessment(verdict="sufficient"),
                 now=datetime.now(UTC),
             )
-            is False
+            is True
         )
-        assert row.state == "open"
-        assert len(clarification_replies(db, decision_id=row.id)) == 2
+        db.commit()
+        assert row.state == "answered"
+        # The awaiting reply remains for the next assessment cycle.
+        awaiting = (
+            db.query(ConversationInboxEntry)
+            .filter_by(conversation_id=conversation.id, status="awaiting")
+            .all()
+        )
+        assert len(awaiting) == 1
+        assert awaiting[0].message_id == submitted.message_id
 
 
 def test_expired_clarification_assessment_is_not_applied():
