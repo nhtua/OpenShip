@@ -1,7 +1,7 @@
 ---
 type: spec
 summary: Durable conversation inbox, queued follow-up turns, and multi-message agent-judged clarifications.
-status: approved-awaiting-implementation-plan
+status: superseded-by-2026-11-12-deferred-routing-design
 date: 2026-11-11
 ---
 
