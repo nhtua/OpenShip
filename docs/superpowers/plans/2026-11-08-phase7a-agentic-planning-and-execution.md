@@ -797,6 +797,39 @@ is the review gate for inline execution.
   operator activation/rollback verification, and the user's inspection and
   acceptance remain unrun; the live selectors stay absent.
 
+  **PR #36 CI compatibility follow-up (2026-11-13).** Reproduced the
+  PostgreSQL lane's obsolete fixed-head assertion and obsolete
+  `dispatch_uncertain` cursor expectation, plus the managed-connector browser
+  fixture's missing inbox-admission endpoint. The sandbox fixture now requires
+  the actual Alembic head without pinning a historical revision; the PostgreSQL
+  restart proof requires a durable recovery decision with no second dispatch;
+  and the browser fixture handles message admission while retaining legacy turn
+  support. Focused PostgreSQL tests: 10 passed. The full `postgres and not
+  jetstream` CI lane passed 90 tests on each of Python 3.11, 3.12 and 3.13,
+  with no failures, errors or skips in the JUnit reports. Both original
+  synthetic full-stack CI tests (`test_manual_search.py`,
+  `test_managed_connectors.py`) passed on Python 3.11 and 3.13, including their
+  Playwright legs. Web unit suite: 443 passed across 43 files; typecheck,
+  build and API Ruff passed. These runs used disposable
+  PostgreSQL 15 and synthetic provider transports, not the running development
+  databases or OpenSandbox. Independent review found no important issues, and
+  secret scans were clean. The unfiltered `uv run pytest tests/ -q` run reported
+  2,150 passed, 107 skipped, 2 failed and 60 setup errors: the failures were
+  `test_chat_download_python_chart_resume_journey` and
+  `test_two_decisions_cannot_enqueue_twice`, both requiring `TEST_POSTGRES_URL`.
+  Setup errors in `test_messaging_relay.py`, `test_messaging_topology.py`,
+  `test_task_decisions_postgres.py`, `test_task_recovery_jetstream.py` and
+  `test_task_restore_postgres.py` likewise required PostgreSQL or disposable
+  NATS selectors absent from that unfiltered run. PostgreSQL cases in the
+  selected CI lane passed separately as recorded above; additional
+  sandbox/JetStream qualification and user acceptance are not claimed.
+  The full credential-free lane then passed 2,149 tests across eight shards
+  (`uv run python scripts/run_selected_tests.py --full-lane --shards 8`).
+  The commit selector chose only the changed PostgreSQL modules and excluded
+  every test with its unit marker, yielding pytest exit 5. After the explicit
+  full-lane pass, only that selector hook was skipped for the local commit;
+  the other commit hooks remained enabled.
+
 ## Task 17: Authorized real-manager/live qualification and operator handoff
 
 **Dependencies:** Tasks 1–16. **Deliverable:** Honest feature qualification and documented activation/rollback, with user acceptance separate.

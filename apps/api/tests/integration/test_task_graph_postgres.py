@@ -150,8 +150,15 @@ def test_pg_binding_survives_dispatch_without_result(pg_sessions, monkeypatch):
 
     lane.rehold()
     resumed = lane.invoke()
-    assert resumed["cursor"]["stopped"] == "dispatch_uncertain"
+    assert resumed["parked"] == "recovery"
     assert len(lane.gateway.calls) == 1
     after_resume = _durable(lane.run_id, pg_sessions)
     assert after_resume["attempts"] == []
     assert after_resume["progress"].call_bindings == interrupted["progress"].call_bindings
+    assert len(after_resume["operations"]) == 1
+    assert after_resume["task_status"] == "waiting"
+    assert _run_state(lane.run_id, pg_sessions)["status"] == "waiting_input"
+    pending = after_resume["progress"].pending_decision
+    assert pending is not None
+    assert pending.kind == "recovery"
+    assert pending.recovery_report is not None

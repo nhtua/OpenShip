@@ -111,7 +111,9 @@ datefmt = %H:%M:%S
         check=False,
     )
     assert current.returncode == 0, current.stderr
-    assert re.search(r"phase6b030\s*\(head\)", current.stdout), current.stdout
+    # Later revisions may extend the chain; require its actual head rather
+    # than freezing this sandbox lane to the revision that introduced it.
+    assert re.fullmatch(r"\w+\s+\(head\)\s*", current.stdout), current.stdout
     assert not re.search(r"phase6b02[1-5]\w*\s*\(head\)", current.stdout), current.stdout
 
     engine = create_engine(lane_url, pool_size=8, max_overflow=4)
