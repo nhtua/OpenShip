@@ -146,19 +146,12 @@ datefmt = %H:%M:%S
 
 @pytest.fixture(autouse=True)
 def restore_transport_gates(request, setup_db):
-    """Keep messaging tests from changing later tests' shared SQLite gates."""
-    if Path(request.node.fspath).name not in {
-        "test_messaging_command_claim.py",
-        "test_messaging_consumer.py",
-        "test_messaging_exhaustion.py",
-        "test_messaging_executor.py",
-        "test_messaging_maintenance.py",
-        "test_messaging_outbox.py",
-        "test_task_wait_delivery.py",
-    }:
-        yield
-        return
+    """Keep messaging tests from changing later tests' shared SQLite gates.
 
+    Every test's changes to MessageTransportState active/admission_open/
+    execution_open are restored after the test completes, so a test that
+    closes a gate cannot leak that state into subsequent tests.
+    """
     from src.openship.messaging.models import MessageTransportState
 
     with TestSessionLocal() as db:
