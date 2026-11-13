@@ -85,6 +85,8 @@ export const useChatStore = defineStore('chat', () => {
   let archivedListGeneration = 0
   let lifecycleIdentityGeneration = 0
   const conversationOperationGenerations = new Map<string, number>()
+  const inboxStreams = new Set<string>()
+  const inboxPending = new Set<string>()
 
   async function getConversations() {
     const generation = ++activeListGeneration
@@ -476,7 +478,7 @@ export const useChatStore = defineStore('chat', () => {
   // is promoted behind the active run or fails to be admitted.
 
   function inboxStatus(value: unknown): InboxMessageSummary['status'] {
-    return value === 'attached' || value === 'promoted' || value === 'failed' || value === 'awaiting'
+    return value === 'attached' || value === 'promoted' || value === 'failed' || value === 'awaiting' || value === 'queued'
       ? value
       : 'awaiting'
   }
@@ -1195,12 +1197,15 @@ export const useChatStore = defineStore('chat', () => {
       enableTools?: boolean
       connectorSelections?: TurnSubmitRequest['connector_selections']
     } = {},
+    retryId?: string,
   ): Promise<void> {
     error.value = null
-    const requestId = generateRequestId()
-    const payload: TurnSubmitRequest = {
+    const requestId = retryId ?? generateRequestId()
+    const payload: TurnSubmitRequest = pendingRequests.value.get(requestId)?.payload ?? {
       content,
       client_request_id: requestId,
+      provider_profile_id: selectedProfileId.value,
+      fallback_profile_ids: [...selectedFallbackIds.value],
       enable_tools: options.enableTools ?? false,
       ...(options.connectorSelections
         ? { connector_selections: { ...options.connectorSelections } }
@@ -1210,13 +1215,21 @@ export const useChatStore = defineStore('chat', () => {
       conversation_id: conversationId,
       payload,
     })
+    inboxPending.add(requestId)
+    if (currentConversation.value?.id === conversationId) {
+      messages.value.push({ id: `temp-${requestId}`, role: 'user', content, conversation_id: conversationId, created_at: new Date().toISOString() })
+    }
     try {
       const response = await runsApi.submitMessage(conversationId, payload)
       const admission = response.data as unknown as MessageAdmissionResponse
       // The server admitted the message and assigned its ID. Add it to the
       // message timeline so the reply is visible; the admission event updates
       // the inbox fold through the stream.
-      if (!messages.value.some((m) => m.id === String(admission.message_id))) {
+      const optimistic = messages.value.find((m) => m.id === `temp-${requestId}`)
+      if (optimistic) {
+        optimistic.id = String(admission.message_id)
+        optimistic.run_id = admission.run_id ?? null
+      } else if (currentConversation.value?.id === conversationId && !messages.value.some((m) => m.id === String(admission.message_id))) {
         messages.value.push({
           id: String(admission.message_id),
           role: 'user',
@@ -1227,7 +1240,26 @@ export const useChatStore = defineStore('chat', () => {
         })
       }
       pendingRequests.value.delete(requestId)
+      inboxPending.delete(requestId)
+      if (!inboxStreams.has(conversationId)) {
+        inboxStreams.add(conversationId)
+        isStreaming.value = true
+        void subscribeToEvents(conversationId, cursors.value.get(conversationId) ?? -1, (event) => {
+          processDurableEvent(event)
+          if (event.sequence > (cursors.value.get(conversationId) ?? -1)) cursors.value.set(conversationId, event.sequence)
+          if (['run.succeeded', 'run.failed', 'run_cancelled'].includes(event.type)) {
+            void hydrateRunCard(conversationId, event.run_id ?? '')
+            void api.get(`/conversations/${conversationId}/messages`).then((res) => {
+              if (currentConversation.value?.id === conversationId) messages.value = res.data as unknown as ChatMessage[]
+            }).catch((e) => console.error('Failed to reload messages', e))
+          }
+        }).catch((e) => console.warn('Event subscription failed', e)).finally(() => {
+          inboxStreams.delete(conversationId)
+          if (currentConversation.value?.id === conversationId) isStreaming.value = false
+        })
+      }
     } catch (err: unknown) {
+      messages.value = messages.value.filter((m) => m.id !== `temp-${requestId}`)
       // Keep the pending request so the draft can be retried; ChatInput
       // restores it from pendingDraft when submissionError is set.
       error.value = safeMessage(err, 'Failed to send message. Please try again.')
@@ -1280,6 +1312,11 @@ export const useChatStore = defineStore('chat', () => {
   async function retrySubmission(requestId: string): Promise<void> {
     if (isSubmitting.value) return
     error.value = null
+    if (inboxPending.has(requestId)) {
+      const pending = pendingRequests.value.get(requestId)
+      if (pending) await submitMessage(pending.payload.content, pending.conversation_id, {}, requestId)
+      return
+    }
     isStreaming.value = true
     try {
       await submitPendingRequest(requestId)

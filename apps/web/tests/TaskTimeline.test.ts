@@ -30,6 +30,11 @@ describe('task entries in the conversation', () => {
     expect(wrapper.get('[data-testid="typing-indicator"]').text()).toContain('Thinking')
     expect(wrapper.get('[data-testid="typing-indicator"]').element.tagName).toBe('DETAILS')
   })
+  it('keeps the processing indicator visible after a tool operation', () => {
+    const operation = { id: 'tool-1', run_id: 'run-1', conversation_id: 'c1', capability_id: 'download_file', status: 'running', created_at: '2026-11-01T00:02:00Z', result: null, artifacts: [], attempts: [] } as unknown as import('@/types').ToolOperationSummary
+    const wrapper = mount(ChatStream, { props: { messages, operations: [operation], isStreaming: true } })
+    expect(wrapper.find('[data-testid="typing-indicator"]').exists()).toBe(true)
+  })
   it('places the plan before tools from the same run', () => {
     const operation = { id: 'tool-1', run_id: 'run-1', conversation_id: 'c1', capability_id: 'download_file', status: 'succeeded', created_at: '2026-11-01T00:02:00Z', result: null, artifacts: [], attempts: [] } as unknown as import('@/types').ToolOperationSummary
     const wrapper = mount(ChatStream, { props: { messages, operations: [operation], tasks: [task()], isStreaming: false } })

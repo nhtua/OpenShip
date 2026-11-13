@@ -4,86 +4,71 @@ export type ConversationEntry =
   | { kind: 'message'; id: string; runId: string | null; createdAt: string | null; message: ChatMessage }
   | { kind: 'tool'; id: string; runId: string | null; createdAt: string | null; operation: ToolOperationSummary }
 
-/** Combine persisted messages and operations for presentation only. */
+/** Preserve the store's message order, inserting operations for presentation only. */
 export function buildConversationTimeline(
   messages: ChatMessage[],
   operations: ToolOperationSummary[],
 ): ConversationEntry[] {
-  const entries: ConversationEntry[] = [
-    ...messages.map((message) => ({
-      kind: 'message' as const,
-      id: message.id,
-      runId: message.run_id ?? null,
-      createdAt: message.created_at || null,
-      message,
-    })),
-    ...operations.map((operation) => ({
-      kind: 'tool' as const,
+  const messageEntries: ConversationEntry[] = messages.map((message) => ({
+    kind: 'message',
+    id: message.id,
+    runId: message.run_id ?? null,
+    createdAt: message.created_at || null,
+    message,
+  }))
+  const messageTimes = messages.map((message) => Date.parse(message.created_at))
+  const userAnchors = new Map<string, number>()
+  const lastUserAnchors = new Map<string, number>()
+  const answerAnchors = new Map<string, number>()
+  messages.forEach((message, index) => {
+    if (!message.run_id) return
+    if (message.role === 'user') {
+      if (!userAnchors.has(message.run_id)) userAnchors.set(message.run_id, index)
+      lastUserAnchors.set(message.run_id, index)
+    }
+    if (message.role === 'assistant' && !answerAnchors.has(message.run_id)) {
+      answerAnchors.set(message.run_id, index)
+    }
+  })
+
+  // History is already ordered by the server, and local sends are appended by
+  // the store. Never re-sort these messages against the browser clock: an
+  // optimistic send (even after its ID is acknowledged) can otherwise jump
+  // above history until completion replaces its timestamp with the server's.
+  const toolsByPosition: ConversationEntry[][] = Array.from(
+    { length: messages.length + 1 }, () => [],
+  )
+  const sortedOperations = [...operations].sort((left, right) => (
+    compareKnownTime(Date.parse(left.created_at ?? ''), Date.parse(right.created_at ?? ''))
+    || left.id.localeCompare(right.id)
+  ))
+  for (const operation of sortedOperations) {
+    const userAnchor = userAnchors.get(operation.run_id)
+    const answerAnchor = answerAnchors.get(operation.run_id)
+    // Timestamps choose a gap (including between clarification replies), never
+    // reorder messages. Run anchors keep skewed worker clocks inside the turn.
+    const time = Date.parse(operation.created_at ?? '')
+    const nextMessage = messageTimes.findIndex((messageTime) => messageTime > time)
+    let position = nextMessage < 0 ? messages.length : nextMessage
+    if (userAnchor !== undefined) {
+      const end = answerAnchor ?? lastUserAnchors.get(operation.run_id)! + 1
+      position = Math.max(userAnchor + 1, Math.min(position, end))
+    } else if (answerAnchor !== undefined) {
+      position = Math.min(position, answerAnchor)
+    }
+    toolsByPosition[position].push({
+      kind: 'tool',
       id: operation.id,
       runId: operation.run_id || null,
       createdAt: operation.created_at || null,
       operation,
-    })),
-  ]
-
-  const sortTimes = new Map<ConversationEntry, number>()
-  for (const entry of entries) {
-    const time = entry.createdAt ? Date.parse(entry.createdAt) : Number.NaN
-    sortTimes.set(entry, Number.isFinite(time) ? time : Number.NaN)
+    })
   }
 
-  const byRun = new Map<string, ConversationEntry[]>()
-  for (const entry of entries) {
-    if (!entry.runId) continue
-    const group = byRun.get(entry.runId) ?? []
-    group.push(entry)
-    byRun.set(entry.runId, group)
-  }
-
-  for (const group of byRun.values()) {
-    const users = group.filter((entry) => entry.kind === 'message' && entry.message.role === 'user')
-    const assistants = group.filter((entry) => entry.kind === 'message' && entry.message.role === 'assistant')
-    const tools = group
-      .filter((entry) => entry.kind === 'tool')
-      .sort((left, right) => compareKnownTime(sortTimes.get(left)!, sortTimes.get(right)!) || left.id.localeCompare(right.id))
-    if (!users.length || !tools.length) continue
-
-    const firstUserTime = Math.min(...users.map((entry) => sortTimes.get(entry)!))
-    const lastAssistantTime = assistants.length
-      ? Math.max(...assistants.map((entry) => sortTimes.get(entry)!))
-      : Number.NaN
-    if (!Number.isFinite(firstUserTime)) continue
-
-    // Operation timestamps can be written on a separate worker clock. When
-    // the run has both ends, spread tools between its user prompt and answer;
-    // for a live run, let same-run tie-breaking put them just after the prompt.
-    if (Number.isFinite(lastAssistantTime) && lastAssistantTime > firstUserTime) {
-      tools.forEach((entry, index) => {
-        sortTimes.set(entry, firstUserTime + ((lastAssistantTime - firstUserTime) * (index + 1)) / (tools.length + 1))
-      })
-    } else {
-      tools.forEach((entry) => sortTimes.set(entry, firstUserTime))
-    }
-  }
-
-  return entries.sort((left, right) => {
-    const leftTime = sortTimes.get(left)!
-    const rightTime = sortTimes.get(right)!
-    const leftKnown = Number.isFinite(leftTime)
-    const rightKnown = Number.isFinite(rightTime)
-    if (leftKnown && rightKnown && leftTime !== rightTime) return leftTime - rightTime
-    if (leftKnown !== rightKnown) return leftKnown ? -1 : 1
-
-    if (left.runId && left.runId === right.runId) {
-      const roleOrder = (entry: ConversationEntry) => {
-        if (entry.kind === 'tool') return 1
-        return entry.message.role === 'user' ? 0 : 2
-      }
-      const roleDifference = roleOrder(left) - roleOrder(right)
-      if (roleDifference) return roleDifference
-    }
-    return left.id.localeCompare(right.id)
-  })
+  const entries: ConversationEntry[] = []
+  messageEntries.forEach((entry, index) => entries.push(...toolsByPosition[index], entry))
+  entries.push(...toolsByPosition[messages.length])
+  return entries
 }
 
 function compareKnownTime(left: number, right: number): number {

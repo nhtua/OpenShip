@@ -46,8 +46,7 @@ const entries = computed(() => {
   return result
 })
 const awaitingAssistant = computed(() => {
-  const latest = timeline.value.at(-1)
-  return latest?.kind === 'message' && latest.message.role === 'user'
+  return props.messages.at(-1)?.role === 'user'
 })
 
 const standaloneStatus: ChatMessage = {
