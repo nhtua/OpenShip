@@ -5,6 +5,8 @@ import type {
   ArtifactSummary,
   ArchiveListState,
   AuthResponse,
+  AgentPreferences,
+  AgentPreferencesUpdate,
   CapabilitySummary,
   ConnectorKind,
   ConnectorRequestStatus,
@@ -68,6 +70,15 @@ export const authApi = {
   logout: (): Promise<void> => api.post('/auth/logout'),
 }
 
+// The account's own execution mode: read it, and change it against the
+// revision this browser last saw.
+export const preferencesApi = {
+  get: (): Promise<{ data: AgentPreferences }> => api.get('/auth/preferences'),
+
+  update: (payload: AgentPreferencesUpdate): Promise<{ data: AgentPreferences }> =>
+    api.patch('/auth/preferences', payload),
+}
+
 export const projectsApi = {
   list: (state: ArchiveListState = 'active'): Promise<{ data: ProjectSummary[] }> =>
     api.get('/projects', { params: { state } }),
@@ -118,6 +129,15 @@ export const runsApi = {
   ): Promise<{ data: Run }> =>
     api.post(`/runs/${conversationId}/turns`, request),
 
+  // One message through the durable inbox: it joins an open clarification or
+  // queues behind the active run. The response says which, and the browser
+  // repeats it instead of deciding locally.
+  submitMessage: (
+    conversationId: string,
+    request: TurnSubmitRequest,
+  ): Promise<{ data: import('@/types').MessageAdmissionResponse }> =>
+    api.post(`/runs/${encodeURIComponent(conversationId)}/messages`, request),
+
   cancelRun: (runId: string): Promise<{ data: Run }> =>
     api.post(`/runs/${runId}/cancel`, {}),
 
@@ -148,6 +168,17 @@ export const runsApi = {
     runId: string,
     params: { limit?: number; cursor?: string } = {},
   ): Promise<{ data: OperationPage }> => api.get(`/runs/${runId}/operations`, { params }),
+}
+
+// The one door every user response to a parked task decision takes: the
+// command carries the exact request, revision and digest the card showed, and
+// a lost response re-asks the same command rather than inventing a new one.
+export const taskDecisionApi = {
+  submit: (
+    runId: string,
+    command: import('@/types').TaskDecisionCommand,
+  ): Promise<{ data: { current_revision?: number; status?: string } }> =>
+    api.post(`/runs/${encodeURIComponent(runId)}/task-decisions`, command),
 }
 
 // The installation's own model profiles: what may be selected, and nothing

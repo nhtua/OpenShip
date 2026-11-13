@@ -2,7 +2,7 @@
 type: story
 summary: Collected ideas, features, and design principles for OpenShip as a co-pilot for DevOps and platform engineers.
 status: in-progress
-date: 2026-11-07
+date: 2026-11-08
 ---
 
 # OpenShip — Ideas
@@ -11,7 +11,7 @@ Recorded ideas, features, and improvements for OpenShip.
 
 ## Status and Current Direction
 
-The [architecture](./architects.md) and [roadmap](./roadmap.md) define the current development direction: a browser client, API server, and durable runtime worker. The user confirmed Phases 1–5 complete on 2026-10-25. NATS with JetStream is the accepted messaging direction for Phase 6 onward; its implementation and later capabilities remain pending. The CLI and UI experiments live under [`poc/`](../poc/README.md).
+The [architecture](./architects.md) and [roadmap](./roadmap.md) define the current development direction: a browser client, API server, and durable runtime worker. The user confirmed Phases 1–5 complete on 2026-10-25, Phase 6A implemented, and Phase 6B complete. Phase 6C implementation/local image validation are complete; live dev-stack/chart validation and user acceptance remain pending. NATS with JetStream is the implemented internal messaging foundation from 6A; this does not broaden its deployment qualification. The requested roadmap split adds outcome-driven agentic planning/execution in **7A**, before typed reusable workflows in **7B**. Both remain pending delivery and detailed design review. The CLI and UI experiments live under [`poc/`](../poc/README.md).
 
 This collection preserves historical intent. Unless explicitly recorded as an accepted decision, an idea is a **Proposal**, not an implementation commitment or a claim of availability. **Stale** annotations identify superseded claims; the remaining parts of a section may still be useful proposals. Follow each annotation's architecture reference for the replacement.
 
@@ -64,6 +64,56 @@ One of OpenShip's built-in workflow templates is the infrastructure automation w
 **Key Principle:** Human-in-the-loop — engineers retain control at critical decision points (especially plan approval), while OpenShip handles the heavy lifting of design generation and execution.
 
 This is just one example workflow template. Other templates include investigation/debug, CI/CD creation, and user-defined custom workflows.
+
+### Outcome-Driven Reasoning, Planning, and Continuous Execution
+
+**Status: Agreed direction; implementation in progress for [roadmap Phase 7A](./roadmap.md#phase-7a--outcome-driven-agentic-planning-and-execution).** The user selected subagent-driven execution of the [implementation plan](./superpowers/plans/2026-11-08-phase7a-agentic-planning-and-execution.md) from the [written spec](./superpowers/specs/2026-11-08-phase7a-agentic-planning-and-execution-design.md). Tasks 1–7 have implementation/review evidence; Task 8 is only partially implemented. The approved crash-recovery clarification below is now being reflected in Tasks 8 onward for review. Auto/Copilot, bounded repair, shared internal abilities, one profile selector and locally generated YAML remain in scope; live qualification and acceptance remain pending.
+
+**Problem:** Having tools does not mean the agent can coordinate them to complete a task. The reported behavior is that a request to download weather JSON and draw a London average-temperature bar chart ends after `download_file`; the user must supply the remaining programming, analysis and execution instructions. Four prebuilt sandbox images exist, but runtime execution currently uses one operator-selected profile, not four independently agent-selectable tools. Existing bounded tool loops and provider reasoning support are foundations, not evidence that multi-step task completion works.
+
+**Desired behavior:** A user describes the outcome, not every tool call. OpenShip should:
+
+1. Understand the requested deliverable, relevant inputs and completion criteria. Ask focused questions when ambiguity affects the result, such as the temperature unit, date range or grouping interval; do not guess material requirements.
+2. Build a concise ordered plan using the relevant enabled, authorized tools and any available skills. Identify dependencies, expected outputs, suitable execution profiles and blockers. Phase 11 still owns portable skills/discovery; Phase 7A does not require importing a skill framework.
+3. Show the plan and a brief explanation of the approach. Support **Copilot** (default: wait for confirmation of the plan before executing it) and **Auto** (present the plan, then execute without a separate plan-confirmation turn). Expose the selector in Chat UI and persist the authenticated user's account-level selection server-side across reloads/sign-ins/browsers. Capture the mode for each new task; preference changes affect subsequent tasks, not active or waiting ones. Both modes still ask for material missing information and obey policy/operation-specific approvals. Selecting Auto is never confirmation of a pending Copilot plan. An approach explanation is not a requirement to reveal private model reasoning or mandate a provider-specific reasoning API.
+4. Execute the current plan continuously through the existing durable runtime, using each observed result as the next step's input. A tool result or progress update is not the end of the task, and the user should not have to send “continue” after each step.
+5. Check progress against the requested outcome, retain and present the actual deliverables, and report evidence of completion. Bounded self-repair is agreed: after a known failed step, reconsider relevant inputs/outputs/errors, diagnose the issue and propose a bounded implementation-level correction before rerunning through the normal gateway and validation. Preserve the intended outcome, selected data and current authority; expose repairs in progress and stop on uncertain outcomes, missing authority, no progress or exhausted budgets. Material changes require a visible revised plan and renewed Copilot confirmation; Auto remains limited to the original request and current authority. Exact limits/transition contracts remain for the spec, not unrestricted replanning or automatic interrupted-operation replay.
+6. Stop visibly on completion, a clarification/approval/configuration need, an unrecoverable failure, cancellation or an enforced budget/no-progress limit. Continuous work is bounded autonomy, not an infinite retry loop or permission to replay uncertain execution.
+
+**Example success journey:** With a valid, controlled weather-data URL and explicit aggregation semantics, download and inspect the JSON, generate Python to select London observations and compute averages, run it in `logs-data` with Matplotlib, validate/retain the chart and supporting results, and present the chart with units, grouping and source. No follow-up programming instructions are needed. The deliberately non-existent example URL is a failure case: report the failed fetch and ask for a usable source; never fabricate observations, silently substitute a source or claim a chart exists.
+
+**Execution-context direction — agreed 2026-11-08:** Use one execution tool with a validated `profile_id` selector, not four wrapper tools. Make the four 6C profiles (`logs-data`, `iac-validation`, `standard`, `devops-shell`) understandable through purpose metadata, but expose only configured, enabled, ready profiles. Reuse the gateway, artifact transfer, exact runtime/dependency identities and OpenSandbox path. Never let the model supply arbitrary images or gain network/cloud credentials because a CLI is installed. Download through the maintained network tool, then stage the exact artifacts into offline execution; no agent-triggered image builds or dependency installation.
+
+**Local image mapping direction — agreed 2026-11-08:** No container registry is assumed. Operators build/preload images on the sandbox manager's serving engine and map each profile ID to its image reference and dependency identity. Extend the existing `sandbox-images build PROFILE|--all` command to offer writing `deploy/sandbox/sandbox-profiles.yaml` interactively, or write without prompting when `--overwrite-profiles` explicitly authorizes it. No separate export command. Ignore `/deploy/sandbox/sandbox-profiles.yaml` in `.gitignore`; actual image IDs/build records are installation-specific, even when recipe-derived tags match across machines. Reuse 6C's deterministic tags and engine/platform-specific build evidence instead of making users find/copy image references.
+
+**Partial-build write policy — agreed 2026-11-08:** Update only the successfully built/validated profiles and preserve other existing profile entries/operator customizations, rather than regenerate the whole mapping. `--overwrite-profiles` authorizes the write; it does not mean deleting unrelated profiles. Noninteractive behavior without that flag and how updates preserve custom fields within a rebuilt profile still need specification.
+
+**Profile purpose metadata — agreed 2026-11-08:** Maintain each profile's concise purpose, suitable task examples, relevant installed-library/CLI highlights and limitations in the existing tracked `deploy/sandbox/images.json` `managed_profiles` entries, alongside each recipe reference. The build command projects those descriptions into the generated local YAML with the matching runtime binding. The runtime reads that one mounted YAML without another catalog mount or hardcoded prompt list; the tracked source is maintained, the YAML metadata is a generated snapshot. Reuse lockfiles for exact dependency versions rather than hand-maintain a second inventory. Present only a bounded summary of authorized, enabled, ready profiles in the execution tool's model-facing description/schema and enforce `profile_id` validation at the gateway. Descriptive metadata guides selection; it cannot grant network access, credentials or other authority. This direction is approved, not implemented; exact field/schema and snapshot compatibility checks belong in the spec.
+
+**Host/container path contract:** In Compose, `SANDBOX_PROFILES_FILE` selects the **host-side source**, defaulting to `./deploy/sandbox/sandbox-profiles.yaml`. Mount that file read-only into the services that need the profile catalog at the fixed **container target** `/etc/openship/sandbox-profiles.yaml`; never forward the host override as the in-container lookup path. Document the default mount in `docker-compose.yml` and preserve normal sandbox-disabled startup. Missing/invalid enabled-sandbox configuration must fail visibly, not become an auto-created directory. The model selects a profile ID, never the image reference or engine socket. These are agreed design requirements, not implemented behavior. Noninteractive behavior without the overwrite flag and whether builds write to a custom host override still need specification.
+
+**Plan versus workflow:** The initial plan lives in conversation/run context, not a required plan file, Git commit or reusable workflow revision. Existing checkpoint/event storage may retain the minimal state needed for truthful progress and safe recovery; interruption still follows the established explicit resume rules. Phase **7B** introduces saved, typed, repeatable workflow definitions; Phase **9** later turns a described process into a reviewed reusable definition. Ad hoc planning cannot rewrite a saved workflow's reviewed graph. Plan review does not grant mutation authority or replace the durable input/approval decisions in Phase **8** and mutation gates in Phase **10**.
+
+**Plan confirmation — agreed 2026-11-08:** Bind confirmation to the exact task/current plan revision and eligible actor; retain the plan/progress/pending request in durable run state and release execution capacity while waiting. A revision invalidates earlier confirmation; stale/repeated/ambiguous responses and a mode toggle cannot release another plan. One confirmation permits continuous execution, including bounded repairs; material Copilot plan revisions return to review. Ordinary informational chat needs no task-plan confirmation. Phase 7A establishes this minimal decision contract, which Phase 8 later generalizes into reusable workflow nodes.
+
+**Crash recovery — agreed clarification:** If a crash loses an unrecorded approval, ask the user again for the same current request; preserve completed work. If a step might have run but its outcome is uncertain, first examine retained evidence and explain the diagnosis, risks and unknowns, then let the user choose **abort**, **repeat the step**, or **continue to the next step**, even in Auto. Never silently choose, replay completed steps or label a skip as success. Repeat needs a distinct attempt within existing limits and cannot overlap a possibly live prior command; continuing requires validated inputs or a visible request for missing input/plan revision. Keep policy, provider lifetime and root budgets unchanged.
+
+**Conversation graph — future proposal, not a Phase 7A prerequisite:** Explore an extensible free-form LangGraph conversation whose nodes grow as the conversation develops. For 7A, a fixed versioned graph with durable internal plan/attempt/output/decision tracking is sufficient to resume where work paused. This proposal has no assigned delivery phase and does not permit rewriting a saved workflow's reviewed graph.
+
+**Reusable agent abilities — agreed direction 2026-11-08:** Use `agent_reasoning`, `agent_planning`, `agent_tracking` and `agent_switch` as shared internal runtime-controlled abilities, not four optional model-selected tools or independent nested agents. Ad hoc task control and later workflows share useful primitives rather than build competing orchestration systems. Revisit reasoning after observations and failures, not just at task admission. Reasoning here means interpreting evidence and proposing a next action, not exposing private model reasoning or assuming a tool name itself enables cognition. The direction is approved, not implemented; names describe responsibilities, not newly registered tool IDs.
+
+| Internal ability | Responsibility and boundary |
+| --- | --- |
+| `agent_reasoning` | Interpret the request/current context and bounded input/output/error evidence; return a concise structured assessment, missing information or repair proposal. It does not dispatch operations or grant authority. |
+| `agent_planning` | Produce an ordered plan or explicit draft revision using permitted tools/skills/profiles and expected outputs/completion criteria. It does not replace the saved-workflow schema/compiler. |
+| `agent_tracking` | Maintain plan revision, logical step status, attempts and evidence references using verified runtime outcomes. A model's claim cannot mark an unexecuted step complete. |
+| `agent_switch` | Route to a permitted next step, bounded repair/reasoning, clarification/approval wait, revision, completion or stop after validating current state and controls. In saved workflows, only declared supported edges are eligible. |
+
+**Selected implementation boundary:** Use typed internal runtime stages invoked by the existing harness. The model proposes interpretations/plans/actions; the runtime enforces tracking, transitions, budgets and gateway admission. Logical abilities need not mean four model calls per step: deterministic tracking/routing should not incur inference, and reasoning/planning may share a bounded model turn. If model-callable interfaces are later useful, they must use the same validated contracts and cannot bypass runtime progression. No independent scheduler, hidden recursive agent loop or duplicate operation ledger.
+
+**Complementary to workflows:** Phase 7A's ad hoc run can choose among validated plan-local actions; 7B's saved sequential workflow fixes its step order and reuses tracking/evidence contracts. Phase 15's later conditional/agent nodes can consume typed reasoning results and choose only approved graph successors, never invent new nodes, permissions or a replacement graph. Deterministic conditions should remain deterministic; model-mediated decisions are explicit, bounded and recorded. These are agreed reuse boundaries, not a claim that reusable workflow branching ships in 7A.
+
+**Related:** [Workflow building as an agentic process](#workflow-building-as-an-agentic-process), [sandbox image scope](#phase-6c--agreed-image-scope), and the historical [dynamic sequencing discussion](#workflow-execution-model). This proposal restores outcome-driven reasoning for ad hoc tasks without reviving unrestricted changes to approved workflow sequencing.
 
 ---
 
@@ -491,6 +541,8 @@ All OpenShip operations — built-in features, custom automations, and user-defi
 
 Building a new workflow is itself an agentic task where users collaborate with the agent to discover, select, and compose available tools and connectors into a multi-step workflow.
 
+**Related proposal:** [Outcome-driven planning](#outcome-driven-reasoning-planning-and-continuous-execution) covers completing an ad hoc task without first saving a reusable workflow. Phase 7B supplies typed saved execution, Phase 9 supplies reviewed natural-language authoring, and Phase 11 supplies progressive discovery; they are not prerequisites for a small installed-tool plan in Phase 7A.
+
 **How It Works:**
 
 - User describes the desired outcome or process through chat.
@@ -619,6 +671,8 @@ provide explicit list/build/smoke commands and opt-in build-on-start. Normal
 startup checks/reuses images without building or upgrading dependencies.
 See [roadmap Phase 6C](./roadmap.md#6c--prebuilt-sandbox-images) and its
 [design](./superpowers/specs/2026-11-07-phase6c-sandbox-images-design.md).
+
+**Phase 7A proposal:** [Execution-context selection](#outcome-driven-reasoning-planning-and-continuous-execution) extends agent-visible tool selection beyond 6C's single operator-selected profile. This is new scope for review, not a claim that 6C already exposes four execution tools.
 
 **Future proposal, not implemented or rejected:** Execute DevOps commands
 against a repository checked out for a workflow, with an isolated working
@@ -848,6 +902,8 @@ OpenShip supports event-driven execution where workflows are automatically trigg
 **Dynamic Step Sequencing and Agent Reasoning:**
 
 > **Status: Stale.** Reviewed graphs define sequencing. Dynamic tool selection occurs inside bounded agent nodes and cannot freely rewrite approved steps. See [architecture](./architects.md), §§9–13.
+
+**Current proposal:** [Phase 7A outcome-driven planning](#outcome-driven-reasoning-planning-and-continuous-execution) applies to ad hoc tasks and follows an explicit current plan. It does not reinstate the unrestricted saved-workflow sequencing described below.
 
 - Workflow definitions specify available steps and tools, but the agent dynamically determines the execution order at runtime.
 - The agent adapts sequencing based on context, intermediate results, and errors — not rigidly following a predefined DAG.

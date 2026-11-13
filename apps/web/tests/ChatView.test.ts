@@ -4,8 +4,9 @@ import { mountWithRouter } from './helpers/mountWithRouter'
 import ChatView from '@/views/ChatView.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { useTaskProgressStore } from '@/stores/taskProgress'
 import { useConnectorsStore } from '@/stores/connectors'
-import api, { connectorsApi, conversationsApi, projectsApi, runsApi, workspaceApi } from '@/services/api'
+import api, { connectorsApi, conversationsApi, projectsApi, runsApi, taskDecisionApi, workspaceApi } from '@/services/api'
 import type { Conversation, RunCard as RunCardType, ToolOperationSummary } from '@/types'
 import { useProjectsStore } from '@/stores/projects'
 import {
@@ -34,10 +35,20 @@ vi.mock('@/services/api', () => ({
   // cancelling asks, and the read answers with what the cancellation left.
   runsApi: {
     submitTurn: vi.fn(),
+    submitMessage: vi.fn().mockResolvedValue({
+      data: {
+        message_id: 'msg-reply-1',
+        disposition: 'clarification',
+        status: 'attached',
+        run_id: 'run-ask',
+        request_id: 'request-ask',
+      },
+    }),
     cancelRun: vi.fn(),
     getSnapshot: vi.fn(),
     getRun: vi.fn(),
   },
+  taskDecisionApi: { submit: vi.fn() },
   artifactsApi: { list: vi.fn(), download: vi.fn(), delete: vi.fn() },
   workspaceApi: {
     get: vi.fn().mockResolvedValue({
@@ -61,6 +72,7 @@ const mockConversationsApi = vi.mocked(conversationsApi)
 const mockConnectorsApi = vi.mocked(connectorsApi)
 const mockRunsApi = vi.mocked(runsApi)
 const mockWorkspaceApi = vi.mocked(workspaceApi)
+const mockDecisionApi = vi.mocked(taskDecisionApi)
 
 const wait = 3000
 
@@ -147,6 +159,107 @@ describe('ChatView', () => {
       },
     } as never)
     mockWorkspaceApi.readFile.mockReset()
+  })
+
+  it('keeps the active decision in the timeline and the expandable run status, with one submission path', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Staging deployed successfully.'), { timeout: wait })
+    const chat = useChatStore()
+    chat.messages = [
+      { id: 'ask', role: 'user', content: 'Make a chart', conversation_id: 'c1', run_id: 'run-1', created_at: '2026-11-01T00:00:00Z' },
+    ]
+    chat.runCards.set('c1', {
+      run_id: 'run-1', status: 'paused', started_at: null, ended_at: null, usage: null,
+      model: null, attempts: [], error_code: null, error_message: null,
+    } as RunCardType)
+    const tasks = useTaskProgressStore()
+    tasks.handleEvent({ id: 'plan', conversation_id: 'c1', run_id: 'run-1', sequence: 1,
+      type: 'task.plan_proposed', payload: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart temperatures' }] }, created_at: '' })
+    tasks.handleEvent({ id: 'decision', conversation_id: 'c1', run_id: 'run-1', sequence: 2,
+      type: 'task.decision_requested', payload: { revision: 1, kind: 'plan_confirmation', request_id: 'req-1', prompt: 'Approve the chart plan?' }, created_at: '' })
+    mockDecisionApi.submit.mockResolvedValue({ data: { current_revision: 1, status: 'running' } } as never)
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="stream"] [data-testid="task-timeline-entry"]').text()).toContain('Chart temperatures')
+    expect(wrapper.get('[data-testid="run-summary"]').text()).toContain('Action needed')
+    await wrapper.get('[data-testid="run-summary"]').trigger('click')
+    expect(wrapper.get('[data-testid="run-details"] [data-testid="task-decision"]').text()).toContain('Approve the chart plan?')
+    await wrapper.get('[data-testid="stream"] [data-testid="task-decision-confirm"]').trigger('click')
+    expect(mockDecisionApi.submit).toHaveBeenCalledTimes(1)
+    expect(mockDecisionApi.submit.mock.calls[0][1]).toMatchObject({ request_id: 'req-1', action: 'confirm' })
+    await nextTick()
+    expect(wrapper.find('[data-testid="run-attention-dot"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="run-details"] [data-testid="task-decision-reject"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="run-details"] [data-testid="task-decision-reject"]').trigger('click')
+    expect(mockDecisionApi.submit).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('renders approve and reject for a replayed decision request', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    const chat = useChatStore()
+    const tasks = useTaskProgressStore()
+    chat.messages = [
+      { id: 'ask', role: 'user', content: 'Make a chart', conversation_id: 'c1', run_id: 'run-replay', created_at: '2026-11-01T00:00:00Z' },
+    ]
+    chat.runCards.set('c1', {
+      run_id: 'run-replay', status: 'waiting_plan', started_at: null, ended_at: null, usage: null,
+      model: null, attempts: [], error_code: null, error_message: null,
+    } as RunCardType)
+    tasks.handleSnapshot({ schema_version: 1, run_id: 'run-replay', revision: 1,
+      plan: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart temperatures' }] },
+      status: 'waiting', mode: 'copilot',
+      pending_decision: { request_id: 'request-1', plan_revision: 1, kind: 'plan_confirmation', expected_digest: 'a'.repeat(64) },
+    })
+    tasks.handleEvent({ id: 'plan', conversation_id: 'c1', run_id: 'run-replay', sequence: 1,
+      type: 'task.plan_proposed', payload: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart temperatures' }] }, created_at: '' })
+    tasks.handleEvent({ id: 'decision', conversation_id: 'c1', run_id: 'run-replay', sequence: 5,
+      type: 'task.decision_requested', payload: { revision: 1, kind: 'plan_confirmation', request_id: 'request-1', prompt: 'Approve the chart plan?' }, created_at: '' })
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="task-decision"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="task-decision-confirm"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="task-decision-reject"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('answers a parked clarification through the composer while the run stream is still open', async () => {
+    const { wrapper } = await mountWithRouter(ChatView, '/conversation/c1')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Staging deployed successfully.'), { timeout: wait })
+    const chat = useChatStore()
+    const tasks = useTaskProgressStore()
+    chat.messages = [
+      { id: 'ask', role: 'user', content: 'Chart the weather', conversation_id: 'c1', run_id: 'run-ask', created_at: '2026-11-01T00:00:00Z' },
+    ]
+    chat.runCards.set('c1', {
+      run_id: 'run-ask', status: 'waiting_input', started_at: null, ended_at: null, usage: null,
+      model: null, attempts: [], error_code: null, error_message: null,
+    } as RunCardType)
+    tasks.handleSnapshot({ schema_version: 1, run_id: 'run-ask', revision: 1,
+      plan: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart temperatures' }] },
+      status: 'waiting', mode: 'copilot',
+      pending_decision: { request_id: 'request-ask', plan_revision: 1, kind: 'clarification',
+        expected_digest: 'a'.repeat(64), prompt: 'Which file should I chart?' },
+    })
+    await nextTick()
+    // The stream is still open while the run waits: nothing has ended, and the
+    // answer is exactly the dependency the next event depends on.
+    chat.isStreaming = true
+    await nextTick()
+
+    const composer = wrapper.get('[data-testid="composer"]')
+    const textarea = wrapper.get('textarea')
+    expect(textarea.attributes('disabled')).toBeUndefined()
+    expect(textarea.attributes('placeholder')).toContain('Answer the waiting request')
+    expect(wrapper.get('[data-testid="task-decision-prompt"]').text()).toContain('Which file should I chart?')
+    await textarea.setValue('the daily readings csv')
+    await composer.trigger('submit')
+    expect(mockRunsApi.submitMessage).toHaveBeenCalledTimes(1)
+    expect(mockRunsApi.submitMessage.mock.calls[0][0]).toBe('c1')
+    expect(mockRunsApi.submitMessage.mock.calls[0][1]).toMatchObject({
+      content: 'the daily readings csv',
+    })
+    wrapper.unmount()
   })
 
   it('renders conversation history with the active selection', async () => {
@@ -811,7 +924,10 @@ describe('ChatView', () => {
     expect((newButton.element as HTMLButtonElement).disabled).toBe(false)
     const row = findByText(wrapper, 'Deploy pipeline')!
     expect((row.element as HTMLButtonElement).disabled).toBe(false)
-    expect((wrapper.get('#message').element as HTMLTextAreaElement).disabled).toBe(true)
+    // During streaming the composer stays open: a plain-text send is admitted
+    // and routed by the server (clarification reply or queued turn), never
+    // blocked by an open stream or an in-flight submission flag.
+    expect((wrapper.get('#message').element as HTMLTextAreaElement).disabled).toBe(false)
 
     await row.trigger('click')
     await vi.waitFor(

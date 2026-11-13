@@ -35,6 +35,13 @@ from src.openship.runs.models import Run, RunJob, RunTranscriptRecord
 from src.openship.runs.queue import Claim
 from src.openship.runs.resume import resume_chat_python
 from src.openship.runs.schemas import ResumeChatPythonRequest
+from src.openship.runs.service import resume_chat_python as resume_through_service
+from src.openship.runs.tasks.models import (
+    TaskDecisionRecord,
+    TaskRecord,
+    TaskStepAttempt,
+)
+from src.openship.runs.tasks.state import read_progress
 from src.openship.sandboxes.models import WorkflowSandbox
 from src.openship.tools.download import tool as download_tool
 from tests.sandboxes.test_tool import Lane, Provider, enable_sandbox
@@ -114,6 +121,15 @@ def _lane(monkeypatch, tmp_path):
     return lane, gateway, provider, fetches
 
 
+def test_lane_session_is_used(monkeypatch, tmp_path):
+    lane, *_ = _lane(monkeypatch, tmp_path)
+    assert lane.db.query(Run).filter_by(id=lane.run.id).one() is lane.run
+
+
+def test_previous_lane_session_was_released():
+    assert Lane.sessions == []
+
+
 async def _execute_ops(lane, gateway, claim, context, *, lost=False):
     """Run the download then python tool calls the way the agent graph does."""
     download = await gateway.execute_tool(
@@ -174,6 +190,34 @@ async def test_active_run_blocks_resume(monkeypatch, tmp_path):
     assert refused.value.detail["error"]["code"] == "run_already_active"
     assert lane.run.status == "running"
     assert lane.db.query(Run).filter_by(conversation_id=lane.conversation.id).count() == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wait_status",
+    ("waiting_connector", "waiting_plan", "waiting_input", "waiting_config"),
+)
+async def test_waiting_task_blocks_resume(monkeypatch, tmp_path, wait_status):
+    lane, gateway, *_ = _lane(monkeypatch, tmp_path)
+    await _execute_ops(lane, gateway, lane.claim, lane.context())
+    _finalize(lane)
+    waiting = Run(
+        conversation_id=lane.conversation.id,
+        project_id=lane.project.id,
+        client_request_id=str(_uuid.uuid4()),
+        status=wait_status,
+        kind="chat",
+        graph_version=5,
+    )
+    lane.db.add(waiting)
+    lane.db.commit()
+    with pytest.raises(HTTPException) as refused:
+        _resume(lane, "last_step", _uuid.uuid4())
+    assert refused.value.status_code == 409
+    assert refused.value.detail["error"]["code"] == "run_already_active"
+    assert (
+        lane.db.query(Run).filter_by(conversation_id=lane.conversation.id).count() == 2
+    )
 
 
 def _resume(lane, mode, request_id, *, principal_id=None):
@@ -432,3 +476,136 @@ def test_resume_route_and_request_are_registered():
         ResumeChatPythonRequest.model_validate(
             {"mode": "automatic", "client_request_id": str(_uuid.uuid4())}
         )
+
+
+def _v5_snapshot(db, run_id):
+    """What the durable records say about one v5 root, read with no graph state."""
+    progress = read_progress(db, run_id)
+    return {
+        "counters": progress.counters,
+        "attempts": [
+            (row.step_id, row.attempt, row.status, row.operation_id)
+            for row in progress.attempts
+        ],
+        "operations": {
+            row.id: row.status
+            for row in db.query(ToolOperation).filter_by(run_id=run_id).all()
+        },
+        "open_request": [
+            (row.request_id, row.kind, row.plan_revision, row.expected_digest)
+            for row in db.query(TaskDecisionRecord)
+            .filter_by(run_id=run_id, state="open")
+            .all()
+        ],
+    }
+
+
+def test_v5_root_waits_for_its_choice_and_the_resume_keeps_that_root(
+    monkeypatch, tmp_path
+):
+    """The endpoint routes a v5 root to the task resume: A cannot answer a recovery ask."""
+    # The v5 root reuses the task lane's records: this case is about the endpoint's
+    # dispatch and the root's identity, not about the choice's internals.
+    from tests.test_task_resume import _uncertain_root
+
+    db = SessionLocal()
+    try:
+        user, _project, conversation, run, request = _uncertain_root(db)
+        roots = db.query(Run).filter_by(conversation_id=conversation.id).count()
+        before = _v5_snapshot(db, run.id)
+        assert before["open_request"] == [
+            (
+                request.request_id,
+                request.kind,
+                request.plan_revision,
+                request.expected_digest,
+            )
+        ], "the waiting root offers exactly the ask the diagnosis parked"
+        assert run.status == "waiting_input"
+
+        with pytest.raises(HTTPException) as refused:
+            resume_through_service(
+                db,
+                principal_id=user.id,
+                run_id=run.id,
+                command=ResumeChatPythonRequest(
+                    mode="last_step", client_request_id=_uuid.uuid4()
+                ),
+            )
+        assert refused.value.status_code == 409
+        assert refused.value.detail["error"]["code"] == "recovery_choice_required"
+        # Same root, same records: nothing was admitted, dispatched or decided.
+        assert db.query(Run).filter_by(conversation_id=conversation.id).count() == roots
+        assert run.status == "waiting_input"
+        assert _v5_snapshot(db, run.id) == before
+        assert (
+            db.query(TaskDecisionRecord)
+            .filter_by(run_id=run.id, kind="recovery", state="open")
+            .count()
+            == 1
+        )
+        # Re-asking the same request is the same refusal: A never becomes a choice.
+        with pytest.raises(HTTPException) as again:
+            resume_through_service(
+                db,
+                principal_id=user.id,
+                run_id=run.id,
+                command=ResumeChatPythonRequest(
+                    mode="last_step", client_request_id=_uuid.uuid4()
+                ),
+            )
+        assert again.value.status_code == 409
+        assert again.value.detail["error"]["code"] == "recovery_choice_required"
+        assert _v5_snapshot(db, run.id) == before
+    finally:
+        db.close()
+
+
+def test_v5_resume_from_beginning_opens_a_fresh_gate_for_that_account(
+    monkeypatch, tmp_path
+):
+    """B is a new root in the account's mode: the prior root's approval stays its own."""
+    from tests.test_task_resume import _uncertain_root
+
+    db = SessionLocal()
+    try:
+        user, _project, conversation, run, _request = _uncertain_root(db)
+        user.agent_mode = "auto"
+        user.agent_mode_revision = 4
+        db.flush()
+        roots = db.query(Run).filter_by(conversation_id=conversation.id).count()
+        before = _v5_snapshot(db, run.id)
+
+        fresh = resume_through_service(
+            db,
+            principal_id=user.id,
+            run_id=run.id,
+            command=ResumeChatPythonRequest(
+                mode="from_beginning", client_request_id=_uuid.uuid4()
+            ),
+        )
+        db.commit()
+        assert fresh.id != run.id
+        assert fresh.status == "queued"
+        pinned = json.loads(fresh.execution_configuration)
+        assert pinned["task_context"]["mode"] == user.agent_mode
+        assert pinned["task_context"]["root_run_id"] == str(fresh.id)
+        assert pinned["graph_version"] == 5
+        assert (
+            db.query(Run).filter_by(conversation_id=conversation.id).count()
+            == roots + 1
+        )
+        # The new root starts empty: its own gate and plan come from its own
+        # records, so the prior root's open recovery is not inherited.
+        assert db.query(TaskRecord).filter_by(run_id=fresh.id).count() == 0
+        assert db.query(TaskDecisionRecord).filter_by(run_id=fresh.id).count() == 0
+        assert db.query(TaskStepAttempt).filter_by(run_id=fresh.id).count() == 0
+        assert _v5_snapshot(db, run.id) == before
+        assert (
+            db.query(TaskDecisionRecord)
+            .filter_by(run_id=run.id, kind="recovery", state="open")
+            .count()
+            == 1
+        )
+    finally:
+        db.close()

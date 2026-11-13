@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from collections.abc import Callable
 from typing import Any
@@ -116,16 +117,148 @@ def _append_transcript(
 
 
 def _result_message(result: PublishedToolResult, max_bytes: int) -> str:
-    encoded = json.dumps(
-        result.model_dump(mode="json"),
+    """Render a tool result for the model, inside `max_bytes`.
+
+    The durable operation result keeps every byte; only this model-visible
+    copy is bounded. A tool may legitimately commit a payload at its own
+    ceiling - the workspace read pairs ``max_read_bytes`` with
+    ``max_model_result_bytes`` (`capabilities/catalog.py:522-524`) - so the
+    envelope added here can overflow a page the gateway already allowed.
+    Aborting there lost the step's outcome and left the model no way to
+    continue, so instead the largest strings of the tool's own payload are
+    shortened, each saying so and pointing at the ``next_offset`` the result
+    already carries.
+    """
+    payload = result.model_dump(mode="json")
+    encoded = _canonical_result(payload)
+    if len(encoded.encode("utf-8")) <= max_bytes:
+        return encoded
+    bounded = _bounded_result_payload(payload, max_bytes)
+    if bounded is None:
+        raise ProviderError("output_limit_exceeded")
+    return bounded
+
+
+def _canonical_result(payload: dict) -> str:
+    return json.dumps(
+        payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     )
-    if len(encoded.encode("utf-8")) > max_bytes:
-        raise ProviderError("output_limit_exceeded")
-    return encoded
+
+
+def _page_pointer(payload: dict) -> str | None:
+    """Where the tool says to read next, when its contract carries one."""
+    inner = payload.get("result")
+    if not isinstance(inner, dict):
+        return None
+    offset = inner.get("next_offset")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset <= 0:
+        return None
+    return f"read the next page at next_offset={offset}"
+
+
+def _truncation_note(total_bytes: int, kept_bytes: int, pointer: str | None) -> str:
+    guide = pointer if pointer is not None else "ask again for a smaller page"
+    return (
+        f" [… OpenShip truncation: {kept_bytes} of {total_bytes} bytes kept;"
+        f" {guide}; the whole result stays recorded for this operation …]"
+    )
+
+
+def _string_leaves(node: Any, path: tuple[str | int, ...] = ()) -> list[tuple[tuple[str | int, ...], str]]:
+    if isinstance(node, dict):
+        found = []
+        for key, value in node.items():
+            found.extend(_string_leaves(value, (*path, key)))
+        return found
+    if isinstance(node, list):
+        found = []
+        for index, value in enumerate(node):
+            found.extend(_string_leaves(value, (*path, index)))
+        return found
+    if isinstance(node, str):
+        return [(path, node)]
+    return []
+
+
+def _leaf_at(node: Any, path: tuple[str | int, ...]) -> Any:
+    for part in path[:-1]:
+        node = node[part]
+    return node[path[-1]]
+
+
+def _replace_leaf(node: Any, path: tuple[str | int, ...], value: str) -> None:
+    for part in path[:-1]:
+        node = node[part]
+    node[path[-1]] = value
+
+
+def _bounded_result_payload(payload: dict, max_bytes: int) -> str | None:
+    """Shorten the tool payload's largest strings until the message fits.
+
+    The envelope fields (status, IDs, artifact refs) stay intact: only the
+    tool's own payload is shortened, so the model never loses an outcome or a
+    pointer it needs to continue. Each pass is a binary search for the longest
+    excerpt that still fits, so the copy is as large as the budget allows.
+    """
+    data = copy.deepcopy(payload)
+    inner = data.get("result")
+    if not isinstance(inner, dict):
+        return None
+    pointer = _page_pointer(payload)
+    leaves = sorted(
+        _string_leaves(inner),
+        key=lambda item: (-len(item[1].encode("utf-8")), [str(part) for part in item[0]]),
+    )
+    for path, _original in leaves:
+        current = _leaf_at(data["result"], path)
+        if not isinstance(current, str):
+            continue
+        total = len(current.encode("utf-8"))
+        _replace_leaf(data["result"], path, _truncation_note(total, 0, pointer))
+        if _encoded_bytes(data) > max_bytes:
+            continue
+        low, high = 0, total
+        while low < high:
+            middle = (low + high + 1) // 2
+            prefix = _clip_to_bytes(current, middle)
+            _replace_leaf(
+                data["result"],
+                path,
+                prefix + _truncation_note(total, len(prefix.encode("utf-8")), pointer),
+            )
+            if _encoded_bytes(data) <= max_bytes:
+                low = middle
+            else:
+                high = middle - 1
+        prefix = _clip_to_bytes(current, low)
+        _replace_leaf(
+            data["result"],
+            path,
+            prefix + _truncation_note(total, len(prefix.encode("utf-8")), pointer),
+        )
+        encoded = _canonical_result(data)
+        if len(encoded.encode("utf-8")) <= max_bytes:
+            return encoded
+    return None
+
+
+def _encoded_bytes(data: dict) -> int:
+    return len(_canonical_result(data).encode("utf-8"))
+
+
+def _clip_to_bytes(value: str, budget: int) -> str:
+    """The longest whole-character prefix that costs at most `budget` bytes."""
+    used = 0
+    for index, char in enumerate(value):
+        cost = len(char.encode("utf-8"))
+        if used + cost > budget:
+            return value[:index]
+        used += cost
+    return value
 
 
 def _failure_for_tool(result: PublishedToolResult) -> ProviderError | None:

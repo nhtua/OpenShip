@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -25,6 +26,18 @@ test_engine = create_engine(
     connect_args={"check_same_thread": False},
 )
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+
+
+@pytest.fixture(autouse=True)
+def close_lane_sessions():
+    """Release Lane sessions for every test module that uses the helper."""
+    yield
+    lane_module = sys.modules.get("tests.sandboxes.test_tool")
+    if lane_module is not None:
+        for session in lane_module.Lane.sessions:
+            session.close()
+        lane_module.Lane.sessions.clear()
+
 
 # Patch the module so that get_db() uses our test engine.
 db_session.engine = test_engine
@@ -59,6 +72,8 @@ def setup_db(request):
         or "test_connector_resume_postgres" in test_path
         or "test_messaging_migration" in test_path
         or "test_messaging_relay" in test_path
+        or "test_phase7a_task_state_postgres" in test_path
+        or "test_task_decisions_postgres" in test_path
     ):
         yield
         return
@@ -131,18 +146,12 @@ datefmt = %H:%M:%S
 
 @pytest.fixture(autouse=True)
 def restore_transport_gates(request, setup_db):
-    """Keep messaging tests from changing later tests' shared SQLite gates."""
-    if Path(request.node.fspath).name not in {
-        "test_messaging_command_claim.py",
-        "test_messaging_consumer.py",
-        "test_messaging_exhaustion.py",
-        "test_messaging_executor.py",
-        "test_messaging_maintenance.py",
-        "test_messaging_outbox.py",
-    }:
-        yield
-        return
+    """Keep messaging tests from changing later tests' shared SQLite gates.
 
+    Every test's changes to MessageTransportState active/admission_open/
+    execution_open are restored after the test completes, so a test that
+    closes a gate cannot leak that state into subsequent tests.
+    """
     from src.openship.messaging.models import MessageTransportState
 
     with TestSessionLocal() as db:
@@ -306,7 +315,7 @@ def profile_spec(
             "max_output_tokens": 4096,
             "token_counting": False,
             "tool_calls": False,
-            "structured_output": False,
+            "structured_output": True,
             "attachment_types": [],
             "parallel_tool_calls": False,
         },

@@ -31,25 +31,52 @@ repos:
 
       - id: api-tests
         name: API Unit Tests
-        entry: bash -c "cd apps/api && uv run pytest -q -m 'not postgres and not provider_live and not full_stack and not jetstream'"
+        # The launcher picks the test modules that can observe the commit's
+        # files and runs exactly those, in the credential-free lane. It runs
+        # the whole lane when a change maps to no test module, when shared lane
+        # infrastructure changes (conftest, pyproject.toml, uv.lock, this file,
+        # scripts, alembic, fixtures), and when the pre-push gate asks for it
+        # with --full-lane. apps/api/scripts/run_selected_tests.py owns the lane
+        # expression; do not restate it here.
+        entry: bash -c "cd apps/api && uv run python scripts/run_selected_tests.py"
         language: system
         types: [python]
         pass_filenames: false
         files: ^apps/api/
 
+      # The web gates pay for themselves only when the web tree changes: a
+      # docs-only commit cannot affect Chromium-adjacent tooling. pnpm-lock.yaml
+      # is included because it changes what the suite runs against.
       - id: frontend-typecheck
         name: Vue Typecheck
         entry: bash -c "cd apps/web && pnpm typecheck"
         language: system
         pass_filenames: false
-        always_run: true
+        files: ^(apps/web/|pnpm-lock\.yaml$)
 
       - id: frontend-tests
         name: Frontend Unit Tests
-        entry: bash -c "cd apps/web && pnpm test:run"
+        # Same contract as the API launcher, in vitest terms: related suites
+        # when vitest sees a relation, the whole suite when changed source
+        # relates to nothing, nothing for a commit the suite cannot observe.
+        entry: bash -c "cd apps/web && node scripts/run-changed-tests.mjs"
+        language: system
+        pass_filenames: false
+        files: ^(apps/web/|pnpm-lock\.yaml$)
+
+  # The branch gate. CI runs the same lanes in shards; this is what to run
+  # before pushing, and the fallback for git rebase and git commit --no-verify,
+  # neither of which runs any commit hook. Install with:
+  #   pre-commit install --hook-type pre-commit --hook-type pre-push
+  - repo: local
+    hooks:
+      - id: openship-verify
+        name: OpenShip Verify (pre-push)
+        entry: bash scripts/openship-verify
         language: system
         pass_filenames: false
         always_run: true
+        stages: [pre-push]
   - repo: https://github.com/nhtua/rayloc
     rev: v2026.10.4  # a release tag or commit SHA
     hooks:

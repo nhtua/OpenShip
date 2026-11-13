@@ -285,6 +285,22 @@ def test_unsupported_capability_is_refused_before_the_network():
     assert "tool_calls" in caught.value.safe_message
 
 
+def test_structured_output_is_a_qualified_capability_not_an_assumption():
+    """A request for JSON mode against a profile that does not declare it is refused."""
+    profile = pin_profile(ProviderProfile(**OPENAI_PROFILE))
+    request = ModelRequest(
+        messages=(ChatMessage(role="user", content="answer with one JSON object"),),
+        max_output_tokens=10,
+        required_capabilities=frozenset({"streaming", "structured_output"}),
+    )
+
+    with pytest.raises(ProviderError) as caught:
+        validate_request(request, profile)
+
+    assert caught.value.code == "unsupported_capability"
+    assert "structured_output" in caught.value.safe_message
+
+
 def test_token_ceiling_without_a_counter_is_refused():
     """An unenforceable ceiling is an error, not a silently ignored limit."""
     uncounted = dict(OPENAI_PROFILE)

@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Literal
 
@@ -21,6 +22,7 @@ from ..workspace.lifecycle import ArchiveStateError, archive_http_error
 from ..workspace.projects import ProjectLifecycleError, select_project_for_conversation
 
 router = APIRouter(prefix="/api", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 class ConversationCreateRequest(BaseModel):
@@ -159,6 +161,14 @@ async def restore_conversation_route(
             conversation_id=conversation_id,
         )
         db.commit()
+        try:
+            from ..runs.inbox.promotion import promote_next_message
+
+            promote_next_message(db, conversation_id=conversation_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("inbox promotion after restore failed")
         return conversation_response(conversation, project)
     except ArchiveStateError as exc:
         db.rollback()

@@ -427,6 +427,43 @@ def test_resume_ownership_and_active_run_admission(
     assert resume(client, old).status_code == 404
 
 
+@pytest.mark.parametrize(
+    "wait_status",
+    ("waiting_connector", "waiting_plan", "waiting_input", "waiting_config"),
+)
+def test_waiting_task_blocks_resume(
+    client,
+    auth_token,
+    artifact_store,
+    monkeypatch,
+    tmp_path,
+    wait_status,
+):
+    _provider, old = setup_analysis(client, auth_token, monkeypatch, tmp_path)
+    _execute(old)
+    with SessionLocal() as db:
+        prior = db.get(Run, uuid.UUID(str(old)))
+        waiting = Run(
+            conversation_id=prior.conversation_id,
+            project_id=prior.project_id,
+            client_request_id=str(uuid.uuid4()),
+            status=wait_status,
+            kind="chat",
+            graph_version=5,
+        )
+        db.add(waiting)
+        db.commit()
+        waiting_id = waiting.id
+    try:
+        response = resume(client, old)
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "run_already_active"
+    finally:
+        with SessionLocal() as db:
+            db.delete(db.get(Run, waiting_id))
+            db.commit()
+
+
 def test_cancellation_rejects_late_sandbox_output_without_deleting_handle(
     client,
     auth_token,

@@ -37,8 +37,36 @@ function operation(id: string, created_at: string): ToolOperationSummary {
 }
 
 describe('buildConversationTimeline', () => {
+  it('keeps appended follow-ups after history even when the browser clock is behind', () => {
+    const history = [
+      runMessage('old-user', 'user', 'old-run', '2026-11-12T12:00:00Z'),
+      runMessage('old-answer', 'assistant', 'old-run', '2026-11-12T12:01:00Z'),
+    ]
+    const pending = message('temp-followup', '2026-11-12T11:02:00Z')
+    const expected = ['old-user', 'old-answer', 'temp-followup']
+    expect(buildConversationTimeline([...history, pending], []).map((entry) => entry.id)).toEqual(expected)
+
+    const admitted = { ...pending, id: 'followup', run_id: 'new-run' }
+    expect(buildConversationTimeline([...history, admitted], [
+      { ...operation('new-tool', '2026-11-12T10:00:00Z'), run_id: 'new-run' },
+    ]).map((entry) => entry.id)).toEqual(['old-user', 'old-answer', 'followup', 'new-tool'])
+  })
+
+  it('preserves message order with equal, missing and invalid timestamps', () => {
+    const timeline = buildConversationTimeline([
+      message('z-first', ''),
+      message('z-second', '2026-11-12T12:00:00Z'),
+      message('a-third', '2026-11-12T12:00:00Z'),
+      message('pending-one', 'not-a-date'),
+      message('pending-two', '2026-11-12T11:00:00Z'),
+    ], [])
+    expect(timeline.map((entry) => entry.id)).toEqual([
+      'z-first', 'z-second', 'a-third', 'pending-one', 'pending-two',
+    ])
+  })
+
   it('orders messages and tool operations together without manufacturing transcript messages', () => {
-    const messages = [message('user-2', '2026-10-20T12:00:02Z'), message('user-1', '2026-10-20T12:00:00Z')]
+    const messages = [message('user-1', '2026-10-20T12:00:00Z'), message('user-2', '2026-10-20T12:00:02Z')]
     const operations = [operation('search-2', '2026-10-20T12:00:03Z'), operation('search-1', '2026-10-20T12:00:01Z')]
 
     const timeline = buildConversationTimeline(messages, operations)
@@ -53,15 +81,15 @@ describe('buildConversationTimeline', () => {
     expect(timeline.filter((entry) => entry.kind === 'message')).toHaveLength(2)
   })
 
-  it('uses stable IDs for equal timestamps and keeps undated operations at the end', () => {
+  it('preserves message order for equal timestamps and keeps undated operations at the end', () => {
     const timeline = buildConversationTimeline(
       [message('message-b', '2026-10-20T12:00:00Z'), message('message-a', '2026-10-20T12:00:00Z')],
       [operation('search-a', '2026-10-20T12:00:00Z'), operation('search-undated', '')],
     )
 
     expect(timeline.map((entry) => entry.id)).toEqual([
-      'message-a',
       'message-b',
+      'message-a',
       'search-a',
       'search-undated',
     ])
@@ -100,6 +128,20 @@ describe('buildConversationTimeline', () => {
     expect(timeline.map((entry) => `${entry.kind}:${entry.id}`)).toEqual([
       'message:user-live',
       'tool:search-live',
+    ])
+  })
+
+  it('keeps earlier tools before later clarification replies in the same run', () => {
+    const timeline = buildConversationTimeline([
+      runMessage('request', 'user', 'run-1', '2026-11-12T12:00:00Z'),
+      runMessage('clarification', 'user', 'run-1', '2026-11-12T12:00:10Z'),
+      runMessage('answer', 'assistant', 'run-1', '2026-11-12T12:00:20Z'),
+    ], [
+      { ...operation('after-reply', '2026-11-12T12:00:15Z'), run_id: 'run-1' },
+      { ...operation('before-reply', '2026-11-12T12:00:05Z'), run_id: 'run-1' },
+    ])
+    expect(timeline.map((entry) => entry.id)).toEqual([
+      'request', 'before-reply', 'clarification', 'after-reply', 'answer',
     ])
   })
 })

@@ -29,6 +29,12 @@ interface Props {
   connectors?: ConnectorUsage[]
   defaultConnectorIds?: Partial<Record<ManagedConnectorKind, string>>
   draftContent?: string | null
+  // The account's execution mode is not settled: a task send would have to
+  // guess it, so only a text-only send stays available.
+  modeSubmissionDisabled?: boolean
+  // The run is parked on a decision, so typed text is a reply to that
+  // request - it is never an ordinary turn that starts another task.
+  replyContext?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -45,6 +51,8 @@ const props = withDefaults(defineProps<Props>(), {
   submissionError: null,
   defaultConnectorIds: () => ({}),
   draftContent: null,
+  modeSubmissionDisabled: false,
+  replyContext: false,
 })
 
 const emit = defineEmits<{
@@ -93,11 +101,14 @@ const awsSelectionValid = computed(() => awsConnectorChoices.value.some(
   (connector) => connector.id === selectedAwsConnectorId.value,
 ))
 
-const inputPlaceholder = computed(() =>
-  showKeyboardHint.value
-    ? 'Message the agent...   Enter to send · Shift+Enter for a new line'
-    : 'Message the agent...',
-)
+const inputPlaceholder = computed(() => {
+  // While the run waits on a decision, the composer is that answer, and the
+  // placeholder says so rather than inviting a new turn.
+  const base = props.replyContext ? 'Answer the waiting request' : 'Message the agent'
+  return showKeyboardHint.value
+    ? `${base}...   Enter to send · Shift+Enter for a new line`
+    : `${base}...`
+})
 
 const effectiveProfile = computed(() =>
   props.profiles.find((profile) => profile.profile_id === props.selectedProfileId) ??
@@ -105,6 +116,7 @@ const effectiveProfile = computed(() =>
   null,
 )
 const automaticToolDisabledReason = computed(() => {
+  if (props.modeSubmissionDisabled) return 'Confirm the agent execution mode before a task send.'
   if (attachedCapability.value) return 'Remove the attached tool to let the model choose automatically.'
   if (props.capabilityError) return 'The search tool catalog is unavailable.'
   if (props.catalogError) return 'The model profile catalog is unavailable.'
@@ -332,7 +344,12 @@ async function handleSubmit() {
     if (!isS3ReadTool.value && props.connectors !== undefined) command.connector_selections = connectorSelections
     emit('search', command)
   } else {
-    if (automaticToolMode.value) {
+    // A parked decision's context turns text into a reply: the run is
+    // waiting on an exact request, so nothing here starts another task.
+    // Text always travels through `send` through `runsApi.submitMessage`;
+    // explicit decision buttons stay on `taskProgress.submitTaskDecision`.
+    if (props.replyContext) emit('send', text)
+    else if (automaticToolMode.value) {
       const connectorSelections: ConnectorSelections = {}
       if (awsSelectionRequired.value && selectedAwsConnectorId.value) {
         connectorSelections.aws = selectedAwsConnectorId.value
@@ -482,7 +499,8 @@ onBeforeUnmount(() => {
         class="inline-flex h-8 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-3 text-xs text-foreground hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         @click="disableAutomaticToolMode"
       >
-        <span>Automatic tools</span>
+        <Icon name="wrench" aria-hidden="true" />
+        <span>ON</span>
         <span aria-hidden="true">×</span>
       </button>
 
@@ -567,6 +585,7 @@ onBeforeUnmount(() => {
       </span>
 
       <div class="ml-auto flex min-w-0 items-center gap-2">
+        <slot name="mode" />
         <ProviderSelector
           :profiles="props.profiles"
           :default-profile-id="props.defaultProfileId"

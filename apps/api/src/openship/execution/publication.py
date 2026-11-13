@@ -59,7 +59,7 @@ _ERROR_MESSAGES = {
     "rate_limited": "The search service is rate limiting this request.",
     "quota_exhausted": "The search service account has exhausted its configured quota.",
     "provider_timeout": "The search service did not respond within the allowed time.",
-    "provider_unavailable": "The search service is temporarily unavailable.",
+    "provider_unavailable": "The service this step depends on is temporarily unavailable.",
     "aws_unavailable": "The AWS service is temporarily unavailable.",
     "aws_account_mismatch": "The AWS role belongs to a different account than the Connector.",
     "aws_identity_mismatch": "The AWS role identity does not match the Connector.",

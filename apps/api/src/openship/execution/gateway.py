@@ -90,7 +90,7 @@ _PRE_DISPATCH_MESSAGES = {
     "rate_limited": "The search service is rate limiting this request.",
     "quota_exhausted": "The search service account has exhausted its configured quota.",
     "provider_timeout": "The search service did not respond within the allowed time.",
-    "provider_unavailable": "The search service is temporarily unavailable.",
+    "provider_unavailable": "The service this step depends on is temporarily unavailable.",
     "aws_unavailable": "The AWS service is temporarily unavailable.",
     "aws_access_denied": "The AWS connector role does not have permission to perform this operation.",
     "aws_trust_denied": "AWS denied the configured role assumption. Check the source key and role trust policy.",
@@ -644,7 +644,7 @@ class ToolGateway:
             except (ValidationError, TypeError, ValueError) as exc:
                 raise ToolPublicationError("changed") from exc
             is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2, 3)
-            is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3, 4)
+            is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3, 4, 5)
             if (
                 context.execution != pinned
                 or not (is_manual_tool or is_chat_tool)
@@ -668,6 +668,28 @@ class ToolGateway:
                 definition = get_tool_definition(manifest)
             except LookupError:
                 raise ToolPublicationError("changed")
+            if (
+                getattr(pinned, "schema_version", None) == 5
+                and manifest.id == "python_execute"
+            ):
+                from src.openship.sandboxes.profiles import (
+                    TaskProfileError,
+                    resolve_task_requirements,
+                    runtime_catalog,
+                )
+
+                try:
+                    arguments = json.loads(operation.arguments_json)
+                    profile_id = arguments.get("profile_id")
+                    if profile_id is None:
+                        raise TaskProfileError(
+                            "changed", "the selected sandbox profile is missing"
+                        )
+                    resolve_task_requirements(pinned, profile_id, runtime_catalog())
+                except TaskProfileError as refused:
+                    raise ToolPublicationError(
+                        "disabled" if refused.code == "disabled" else "changed"
+                    ) from None
             if manifest.id in {"aws_read", "aws_read_catalog"}:
                 from src.openship.connectors.aws.read_catalog import (
                     load_aws_read_catalog,

@@ -1,0 +1,1 @@
+{"assessment": {"classification": "clarification", "explanation": "The averages cannot be computed until the units are known.", "evidence_refs": ["obs:0"], "missing_information": ["the units the recorded readings use"], "failure": "none", "step_id": null, "unknowns": ["temperature readings arrive as bare numbers"], "risks": [], "recommended_recovery_action": null}}

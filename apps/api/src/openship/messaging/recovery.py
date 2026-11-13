@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import time
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from ..connectors.blockers import expire_connector_blockers
 from ..database.session import SessionLocal
 from ..execution.availability import refresh_tool_availability
 from ..runs.queue import reconcile_expired
+from ..runs.tasks.decisions import expire_task_decisions
 from .executor import ExecutionPool
 
 logger = logging.getLogger(__name__)
@@ -32,8 +34,22 @@ class _RecoveryResource:
     def expire_connector_blockers(self) -> None:
         self._with_session(expire_connector_blockers)
 
+    def expire_task_decisions(self) -> None:
+        def expire(db):
+            expire_task_decisions(db, now=datetime.now(UTC))
+            db.commit()
+
+        self._with_session(expire)
+
     def reconcile_expired_leases(self) -> None:
-        self._with_session(reconcile_expired)
+        def reconcile(db):
+            from ..runs.inbox.promotion import reconcile_queued_messages
+
+            reconcile_expired(db)
+            reconcile_queued_messages(db)
+            db.commit()
+
+        self._with_session(reconcile)
 
     def _with_session(self, operation) -> None:
         db: Session = self.session_factory()
@@ -93,6 +109,7 @@ class RecoverySupervisor:
                 now = time.monotonic()
                 next_availability = now
                 next_connector_expiry = now
+                next_task_expiry = now
                 next_lease_reconciliation = now
                 while not stop.is_set():
                     now = time.monotonic()
@@ -106,6 +123,9 @@ class RecoverySupervisor:
                         next_connector_expiry = (
                             time.monotonic() + self.recovery_interval
                         )
+                    if now >= next_task_expiry:
+                        await self._attempt(slot, "expire_task_decisions")
+                        next_task_expiry = time.monotonic() + self.recovery_interval
                     if now >= next_lease_reconciliation:
                         await self._attempt(slot, "reconcile_expired_leases")
                         next_lease_reconciliation = (
@@ -116,6 +136,7 @@ class RecoverySupervisor:
                     deadline = min(
                         next_availability,
                         next_connector_expiry,
+                        next_task_expiry,
                         next_lease_reconciliation,
                     )
                     timeout = max(0.0, deadline - time.monotonic())

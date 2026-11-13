@@ -4,6 +4,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from ..artifacts.contracts import ArtifactRef
@@ -21,14 +22,17 @@ from ..messaging.models import MessageTransportState
 from ..messaging.outbox import check_submission_capacity, enqueue_run
 from ..sandboxes.models import WorkflowSandbox
 from .analysis_graph import AnalysisJourney, decode_journey, encode_journey
-from .models import Run, RunJob, RunTranscriptRecord
+from .models import ACTIVE_RUN_STATUSES, Run, RunJob, RunTranscriptRecord
 from .schemas import ResumeAnalysisRequest, ResumeChatPythonRequest
 from .service import (
     _lock_active_conversation_scope,
+    _locked_agent_preference,
     _tool_command_error,
     get_run,
     require_owned_conversation,
 )
+from .tasks.contracts import ExecutionConfigV5
+from .tasks.models import TaskDecisionRecord, TaskRecord
 
 
 def _require_refs(db, run, refs):
@@ -155,7 +159,7 @@ def resume_analysis(
         db.query(Run)
         .filter(
             Run.conversation_id == conversation.id,
-            Run.status.in_(("created", "queued", "running", "waiting_connector")),
+            Run.status.in_(ACTIVE_RUN_STATUSES),
         )
         .first()
     ):
@@ -353,7 +357,7 @@ def resume_chat_python(
         db.query(Run)
         .filter(
             Run.conversation_id == conversation.id,
-            Run.status.in_(("created", "queued", "running", "waiting_connector")),
+            Run.status.in_(ACTIVE_RUN_STATUSES),
         )
         .first()
     ):
@@ -548,6 +552,254 @@ def resume_chat_python(
             "capability": "python_execute",
             "resumed_from": str(prior.id),
             "mode": command.mode,
+        },
+    )
+    db.flush()
+    return run
+
+
+def resume_task(
+    db: Session,
+    *,
+    principal_id: uuid.UUID,
+    run_id: uuid.UUID,
+    command: ResumeChatPythonRequest,
+) -> Run:
+    """A/B continuation of a task-graph v5 root, never a scheduler.
+
+    A (``last_step``) re-admits the SAME root through the ordinary queue and
+    outbox: the plan, attempts, counters and any committed recovery choice stay
+    exactly as the records hold them, and an open recovery ask is returned as a
+    blocker rather than answered - A never becomes ``repeat_step``. B
+    (``from_beginning``) is a deliberate new root: it carries the account's
+    current mode, re-pins its own execution snapshot, opens its own plan gate
+    and records the prior root as lineage while inheriting no confirmation and
+    no recovery history. Caller owns the commit.
+    """
+    prior = get_run(db=db, user_id=principal_id, run_id=str(run_id))
+    conversation = require_owned_conversation(
+        db, principal_id, str(prior.conversation_id)
+    )
+    digest = canonical_digest({"resume_task": str(run_id), "mode": command.mode})
+    existing = _resume_replay(
+        db,
+        conversation_id=conversation.id,
+        request_id=command.client_request_id,
+        digest=digest,
+    )
+    if existing is not None:
+        return existing
+    conversation = _lock_active_conversation_scope(
+        db, user_id=principal_id, conversation_id=conversation.id
+    )
+    existing = _resume_replay(
+        db,
+        conversation_id=conversation.id,
+        request_id=command.client_request_id,
+        digest=digest,
+    )
+    if existing is not None:
+        return existing
+    prior = (
+        db.query(Run).filter_by(id=run_id).with_for_update().populate_existing().one()
+    )
+    try:
+        execution = decode_execution_config(prior.execution_configuration or "")
+        if prior.kind != "chat" or prior.graph_version != 5:
+            raise ValueError("not a task-graph v5 root")
+        if execution.graph_version != 5:
+            raise ValueError("the pinned snapshot is not a task graph")
+    except (KeyError, TypeError, ValueError):
+        raise _tool_command_error(
+            409,
+            "task_resume_unavailable",
+            "This run has no pinned task-graph execution to continue. Submit a new task explicitly.",
+        ) from None
+    task = db.query(TaskRecord).filter_by(run_id=prior.id).one_or_none()
+    if task is None:
+        raise _tool_command_error(
+            409,
+            "task_record_unavailable",
+            "This v5 root has no durable task record. Submit a new task explicitly.",
+        )
+    if prior.ended_at is not None or prior.status == "cancelled":
+        raise _tool_command_error(
+            409,
+            "task_resume_finished",
+            "This task root already ended. Start a new task root explicitly.",
+        )
+    if (
+        db.query(Run)
+        .filter(
+            Run.conversation_id == conversation.id,
+            Run.status.in_(ACTIVE_RUN_STATUSES),
+            Run.id != prior.id,
+        )
+        .first()
+    ):
+        raise _tool_command_error(
+            409,
+            "run_already_active",
+            "This conversation already has other active work; finish or cancel it before resuming.",
+        )
+
+    def _refused_uncertain():
+        raise _tool_command_error(
+            409,
+            "chat_python_execution_interrupted",
+            "An earlier sandbox command may still be running. Wait for its provider TTL before continuing; no command has been sent.",
+        )
+
+    pointer = (
+        db.query(WorkflowSandbox)
+        .filter_by(project_id=prior.project_id, conversation_id=prior.conversation_id)
+        .first()
+    )
+    if pointer is not None and pointer.command_uncertain_until is not None:
+        until = pointer.command_uncertain_until
+        until = until.replace(tzinfo=UTC) if until.tzinfo is None else until
+        if until > datetime.now(UTC):
+            _refused_uncertain()
+
+    if command.mode == "last_step":
+        # A keeps the root: an open recovery ask is answered by its own
+        # decision endpoint, never by translating this command.
+        open_recovery = (
+            db.query(TaskDecisionRecord)
+            .filter_by(run_id=prior.id, kind="recovery", state="open")
+            .first()
+        )
+        if open_recovery is not None:
+            raise _tool_command_error(
+                409,
+                "recovery_choice_required",
+                "A recovery choice for this task is still open. Resolve that request through abort/repeat/continue, or resume from the beginning as a new root; A grants no permission.",
+            )
+        job = (
+            db.query(RunJob)
+            .filter_by(run_id=prior.id)
+            .with_for_update()
+            .populate_existing()
+            .first()
+        )
+        if job is None:
+            job = RunJob(run_id=prior.id, fence=prior.fence)
+            db.add(job)
+            db.flush()
+        # Re-admission keeps every counter and re-queues at the root's own
+        # fence. The queue claim then bumps the job/run fence by one, so the
+        # task record must already carry that fence: park_task_wait compares
+        # task.fence against the claiming worker's claim.fence, and both must
+        # name the fence this re-admission runs under.
+        job.fence = prior.fence
+        task.fence = prior.fence + 1
+        prior.status = "queued"
+        prior.error_code = None
+        job.available_at = datetime.now(UTC)
+        job.dispatch_generation += 1
+        transport = db.query(MessageTransportState).filter_by(id=1).one()
+        enqueue_run(
+            db,
+            prior.id,
+            job.dispatch_generation,
+            epoch=transport.transport_epoch,
+        )
+        append_event(
+            db,
+            conversation_id=prior.conversation_id,
+            run_id=prior.id,
+            event_type="task.resume",
+            actor_id=principal_id,
+            payload={
+                "schema_version": 1,
+                "run_id": str(prior.id),
+                "root_run_id": str(prior.id),
+                "client_request_id": str(command.client_request_id),
+                "mode": command.mode,
+            },
+        )
+        db.flush()
+        return prior
+
+    # B is a new root: the account's current mode is read under its row lock so
+    # a concurrent preference change is either seen or waits.
+    current_mode, _ = _locked_agent_preference(db, principal_id)
+    new_run_id = uuid.uuid4()
+    try:
+        # The new root restates the same pinned snapshot with its own identity:
+        # the copy keeps every capability, artifact and catalog the prior root
+        # held, while the root run id and the account's current mode are the
+        # only facts that change. Re-validating the copy re-runs the snapshot's
+        # own checks (context graph version, catalog digest), so a snapshot this
+        # installation cannot honour is refused rather than guessed at.
+        fresh_context = execution.task_context.model_copy(
+            update={"root_run_id": new_run_id, "mode": current_mode}
+        )
+        pinned = ExecutionConfigV5.model_validate(
+            execution.model_copy(update={"task_context": fresh_context}),
+            from_attributes=True,
+        )
+    except (KeyError, TypeError, ValueError, ValidationError):
+        raise _tool_command_error(
+            409,
+            "task_snapshot_unavailable",
+            "This run's task snapshot cannot be re-pinned for a new root. Submit a new task explicitly.",
+        ) from None
+    run = Run(
+        id=new_run_id,
+        conversation_id=prior.conversation_id,
+        project_id=prior.project_id,
+        client_request_id=str(command.client_request_id),
+        command_digest=digest,
+        kind="chat",
+        graph_version=5,
+        status="queued",
+        attempt=0,
+        fence=0,
+        execution_configuration=pinned.model_dump_json(),
+        model_selection=prior.model_selection,
+        model_configuration=prior.model_configuration,
+        tool_policy_revision=prior.tool_policy_revision,
+    )
+    db.add(run)
+    db.flush()
+    job = RunJob(run_id=run.id, fence=0)
+    db.add(job)
+    db.flush()
+    transport = db.query(MessageTransportState).filter_by(id=1).one()
+    enqueue_run(db, run.id, job.dispatch_generation, epoch=transport.transport_epoch)
+    # The new root restates the same task intent so its own gate and plan start
+    # from the request, not from the prior root's progress.
+    for row in (
+        db.query(Message)
+        .filter_by(run_id=prior.id, role="user")
+        .order_by(Message.created_at)
+        .all()
+    ):
+        db.add(
+            Message(
+                run_id=run.id,
+                **{
+                    column.key: getattr(row, column.key)
+                    for column in Message.__table__.columns
+                    if column.key not in ("id", "run_id", "created_at")
+                },
+            )
+        )
+    append_event(
+        db,
+        conversation_id=run.conversation_id,
+        run_id=run.id,
+        event_type="turn.submitted",
+        actor_id=principal_id,
+        payload={
+            "schema_version": 1,
+            "run_id": str(run.id),
+            "client_request_id": str(command.client_request_id),
+            "capability": "task",
+            "resumed_from": str(prior.id),
+            "mode": command.mode,
+            "agent_mode": current_mode,
         },
     )
     db.flush()

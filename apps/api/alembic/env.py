@@ -6,8 +6,12 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
-# Ensure the src directory is on the Python path
+# Ensure the src directory is on the Python path, so Alembic can load the
+# package as `openship`. The application loads the same package as `src.openship`
+# (the API and worker entry points run with apps/api on the path), and modules
+# inside the package name both roots, so Alembic needs that root too.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), ".."))
 from openship.config import settings
 
 # this is the Alembic Config object, which provides
@@ -29,6 +33,8 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 # for 'autogenerate' support
 from openship.database.models import Base
+from openship.runs.inbox import models as _inbox_models  # noqa: F401
+from openship.runs.tasks import models as _task_models  # noqa: F401
 
 target_metadata = Base.metadata
 

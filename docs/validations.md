@@ -82,3 +82,167 @@ This page records community validation of OpenShip concepts; it is not a
 delivery or build record. Implementation evidence belongs with the feature
 runbooks. For Phase 6C sandbox images, see the
 [local image validation record](operations/opensandbox.md#local-image-validation-record-2026-11-07).
+
+### Phase 7A agentic task journeys — qualification boundary (2026-11-10)
+
+What was validated, and where each boundary stays synthetic, for the Phase 7A
+continuous-task journeys in
+`apps/api/tests/full_stack/test_agentic_tasks.py`. Command lines, counts and
+per-journey assertions are recorded with the plan that owns them
+([Phase 7A plan, Task 16](superpowers/plans/2026-11-08-phase7a-agentic-planning-and-execution.md)).
+This is fixture qualification only: it is not live-provider qualification and
+not user acceptance, and the live gates in that plan remain open.
+
+| Boundary | Status in the selected lane |
+| --- | --- |
+| Model transport | Synthetic. A deterministic stage script answers the v5 protocol turns from `apps/api/tests/fixtures/agentic_tasks/`; provider selection, budgets, transcripts and the model-attempt records around it are the product's own. |
+| External source | Synthetic. A canned weather CSV and logs JSON are served to the real `download_file` capture through the real URL policy gate; the illustrative invalid public URL is never contacted. |
+| Sandbox transport | **Real.** The OpenSandbox HTTP client runs against the authorized loopback gateway (`127.0.0.1:18080`) with authenticated preflight, creating one sandbox per chart step from the operator's profile snapshot at its pinned immutable image ID (`logs-data` → `sha256:260308ad02e5…`). Nothing in the lane stubs the sandbox transport, and the lane fails when the gateway is not answering. |
+| Durable runtime | Real. A disposable PostgreSQL database, the run queue, leases and reconciler, the v5 task graph, the tool gateway, the artifact store, the event/outbox path and the authenticated preference door. |
+| Browser | Real. Chromium through the repository's `playwright.full-stack.config.ts` against the vite dev server proxying the same API process. |
+
+Unqualified by these fixtures, and therefore still open: live-manager
+immutable-image execution, the separately authorized provider tuple for tasks,
+real provider fault injection, and the user's inspection and acceptance of the
+chart, progress, known-repair, source-blocker and recovery views.
+
+### Changed-file test selection — measurement (2026-11-10)
+
+What the narrowed commit gate costs, and what the full lane still costs, measured
+on this tree. Design and rules:
+[the spec](superpowers/specs/2026-11-10-changed-file-test-selection-design.md);
+steps and pinned behaviours:
+[the plan](superpowers/plans/2026-11-10-changed-file-test-selection.md).
+
+| Measurement | Result |
+| --- | --- |
+| Import graph build (`apps/api/src` + `apps/api/tests`, stdlib `ast`, no cache) | 1185 modules, 9039 import edges, 0.63 s (re-measured 2026-11-10 after the relative-import fix) |
+| `apps/api/src/openship/runs/tasks/projections.py` staged alone | 1 selected module, 1 passed, 4.32 s (6.6 s wall) |
+| `apps/api/src/openship/runs/service.py` staged alone | 109 selected modules |
+| `apps/api/src/openship/chat/service.py` (no test imports it) | full lane: "maps to no test module" |
+| `apps/web/src/stores/taskProgress.ts` staged alone | plan `changed`, 13 suites / 201 tests, 4.26 s (5.9 s wall) |
+| `--explain` on both launchers | API: plan, per-file reasons, exact command, nothing run; web: plan `changed`, suites it reaches, exact command, no vitest process started |
+| `uvx pre-commit run --all-files` (new config) | 7 hooks passed in 4 s: ruff, the poc suite, API ruff, `vue-tsc` and the web suite ran over the tree. The two test hooks read the index, so with nothing staged they selected nothing (see the caveat in `docs/development.md`). |
+| `bash scripts/openship-verify` (full lane, tree at `f787a28`) | Python lane `2051 passed` in 148.6 s across 8 shards (256-257 passed each); `vue-tsc --noEmit` clean; web `400 passed` in 42 files; `rayloc` scan clean (`0 finding(s)`, 48 inline suppressions, 13 accepted). The gate exits 0. Two earlier 8-shard runs of the same lane each failed one case on shard 8 - see the shard-load caveat below. The later `ca45d98` copy fix was gated by its own changed-file lane, not this run. |
+| Full credential-free lane, in the tool commit's own hook run | 2001 passed, 169 deselected, 853.60 s |
+
+No `postgres`, `full_stack`, `provider_live` or `jetstream` lane ran for these
+numbers, and none was needed: the credential-free lane needs no database,
+provider key, sandbox endpoint, broker or browser. The lanes that need those
+prerequisites are run by the commands named in
+[the testing guide](testing/phase4-acceptance.md) — for the API, `uv run pytest -q -m postgres`
+with a disposable `TEST_POSTGRES_URL`, `-m full_stack` with the full-stack
+launcher, `-m provider_live` with authorized credentials, and `-m jetstream`
+with the qualified broker.
+
+### Parallel shards for the full lane — measurement (2026-11-10)
+
+Same tree, same machine, same minute, one run each. Design:
+[the sharding spec](superpowers/specs/2026-11-10-launcher-test-sharding-design.md).
+
+| Measurement | Result |
+| --- | --- |
+| Full credential-free lane, single process | 851.34 s, `2020 passed, 169 deselected` |
+| Full credential-free lane, 4 shards | 249.1 s (3.4x the single process) |
+| Full credential-free lane, 8 shards | 152.6 s and 152.4 s on two runs (5.6x); per-shard walls 118.7-149.6 s, 254-255 passed each |
+| The sharding commit's own hook run (auto, 4 shards then) | `API Unit Tests` passed, `2037` tests, 252.4 s |
+| `--explain` on a full-lane plan | prints `lane shards: 8`, the plugin command and one env line per shard; runs nothing |
+
+Every sharded run's summed counts must equal the single-process run's. The
+single process reported `2020 passed, 169 deselected` before the 17
+launcher/mapper tests this branch adds; the last full lane, on the tree at
+`f787a28`, reported `2051 passed`, and the two copy-fix pins (`ca45d98`) were
+added after it. A shard that collected nothing exits 5 and is not counted as a
+failure.
+
+Shard-load caveat (2026-11-11). Two eight-shard runs of the full lane each
+failed exactly one case:
+`tests/execution/test_aws_sdk.py::test_executor_slot_is_held_until_the_first_sdk_call_finishes`
+timed out inside its own one-second wait (`asyncio.wait_for(..., timeout=1)`,
+`tests/execution/test_aws_sdk.py:496`) while eight pytest processes ran. It
+passed twice in isolation (0.81 s and 0.85 s), and the run after the two fix
+commits was clean. This is recorded as load sensitivity in that case's
+one-second budget, not as a branch regression; the case itself is unchanged.
+
+### Agentic task journeys on the dev stack — what the durable doors do (2026-11-11)
+
+Operator QA against the running dev stack (the driver is a scratch script in
+`/tmp`, not a committed tool): sign in, submit one outcome-level request in
+`copilot` mode, watch the parked plan, confirm it through `POST
+/api/runs/{run}/task-decisions`, and read the run back. This is a journey check,
+not acceptance: no `postgres`, `full_stack`, `provider_live` or `jetstream` test
+lane ran, and no user was asked to accept anything.
+
+| Step | Result |
+| --- | --- |
+| Plan stage before the prompt fix | four recorded answers each wrote a sentence into `recommended_recovery_action` and left `step_id` null, so every assessment failed and the chat answered "no plan could be validated" for any request |
+| Replay of those recorded answers through the product's own validators | `PLAN VALID` against the run's own pinned `execution_configuration` - the plan was always fine; only the assessment's field values were refused |
+| After `fb90e74` (the prompt states the contract's rules) | three runs parked a real plan: `find_source/download_data/make_chart/verify_chart`, `download/inspect/chart/confirm`, `download_data/create_chart/confirm_chart`, each at `waiting_plan` with pending kind `plan_confirmation` |
+| Confirming one parked plan | `POST /api/runs/{run}/task-decisions` → HTTP 200, execution started, and the plan's steps moved through `queued`/`running`/settled states in the run view |
+| The `.txt` download plan after the attempt-recording fix | run `completed`: `download_data:failed`, `create_chart:failed`, `confirm_chart:succeeded` - the refused step is recorded and the switcher keeps routing, instead of the worker dying |
+| Before that fix | the same step aborted the run: `TaskStateError: the committed operation has no result digest` at `runs/tasks/state.py`, then `failed`/`internal_error` |
+| A second journey after `77ee949` - run `e8aa2b32-1507-4c3d-8114-b8606f4b0915` | parked a real plan (`download`/`chart`/`verify`) at `waiting_plan` with `plan_confirmation`; `POST /api/runs/{run}/task-decisions` → HTTP 200; steps settled `download:verified`, `chart:failed`, `verify:succeeded`; run `completed` with no error after five provider attempts. The failed chart step is a sandbox `python_execute` provider failure, recorded as a step outcome instead of aborting the run. The scratch driver still reports `INCONCLUSIVE` because the task record stays `running` - the open finding below. |
+| The same run's `download` step | `download_file` succeeded and published `Heathrow.csv` (50,448 bytes, digest recorded) as `download:verified` - the same source CSV whose page the pre-fix run read at the ceiling. The bounded-rendering fix itself is pinned by fixture, not re-proven by a ceiling read in this journey. |
+
+Two real breaks were found this way and both are fixed; one separate gap stays
+open and is recorded honestly.
+
+- **Fixed in `77ee949` - a read at the ceiling killed a task run.** The tool
+  read 15,759 bytes and the operation committed `result_json` at exactly
+  `max_model_result_bytes` (16,384), so the envelope `_result_message` added on
+  top of a payload already allowed at the ceiling made the model-visible
+  message too large: `ProviderError("output_limit_exceeded")` was raised inside
+  `dispatch` (`task_graph.py`), which aborted the run instead of leaving a step
+  outcome. The manifest pairs `max_read_bytes` and `max_model_result_bytes` at
+  the same 16 KiB (`capabilities/catalog.py:522-524`). `77ee949` keeps the
+  durable result exact and bounds only the model-visible copy: the largest
+  strings of the tool's own payload are shortened to the longest excerpt that
+  fits, each carrying "OpenShip truncation: k of N bytes kept" and the
+  `next_offset` the contract already publishes; an under-budget result renders
+  byte-identically, and an envelope with nothing left to bound still refuses
+  `output_limit_exceeded`. Pin:
+  `apps/api/tests/test_tool_turn_result_size.py` - its fixture reproduces the QA
+  row (the canonical `result_json` is exactly 16,384 bytes, so the old code
+  raised at `agent_graph.py:127`).
+- **Fixed in `ca45d98` - a failed step blamed the search service.** The second
+  journey's `python_execute` step failed with `provider_unavailable`, and its
+  recorded message read "The search service is temporarily unavailable.": the
+  shared execution maps (`execution/gateway.py`, `execution/publication.py`)
+  carried search wording for a code every capability can produce. The shared
+  copy is now "The service this step depends on is temporarily unavailable.",
+  and the search transport keeps its own wording. Pin:
+  `apps/api/tests/execution/test_failure_copy.py`.
+- **Open - a confirmed plan that finishes publishes no closing turn.** Run
+  `e917c027-c321-4443-806f-74b786e6feaa` ended `completed` with only two
+  messages in the conversation - the request and the plan presentation - while
+  its task record stayed `status: running`, `last_disposition: none`. The chat
+  shows a plan and silence, so the durable task's own terminal state is never
+  published. `task.status` reaches `completed` only through the verification
+  path (`runs/tasks/state.py:995`), which a run with no verified output never
+  enters. The plan's own Task 12 evidence already treats durable
+  `task_status == "running"` with `verified_steps == ()` as the honest
+  pre-verification state, so the missing closing turn is the reportable half of
+  this finding, not the status itself.
+
+### Structured-output wiring - what the declaration now means (2026-11-11)
+
+A profile admitted for agentic tasks has always had to declare
+`structured_output` (`runs/service.py:319-322`), but until `f787a28` no request
+ever asked the provider for JSON: the declaration was an admission check with
+no wire meaning, and the two envelope stages (`assess_task`, `plan_task`)
+relied on prompt wording alone. Those stages now add the capability to their
+request, and each adapter asks for JSON mode per its pinned API version:
+`response_format={"type": "json_object"}` for `chat-completions` and
+`text={"format": {"type": "json_object"}}` for `responses`. `validate_request`
+refuses a profile that does not declare the capability before any dispatch, and
+prose chat turns ask for nothing, so their wire request is unchanged.
+
+Pins: `tests/providers/test_openai.py` and
+`tests/providers/test_openai_responses.py` assert both wire forms and that a
+prose turn sends neither; `tests/test_task_inference.py` asserts a stage's own
+request carries the requirement; `tests/providers/test_contracts.py` pins the
+refusal. The RED run showed no wire kwarg and no request requirement before the
+change. JSON mode guarantees valid JSON, not the envelope's shape - the
+contract validators remain the authority - and strict `json_schema` stays a
+proposal because the request contract has no per-request schema carrier. No
+live tuple is claimed from this: the live lanes stay `pending`.

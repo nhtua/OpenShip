@@ -1,21 +1,26 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ChatMessage, Run, ToolOperationSummary } from '@/types'
+import type { ChatMessage, Run, TaskCardState, ToolOperationSummary } from '@/types'
 import { buildConversationTimeline } from '@/lib/chatTimeline'
 import AgentMessage from './AgentMessage.vue'
 import UserMessage from './UserMessage.vue'
 import ToolOperationCard from './ToolOperationCard.vue'
+import TaskTimelineEntry from './TaskTimelineEntry.vue'
 
 const props = withDefaults(defineProps<{
   messages: ChatMessage[]
   operations?: ToolOperationSummary[]
+  tasks?: TaskCardState[]
+  activeTaskRunId?: string | null
   isStreaming: boolean
   canResume?: boolean
-}>(), { operations: () => [], canResume: false })
+  readOnly?: boolean
+}>(), { operations: () => [], tasks: () => [], canResume: false, readOnly: false })
 const emit = defineEmits<{
   download: [artifactId: string, name: string]
   cancel: [runId: string]
   resumed: [run: Run]
+  respond: [runId: string, action: string, answer: string | null]
 }>()
 
 /**
@@ -30,9 +35,18 @@ const scrollRef = ref<HTMLElement | null>(null)
 const nearBottom = ref(true)
 const initialLoad = ref(true)
 const timeline = computed(() => buildConversationTimeline(props.messages, props.operations))
+const entries = computed(() => {
+  const result: Array<(typeof timeline.value)[number] | { kind: 'task'; id: string; card: TaskCardState }> = [...timeline.value]
+  for (const card of props.tasks) {
+    if (!card.planRevisions.length && !card.pendingDecision && !card.resolvedDecisions.length) continue
+    const anchor = result.findIndex((entry) => entry.kind === 'message' && entry.runId === card.runId && entry.message.role === 'user')
+    if (anchor >= 0) result.splice(anchor + 1, 0, { kind: 'task', id: card.runId, card })
+    else if (card.runId === props.activeTaskRunId) result.push({ kind: 'task', id: card.runId, card })
+  }
+  return result
+})
 const awaitingAssistant = computed(() => {
-  const latest = timeline.value.at(-1)
-  return latest?.kind === 'message' && latest.message.role === 'user'
+  return props.messages.at(-1)?.role === 'user'
 })
 
 const standaloneStatus: ChatMessage = {
@@ -70,7 +84,7 @@ function jumpToLatest() {
 }
 
 watch(
-  () => [props.messages, props.operations, props.isStreaming],
+  () => [props.messages, props.operations, props.tasks, props.isStreaming],
   () => { void maybeFollowScroll() },
   { deep: true },
 )
@@ -92,7 +106,7 @@ onBeforeUnmount(() => {
       class="h-full min-h-0 space-y-6 overflow-y-auto p-4 md:p-6"
       data-testid="stream"
     >
-      <template v-for="entry in timeline" :key="`${entry.kind}:${entry.id}`">
+      <template v-for="entry in entries" :key="`${entry.kind}:${entry.id}`">
         <UserMessage v-if="entry.kind === 'message' && entry.message.role === 'user'" :message="entry.message" />
         <AgentMessage
           v-else-if="entry.kind === 'message' && entry.message.role === 'assistant'"
@@ -110,55 +124,32 @@ onBeforeUnmount(() => {
           @resumed="emit('resumed', $event)"
           @layout-change="maybeFollowScroll"
         />
+        <TaskTimelineEntry
+          v-else-if="entry.kind === 'task'"
+          :card="entry.card"
+          :read-only="readOnly || (activeTaskRunId != null && entry.card.runId !== activeTaskRunId)"
+          @respond="(action, answer) => emit('respond', entry.card.runId, action, answer)"
+        />
       </template>
 
-      <!-- Typing indicator: agent is working (streaming but no assistant message yet) -->
-      <div
-        v-if="isStreaming && awaitingAssistant"
-        class="message flex min-w-0 items-start gap-4"
-        data-testid="typing-indicator"
-      >
-        <div
-          class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground"
-          aria-hidden="true"
-        >
-          OS
-        </div>
-        <div class="min-w-0 max-w-full flex-1 space-y-3 md:max-w-2xl">
-          <div
-            class="flex items-center gap-2 text-xs font-medium text-muted-foreground"
-            role="status"
-          >
-            <span>Agent</span>
-            <span
-              class="flex gap-1"
-              data-testid="thinking-dots"
-              aria-hidden="true"
-            >
-              <span class="size-1.5 animate-bounce rounded-full bg-muted-foreground"></span>
-              <span
-                class="size-1.5 animate-bounce rounded-full bg-muted-foreground"
-                style="animation-delay: 150ms"
-              ></span>
-              <span
-                class="size-1.5 animate-bounce rounded-full bg-muted-foreground"
-                style="animation-delay: 300ms"
-              ></span>
-            </span>
-          </div>
-        </div>
-      </div>
+      <details v-if="isStreaming && awaitingAssistant" data-testid="typing-indicator"
+        class="text-xs text-muted-foreground">
+        <summary class="cursor-pointer rounded-md py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" role="status">
+          Thinking <span data-testid="thinking-dots" aria-hidden="true">…</span>
+        </summary>
+        <p class="pl-4">The agent is working.</p>
+      </details>
 
       <!-- One standalone status when streaming with no messages at all:
            never a second placeholder. -->
       <AgentMessage
-        v-if="isStreaming && timeline.length === 0"
+        v-if="isStreaming && entries.length === 0"
         :message="standaloneStatus"
         :is-streaming="true"
       />
 
       <div
-        v-if="timeline.length === 0 && !isStreaming"
+        v-if="entries.length === 0 && !isStreaming"
         class="flex min-h-full items-center justify-center"
         data-testid="empty-state"
       >

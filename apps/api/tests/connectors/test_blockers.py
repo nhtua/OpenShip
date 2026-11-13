@@ -354,6 +354,50 @@ def test_resume_is_atomic_idempotent_and_uses_the_same_pinned_global_connector(
         )
 
 
+@pytest.mark.parametrize(
+    "wait_status",
+    ("waiting_connector", "waiting_plan", "waiting_input", "waiting_config"),
+)
+def test_resume_rejects_a_coexisting_waiting_run(
+    monkeypatch, track_scope, wait_status
+):
+    monkeypatch.setattr(
+        "src.openship.connectors.blockers.preflight_connector_references",
+        lambda **_kwargs: None,
+    )
+    with SessionLocal() as db:
+        scope = _scope(db)
+        track_scope(scope)
+        user, _project, _conversation, _reference, execution, run, _job = _park(
+            db, scope
+        )
+        blocker = db.query(ConnectorBlocker).filter_by(run_id=run.id).one()
+        waiting = Run(
+            conversation_id=run.conversation_id,
+            project_id=run.project_id,
+            client_request_id=str(uuid.uuid4()),
+            status=wait_status,
+            kind="chat",
+            graph_version=5,
+        )
+        db.add(waiting)
+        db.commit()
+
+        with pytest.raises(HTTPException) as caught:
+            resume_connector_wait(
+                db,
+                user_id=user.id,
+                run_id=run.id,
+                blocker_id=blocker.id,
+                request_id=blocker.request_id,
+                expected_configuration_digest=configuration_digest(execution),
+                session_factory=SessionLocal,
+            )
+        assert caught.value.status_code == 409
+        assert caught.value.detail["error"]["code"] == "run_already_active"
+        assert blocker.state == "waiting"
+
+
 def test_resume_rejects_changed_request_or_configuration_digest(
     monkeypatch, track_scope
 ):

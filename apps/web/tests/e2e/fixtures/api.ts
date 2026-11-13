@@ -1061,6 +1061,26 @@ export async function mockDurableApi(
     json(route, 202, submittedRun)
   })
 
+  // Composer sends use inbox admission; legacy turn callers still receive
+  // the run response above. Both feed the same message/event projections.
+  await page.route('**/api/runs/*/messages', async (route) => {
+    if (turnsStatus !== 202) {
+      return json(route, turnsStatus, { detail: 'Message could not be submitted' })
+    }
+    const body = (route.request().postDataJSON() ?? {}) as Record<string, unknown>
+    capture.submitted.push({
+      conversation_id: conversationFrom(route.request().url(), '/runs/'),
+      payload: body,
+    })
+    json(route, 202, {
+      message_id: `msg-user-${body.client_request_id}`,
+      disposition: 'queued',
+      status: 'promoted',
+      run_id: submittedRun.id,
+      request_id: null,
+    })
+  })
+
   await page.route('**/api/runs/*/tools', async (route) => {
     if (toolsStatus !== 202) {
       return json(route, toolsStatus, { detail: 'Search could not be submitted' })

@@ -383,6 +383,18 @@ def _classify_runs(
                         blocker = "blocked_active_execution"
                     else:
                         blocker = "waiting_preserved"
+                elif run.status in {"waiting_plan", "waiting_input", "waiting_config"}:
+                    from .delivery import durable_task_wait
+
+                    if (
+                        run.id in active_operation_runs
+                        or run.id in started_attempt_runs
+                    ):
+                        blocker = "blocked_active_execution"
+                    elif durable_task_wait(db, db.get(Run, run.id), job):
+                        blocker = "waiting_preserved"
+                    else:
+                        blocker = "blocked_task_wait_incomplete"
                 elif run.status in {"created", "running"}:
                     blocker = "requires_recovery"
                 else:

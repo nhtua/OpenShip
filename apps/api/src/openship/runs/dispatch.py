@@ -2,9 +2,11 @@
 
 from collections.abc import Callable
 
+from ..runs.tasks.contracts import ExecutionConfigV5
 from .agent_graph import build_agent_graph
 from .analysis_graph import build_analysis_graph
 from .graph import build_chat_graph
+from .task_graph import build_task_graph
 from .tool_graph import build_tool_graph
 
 
@@ -17,6 +19,7 @@ _GRAPH_FACTORIES: dict[tuple[str, int], Callable] = {
     ("chat", 2): build_agent_graph,
     ("chat", 3): build_agent_graph,
     ("chat", 4): build_agent_graph,
+    ("chat", 5): build_task_graph,
     ("tool", 1): build_tool_graph,
     ("tool", 2): build_tool_graph,
     ("tool", 3): build_tool_graph,
@@ -45,6 +48,14 @@ def resolve_graph(
         )
     ):
         return build_analysis_graph
+    if (kind, graph_version) == ("chat", 5) and not isinstance(
+        execution, ExecutionConfigV5
+    ):
+        # A v5 task run only runs against its own pinned snapshot: a missing
+        # or legacy snapshot blocks instead of falling back to older routing.
+        raise UnsupportedGraphVersion(
+            "chat graph 5 requires a pinned ExecutionConfigV5 snapshot"
+        )
     try:
         return _GRAPH_FACTORIES[(kind, graph_version)]
     except KeyError as exc:

@@ -16,6 +16,7 @@ from ..chat.models import Conversation, Message
 from ..execution.pagination import decode_cursor, encode_cursor
 from ..execution.reads import read_operation_page
 from ..resources.models import ConnectorBlocker
+from ..runs.inbox.projection import read_inbox_summaries
 from ..runs.models import Event, ProviderAttempt, Run
 from ..runs.schemas import (
     _attempt_projection,
@@ -23,8 +24,10 @@ from ..runs.schemas import (
     _model_projection,
     _usage_projection,
 )
+from ..runs.tasks.projections import read_task_summary
 from ..workspace.lifecycle import format_archive_timestamp
 from .schemas import (
+    TASK_EVENT_SCHEMAS,
     EventRead,
     MessageSummary,
     RunSummary,
@@ -162,7 +165,9 @@ def _message_to_summary(msg: Message) -> MessageSummary:
     )
 
 
-def _run_to_summary(run: Run, attempts=(), operation_page=None, blocker=None) -> RunSummary:
+def _run_to_summary(
+    run: Run, attempts=(), operation_page=None, blocker=None
+) -> RunSummary:
     """Convert Run model to RunSummary schema: only the public projection."""
     from ..runs.schemas import analysis_projection
 
@@ -225,6 +230,9 @@ def append_event(
     Returns:
         The persisted Event object.
     """
+    schema = TASK_EVENT_SCHEMAS.get(event_type)
+    if schema is not None:
+        schema.model_validate(payload)
     # Flush pending changes first, then allocate a sequence with one atomic
     # update. Reading an ORM Conversation here can return a stale identity-map
     # value after a tool gateway session has appended events during this run.
@@ -299,7 +307,12 @@ def read_snapshot(
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_conversation_id", "message": "Invalid conversation ID format"}},
+            detail={
+                "error": {
+                    "code": "invalid_conversation_id",
+                    "message": "Invalid conversation ID format",
+                }
+            },
         )
 
     bind = db.get_bind()
@@ -317,13 +330,23 @@ def read_snapshot(
     except ConversationLifecycleError:
         raise HTTPException(
             status_code=404,
-            detail={"error": {"code": "conversation_not_found", "message": "Conversation not found"}},
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": "Conversation not found",
+                }
+            },
         ) from None
 
     if not 1 <= artifact_limit <= 100 or not 1 <= operation_limit <= 100:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_snapshot_limit", "message": "Snapshot page sizes must be between 1 and 100"}},
+            detail={
+                "error": {
+                    "code": "invalid_snapshot_limit",
+                    "message": "Snapshot page sizes must be between 1 and 100",
+                }
+            },
         )
 
     # Read all events up to the current committed sequence
@@ -356,9 +379,12 @@ def read_snapshot(
     # Attempts belong to the run's own story, in the order the worker made them
     recorded_attempts: dict[uuid.UUID, list[ProviderAttempt]] = {}
     if runs:
-        for attempt in db.query(ProviderAttempt).filter(
-            ProviderAttempt.run_id.in_([run.id for run in runs])
-        ).order_by(ProviderAttempt.ordinal).all():
+        for attempt in (
+            db.query(ProviderAttempt)
+            .filter(ProviderAttempt.run_id.in_([run.id for run in runs]))
+            .order_by(ProviderAttempt.ordinal)
+            .all()
+        ):
             recorded_attempts.setdefault(attempt.run_id, []).append(attempt)
 
     max_sequence = conv.next_event_sequence - 1
@@ -375,7 +401,12 @@ def read_snapshot(
         except ValueError as exc:
             raise HTTPException(
                 status_code=422,
-                detail={"error": {"code": "invalid_artifact_cursor", "message": "Artifact cursor is invalid"}},
+                detail={
+                    "error": {
+                        "code": "invalid_artifact_cursor",
+                        "message": "Artifact cursor is invalid",
+                    }
+                },
             ) from exc
         artifact_query = artifact_query.filter(
             or_(
@@ -383,7 +414,11 @@ def read_snapshot(
                 and_(Artifact.created_at == cursor_created_at, Artifact.id < cursor_id),
             )
         )
-    artifact_rows = artifact_query.order_by(Artifact.created_at.desc(), Artifact.id.desc()).limit(artifact_limit + 1).all()
+    artifact_rows = (
+        artifact_query.order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        .limit(artifact_limit + 1)
+        .all()
+    )
     artifacts_have_more = len(artifact_rows) > artifact_limit
     artifact_rows = artifact_rows[:artifact_limit]
     artifact_summaries = [
@@ -426,6 +461,13 @@ def read_snapshot(
             )
         )
 
+    # A reload shows the same plan and progress the events already showed.
+    task_summaries = []
+    for run in runs:
+        summary = read_task_summary(db, run.id)
+        if summary is not None:
+            task_summaries.append(summary)
+
     return SnapshotResponse(
         conversation_id=str(conv_id),
         project_id=str(conv.project_id),
@@ -435,6 +477,8 @@ def read_snapshot(
         events=[_event_to_read(ev) for ev in events],
         messages=[_message_to_summary(msg) for msg in messages],
         runs=run_summaries,
+        tasks=task_summaries,
+        inbox=read_inbox_summaries(db, conversation_id=conv_id),
         artifacts=artifact_summaries,
         artifacts_next_cursor=(
             encode_cursor(artifact_rows[-1].created_at, artifact_rows[-1].id)
@@ -469,17 +513,31 @@ def stream_events(
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail={"error": {"code": "invalid_conversation_id", "message": "Invalid conversation ID format"}},
+            detail={
+                "error": {
+                    "code": "invalid_conversation_id",
+                    "message": "Invalid conversation ID format",
+                }
+            },
         )
 
-    conv = db.query(Conversation).filter(
-        Conversation.id == conv_id,
-        Conversation.user_id == user_id,
-    ).first()
+    conv = (
+        db.query(Conversation)
+        .filter(
+            Conversation.id == conv_id,
+            Conversation.user_id == user_id,
+        )
+        .first()
+    )
     if not conv:
         raise HTTPException(
             status_code=404,
-            detail={"error": {"code": "conversation_not_found", "message": "Conversation not found"}},
+            detail={
+                "error": {
+                    "code": "conversation_not_found",
+                    "message": "Conversation not found",
+                }
+            },
         )
 
     # Validate cursor is not in the future

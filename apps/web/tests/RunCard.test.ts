@@ -6,6 +6,7 @@ import type {
   RunCard as RunCardType,
   RunModelSummary as Model,
   UsageSummary as Usage,
+  TaskCardState,
 } from '@/types'
 
 // A card is only ever what a run read said. Nothing here is filled in for a
@@ -30,6 +31,75 @@ function render(props: Partial<RunCardType>) {
 }
 
 describe('RunCard', () => {
+  it('makes task progress the primary status and puts the decision and full plan in details', async () => {
+    const task: TaskCardState = {
+      runId: 'run-1', sequence: 4, currentRevision: 1,
+      planRevisions: [{ revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'fetch', intent: 'Fetch data' }, { id: 'chart', intent: 'Chart it' }] }],
+      progress: { schema_version: 1, run_id: 'run-1', status: 'waiting', mode: 'copilot', steps: [{ id: 'fetch', status: 'verified' }, { id: 'chart', status: 'pending' }] },
+      dispositions: [], pendingDecision: { request_id: 'decision-1', plan_revision: 1, kind: 'plan_confirmation', prompt: 'Approve the plan?', expected_digest: 'a'.repeat(64) },
+      resolvedDecisions: [], decisionError: null, readOnly: false,
+    }
+    const wrapper = mount(RunCard, { props: { card: card({ run_id: 'run-1', status: 'paused' }), task } })
+
+    const summary = wrapper.get('[data-testid="run-summary"]')
+    expect(summary.text()).toContain('1 of 2 verified')
+    expect(summary.text()).toContain('Action needed')
+    expect(wrapper.get('[data-testid="run-attention-dot"]').attributes('aria-hidden')).toBe('true')
+    expect(wrapper.find('[data-testid="task-plan"]').exists()).toBe(false)
+    await summary.trigger('click')
+    expect(wrapper.get('[data-testid="run-details"] [data-testid="task-plan"]').text()).toContain('chart')
+    expect(wrapper.get('[data-testid="run-details"] [data-testid="task-plan"]').text()).toContain('Chart it')
+    await wrapper.get('[data-testid="run-details"] [data-testid="task-decision-reject"]').trigger('click')
+    expect(wrapper.emitted('respond')).toEqual([['reject', null]])
+  })
+
+  it('labels a parked plan run as waiting for the user instead of exposing a raw status', () => {
+    const task: TaskCardState = {
+      runId: 'run-waiting', sequence: 2, currentRevision: 1,
+      planRevisions: [{ revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart data' }] }],
+      progress: { schema_version: 1, run_id: 'run-waiting', status: 'waiting' },
+      dispositions: [], pendingDecision: { request_id: 'request-1', kind: 'plan_confirmation', plan_revision: 1, expected_digest: 'a'.repeat(64), prompt: 'Approve the plan?' },
+      resolvedDecisions: [], decisionError: null, readOnly: false,
+    }
+    const wrapper = mount(RunCard, { props: { card: card({ run_id: 'run-waiting', status: 'waiting_plan' }), task } })
+    expect(wrapper.get('[data-testid="run-summary"]').text()).toContain('Waiting for you')
+    expect(wrapper.get('[data-testid="run-summary"]').text()).not.toContain('waiting_plan')
+  })
+
+  it('shows planned steps before execution has reported per-step statuses', () => {
+    const task: TaskCardState = {
+      runId: 'run-queued', sequence: 1, currentRevision: 1,
+      planRevisions: [{ revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'fetch', intent: 'Fetch data' }, { id: 'chart', intent: 'Chart data' }] }],
+      progress: { schema_version: 1, run_id: 'run-queued', status: 'planned' },
+      dispositions: [], pendingDecision: null, resolvedDecisions: [], decisionError: null, readOnly: false,
+    }
+    const wrapper = mount(RunCard, { props: { card: card({ run_id: 'run-queued', status: 'queued' }), task } })
+    expect(wrapper.get('[data-testid="run-task-progress"]').text()).toBe('0 of 2 verified')
+  })
+
+  it('shows the active step beside verified progress without marking unfinished work done', () => {
+    const task: TaskCardState = {
+      runId: 'run-working', sequence: 2, currentRevision: 1,
+      planRevisions: [{ revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'fetch', intent: 'Fetch data' }, { id: 'chart', intent: 'Chart data' }] }],
+      progress: { schema_version: 1, run_id: 'run-working', status: 'running', steps: [{ id: 'fetch', status: 'verified' }, { id: 'chart', status: 'running' }] },
+      dispositions: [], pendingDecision: null, resolvedDecisions: [], decisionError: null, readOnly: false,
+    }
+    const wrapper = mount(RunCard, { props: { card: card({ run_id: 'run-working', status: 'running' }), task } })
+    expect(wrapper.get('[data-testid="run-summary"]').text()).toContain('1 of 2 verified')
+    expect(wrapper.get('[data-testid="run-current-step"]').text()).toContain('Chart data')
+  })
+
+  it('retains available context and token figures on a narrow action-ready summary', () => {
+    const wrapper = mount(RunCard, { props: {
+      card: card({ run_id: 'run-stats', status: 'running', usage: {
+        input_tokens: 1000, output_tokens: 100, total_tokens: 1100, cached_input_tokens: null, reasoning_tokens: null, source: 'provider',
+      }, model: { profile_id: 'p', label: 'P', adapter: 'openai', requested_model: 'm', actual_model: 'm', destination_label: null, fallback_profile_ids: [], recorded: true, serving_context_tokens: 10000 } }),
+      hasActions: true,
+    } })
+    expect(wrapper.get('[data-testid="run-metrics"]').text()).toContain('Context 10.0%')
+    expect(wrapper.get('[data-testid="run-metrics"]').text()).toContain('1,100 tokens')
+    expect(wrapper.get('[data-testid="run-summary"]').text()).toContain('Running')
+  })
   it('renders run status badge', () => {
     const wrapper = render({
       run_id: 'run-1',
@@ -130,6 +200,10 @@ describe('RunCard', () => {
     expect(summary.text()).toContain('718 tokens')
     expect(wrapper.find('[data-testid="run-details"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Requested:')
+    await summary.trigger('click')
+    expect(wrapper.get('[data-testid="run-details"]').text()).toContain('Context window 128,000 tokens')
+    expect(wrapper.get('[data-testid="run-details"]').text()).toContain('Input 613')
+    expect(wrapper.get('[data-testid="run-details"]').text()).toContain('Output 105')
   })
 
   it('omits unavailable statistics', () => {

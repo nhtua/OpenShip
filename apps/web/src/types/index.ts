@@ -21,6 +21,23 @@ export interface RegisterRequest {
   password: string
 }
 
+// How much the agent may do on its own for new tasks. The account owns this
+// choice, so the browser reads it back rather than assuming one: a stored
+// browser preference is never authority for what the account asked for.
+export type AgentMode = 'auto' | 'copilot'
+
+export interface AgentPreferences {
+  agent_mode: AgentMode
+  revision: number
+}
+
+// The save is a compare-and-swap against the revision this browser last saw:
+// a stale copy is refused, not silently applied over a newer one.
+export interface AgentPreferencesUpdate {
+  agent_mode: AgentMode
+  expected_revision: number
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -61,6 +78,8 @@ export interface Run {
   operations?: ToolOperationSummary[]
   operations_next_cursor?: string | null
   connector_blocker?: ConnectorBlockerSummary | null
+  // A run read shows the same plan and progress the task events showed.
+  task?: TaskSummary | null
 }
 
 export interface RunCard {
@@ -107,6 +126,13 @@ export interface TurnSubmitRequest {
   // Automatic tool selection is an opt-in for this submitted turn. The
   // server resolves and pins the exact enabled capability versions.
   enable_tools?: boolean
+  // The exact mode this send was made under, and the preference revision it
+  // was made at. They travel together and stay in the pending payload, so a
+  // retry of a lost response replays the mode that turn asked for rather than
+  // whatever mode the account uses now. Omitting both lets the server capture
+  // the account's current preference exactly once.
+  agent_mode?: AgentMode | null
+  agent_mode_revision?: number | null
   connector_selections?: ConnectorSelections
 }
 
@@ -282,14 +308,171 @@ export interface DurableEvent {
   created_at: string
 }
 
+// The browser's view of a durable task. Every field states a fact the records
+// already hold: the plan under review, what each step has durably done, and
+// the one decision the run waits on. Nothing here names an operation, a call
+// binding or a continuation - those stay in the ledgers the task indexes.
+export interface TaskPlanStepView {
+  id: string
+  intent: string
+  depends_on?: string[]
+}
+
+export interface TaskPlanView {
+  revision: number
+  review_digest: string
+  steps: TaskPlanStepView[]
+}
+
+export interface TaskArtifactLink {
+  id: string
+  name?: string | null
+  media_type: string
+  status: 'ready' | 'unavailable' | 'deleting' | 'deleted'
+}
+
+export interface TaskStepView {
+  id: string
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'uncertain' | 'verified' | 'skipped'
+  attempt_count?: number
+  evidence_refs?: string[]
+  outputs?: TaskArtifactLink[]
+}
+
+export type TaskStatus =
+  'unknown'
+  | 'planned'
+  | 'running'
+  | 'waiting'
+  | 'verification_pending'
+  | 'completed'
+  | 'blocked'
+  | 'failed'
+  | 'cancelled'
+
+export type TaskDisposition =
+  'none'
+  | 'known_failure'
+  | 'material_revision'
+  | 'uncertain'
+  | 'denied'
+  | 'policy_revoked'
+  | 'budget_exhausted'
+
+export type RecoveryAction = 'abort' | 'repeat_step' | 'continue_next'
+
+export interface TaskRecoveryView {
+  plan_revision: number
+  plan_digest: string
+  step_id: string
+  attempt: number
+  explanation: string
+  evidence_refs?: string[]
+  unknowns?: string[]
+  risks?: string[]
+  blockers?: string[]
+  eligible_actions?: RecoveryAction[]
+  recommended_action?: RecoveryAction | null
+  digest: string
+}
+
+export interface TaskPendingDecision {
+  request_id: string
+  kind: 'plan_confirmation' | 'clarification' | 'configuration' | 'recovery'
+  plan_revision: number
+  expected_digest?: string | null
+  expires_at?: string | null
+  // What the run asks, from the request event that parked it. The card keeps
+  // it so a reader can answer in their own words.
+  prompt?: string | null
+  diagnosis?: TaskRecoveryView | null
+}
+
+export interface TaskResolvedDecision {
+  request_id: string
+  kind: 'plan_confirmation' | 'clarification' | 'configuration' | 'recovery' | null
+  plan_revision: number
+  state: 'confirmed' | 'rejected' | 'answered' | 'expired' | 'cancelled'
+}
+
+export interface TaskSummary {
+  schema_version: 1
+  run_id: string
+  mode?: AgentMode
+  revision?: number
+  plan?: TaskPlanView | null
+  status?: TaskStatus
+  steps?: TaskStepView[]
+  skipped_steps?: string[]
+  verified_outputs?: TaskArtifactLink[]
+  last_disposition?: TaskDisposition
+  pending_decision?: TaskPendingDecision | null
+}
+
+export interface TaskDispositionView {
+  stepId: string | null
+  disposition: TaskDisposition
+}
+
+// The card the browser keeps for one task: the events and the snapshot both
+// fold into it, so a reload lands the same story the stream already showed.
+export interface TaskCardState {
+  runId: string
+  sequence: number
+  currentRevision: number
+  planRevisions: TaskPlanView[]
+  progress: TaskSummary
+  dispositions: TaskDispositionView[]
+  pendingDecision: TaskPendingDecision | null
+  resolvedDecisions: TaskResolvedDecision[]
+  decisionError: string | null
+  readOnly: boolean
+  submitting?: boolean
+}
+
+// Every user response to a parked decision: bound to the exact request, the
+// plan revision under review and the digest that review or diagnosis made.
+export interface TaskDecisionCommand {
+  client_request_id: string
+  request_id: string
+  plan_revision: number
+  expected_digest: string
+  action: 'confirm' | 'reject' | 'answer' | 'resume_configuration' | RecoveryAction
+  answer?: string | null
+}
+
 export interface Snapshot {
   conversation_id: string
   project_id?: string
   sequence: number
   events: DurableEvent[]
   runs?: SnapshotRun[]
+  // A reload shows the same plan and progress the events already showed.
+  tasks?: TaskSummary[]
+  // The same bounded admission states the message events announced.
+  inbox?: InboxMessageSummary[]
   artifacts?: ArtifactSummary[]
   artifacts_next_cursor?: string | null
+}
+
+// One durable message admission: which run or clarification owns it and what
+// became of it. Status comes from the server; the browser never guesses one.
+export interface InboxMessageSummary {
+  message_id: string
+  disposition: 'clarification' | 'queued' | null
+  status: 'awaiting' | 'attached' | 'queued' | 'promoted' | 'failed'
+  run_id?: string | null
+  request_id?: string | null
+  sequence: number
+  error_code?: string | null
+}
+
+export interface MessageAdmissionResponse {
+  message_id: string
+  disposition: 'clarification' | 'queued' | null
+  status: 'awaiting' | 'attached' | 'queued' | 'promoted' | 'failed'
+  run_id?: string | null
+  request_id?: string | null
 }
 
 export interface SnapshotRun {

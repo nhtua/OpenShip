@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi, Mock } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { mount } from '@vue/test-utils'
+import { defineComponent, h, nextTick } from 'vue'
+import ChatStream from '@/components/chat/ChatStream.vue'
 import { useChatStore } from '@/stores/chat'
+import { useTaskProgressStore } from '@/stores/taskProgress'
 import api, { conversationsApi, modelProfilesApi, runsApi } from '@/services/api'
 import { buildConversationTimeline } from '@/lib/chatTimeline'
 import {
@@ -23,6 +27,7 @@ vi.mock('@/services/api', () => ({
   },
   runsApi: {
     submitTurn: vi.fn(),
+    submitMessage: vi.fn(),
     submitTool: vi.fn(),
     cancelRun: vi.fn(),
     getSnapshot: vi.fn(),
@@ -106,6 +111,154 @@ describe('chat store', () => {
     // What this installation offers. A test that wants a missing catalog
     // replaces this; nothing here guesses a profile in its place.
     mockProfiles.list.mockResolvedValue({ data: modelProfileCatalog })
+  })
+
+  it('shows an admitted follow-up and receives its completed answer without reloading', async () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    mockRunsApi.submitMessage.mockResolvedValue({ data: {
+      message_id: 'msg-followup', status: 'promoted', disposition: 'queued', run_id: 'run-new', request_id: null,
+    } } as never)
+    mockApi.get.mockResolvedValue({ data: [
+      { id: 'msg-followup', role: 'user', content: 'Follow up', conversation_id: 'c1', created_at: '' },
+      { id: 'answer', role: 'assistant', content: 'Here is the answer', conversation_id: 'c1', created_at: '' },
+    ] } as never)
+    mockRunsApi.getRun.mockResolvedValueOnce({ data: { id: 'run-new', status: 'completed' } } as never)
+    serveStream(frame(1, 'turn_submitted', 'run-new', { content: 'Follow up' }), frame(2, 'run.succeeded', 'run-new'))
+
+    await chat.submitMessage('Follow up', 'c1')
+
+    await vi.waitFor(() => expect(chat.messages.some((item) => item.content === 'Here is the answer')).toBe(true))
+  })
+
+  it('shows the user message immediately on submitMessage, before the server answers', async () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    let resolveAdmission: (value: unknown) => void = () => {}
+    mockRunsApi.submitMessage.mockImplementation(() => new Promise((resolve) => {
+      resolveAdmission = (value) => resolve({ data: value } as never)
+    }))
+    const sendPromise = chat.submitMessage('Immediate follow-up', 'c1')
+
+    // The optimistic user message must appear synchronously, before the server responds.
+    await vi.waitFor(() => expect(chat.messages.some((item) => item.content === 'Immediate follow-up' && item.role === 'user')).toBe(true))
+
+    resolveAdmission({
+      message_id: 'msg-immediate', status: 'promoted', disposition: 'queued', run_id: 'run-new', request_id: null,
+    })
+    await sendPromise
+
+    expect(chat.messages.some((item) => item.id === 'msg-immediate' && item.content === 'Immediate follow-up')).toBe(true)
+    expect(chat.messages.filter((item) => item.role === 'user' && item.content === 'Immediate follow-up')).toHaveLength(1)
+  })
+
+  it('appends the user message at the bottom of the conversation on submitMessage', async () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    chat.messages = [
+      { id: 'msg-1', role: 'user', content: 'First message', conversation_id: 'c1', created_at: '2026-11-01T00:00:00Z' },
+      { id: 'msg-2', role: 'assistant', content: 'First reply', conversation_id: 'c1', created_at: '2026-11-01T00:01:00Z' },
+    ]
+    let resolveAdmission: (value: unknown) => void = () => {}
+    mockRunsApi.submitMessage.mockImplementation(() => new Promise((resolve) => {
+      resolveAdmission = (value) => resolve({ data: value } as never)
+    }))
+    const sendPromise = chat.submitMessage('Bottom message', 'c1')
+
+    // Optimistic message must be appended at the end of messages.value
+    await vi.waitFor(() => expect(chat.messages.at(-1)?.content).toBe('Bottom message'))
+    expect(chat.messages.at(-1)?.role).toBe('user')
+    expect(chat.messages.at(-1)?.id).toMatch(/^temp-/)
+
+    resolveAdmission({
+      message_id: 'msg-bottom', status: 'promoted', disposition: 'queued', run_id: 'run-new', request_id: null,
+    })
+    await sendPromise
+
+    // After server confirmation, the message stays at the bottom with its server ID
+    expect(chat.messages.at(-1)?.content).toBe('Bottom message')
+    expect(chat.messages.at(-1)?.id).toBe('msg-bottom')
+    expect(chat.messages.filter((item) => item.content === 'Bottom message')).toHaveLength(1)
+  })
+
+  it('renders a follow-up at the bottom before admission, during work and after the reply', async () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    // The server clock is ahead of the browser. Completion replaces the local
+    // timestamp, but the visible order must already be right before then.
+    const serverTime = Date.now() + 60_000
+    const history = [
+      { id: 'old-user', role: 'user' as const, content: 'First question', conversation_id: 'c1', run_id: 'old-run', created_at: new Date(serverTime).toISOString() },
+      { id: 'old-answer', role: 'assistant' as const, content: 'First answer', conversation_id: 'c1', run_id: 'old-run', created_at: new Date(serverTime + 1_000).toISOString() },
+    ]
+    chat.messages = [...history]
+    let resolveAdmission: (value: unknown) => void = () => {}
+    mockRunsApi.submitMessage.mockImplementation(() => new Promise((resolve) => {
+      resolveAdmission = (value) => resolve({ data: value } as never)
+    }))
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true, status: 200,
+      body: new ReadableStream<Uint8Array>({ start(controller) { stream = controller } }),
+    } as Response)
+    const wrapper = mount(defineComponent({
+      setup: () => () => h(ChatStream, { messages: chat.messages, isStreaming: chat.isStreaming }),
+    }))
+    const bubbles = () => wrapper.findAll('.message [data-testid="markdown-content"]').map((node) => node.text())
+    try {
+      const sending = chat.submitMessage('Follow-up question', 'c1')
+      await nextTick()
+      expect(bubbles()).toEqual(['First question', 'First answer', 'Follow-up question'])
+
+      resolveAdmission({ message_id: 'followup', status: 'promoted', disposition: 'queued', run_id: 'new-run', request_id: null })
+      await sending
+      await nextTick()
+      expect(bubbles()).toEqual(['First question', 'First answer', 'Follow-up question'])
+      expect(wrapper.find('[data-testid="typing-indicator"]').exists()).toBe(true)
+
+      mockApi.get.mockResolvedValueOnce({ data: [
+        ...history,
+        { id: 'followup', role: 'user', content: 'Follow-up question', conversation_id: 'c1', run_id: 'new-run', created_at: new Date(serverTime + 2_000).toISOString() },
+        { id: 'new-answer', role: 'assistant', content: 'Follow-up answer', conversation_id: 'c1', run_id: 'new-run', created_at: new Date(serverTime + 3_000).toISOString() },
+      ] } as never)
+      mockRunsApi.getRun.mockResolvedValueOnce({ data: { id: 'new-run', status: 'completed' } } as never)
+      stream!.enqueue(new TextEncoder().encode(frame(1, 'run.succeeded', 'new-run')))
+      stream!.close()
+      await vi.waitFor(() => expect(bubbles()).toEqual([
+        'First question', 'First answer', 'Follow-up question', 'Follow-up answer',
+      ]))
+      expect(chat.messages.filter((item) => item.content === 'Follow-up question')).toHaveLength(1)
+    } finally {
+      // Release the controlled stream even when the pre-admission assertion
+      // fails so this regression never leaves an open subscription behind.
+      try { stream?.close() } catch { /* already closed */ }
+      wrapper.unmount()
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('retains queued status from a message assignment event', () => {
+    const chat = useChatStore()
+    chat.processDurableEvent({
+      id: 'queued-assignment', conversation_id: 'c1', run_id: null, sequence: 3,
+      type: 'message.assigned', created_at: '',
+      payload: { message_id: 'msg-queued', disposition: 'queued', status: 'queued' },
+    })
+    expect(chat.inboxFor('c1')[0].status).toBe('queued')
+  })
+
+  it('retries an uncertain inbox submission through the same admission endpoint', async () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    mockRunsApi.submitMessage.mockReset()
+    mockRunsApi.submitMessage.mockRejectedValueOnce(new Error('lost response'))
+      .mockResolvedValueOnce({ data: { message_id: 'm1', disposition: 'queued', status: 'queued', run_id: null } } as never)
+    serveStream(frame(1, 'run.succeeded', 'run-new'))
+    await chat.submitMessage('Try again', 'c1')
+    const requestId = [...chat.pendingRequests.keys()][0]
+    await chat.retrySubmission(requestId)
+    expect(mockRunsApi.submitMessage).toHaveBeenCalledTimes(2)
+    expect(mockRunsApi.submitMessage.mock.calls[1][1]).toEqual(mockRunsApi.submitMessage.mock.calls[0][1])
   })
 
   it('loadConversationKeepsKnownTitle', async () => {
@@ -633,6 +786,227 @@ describe('chat store', () => {
     expect(chat.messages.filter((m) => m.role === 'user').length).toBe(1)
   })
 
+  it('admission and status events fold into the inbox', () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    chat.messages = []
+
+    chat.processDurableEvent({
+      id: 'evt-admit',
+      conversation_id: 'c1',
+      run_id: null,
+      sequence: 1,
+      type: 'message.admitted',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: null,
+        status: 'awaiting',
+        run_id: null,
+        request_id: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+
+    const entries = chat.inboxFor('c1')
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      message_id: 'msg-1',
+      disposition: null,
+      status: 'awaiting',
+      run_id: null,
+      request_id: null,
+      error_code: null,
+    })
+    expect(chat.hasQueuedInbox('c1')).toBe(true)
+
+    chat.processDurableEvent({
+      id: 'evt-promote',
+      conversation_id: 'c1',
+      run_id: 'run-1',
+      sequence: 2,
+      type: 'message.status_changed',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        status: 'promoted',
+        run_id: 'run-1',
+        reason: null,
+      },
+      created_at: '2026-10-04T00:00:01Z',
+    })
+
+    expect(chat.inboxFor('c1')[0]).toMatchObject({
+      message_id: 'msg-1',
+      status: 'promoted',
+      run_id: 'run-1',
+      error_code: null,
+    })
+    expect(chat.hasQueuedInbox('c1')).toBe(false)
+  })
+
+  it('folds awaiting admission then assignment', () => {
+    const chat = useChatStore()
+    chat.currentConversation = { id: 'c1', title: 'Test', created_at: '', updated_at: '' }
+    chat.messages = []
+
+    chat.processDurableEvent({
+      id: 'evt-admit',
+      conversation_id: 'c1',
+      run_id: null,
+      sequence: 1,
+      type: 'message.admitted',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: null,
+        status: 'awaiting',
+        run_id: null,
+        request_id: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+
+    let entries = chat.inboxFor('c1')
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      message_id: 'msg-1',
+      disposition: null,
+      status: 'awaiting',
+      run_id: null,
+      request_id: null,
+      error_code: null,
+    })
+    expect(chat.hasQueuedInbox('c1')).toBe(true)
+
+    chat.processDurableEvent({
+      id: 'evt-assign',
+      conversation_id: 'c1',
+      run_id: 'run-1',
+      sequence: 2,
+      type: 'message.assigned',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: 'clarification',
+        status: 'attached',
+        run_id: 'run-1',
+        request_id: 'request-1',
+      },
+      created_at: '2026-10-04T00:00:01Z',
+    })
+
+    expect(chat.inboxFor('c1')[0]).toMatchObject({
+      message_id: 'msg-1',
+      disposition: 'clarification',
+      status: 'attached',
+      run_id: 'run-1',
+      request_id: 'request-1',
+      error_code: null,
+    })
+    expect(chat.hasQueuedInbox('c1')).toBe(false)
+    expect(chat.hasOpenClarification('c1')).toBe(true)
+
+    // Replay of the same assignment sequence never rewinds the state.
+    chat.processDurableEvent({
+      id: 'evt-assign-replay',
+      conversation_id: 'c1',
+      run_id: 'run-1',
+      sequence: 2,
+      type: 'message.assigned',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: 'clarification',
+        status: 'attached',
+        run_id: 'run-1',
+        request_id: 'request-1',
+      },
+      created_at: '2026-10-04T00:00:01Z',
+    })
+    expect(chat.inboxFor('c1')[0].status).toBe('attached')
+    expect(chat.inboxFor('c1')[0].request_id).toBe('request-1')
+  })
+
+  it('a later admission event does not rewind an older state', () => {
+    const chat = useChatStore()
+    chat.processDurableEvent({
+      id: 'evt-promo',
+      conversation_id: 'c1',
+      run_id: 'run-1',
+      sequence: 5,
+      type: 'message.status_changed',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        status: 'promoted',
+        run_id: 'run-1',
+        reason: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+    chat.processDurableEvent({
+      id: 'evt-admit',
+      conversation_id: 'c1',
+      run_id: null,
+      sequence: 3,
+      type: 'message.admitted',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: 'queued',
+        status: 'queued',
+        run_id: null,
+        request_id: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+
+    expect(chat.inboxFor('c1')[0].status).toBe('promoted')
+  })
+
+  it('a snapshot with inbox replaces the fold', () => {
+    const chat = useChatStore()
+    chat.processDurableEvent({
+      id: 'evt-admit',
+      conversation_id: 'c1',
+      run_id: null,
+      sequence: 1,
+      type: 'message.admitted',
+      payload: {
+        schema_version: 1,
+        message_id: 'msg-1',
+        disposition: null,
+        status: 'awaiting',
+        run_id: null,
+        request_id: null,
+      },
+      created_at: '2026-10-04T00:00:00Z',
+    })
+
+    chat.applySnapshotInbox(
+      'c1',
+      [
+        {
+          message_id: 'msg-2',
+          disposition: 'clarification',
+          status: 'attached',
+          run_id: 'run-1',
+          request_id: 'request-1',
+          sequence: 4,
+          error_code: null,
+        },
+      ],
+      4,
+    )
+
+    const entries = chat.inboxFor('c1')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].message_id).toBe('msg-2')
+    expect(entries[0].disposition).toBe('clarification')
+    expect(chat.hasQueuedInbox('c1')).toBe(false)
+  })
+
   it('loadConversation fetches snapshot and rebuilds state', async () => {
     // Mock snapshot response
     const snapshotEvents = [
@@ -691,6 +1065,50 @@ describe('chat store', () => {
     expect(mockRunsApi.getRun).toHaveBeenCalledWith('run-blocked')
     expect(chat.runCards.get('c1')?.status).toBe('waiting_connector')
     expect(chat.runCards.get('c1')?.connector_blocker?.connector_id).toBe('connector-aws-1')
+  })
+
+  it('keeps a parked plan approveable when a run read lands its task before the decision replays', async () => {
+    const chat = useChatStore()
+    const tasks = useTaskProgressStore()
+    mockRunsApi.getSnapshot.mockResolvedValue({
+      data: { conversation_id: 'c1', project_id: 'p1', sequence: 4, events: [], runs: [] },
+    } as never)
+    await chat.loadConversation('c1')
+    expect(chat.cursors.get('c1')).toBe(4)
+
+    // The run read is the only place that states this run's plan, and at the
+    // moment of the read nothing was parked yet: it names no open decision.
+    mockRunsApi.getRun.mockResolvedValueOnce({
+      data: {
+        id: 'run-1', conversation_id: 'c1', status: 'running', created_at: '', attempt: 0,
+        kind: 'chat',
+        task: {
+          schema_version: 1, run_id: 'run-1', mode: 'copilot', revision: 1,
+          plan: { revision: 1, review_digest: 'a'.repeat(64), steps: [{ id: 'chart', intent: 'Chart them' }] },
+          status: 'planned', steps: [], skipped_steps: [], verified_outputs: [],
+          last_disposition: 'none', pending_decision: null,
+        },
+      },
+    } as never)
+    serveStream(frame(5, 'run.succeeded', 'run-1', { message_id: 'msg-1' }))
+    await chat.sendMessage('Chart the temperatures', 'c1')
+
+    expect(tasks.cards.get('run-1')?.pendingDecision).toBeNull()
+
+    // A reconnect replays what the conversation had not folded yet: the request
+    // that parked the plan. It sits above the cursor this conversation reached,
+    // so the card must land it and offer the choice.
+    chat.processDurableEvent({
+      id: 'evt-6', conversation_id: 'c1', run_id: 'run-1', sequence: 6,
+      type: 'task.decision_requested', created_at: '',
+      payload: {
+        schema_version: 1, run_id: 'run-1', revision: 1, request_id: 'request-1',
+        kind: 'plan_confirmation', prompt: 'Approve the plan?',
+        expires_at: '2026-11-12T00:00:00Z',
+      },
+    } as never)
+    expect(tasks.cards.get('run-1')?.pendingDecision?.request_id).toBe('request-1')
+    expect(tasks.buildCommand('run-1', 'confirm')).toBeTypeOf('object')
   })
 
   it('retains operations from every snapshot run and deduplicates durable refreshes per conversation', async () => {

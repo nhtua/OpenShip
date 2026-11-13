@@ -2,12 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Badge, Icon } from '@/components/ui'
 import RunResume from './RunResume.vue'
+import TaskPlan from './TaskPlan.vue'
+import TaskDecision from './TaskDecision.vue'
 import type {
   ProviderAttemptSummary,
   RunCard,
   RunModelSummary,
   UsageSummary,
   Run,
+  TaskCardState,
 } from '@/types'
 
 interface Props {
@@ -15,12 +18,16 @@ interface Props {
   hasActions?: boolean
   canResumeConnector?: boolean
   connectorActionBusy?: boolean
+  task?: TaskCardState | null
+  readOnly?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   hasActions: false,
   canResumeConnector: false,
   connectorActionBusy: false,
+  task: null,
+  readOnly: false,
 })
 const emit = defineEmits<{
   'analysis-resumed': [run: Run]
@@ -28,6 +35,7 @@ const emit = defineEmits<{
   'dismiss-connector': []
   'setup-connector': []
   'resubmit-connector': []
+  respond: [action: string, answer: string | null]
 }>()
 const kind = computed(() => props.card.kind ?? 'chat')
 const expanded = ref(false)
@@ -43,6 +51,11 @@ const statusLabel = computed(() => {
       return 'Running'
     case 'waiting_connector':
       return 'Waiting for connector'
+    case 'waiting_plan':
+    case 'waiting_input':
+      return 'Waiting for you'
+    case 'waiting_config':
+      return 'Waiting for configuration'
     case 'paused':
       return 'Paused'
     case 'failed':
@@ -61,6 +74,9 @@ const statusVariant = computed(() => {
     case 'running':
       return 'default'
     case 'waiting_connector':
+    case 'waiting_plan':
+    case 'waiting_input':
+    case 'waiting_config':
       return 'outline'
     case 'failed':
       return 'destructive'
@@ -155,6 +171,15 @@ const totalTokensText = computed(() => {
   const totalTokens: UsageSummary['total_tokens'] = props.card.usage?.total_tokens ?? null
   return totalTokens == null ? null : `${totalTokens.toLocaleString()} tokens`
 })
+const verifiedCount = computed(() => props.task?.progress.steps?.filter((step) => step.status === 'verified').length ?? 0)
+const stepCount = computed(() => props.task?.planRevisions.find((plan) => plan.revision === props.task?.currentRevision)?.steps.length ?? props.task?.progress.steps?.length ?? 0)
+const currentStep = computed(() => {
+  const running = props.task?.progress.steps?.find((step) => step.status === 'running')
+  if (!running) return null
+  return props.task?.planRevisions.find((plan) => plan.revision === props.task?.currentRevision)?.steps.find((step) => step.id === running.id)?.intent ?? running.id
+})
+const needsAttention = computed(() => Boolean(props.task?.pendingDecision && !props.task.readOnly && !props.task.submitting && !props.readOnly &&
+  props.task.pendingDecision.plan_revision === props.task.currentRevision))
 
 function syncDurationTimer() {
   if (props.card.status === 'running' && durationTimer === null) {
@@ -185,41 +210,29 @@ onBeforeUnmount(() => {
       <button
         :aria-controls="detailsId"
         :aria-expanded="expanded"
-        :aria-label="`${statusLabel}. ${expanded ? 'Hide' : 'Show'} run details`"
+        :aria-label="`${statusLabel}. ${needsAttention ? 'Action needed. ' : ''}${expanded ? 'Hide' : 'Show'} run details`"
         data-testid="run-summary"
         type="button"
-        class="run-card__summary flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        class="run-card__summary flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         @click="expanded = !expanded"
       >
         <Badge :variant="statusVariant" class="run-card__status h-5 shrink-0 text-[10px]">
           {{ statusLabel }}
         </Badge>
-        <span
-          v-if="durationText"
-          data-testid="run-duration"
-          class="run-card__stat run-card__duration truncate text-muted-foreground"
-        >
-          {{ durationText }}
+        <span v-if="task && stepCount" data-testid="run-task-progress" class="shrink-0 font-medium">
+          {{ verifiedCount }} of {{ stepCount }} verified
         </span>
-        <span
-          v-if="contextText"
-          data-testid="run-context"
-          class="run-card__stat run-card__context truncate text-muted-foreground"
-        >
-          {{ contextText }}
+        <span v-if="currentStep" data-testid="run-current-step" class="min-w-0 truncate text-muted-foreground">Now: {{ currentStep }}</span>
+        <span v-if="needsAttention" class="shrink-0 font-medium text-destructive">Action needed</span>
+        <span class="ml-auto flex shrink-0 items-center gap-2">
+          <span v-if="needsAttention" data-testid="run-attention-dot" aria-hidden="true" class="size-2 rounded-full bg-destructive shadow-[0_0_8px_currentColor] text-destructive animate-pulse motion-reduce:animate-none" />
+          <Icon :name="expanded ? 'chevron-up' : 'chevron-down'" class="size-3 text-muted-foreground" aria-hidden="true" />
         </span>
-        <span
-          v-if="totalTokensText"
-          data-testid="run-total-tokens"
-          class="run-card__stat run-card__tokens truncate text-muted-foreground"
-        >
-          {{ totalTokensText }}
+        <span v-if="durationText || contextText || totalTokensText" data-testid="run-metrics" class="flex w-full flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+          <span v-if="durationText" data-testid="run-duration">{{ durationText }}</span>
+          <span v-if="contextText" data-testid="run-context">{{ contextText }}</span>
+          <span v-if="totalTokensText" data-testid="run-total-tokens">{{ totalTokensText }}</span>
         </span>
-        <Icon
-          :name="expanded ? 'chevron-up' : 'chevron-down'"
-          class="ml-auto size-3 shrink-0 text-muted-foreground"
-          aria-hidden="true"
-        />
       </button>
       <div v-if="hasActions" data-testid="run-actions" class="flex shrink-0 items-center gap-1">
         <slot />
@@ -243,6 +256,11 @@ onBeforeUnmount(() => {
         <span v-if="servingText">{{ servingText }}</span>
       </template>
       <span v-if="attemptText">{{ attemptText }}</span>
+      <span v-if="contextText">{{ contextText }}</span>
+      <span v-if="totalTokensText">{{ totalTokensText }}</span>
+      <span v-if="card.model?.serving_context_tokens">Context window {{ card.model.serving_context_tokens.toLocaleString() }} tokens</span>
+      <span v-if="card.usage?.input_tokens != null">Input {{ card.usage.input_tokens.toLocaleString() }}</span>
+      <span v-if="card.usage?.output_tokens != null">Output {{ card.usage.output_tokens.toLocaleString() }}</span>
       <!-- The settled safe copy, never a provider's own body. -->
       <span v-if="card.error_message" class="text-destructive">
         ({{ card.error_message }})
@@ -250,6 +268,8 @@ onBeforeUnmount(() => {
       <span v-else-if="card.error_code" class="text-destructive">
         ({{ card.error_code }})
       </span>
+      <TaskPlan v-if="task" :card="task" class="text-card-foreground" />
+      <TaskDecision v-if="task?.pendingDecision" :card="task" :read-only="readOnly" @respond="(action, answer) => emit('respond', action, answer)" />
     </div>
 
     <RunResume
@@ -318,29 +338,3 @@ onBeforeUnmount(() => {
     </section>
   </div>
 </template>
-
-<style scoped>
-.run-card {
-  container-name: run-card;
-  container-type: inline-size;
-}
-
-@container run-card (max-width: 26rem) {
-  .run-card[data-has-actions='true'] .run-card__context,
-  .run-card[data-has-actions='true'] .run-card__tokens {
-    display: none;
-  }
-}
-
-@container run-card (max-width: 18rem) {
-  .run-card[data-has-actions='true'] .run-card__duration {
-    display: none;
-  }
-}
-
-@container run-card (max-width: 14rem) {
-  .run-card[data-has-actions='true'] .run-card__status {
-    display: none;
-  }
-}
-</style>

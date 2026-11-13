@@ -7,10 +7,21 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from ..auth.models import User
+from ..auth.preferences import (
+    AgentPreferenceConflict,
+    AgentPreferenceNotFound,
+    read_preferences,
+    update_preferences,
+)
 from ..auth.service import create_jwt, hash_password, verify_jwt, verify_password
 from ..database.session import get_db
 from ..workspace.models import Project
-from .schemas import LoginRequest, RegisterRequest
+from .schemas import (
+    AgentPreferences,
+    AgentPreferencesUpdate,
+    LoginRequest,
+    RegisterRequest,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -149,3 +160,60 @@ async def login(req: LoginRequest, db: Session = Depends(get_db)):
         "access_token": create_jwt(user.id, user.username),
         "user": {"id": str(user.id), "username": user.username},
     }
+
+
+@router.get("/preferences", response_model=AgentPreferences)
+async def get_preferences(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """Read only the authenticated account's agent-mode preference."""
+    try:
+        return read_preferences(db, user.id)
+    except AgentPreferenceNotFound:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "User not found",
+                }
+            },
+        ) from None
+
+
+@router.patch("/preferences", response_model=AgentPreferences)
+async def patch_preferences(
+    req: AgentPreferencesUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    """Compare-and-swap the authenticated account's preference."""
+    try:
+        preferences = update_preferences(db, user.id, req)
+        db.commit()
+        return preferences
+    except AgentPreferenceConflict as conflict:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": "stale_agent_preference",
+                    "message": (
+                        f"The preference is now {conflict.current.agent_mode!r} "
+                        f"at revision {conflict.current.revision}; reload it "
+                        "before saving again"
+                    ),
+                }
+            },
+        ) from None
+    except AgentPreferenceNotFound:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "User not found",
+                }
+            },
+        ) from None

@@ -4,13 +4,16 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useArtifactsStore } from '@/stores/artifacts'
+import { useAgentModeStore } from '@/stores/agentMode'
+import { useTaskProgressStore } from '@/stores/taskProgress'
 import { useConnectorsStore } from '@/stores/connectors'
 import { useProjectsStore } from '@/stores/projects'
 import { runsApi } from '@/services/api'
-import type { ConnectorSelections } from '@/types'
+import type { AgentMode, ConnectorSelections } from '@/types'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChatStream from '@/components/chat/ChatStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import AgentModeSelector from '@/components/chat/AgentModeSelector.vue'
 import RunCard from '@/components/chat/RunCard.vue'
 import ConversationFiles from '@/components/chat/ConversationFiles.vue'
 import ArchivedConversationsDialog from '@/components/chat/ArchivedConversationsDialog.vue'
@@ -34,6 +37,8 @@ const chat = useChatStore()
 const artifacts = useArtifactsStore()
 const connectors = useConnectorsStore()
 const projects = useProjectsStore()
+const agentMode = useAgentModeStore()
+const taskProgress = useTaskProgressStore()
 
 // View-local async state (plan Task 5.3): released in finally blocks.
 const isLoadingConversations = ref(false)
@@ -246,12 +251,18 @@ async function handleSend(content: string, options?: {
   enableTools: boolean
   connectorSelections?: ConnectorSelections
 }) {
-  if (conversationBusy.value) return
+  // Every composer send travels through one durable admission path. The server
+  // decides whether the text answers an open clarification or queues a new
+  // turn; the browser never guesses the route. Only navigation or read-only
+  // scope blocks a plain-text send.
+  if (navigationBusy.value || chat.currentConversationReadOnly) return
   chat.error = null
 
   const conversationId = chat.currentConversation?.id
     ?? await createAndOpenConversation('New Conversation')
-  if (conversationId) await chat.sendMessage(content, conversationId, options)
+  if (conversationId) {
+    await chat.submitMessage(content, conversationId, options)
+  }
 }
 
 // A run that has reached an end has nothing left to stop, and a run that has
@@ -275,6 +286,61 @@ async function handleCancelRun() {
   const runId = activeRunId.value
   if (!runId) return
   await chat.cancelRun(runId)
+}
+
+// The task card belongs to the run this conversation is showing, however that
+// run got here: from a stream, a reconnect, or a reload's snapshot. The store
+// folds both into the same view, so the card never restarts the task and never
+// shows a second copy of it.
+const taskCard = computed(() => {
+  const conversationId = chat.currentConversation?.id
+  const runCard = conversationId ? chat.runCards.get(conversationId) : null
+  const runId = runCard?.run_id
+  return runId ? taskProgress.cards.get(runId) : null
+})
+// The composer's plain-text answer targets the open clarification on the
+// current run; the server binds it to that request. Explicit buttons keep
+// their own request-bound path.
+const clarificationReplyContext = computed(
+  () => Boolean(taskCard.value) && taskCard.value?.pendingDecision?.kind === 'clarification',
+)
+const conversationTaskCards = computed(() => {
+  const runIds = new Set([
+    ...chat.messages.map((message) => message.run_id).filter(Boolean),
+    ...conversationOperations.value.map((operation) => operation.run_id),
+    taskCard.value?.runId,
+  ])
+  return [...taskProgress.cards.values()].filter((card) => runIds.has(card.runId))
+})
+// The composer stays open while a run streams or waits: the next event may
+// depend on this answer (an open clarification), and a composer that waits
+// for the stream waits for the answer. Only navigation or read-only scope
+// blocks it. The server decides whether the text answers an open clarification
+// or queues a new turn.
+const composerBlocked = computed(
+  () =>
+    navigationBusy.value || chat.currentConversationReadOnly,
+)
+watch(
+  (): [string, boolean] => [taskCard.value?.runId ?? '', chat.currentConversationReadOnly],
+  ([runId, readOnly]) => {
+    if (runId) taskProgress.markReadOnly(runId, readOnly)
+  },
+)
+
+async function handleDecisionRespond(action: string, answer: string | null): Promise<void> {
+  const card = taskCard.value
+  if (!card) return
+  // A click only ever sends the command bound to the card's own request,
+  // revision and digest; the store refuses one it cannot bind.
+  const command = taskProgress.buildCommand(card.runId, action, answer)
+  if (!command) return
+  await taskProgress.submitTaskDecision(card.runId, command)
+}
+
+async function handleTimelineDecisionRespond(runId: string, action: string, answer: string | null): Promise<void> {
+  if (taskCard.value?.runId !== runId) return
+  await handleDecisionRespond(action, answer)
 }
 
 async function handleResumeConnector(): Promise<void> {
@@ -471,6 +537,14 @@ function handleSelectProfile(profileId: string | null, fallbackIds: string[]) {
   chat.selectProfile(profileId, fallbackIds)
 }
 
+// Choosing a mode is a preference change and nothing else: it saves the
+// account's choice and sends no run command, so a pending decision stays
+// exactly as it was asked.
+async function handleChooseMode(mode: AgentMode) {
+  if (agentMode.submissionBlocked) return
+  await agentMode.save(mode)
+}
+
 async function handleSignOut() {
   auth.logout()
   chat.clearMessages()
@@ -523,6 +597,10 @@ onMounted(async () => {
   // it is loaded when the page is. A missing catalog is stated by the store
   // rather than guessed at here, and the next turn simply names no profile.
   await chat.loadModelProfiles()
+  // The account's execution mode belongs to whoever is signed in, and a page
+  // reload can carry a token without an in-memory user: the preference is read
+  // again from the account rather than kept in the browser.
+  if (auth.token) await agentMode.load()
   await projects.initialize()
   await connectors.initialize(projects.currentProjectId)
   await loadHistory()
@@ -629,6 +707,8 @@ onBeforeUnmount(() => {
       <div v-if="chat.currentConversation && chat.runCards.has(chat.currentConversation.id)" class="shrink-0 px-4 pt-4">
         <RunCard
           :card="chat.runCards.get(chat.currentConversation.id)!"
+          :task="taskCard"
+          :read-only="chat.currentConversationReadOnly"
           :has-actions="Boolean(pendingSubmissionId || (activeRunId && chat.runCards.get(chat.currentConversation.id)!.kind !== 'tool') || chat.runCards.get(chat.currentConversation.id)!.connector_blocker)"
           :can-resume-connector="canResumeConnector"
           :connector-action-busy="connectorActionBusy"
@@ -637,6 +717,7 @@ onBeforeUnmount(() => {
           @dismiss-connector="handleDismissConnector"
           @setup-connector="handleSetupConnector"
           @resubmit-connector="handleResubmitConnector"
+          @respond="handleDecisionRespond"
         >
           <Button
             v-if="pendingSubmissionId"
@@ -666,15 +747,21 @@ onBeforeUnmount(() => {
       <ChatStream
         :messages="chat.messages"
         :operations="conversationOperations"
+        :tasks="conversationTaskCards"
+        :active-task-run-id="taskCard?.runId"
+        :read-only="chat.currentConversationReadOnly"
         :is-streaming="chat.isStreaming"
         :can-resume="Boolean(chat.currentConversation) && !chat.isStreaming && !activeRunId && !pendingSubmissionId"
         @download="handleDownloadArtifact"
         @cancel="handleCancelOperation"
         @resumed="run => { if (chat.currentConversation?.id === run.conversation_id) void chat.loadConversation(run.conversation_id) }"
+        @respond="handleTimelineDecisionRespond"
       />
       <ChatInput
-        :disabled="conversationBusy"
+        :disabled="composerBlocked"
         :selection-disabled="chat.isSubmitting"
+        :mode-submission-disabled="agentMode.submissionBlocked"
+        :reply-context="clarificationReplyContext"
         :profiles="chat.modelProfiles?.profiles ?? []"
         :default-profile-id="chat.modelProfiles?.default_profile_id ?? null"
         :selected-profile-id="chat.selectedProfileId"
@@ -693,7 +780,14 @@ onBeforeUnmount(() => {
         @search="handleSearch"
         @select="handleSelectProfile"
         @draft-consumed="handleComposerDraftConsumed"
-      />
+      >
+        <template #mode>
+          <AgentModeSelector :mode="agentMode.mode" :pending-mode="agentMode.pendingMode"
+            :revision="agentMode.revision" :loading="agentMode.loading" :saving="agentMode.saving"
+            :conflict="agentMode.conflict" :blocked="agentMode.submissionBlocked" :message="agentMode.error"
+            @choose="handleChooseMode" />
+        </template>
+      </ChatInput>
     </div>
 
     <Sheet

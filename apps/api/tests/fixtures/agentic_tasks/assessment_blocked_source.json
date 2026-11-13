@@ -1,0 +1,1 @@
+{"classification": "blocked", "explanation": "The recorded step refused: the source is not reachable under the network policy this run was given.", "evidence_refs": [], "missing_information": ["a source for the same data that the authorized network policy can reach"], "failure": "known", "step_id": "fetch", "unknowns": [], "risks": [], "recommended_recovery_action": null}

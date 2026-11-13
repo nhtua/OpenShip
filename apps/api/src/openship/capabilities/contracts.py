@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from contextlib import suppress
-from typing import Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, Union
 from uuid import UUID
 
 from pydantic import (
@@ -16,6 +16,9 @@ from pydantic import (
 )
 
 from src.openship.artifacts.contracts import ArtifactRef
+
+if TYPE_CHECKING:
+    from src.openship.runs.tasks.contracts import ExecutionConfigV5
 
 TOOL_ID_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -318,9 +321,13 @@ class ExecutionConfigV4(FrozenModel):
     loop_limits: LoopLimits = Field(default_factory=LoopLimits)
 
 
-ExecutionConfigLike: TypeAlias = (
-    ExecutionConfig | ExecutionConfigV2 | ExecutionConfigV3 | ExecutionConfigV4
-)
+ExecutionConfigLike: TypeAlias = Union[
+    ExecutionConfig,
+    ExecutionConfigV2,
+    ExecutionConfigV3,
+    ExecutionConfigV4,
+    "ExecutionConfigV5",
+]
 
 
 def decode_execution_config(
@@ -338,7 +345,20 @@ def decode_execution_config(
         return ExecutionConfigV3.model_validate_json(encoded)
     if version == 4:
         return ExecutionConfigV4.model_validate_json(encoded)
+    if version == 5:
+        from src.openship.runs.tasks.contracts import ExecutionConfigV5
+
+        return ExecutionConfigV5.model_validate_json(encoded)
     raise ValueError("unsupported execution configuration version")
+
+
+def __getattr__(name: str) -> Any:
+    """Expose task-owned versions without creating a module import cycle."""
+    if name == "ExecutionConfigV5":
+        from src.openship.runs.tasks.contracts import ExecutionConfigV5
+
+        return ExecutionConfigV5
+    raise AttributeError(name)
 
 
 class AuthorizationContext(FrozenModel):

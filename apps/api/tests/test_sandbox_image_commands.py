@@ -169,6 +169,29 @@ def test_list_build_smoke_exit_codes_and_no_implicit_builds(tmp_path, monkeypatc
     assert sandbox_images.main(["--root", str(root), "--engine", "docker", "smoke", "logs-data"]) == 0
 
 
+def test_build_accepts_the_overwrite_flag_and_rejects_other_build_shapes(tmp_path, monkeypatch):
+    catalog = build_catalog(tmp_path, monkeypatch)
+    root = catalog["root"]
+    monkeypatch.delenv("SANDBOX_PROFILES_FILE", raising=False)
+    monkeypatch.setenv(
+        "FAKE_INSPECT_JSON",
+        json.dumps([{"Id": "sha256:" + "a" * 64, "Machine": "x86_64"}]),
+    )
+    for invalid in (
+        ["build"],
+        ["build", "--overwrite-profiles"],
+        ["build", "logs-data", "extra"],
+        ["build", "--all", "--overwrite-profiles", "extra"],
+        ["build", "--overwrite-profiles", "logs-data"],
+    ):
+        assert sandbox_images.main(["--root", str(root), "--engine", "docker", *invalid]) == 2
+    assert sandbox_images.main(
+        ["--root", str(root), "--engine", "docker", "build", "logs-data", "--overwrite-profiles"]
+    ) == 0
+    destination = root / "deploy/sandbox/sandbox-profiles.yaml"
+    assert destination.is_file()
+
+
 def test_build_context_omits_secret_and_rendered_config_sentinels(tmp_path, monkeypatch):
     catalog = build_catalog(tmp_path, monkeypatch)
     root = catalog["root"]

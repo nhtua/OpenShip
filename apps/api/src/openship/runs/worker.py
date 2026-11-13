@@ -18,7 +18,7 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_
 from sqlalchemy.orm import sessionmaker
 
 from ..artifacts.filesystem import ArtifactStorageError
@@ -44,9 +44,10 @@ from ..providers.errors import ProviderError
 from ..providers.runner import authorize_current_profile
 from ..runs.schemas import _model_projection
 from ..runs.service import bind_run_model_config
+from ..sandboxes.profiles import startup_catalog
 from .dispatch import UnsupportedGraphVersion, resolve_graph
 from .graph import ModelResult
-from .models import ProviderAttempt, Run, RunJob
+from .models import ACTIVE_RUN_STATUSES, ProviderAttempt, Run, RunJob
 from .queue import (
     begin_execution_window,
     claim_next,
@@ -78,6 +79,51 @@ USAGE_SCHEMA_VERSION = 1
 def _run_outcome(error_code: str) -> str:
     """The run status a normalized provider failure shows."""
     return _OUTCOME.get(error_code, "failed")
+
+
+def _conversation_history(
+    db,
+    *,
+    conversation,
+    user_msg,
+    run,
+    admitted_context_ids: tuple,
+):
+    """The prior messages this run may read, in durable order.
+
+    A pinned snapshot admits only its recorded context, except for replies
+    bound to this run's clarification: those arrived after the pin and are
+    still the turn the run must answer.
+    """
+    from .inbox.models import ConversationInboxEntry
+
+    not_admitted = db.query(ConversationInboxEntry.message_id).filter(
+        ConversationInboxEntry.conversation_id == conversation.id,
+        ConversationInboxEntry.status.in_(("awaiting", "queued", "failed")),
+    )
+    history_query = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.id != user_msg.id,
+        ~Message.id.in_(not_admitted),
+    )
+    if admitted_context_ids:
+        if user_msg.id not in admitted_context_ids:
+            raise ProviderError("configuration_error")
+        clarification_reply_ids = db.query(Message.id).filter(
+            Message.run_id == run.id,
+            Message.message_kind == "clarification_reply",
+        )
+        history_query = history_query.filter(
+            or_(
+                Message.id.in_(admitted_context_ids),
+                Message.id.in_(clarification_reply_ids),
+            )
+        )
+    elif run.graph_version == 5:
+        # Historical v5 runs did not always pin message IDs. Never let
+        # messages submitted after that run become its context on replay.
+        history_query = history_query.filter(Message.created_at < user_msg.created_at)
+    return history_query.order_by(Message.created_at.asc(), Message.id.asc()).all()
 
 
 def _chat_system_prompt(
@@ -198,6 +244,9 @@ class Worker:
         self.running = True
         self._closed = False
         self.refresh_availability_during_run = refresh_availability_during_run
+        # Load the mounted snapshot once per process, and only when enabled
+        # mapping or deployment selection actually needs it.
+        self.profile_catalog = startup_catalog(settings_obj=settings)
 
         # Set up database connection
         self.engine = create_engine(settings.database_url)
@@ -701,11 +750,19 @@ class Worker:
 
     def _is_first_message(self, db, conversation, user_msg):
         """Check if this is the first message in the conversation."""
+        from .inbox.models import ConversationInboxEntry
+
+        pending = db.query(ConversationInboxEntry.message_id).filter(
+            ConversationInboxEntry.conversation_id == conversation.id,
+            ConversationInboxEntry.disposition == "queued",
+            ConversationInboxEntry.status.in_(("queued", "failed")),
+        )
         existing = (
             db.query(Message)
             .filter(
                 Message.conversation_id == conversation.id,
                 Message.id != user_msg.id,
+                ~Message.id.in_(pending),
             )
             .count()
         )
@@ -752,6 +809,9 @@ class Worker:
                 logger.warning(f"Run {run_id} not found")
                 return False
 
+            if run.status in {"waiting_plan", "waiting_input", "waiting_config"}:
+                return False
+
             conv = (
                 job.query(Conversation)
                 .filter(Conversation.id == run.conversation_id)
@@ -761,8 +821,26 @@ class Worker:
                 logger.warning(f"Conversation {run.conversation_id} not found")
                 return False
 
+            # A v5 chat run resolves only against its own pinned ExecutionConfigV5
+            # snapshot: the same records the task switcher reads decide which graph
+            # this worker may run, and a missing or legacy snapshot blocks instead
+            # of falling back to older routing. Older graphs keep their snapshot-free
+            # resolution, so the pinned decode is only read for a v5 root.
+            pinned_execution = None
+            if run.kind == "chat" and run.graph_version == 5:
+                try:
+                    pinned_execution = decode_execution_config(
+                        run.execution_configuration or ""
+                    )
+                except Exception:
+                    pinned_execution = None
             try:
-                graph_factory = resolve_graph(run.kind, run.graph_version)
+                if pinned_execution is not None:
+                    graph_factory = resolve_graph(
+                        run.kind, run.graph_version, pinned_execution
+                    )
+                else:
+                    graph_factory = resolve_graph(run.kind, run.graph_version)
             except UnsupportedGraphVersion:
                 safe_message = (
                     "This run uses a graph version this runtime does not support."
@@ -809,6 +887,7 @@ class Worker:
                 .filter(
                     Message.run_id == run_id,
                     Message.role == "user",
+                    Message.message_kind == "primary",
                 )
                 .first()
             )
@@ -821,7 +900,10 @@ class Worker:
             agent_execution = None
             try:
                 snapshot = bind_run_model_config(job, run, fence)
-                if run.kind == "chat" and run.graph_version in (2, 3, 4):
+                # Graph 5 is the task graph: it runs only against its own
+                # pinned ExecutionConfigV5 snapshot, which the resolver above
+                # already required, so one decode serves both maintained loops.
+                if run.kind == "chat" and run.graph_version in (2, 3, 4, 5):
                     try:
                         agent_execution = decode_execution_config(
                             run.execution_configuration or ""
@@ -873,22 +955,16 @@ class Worker:
             is_first = self._is_first_message(job, conv, user_msg)
 
             # Load conversation history for context
-            history_query = job.query(Message).filter(
-                Message.conversation_id == conv.id,
-                Message.id != user_msg.id,
-            )
             admitted_context_ids = tuple(
                 getattr(agent_execution, "admitted_context_message_ids", ())
             )
-            if admitted_context_ids:
-                if user_msg.id not in admitted_context_ids:
-                    raise ProviderError("configuration_error")
-                history_query = history_query.filter(
-                    Message.id.in_(admitted_context_ids)
-                )
-            history = history_query.order_by(
-                Message.created_at.asc(), Message.id.asc()
-            ).all()
+            history = _conversation_history(
+                job,
+                conversation=conv,
+                user_msg=user_msg,
+                run=run,
+                admitted_context_ids=admitted_context_ids,
+            )
 
             # Build graph state with checkpoint namespace
             messages = []
@@ -1082,6 +1158,19 @@ class Worker:
                 )
                 return False
 
+            # A task wait parked inside this graph run already delivered its
+            # own request and moved the run to a waiting status with its task
+            # fence. Publishing an ordinary answer and a completion here would
+            # claim the task finished while it waits for a human decision, so
+            # this turn's disposition is the wait itself.
+            parked = graph_state.get("parked") if failure is None else None
+            if parked:
+                logger.info(
+                    f"[{self.worker_id}] Run {run_id} parked as {parked}; "
+                    "publishing no final message or completion"
+                )
+                return True
+
             # Auto-title the conversation if this is the first message
             new_title = None
             cleaned_response = result.assistant_response
@@ -1156,6 +1245,7 @@ class Worker:
                         content=cleaned_response,
                     )
                     job.add(assistant_msg)
+                    job.flush()
 
                     # Update conversation title if this was the first message
                     if is_first and new_title:
@@ -1264,6 +1354,37 @@ class Worker:
                 supervisor_thread.join()
             if job is not None:
                 job.close()
+            # Promotion runs after the terminal transaction releases its locks.
+            # Recovery also scans the queue if this best-effort attempt fails.
+            try:
+                from .inbox.assignment import assign_next_message
+                from .inbox.promotion import promote_next_message
+
+                with self.Session() as promotion_db:
+                    finished = promotion_db.get(Run, run_id)
+                    if (
+                        finished is not None
+                        and finished.status not in ACTIVE_RUN_STATUSES
+                    ):
+                        # Assign any awaiting message before promoting: a
+                        # waiting_input run's open clarification owns the next
+                        # reply; otherwise the oldest awaiting entry becomes a
+                        # queued turn that promotion picks up.
+                        conversation = promotion_db.get(
+                            Conversation, finished.conversation_id
+                        )
+                        assign_next_message(
+                            promotion_db,
+                            conversation_id=finished.conversation_id,
+                            user_id=conversation.user_id,
+                            now=datetime.now(UTC),
+                        )
+                        promote_next_message(
+                            promotion_db, conversation_id=finished.conversation_id
+                        )
+                        promotion_db.commit()
+            except Exception:
+                logger.exception("inbox promotion after run %s failed", run_id)
 
     def run(self):
         """Main worker loop with automatic reconciliation and resource cleanup."""
@@ -1308,6 +1429,10 @@ class Worker:
                         logger.info(
                             f"[{self.worker_id}] Reclaimed {reclaimed} expired leases"
                         )
+                    from .inbox.promotion import reconcile_queued_messages
+
+                    reconcile_queued_messages(db)
+                    db.commit()
                 except Exception as e:
                     logger.warning(
                         f"[{self.worker_id}] Error during reconciliation: {e}"

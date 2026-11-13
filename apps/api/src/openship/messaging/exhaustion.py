@@ -827,6 +827,20 @@ def refresh_live_owner_observation(
             db.commit()
             return ExhaustionObservationReceipt(observation.id, observation.state)
 
+        if run.status in {"waiting_plan", "waiting_input", "waiting_config"}:
+            from .delivery import durable_task_wait
+
+            if not durable_task_wait(db, run, job):
+                return _block_observation(
+                    db, observation_id, "task_wait_incomplete", checked_at
+                )
+            observation.state = "settling"
+            observation.next_check_at = None
+            observation.error_code = "task_wait"
+            observation.updated_at = checked_at
+            db.commit()
+            return ExhaustionObservationReceipt(observation.id, observation.state)
+
         if job.dispatch_generation > observation.dispatch_generation:
             if not _valid_replacement(
                 db, observation=observation, run=run, job=job, state=state

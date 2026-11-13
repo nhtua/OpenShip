@@ -1,5 +1,7 @@
 """Exercise the actual Bash wrapper; stop at the first initialization boundary."""
 
+import json
+import os
 import shutil
 import socket
 import subprocess
@@ -13,8 +15,11 @@ from tests.sandbox_image_fixture_support import build_catalog
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from sandbox_image_lib.catalog import ImageError, resolve_recipe
+from sandbox_image_lib.catalog import ImageError, load_metadata, resolve_recipe
 from sandbox_image_lib.config import read_settings, resolve_endpoint, validate_selection
+
+from src.openship.capabilities.contracts import canonical_digest
+from src.openship.sandboxes.profile_schema import decode_catalog, encode_catalog
 
 
 def wrapper(tmp_path, monkeypatch, *, enabled="true", profile="logs-data"):
@@ -24,6 +29,10 @@ def wrapper(tmp_path, monkeypatch, *, enabled="true", profile="logs-data"):
     scripts.mkdir()
     shutil.copy(ROOT / "scripts/sandbox_images.py", scripts)
     shutil.copytree(ROOT / "scripts/sandbox_image_lib", scripts / "sandbox_image_lib", ignore=shutil.ignore_patterns("__pycache__"))
+    # The copied host helper still resolves the shared API-owned codec through
+    # this repository's synced interpreter, never a second YAML parser.
+    (root / "apps").mkdir(exist_ok=True)
+    (root / "apps/api").symlink_to(ROOT / "apps/api", target_is_directory=True)
     text = (ROOT / "scripts/openship-stack").read_text().replace(
         "initialize_dev_messaging_if_missing() {",
         'initialize_dev_messaging_if_missing() {\n  touch "$ROOT/mutated"; return 42',
@@ -43,6 +52,50 @@ def wrapper(tmp_path, monkeypatch, *, enabled="true", profile="logs-data"):
 
 def call(stack, *args):
     return subprocess.run([str(stack), *args], capture_output=True, text=True, check=False)
+
+
+def write_snapshot(
+    root: Path,
+    *,
+    image_id: str = "sha256:" + "a" * 64,
+    engine_identity: str | None = None,
+) -> Path:
+    """Publish a ready mapping directly, standing in for the build consent path."""
+    profile_id = "logs-data"
+    metadata = load_metadata(root, profile_id)
+    fingerprint = resolve_recipe(root, profile_id, "linux/amd64").fingerprint
+    identity = engine_identity or (
+        f"docker@unix://{os.environ['OPENSHIP_SANDBOX_ENGINE_SOCKET']}@linux/amd64"
+    )
+    entry = {
+        "enabled": True,
+        "extensions": {},
+        "metadata": metadata,
+        "metadata_digest": canonical_digest(metadata),
+        "runtime": {
+            "image_tag": f"openship-sandbox-{profile_id}:fixture",
+            "image_id": image_id,
+            "dependency_identity": f"sha256:{fingerprint}",
+            "platform": "linux/amd64",
+            "fingerprint": fingerprint,
+            "engine_identity": identity,
+            "smoke_image_id": image_id,
+            "smoke_fingerprint": fingerprint,
+            "smoke_passed": True,
+            "smoke_evidence_digest": "3" * 64,
+        },
+    }
+    destination = root / "deploy/sandbox/sandbox-profiles.yaml"
+    destination.write_bytes(
+        encode_catalog(
+            decode_catalog(
+                json.dumps(
+                    {"schema_version": 1, "profiles": {profile_id: entry}}
+                ).encode()
+            )
+        )
+    )
+    return destination
 
 
 def test_public_image_commands_leave_protected_files_and_stack_untouched(tmp_path, monkeypatch):
@@ -67,7 +120,7 @@ def test_missing_image_start_never_builds_or_initializes(tmp_path, monkeypatch):
     assert result.returncode != 0
     assert "sandbox-images build logs-data" in result.stderr
     assert not (catalog["root"] / "mutated").exists()
-    assert " build " not in catalog["log"].read_text()
+    assert not catalog["log"].exists() or " build " not in catalog["log"].read_text()
 
 
 def test_opt_in_builds_only_selected_profile_then_matching_start_reuses(tmp_path, monkeypatch):
@@ -79,6 +132,9 @@ def test_opt_in_builds_only_selected_profile_then_matching_start_reuses(tmp_path
     assert "--label openship.profile=logs-data" in log
     assert "--label openship.profile=standard" not in log
     assert (catalog["root"] / "mutated").exists()
+    image_id = "sha256:" + "c" * 64
+    write_snapshot(catalog["root"], image_id=image_id)
+    monkeypatch.setenv("FAKE_INSPECT_JSON", json.dumps([{"Id": image_id}]))
     catalog["log"].write_text("")
     result = call(stack, "-e", "dev", "--sandbox", "start")
     assert result.returncode == 42, result.stderr
@@ -91,11 +147,15 @@ def test_preflight_failure_precedes_initialization(tmp_path, monkeypatch, failur
     if failure == "build":
         monkeypatch.setenv("FAKE_BUILD_RC", "1")
     elif failure == "selection":
-        monkeypatch.setenv("SANDBOX_DEPENDENCY_IDENTITY", "contradictory")
+        write_snapshot(
+            catalog["root"],
+            engine_identity="docker@unix:///run/other-manager.sock@linux/amd64",
+        )
     else:
-        assert call(stack, "-e", "dev", "sandbox-images", "build", "logs-data").returncode == 0
-        monkeypatch.setenv("FAKE_INSPECT_JSON", '[{"Id":"retagged","Architecture":"amd64"}]')
-    flags = ("--build-sandbox",) if failure != "stale" else ()
+        image_id = "sha256:" + "d" * 64
+        write_snapshot(catalog["root"], image_id=image_id)
+        monkeypatch.setenv("FAKE_INSPECT_JSON", json.dumps([{"Id": "sha256:" + "e" * 64}]))
+    flags = ("--build-sandbox",) if failure == "build" else ()
     result = call(stack, "-e", "dev", "--sandbox", "start", *flags)
     assert result.returncode != 0
     assert not (catalog["root"] / "mutated").exists()

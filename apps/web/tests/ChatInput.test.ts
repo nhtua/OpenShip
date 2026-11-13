@@ -111,7 +111,7 @@ describe('ChatInput', () => {
         submissionError: null,
       },
     })
-    expect(wrapper.get('[data-testid="automatic-tool-chip"]').text()).toContain('Automatic tools')
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').text()).toContain('ON')
     await wrapper.get('textarea').setValue('nearest star system')
     await wrapper.get('form').trigger('submit')
 
@@ -295,7 +295,7 @@ describe('ChatInput', () => {
         submissionError: null,
       },
     })
-    expect(wrapper.get('[data-testid="automatic-tool-chip"]').text()).toContain('Automatic tools')
+    expect(wrapper.get('[data-testid="automatic-tool-chip"]').text()).toContain('ON')
     await wrapper.get('textarea').setValue('search without attaching either service')
     await wrapper.get('form').trigger('submit')
 

@@ -20,6 +20,7 @@ from ..connectors.blockers import (
 )
 from ..database.session import SessionLocal, get_db
 from ..execution.reads import OperationPage, read_operation_page
+from .inbox.contracts import MessageAdmissionRequest, MessageAdmissionResponse
 from .models import ProviderAttempt
 from .schemas import (
     ConnectorDismissRequest,
@@ -31,9 +32,32 @@ from .schemas import (
     project_run_response,
 )
 from .service import get_run, request_cancel, submit_tool_run, submit_turn
+from .tasks.projections import read_task_summary
 
 logger = logging.getLogger("runs.routes")
 router = APIRouter(prefix="/api/runs", tags=["runs"])
+
+
+@router.post(
+    "/{conversation_id}/messages", status_code=202, response_model=MessageAdmissionResponse
+)
+async def admit_conversation_message(
+    conversation_id: uuid.UUID,
+    req: MessageAdmissionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_jwt),
+):
+    from .inbox.admission import submit_message
+
+    try:
+        response = submit_message(
+            db, user_id=user.id, conversation_id=conversation_id, request=req
+        )
+        db.commit()
+        return response
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post("/{run_id}/resume-analysis", status_code=202, response_model=RunResponse)
@@ -61,10 +85,12 @@ async def resume_chat_python_run(
     run_id: uuid.UUID, req: ResumeChatPythonRequest,
     db: Session = Depends(get_db), user: User = Depends(require_jwt),
 ):
-    from .resume import resume_chat_python
+    from .service import resume_chat_python as admit_resume_chat_python
 
     try:
-        run = resume_chat_python(db, principal_id=user.id, run_id=run_id, command=req)
+        run = admit_resume_chat_python(
+            db, principal_id=user.id, run_id=run_id, command=req
+        )
         db.commit()
         db.refresh(run)
         return project_run_response(run)
@@ -97,7 +123,9 @@ async def get_run_status(
         )
         operations = read_operation_page(db, run.id)
         blocker = waiting_blocker(db, run.id)
-        return project_run_response(run, attempts, operations, blocker=blocker)
+        return project_run_response(
+            run, attempts, operations, blocker=blocker, task=read_task_summary(db, run.id)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -144,6 +172,8 @@ async def submit_chat_turn(
             artifact_ids=req.artifact_ids,
             connector_selections=req.connector_selections,
             resource_binding_selections=req.resource_binding_selections,
+            agent_mode=req.agent_mode,
+            agent_mode_revision=req.agent_mode_revision,
         )
         logger.info(f"submit_chat_turn success: run={run.id}")
         return project_run_response(run)

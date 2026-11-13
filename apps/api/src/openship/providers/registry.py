@@ -8,6 +8,7 @@ adapter implementation, or an SDK argument.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 
 from src.openship.providers.configuration import parse_profiles
 from src.openship.providers.contracts import (
@@ -71,13 +72,35 @@ def _adapter_supported(name: str) -> bool:
 class ProviderRegistry:
     """Immutable, non-secret view of the installation's model profiles."""
 
-    def __init__(self, profiles: dict[str, object], default_profile_id: str):
+    def __init__(
+        self,
+        profiles: dict[str, object],
+        default_profile_id: str,
+        declared: dict[str, object] | None = None,
+    ):
         self._profiles = dict(profiles)
+        self._declared = dict(declared) if declared else {}
         self.default_profile_id = default_profile_id
+        #: Task pins are derived, so they are cached beside the installation
+        #: they came from. The task ceilings are part of the key: two ceilings
+        #: are two snapshots, and reusing one for the other would silently
+        #: change what a queued run runs.
+        self._task_pins: dict[tuple, RunModelConfig] = {}
 
     @property
     def profile_ids(self) -> tuple[str, ...]:
         return tuple(self._profiles)
+
+    @property
+    def declared_profiles(self) -> dict[str, object]:
+        """The operator declarations behind the pins, limits and all.
+
+        A pinned snapshot has already merged the installation defaults into its
+        limits, so it cannot say which cap the operator actually declared. Task
+        work needs that distinction: an explicit ceiling stays, an omitted one
+        takes the task default.
+        """
+        return dict(self._declared)
 
     def get(self, profile_id: str):
         """Exact lookup. An unknown ID is a configuration error, never a guess."""
@@ -163,6 +186,78 @@ class ProviderRegistry:
             binding_origin="submission",
         )
 
+    def resolve_task(
+        self,
+        profile_id: str | None,
+        fallback_ids: Sequence[str] = (),
+        *,
+        task_limits: RunLimits,
+    ) -> RunModelConfig:
+        """Freeze the snapshot a v5 task run executes against its task ceilings.
+
+        Authorization is the same as `pin_selection`: an exact profile, distinct
+        fallback IDs the profile allows. What differs is the pinning: the
+        operator's own declaration is frozen with the task ceilings as defaults,
+        so a ceiling nobody declared replaces the legacy per-loop default while
+        an explicit cap never moves. The already-pinned legacy snapshot is never
+        read here, because it cannot say which caps were explicit.
+        """
+        selected = profile_id or self.default_profile_id
+        primary_declared = self._declared.get(selected)
+        if primary_declared is None:
+            raise ProviderError(
+                "configuration_error",
+                safe_message=(
+                    f"profile {selected!r} has no declared configuration to pin for task work"
+                ),
+            )
+
+        requested = list(fallback_ids or ())
+        if len(set(requested)) != len(requested):
+            raise ProviderError(
+                "configuration_error",
+                safe_message="fallback profile IDs must be distinct",
+            )
+        allowed = list(primary_declared.allowed_fallback_profile_ids)
+        unauthorized = [name for name in requested if name not in allowed]
+        if unauthorized or primary_declared.id in requested:
+            raise ProviderError(
+                "configuration_error",
+                safe_message=(
+                    f"profile {primary_declared.id!r} does not allow fallback to "
+                    + ", ".join(unauthorized or [primary_declared.id])
+                ),
+            )
+        unknown = [name for name in requested if name not in self._declared]
+        if unknown:
+            raise ProviderError(
+                "configuration_error",
+                safe_message=(
+                    f"profile {unknown[0]!r} is not declared for this installation"
+                ),
+            )
+
+        cache_key = (selected, tuple(requested), task_limits.model_dump_json())
+        cached = self._task_pins.get(cache_key)
+        if cached is not None:
+            return cached
+
+        primary = pin_profile(primary_declared, defaults=task_limits)
+        limits = primary.limits
+        validate_limits(limits, primary)
+        snapshot = RunModelConfig(
+            schema_version=1,
+            primary=primary,
+            fallbacks=tuple(
+                pin_profile(self._declared[name], defaults=task_limits)
+                for name in requested
+            ),
+            limits=limits,
+            binding_origin="submission",
+        )
+        self._task_pins[cache_key] = snapshot
+        return snapshot
+
 
 def _configuration_digest(settings) -> str:
     """A cache key over non-secret configuration only."""
@@ -219,7 +314,11 @@ def _build_registry(settings) -> ProviderRegistry:
     pinned = {
         profile.id: pin_profile(profile, defaults=installation) for profile in profiles
     }
-    return ProviderRegistry(pinned, default_id)
+    return ProviderRegistry(
+        pinned,
+        default_id,
+        declared={profile.id: profile for profile in profiles},
+    )
 
 
 #: Profiles are parsed once per process: configuration is read at startup, and

@@ -60,7 +60,7 @@ services:
     environment:
       POSTGRES_DB: openship
       POSTGRES_USER: openship
-      POSTGRES_PASSWORD: openship
+      POSTGRES_PASSWORD: openship  # rayloc:ignore
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -130,6 +130,15 @@ services:
       ARTIFACT_PROJECT_QUOTA_BYTES: ${ARTIFACT_PROJECT_QUOTA_BYTES:-1073741824}
       ARTIFACT_PROJECT_QUOTA_COUNT: ${ARTIFACT_PROJECT_QUOTA_COUNT:-1000}
       TOOL_ENABLED_IDS:
+      # The agentic task gate is read at admission in the api and again by the
+      # worker executing the run it queued: both services must see the same
+      # allowlist, so the switches are passed to both from the same variables.
+      # Defaults match openship/config.py - disabled, empty, 24 attempts - so a
+      # stack without them behaves exactly as before. See
+      # docs/operations/opensandbox.md.
+      AGENTIC_TASKS_ENABLED: ${AGENTIC_TASKS_ENABLED:-false}
+      AGENTIC_TASK_PROFILE_IDS: ${AGENTIC_TASK_PROFILE_IDS:-}
+      AGENTIC_MAX_GENERATION_ATTEMPTS: ${AGENTIC_MAX_GENERATION_ATTEMPTS:-24}
       # Profile configuration is non-secret and shared: the worker executes a
       # run the API queued, so a profile that means different things to the
       # two of them would make "which model answered" a question with two
@@ -153,6 +162,12 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - type: bind
+        source: "${SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+        target: /etc/openship/sandbox-profiles.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/api.json:/run/nats-auth/api.json:ro"
     depends_on:
       postgres:
@@ -202,6 +217,15 @@ services:
       ARTIFACT_PROJECT_QUOTA_BYTES: ${ARTIFACT_PROJECT_QUOTA_BYTES:-1073741824}
       ARTIFACT_PROJECT_QUOTA_COUNT: ${ARTIFACT_PROJECT_QUOTA_COUNT:-1000}
       TOOL_ENABLED_IDS:
+      # The agentic task gate is read at admission in the api and again by the
+      # worker executing the run it queued: both services must see the same
+      # allowlist, so the switches are passed to both from the same variables.
+      # Defaults match openship/config.py - disabled, empty, 24 attempts - so a
+      # stack without them behaves exactly as before. See
+      # docs/operations/opensandbox.md.
+      AGENTIC_TASKS_ENABLED: ${AGENTIC_TASKS_ENABLED:-false}
+      AGENTIC_TASK_PROFILE_IDS: ${AGENTIC_TASK_PROFILE_IDS:-}
+      AGENTIC_MAX_GENERATION_ATTEMPTS: ${AGENTIC_MAX_GENERATION_ATTEMPTS:-24}
       # Identical to the api service above, on the same variables: the worker
       # executes what the API queued, so the profile a run names has to mean
       # the same thing to both.
@@ -226,6 +250,12 @@ services:
     volumes:
       - artifactdata:/var/lib/openship/artifacts
       - ./secrets:/run/secrets:ro
+      - type: bind
+        source: "${SANDBOX_PROFILES_FILE:?Set the sandbox profile snapshot source}"
+        target: /etc/openship/sandbox-profiles.yaml
+        read_only: true
+        bind:
+          create_host_path: false
       - "${OPENSHIP_MESSAGING_DIR:-.openship/messaging/dev}/worker.json:/run/nats-auth/worker.json:ro"
     networks:
       - default

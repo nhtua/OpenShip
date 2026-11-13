@@ -129,6 +129,33 @@ def resolve_chat_inputs(
     return tuple(result)
 
 
+def _require_task_profile_selection(execution, capability_id: str, arguments: dict) -> None:
+    """Fail closed before admitting a task-v5 Python profile selection."""
+    if getattr(execution, "schema_version", None) != 5 or capability_id != "python_execute":
+        return
+    from ..sandboxes.profiles import (
+        TaskProfileError,
+        resolve_task_requirements,
+        runtime_catalog,
+    )
+
+    profile_id = arguments.get("profile_id")
+    if profile_id is None:
+        raise _refused(
+            422,
+            "invalid_tool_arguments",
+            "A sandbox profile is required for this task",
+        )
+    try:
+        resolve_task_requirements(execution, profile_id, runtime_catalog())
+    except TaskProfileError as refused:
+        if refused.code in ("changed", "disabled"):
+            raise _refused(409, refused.code, "The selected sandbox profile is unavailable") from None
+        raise _refused(
+            422, "invalid_tool_arguments", "The selected sandbox profile is not available"
+        ) from None
+
+
 def admit_operation(
     db: Session,
     claim: Claim,
@@ -154,7 +181,7 @@ def admit_operation(
         raise _refused(409, "lease_lost", "This worker no longer owns the active run")
     run = require_live_claim(db, claim, lock=True)
     is_manual_tool = run.kind == "tool" and run.graph_version in (1, 2, 3)
-    is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3, 4)
+    is_chat_tool = run.kind == "chat" and run.graph_version in (2, 3, 4, 5)
     if not (is_manual_tool or is_chat_tool):
         raise _refused(
             409,
@@ -267,6 +294,7 @@ def admit_operation(
         manifest = resolve_capability(ref, policy.effective_ids)
         definition = get_tool_definition(manifest)
         normalized = definition.validate_arguments(arguments).model_dump(mode="json")
+        _require_task_profile_selection(pinned, ref.id, normalized)
     except ToolPolicyError as refused:
         if refused.code == "tool_policy_unavailable":
             raise _refused(

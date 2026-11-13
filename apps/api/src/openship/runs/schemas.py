@@ -10,11 +10,13 @@ from pydantic import (
     StrictBool,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from ..execution.projections import OperationSummary
 from ..providers.configuration import destination_label
 from ..providers.errors import SAFE_MESSAGES
+from ..runs.tasks.projections import TaskSummary
 from .models import ProviderAttempt, Run
 
 
@@ -32,6 +34,10 @@ class TurnSubmitRequest(BaseModel):
     # fallback disabled. The two are not the same request.
     fallback_profile_ids: list[str] | None = None
     enable_tools: StrictBool = False
+    # Server-captured mode and its revision travel together. Omitting both
+    # asks admission to capture the account's current preference exactly once.
+    agent_mode: Literal["auto", "copilot"] | None = None
+    agent_mode_revision: int | None = Field(default=None, ge=1)
     artifact_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     resource_binding_selections: list[uuid.UUID] = Field(
         default_factory=list, max_length=10
@@ -55,6 +61,14 @@ class TurnSubmitRequest(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("resource_binding_selections must be distinct")
         return value
+
+    @model_validator(mode="after")
+    def _agent_mode_is_paired(self):
+        if (self.agent_mode is None) != (self.agent_mode_revision is None):
+            raise ValueError(
+                "agent_mode and agent_mode_revision must be supplied together"
+            )
+        return self
 
 
 class ModelSummary(BaseModel):
@@ -144,6 +158,8 @@ class RunResponse(BaseModel):
     operations: list[OperationSummary] = Field(default_factory=list)
     operations_next_cursor: str | None = None
     connector_blocker: ConnectorBlockerSummary | None = None
+    # A run read shows the same plan and progress the task events showed.
+    task: TaskSummary | None = None
 
     @field_serializer("id")
     def serialize_id(self, value: uuid.UUID) -> str:
@@ -291,12 +307,31 @@ def _usage_projection(recorded: str | None) -> UsageSummary | None:
     return UsageSummary(**json.loads(recorded))
 
 
+#: Copy for failures the run itself raised, kept apart from the provider's own
+#: copy: a run-level code dressed as a provider failure sends the reader to a
+#: component that answered fine, which is what made the QA run unreadable.
+_RUN_SAFE_MESSAGES: dict[str, str] = {
+    "internal_error": (
+        "This run stopped for a reason the runtime could not classify. "
+        "Retry the request; if it repeats, report the run's code to the operator."
+    ),
+    "unsupported_graph_version": (
+        "This installation cannot execute the graph version this run recorded. "
+        "Update the runtime and resume the run."
+    ),
+}
+
+
 def _error_projection(code: str | None) -> ErrorSummary | None:
     if not code:
         return None
     return ErrorSummary(
         code=code,
-        message=SAFE_MESSAGES.get(code, "The model provider reported a failure."),
+        message=(
+            SAFE_MESSAGES.get(code)
+            or _RUN_SAFE_MESSAGES.get(code)
+            or "This run stopped for a reason this installation has no copy for."
+        ),
     )
 
 
@@ -317,7 +352,7 @@ def _attempt_projection(attempt: ProviderAttempt) -> AttemptSummary:
 
 
 def project_run_response(
-    run: Run, attempts=(), operation_page=None, blocker=None
+    run: Run, attempts=(), operation_page=None, blocker=None, task=None
 ) -> RunResponse:
     """The public shape of a run: only what a browser is allowed to see."""
     return RunResponse(
@@ -335,6 +370,7 @@ def project_run_response(
         provider_attempts=[_attempt_projection(attempt) for attempt in attempts],
         operations=list(operation_page.items) if operation_page else [],
         operations_next_cursor=operation_page.next_cursor if operation_page else None,
+        task=task,
         connector_blocker=(
             ConnectorBlockerSummary(
                 id=blocker.id,

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from ..chat.models import Conversation
 from ..runs.models import Outbox, Run, RunJob
 from ..runs.queue import Claim, ClaimDecision
+from ..runs.tasks.models import TaskDecisionRecord, TaskRecord
 from .command import (
     InvalidCommandEnvelope,
     RunCommand,
@@ -38,6 +39,37 @@ class PreparedDelivery:
     command: RunCommand | None
     decision: ClaimDecision | None
     disposition: DeliveryDisposition | None
+
+
+def durable_task_wait(db: Session, run: Run, job: RunJob) -> bool:
+    """Recognize only a fully committed, fenced parking transaction."""
+    kinds = {
+        "waiting_plan": ("plan_confirmation",),
+        "waiting_input": ("clarification", "recovery"),
+        "waiting_config": ("configuration",),
+    }
+    if run.status not in kinds or run.ended_at is not None:
+        return False
+    if (
+        job.owner_id is not None
+        or job.lease_until is not None
+        or job.fence != run.fence
+    ):
+        return False
+    task = db.query(TaskRecord).filter_by(run_id=run.id).one_or_none()
+    decision = (
+        db.query(TaskDecisionRecord)
+        .filter_by(run_id=run.id, state="open")
+        .one_or_none()
+    )
+    return bool(
+        task
+        and decision
+        and task.status == "waiting"
+        and task.fence == run.fence
+        and decision.task_id == task.id
+        and decision.kind in kinds[run.status]
+    )
 
 
 def _unclaimed(decision: ClaimDecision) -> DeliveryDisposition | None:
@@ -180,6 +212,10 @@ def _settle_locked(
         if job.owner_id is None and job.lease_until is None:
             return complete("connector_wait")
         return DeliveryDisposition("reconcile", "connector_wait_incomplete")
+    if run.status in {"waiting_plan", "waiting_input", "waiting_config"}:
+        if durable_task_wait(db, run, job):
+            return complete("task_wait")
+        return DeliveryDisposition("reconcile", "task_wait_incomplete")
     if job.dispatch_generation > command.dispatch_generation:
         state = (
             db.query(MessageTransportState)

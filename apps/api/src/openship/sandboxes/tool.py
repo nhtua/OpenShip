@@ -170,28 +170,19 @@ def analysis_error(error: Exception) -> str | None:
 
 
 def runtime_requirements() -> RuntimeRequirements:
-    """Derive the sandbox runtime identity from installation settings."""
+    """Derive the legacy sandbox runtime identity from installation settings.
+
+    Only execution versions 1-4 use this operator-selected single profile.
+    Task-v5 execution resolves an exact pinned profile instead.
+    """
     if not settings.sandbox_image or not settings.sandbox_endpoint.strip():
         raise SandboxUnavailable("sandbox runtime image is not configured")
+    from src.openship.sandboxes.profiles import TaskProfileError, sandbox_provider_id
+
     try:
-        endpoint = httpx.URL(settings.sandbox_endpoint)
-        if (
-            endpoint.scheme not in ("http", "https")
-            or not endpoint.host
-            or endpoint.userinfo
-            or endpoint.query
-            or endpoint.fragment
-        ):
-            raise ValueError("invalid endpoint identity")
-    except ValueError:
-        raise SandboxUnavailable("sandbox provider identity is not configured") from None
-    deployment = settings.sandbox_deployment_id.strip()
-    if not deployment:
-        raise SandboxUnavailable("sandbox deployment identity is not configured")
-    endpoint_identity = f"{endpoint.scheme}://{endpoint.host}:{endpoint.port}{endpoint.path.rstrip('/')}"
-    provider_id = "opensandbox:" + hashlib.sha256(
-        f"{deployment}\n{endpoint_identity}".encode()
-    ).hexdigest()
+        provider_id = sandbox_provider_id()
+    except TaskProfileError as refused:
+        raise SandboxUnavailable(str(refused)) from None
     return RuntimeRequirements(
         provider_id=provider_id,
         profile_id=settings.sandbox_profile_id,

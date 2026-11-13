@@ -18,6 +18,7 @@ from .events.routes import router as events_router
 from .providers.routes import router as providers_router
 from .resources.routes import router as resources_router
 from .runs.routes import router as runs_router
+from .runs.tasks.routes import router as task_decisions_router
 from .workspace.project_routes import router as project_router
 from .workspace.routes import router as workspace_router
 
@@ -25,6 +26,14 @@ from .workspace.routes import router as workspace_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Own one independent event consumer for this API process."""
+    from .sandboxes.profiles import startup_catalog
+
+    try:
+        app.state.sandbox_profiles = startup_catalog()
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            "the enabled sandbox profile snapshot is missing or invalid"
+        ) from exc
     fanout = EventFanout()
     app.state.event_fanout = fanout
     await fanout.start()
@@ -62,6 +71,7 @@ app.include_router(capabilities_router)
 app.include_router(chat_router)
 app.include_router(connectors_router)
 app.include_router(runs_router)
+app.include_router(task_decisions_router)
 app.include_router(workspace_router)
 app.include_router(project_router)
 app.include_router(events_router)
@@ -107,10 +117,16 @@ async def readiness_check():
     from fastapi import Response as FastAPIResponse
     from sqlalchemy import func, text
 
+    from .config import settings
     from .database.session import SessionLocal
     from .messaging.health import check_worker_health
     from .messaging.models import MessageTransportState
     from .runs.models import Run, RunJob
+    from .sandboxes.profiles import (
+        MANAGED_PROFILE_IDS,
+        profile_readiness,
+        runtime_catalog,
+    )
 
     # Check database
     db_ok = False
@@ -199,6 +215,11 @@ async def readiness_check():
                 "event_consumer": event_consumer_ready,
                 "worker_health": worker_health_status,
             },
+            "sandbox_profiles": profile_readiness(
+                runtime_catalog(),
+                MANAGED_PROFILE_IDS,
+                selected=settings.sandbox_profile_id,
+            ),
         }
     )
     status = 200 if ready else 503

@@ -232,15 +232,6 @@ class Lane:
         )
 
 
-@pytest.fixture(autouse=True)
-def close_lane_sessions():
-    """Do not let journey fixtures exhaust the shared database connection pool."""
-    yield
-    for session in Lane.sessions:
-        session.close()
-    Lane.sessions.clear()
-
-
 def _ref(artifact: Artifact) -> ArtifactRef:
     return ArtifactRef(
         id=artifact.id,

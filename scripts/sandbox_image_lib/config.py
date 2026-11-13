@@ -3,12 +3,15 @@
 import os
 import re
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 
 from .builds import runtime_values
 from .catalog import ImageError
 
 MANAGED = {"standard", "logs-data", "iac-validation", "devops-shell"}
+DEFAULT_PROFILES_FILE = "deploy/sandbox/sandbox-profiles.yaml"
+EXAMPLE_PROFILES_FILE = "deploy/sandbox/sandbox-profiles.example.yaml"
 KEYS = {
     "SANDBOX_ENABLED", "SANDBOX_PROFILE_ID", "SANDBOX_IMAGE", "SANDBOX_DEPENDENCY_IDENTITY",
     "OPENSHIP_SANDBOX_ENGINE_SOCKET", "XDG_RUNTIME_DIR",
@@ -29,9 +32,104 @@ def _literal(key, value):
     return value
 
 
-def read_settings(root: Path, environ) -> dict[str, str]:
+def _dotenv_value(root: Path, key: str) -> str | None:
+    """Read one literal assignment from root .env without sourcing or evaluating it."""
+    dotenv = root / ".env"
+    try:
+        if not dotenv.exists():
+            return None
+        lines = dotenv.read_text().splitlines()
+    except OSError as exc:
+        raise ImageError(f"unreadable {dotenv}") from exc
+    for line in lines:
+        match = re.match(r"^\s*(?:export\s+)?([A-Z_]+)\s*=(.*)$", line)
+        if match and match[1] == key:
+            return match[2]
+    return None
+
+
+def resolve_profiles_source(root: Path, environ: Mapping[str, str]) -> tuple[Path, bool]:
+    """Resolve the host profile source: process env, root .env, then the default.
+
+    Paths are always interpreted relative to the repository root, never the
+    caller's working directory. The boolean reports an explicit override.
+    """
+    root = Path(root)
+    if "SANDBOX_PROFILES_FILE" in environ:
+        raw, explicit = environ["SANDBOX_PROFILES_FILE"], True
+    else:
+        raw = _dotenv_value(root, "SANDBOX_PROFILES_FILE")
+        explicit = raw is not None
+        if raw is None:
+            raw = DEFAULT_PROFILES_FILE
+    value = _literal("SANDBOX_PROFILES_FILE", raw)
+    if not value:
+        raise ImageError("SANDBOX_PROFILES_FILE requires a non-empty literal path")
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    return Path(os.path.abspath(path)), explicit
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_compose_source(
+    root: Path, environ: Mapping[str, str], *, settings_file: Path | None = None
+) -> Path:
+    """Return the existing snapshot a Compose invocation may bind read-only.
+
+    The source selector is the Task 2 resolver. Only a sandbox-disabled
+    invocation with no explicit override and no generated default may fall back
+    to the tracked empty example. Every other missing source is refused; this
+    helper never creates the generated file.
+    """
+    root = Path(root)
+    path, explicit = resolve_profiles_source(root, environ)
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        info = None
+    except OSError as exc:
+        raise ImageError(f"profile source is not readable: {path}") from exc
+    if info is not None:
+        if not stat.S_ISREG(info.st_mode):
+            raise ImageError(
+                "SANDBOX_PROFILES_FILE must name an existing regular file"
+            )
+        return path
+    if explicit:
+        raise ImageError("SANDBOX_PROFILES_FILE must name an existing regular file")
+
+    settings = read_settings(root, environ, settings_file=settings_file)
+    if _truthy(settings.get("SANDBOX_ENABLED", "false")):
+        raise ImageError(
+            "sandbox execution is enabled but the profile snapshot is missing; "
+            "run `scripts/openship-stack -e dev sandbox-images build PROFILE` "
+            "or set SANDBOX_PROFILES_FILE to an existing snapshot"
+        )
+    example = Path(os.path.abspath(root / EXAMPLE_PROFILES_FILE))
+    try:
+        info = os.lstat(example)
+    except OSError as exc:
+        raise ImageError(
+            f"tracked sandbox profile example is missing: {example}"
+        ) from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise ImageError(f"tracked sandbox profile example is unsafe: {example}")
+    return example
+
+
+def read_settings(
+    root: Path, environ, *, settings_file: Path | None = None
+) -> dict[str, str]:
     raw = {}
     dotenv = root / ".env"
+    if settings_file is not None:
+        dotenv = Path(settings_file)
+        if not dotenv.is_absolute():
+            dotenv = root / dotenv
     if dotenv.exists():
         for line in dotenv.read_text().splitlines():
             match = re.match(r"^\s*(?:export\s+)?([A-Z_]+)\s*=(.*)$", line)
