@@ -26,11 +26,13 @@ Two things this module deliberately refuses to do:
 from __future__ import annotations
 
 import hashlib
+import json
 from uuid import UUID
 
 from ...artifacts.contracts import ArtifactRef
 from ...artifacts.filesystem import ArtifactStorageError, LocalArtifactStore
 from ...artifacts.models import Artifact
+from ...capabilities.contracts import canonical_digest
 from ...config import settings
 from ...execution.models import ToolOperation
 from .contracts import TaskAssessment, VerificationCheck, VerificationReport
@@ -39,6 +41,70 @@ from .state import _json, read_plan, read_progress
 
 _OPERATION_EVIDENCE = "operation:"
 _ARTIFACT_EVIDENCE = "artifact:"
+
+
+def operation_result_reference(
+    step_id: str, db, run_id: UUID
+) -> str:
+    """Evidence reference for a verified result-only step's committed result.
+
+    A result-only step publishes no artifact, so its evidence is the durable
+    committed operation identity that produced its result.
+    """
+    attempt = (
+        db.query(TaskStepAttempt)
+        .filter(TaskStepAttempt.run_id == run_id, TaskStepAttempt.step_id == step_id)
+        .order_by(TaskStepAttempt.ordinal.desc())
+        .first()
+    )
+    operation = _operation_row(db, attempt.operation_id) if attempt else None
+    if operation is not None and operation.request_digest:
+        return _OPERATION_EVIDENCE + operation.request_digest
+    return _OPERATION_EVIDENCE + "result-only:" + str(step_id)
+
+
+def _result_only_evidence(operation: ToolOperation, db) -> tuple[bool, str]:
+    """Prove a result-only step's committed result still matches stored bytes.
+
+    A read-only local result references an existing artifact. The committed
+    result JSON and its digest must agree, and the artifact the result points
+    to must still be ready, in scope, and backed by stored bytes whose content
+    matches the committed result. Any disagreement means the step is not done.
+    """
+    try:
+        result = json.loads(operation.result_json or "{}")
+    except (TypeError, ValueError):
+        return False, "the committed result is not readable JSON"
+    if not isinstance(result, dict):
+        return False, "the committed result is not a JSON object"
+    if canonical_digest(result) != operation.result_digest:
+        return False, "the committed result digest does not match its content"
+    artifact_id = result.get("artifact_id")
+    if artifact_id is None:
+        # No referenced artifact: the committed digest is the only evidence.
+        return True, ""
+    try:
+        aid = UUID(str(artifact_id))
+    except (TypeError, ValueError):
+        return False, "the result references an invalid artifact"
+    artifact = (
+        db.query(Artifact)
+        .filter(
+            Artifact.id == aid,
+            Artifact.project_id == operation.project_id,
+            Artifact.conversation_id == operation.conversation_id,
+        )
+        .one_or_none()
+    )
+    if artifact is None or artifact.status != "ready":
+        return False, "the result references a missing or unready artifact"
+    data = _stored_bytes(artifact)
+    if data is None:
+        return False, "the referenced artifact's stored bytes no longer prove its identity"
+    content = result.get("content")
+    if isinstance(content, str) and data.decode("utf-8") != content:
+        return False, "the committed result content does not match the stored artifact"
+    return True, ""
 
 
 class VerificationError(RuntimeError):
@@ -195,25 +261,49 @@ def verify_step(
                 )
             )
 
-    for name in step.expected_outputs:
-        row = by_name.get(name)
-        if (
-            row is None
-            or row.status != "ready"
-            or verified_bytes.get(name) is None
-        ):
-            missing.append(name)
-            checks.append(
-                VerificationCheck(name=f"declared output {name}", passed=False)
-            )
-            continue
+    if step.is_result_only:
+        # A result-only local step publishes no new artifact: its committed
+        # operation result is the evidence. Prove the committed result still
+        # matches the stored artifact it references, so a tampered or lost read
+        # cannot be verified as done.
+        if operation is None:
+            result_ok = False
+        else:
+            result_ok, _result_reason = _result_only_evidence(operation, db)
+        evidence_ref = (
+            _OPERATION_EVIDENCE + operation.request_digest
+            if result_ok and operation is not None and operation.request_digest
+            else None
+        )
         checks.append(
             VerificationCheck(
-                name=f"declared output {name}",
-                passed=True,
-                evidence_ref=_ARTIFACT_EVIDENCE + row.sha256,
+                name="committed result evidence",
+                passed=result_ok,
+                evidence_ref=evidence_ref,
             )
         )
+        if not result_ok:
+            missing.append(step.id or "result")
+    else:
+        for name in step.expected_outputs:
+            row = by_name.get(name)
+            if (
+                row is None
+                or row.status != "ready"
+                or verified_bytes.get(name) is None
+            ):
+                missing.append(name)
+                checks.append(
+                    VerificationCheck(name=f"declared output {name}", passed=False)
+                )
+                continue
+            checks.append(
+                VerificationCheck(
+                    name=f"declared output {name}",
+                    passed=True,
+                    evidence_ref=_ARTIFACT_EVIDENCE + row.sha256,
+                )
+            )
 
     resolved = set(evidence) | {_ARTIFACT_EVIDENCE + row.sha256 for row in by_name.values()}
     unresolved = tuple(
@@ -294,16 +384,26 @@ def verify_task(db, *, run_id: UUID, assessment: TaskAssessment) -> Verification
         uncovered = tuple(
             name for name in step.expected_outputs if name not in covered
         )
-        if step.id in verified and not uncovered:
-            checks.append(
-                VerificationCheck(
-                    name=f"step {step.id} verified",
-                    passed=True,
-                    evidence_ref=_ARTIFACT_EVIDENCE
-                    + covered[step.expected_outputs[0]].sha256,
+        if step.id in verified:
+            if step.is_result_only:
+                checks.append(
+                    VerificationCheck(
+                        name=f"step {step.id} verified",
+                        passed=True,
+                        evidence_ref=operation_result_reference(step.id, db, run_id),
+                    )
                 )
-            )
-            continue
+                continue
+            if not uncovered:
+                checks.append(
+                    VerificationCheck(
+                        name=f"step {step.id} verified",
+                        passed=True,
+                        evidence_ref=_ARTIFACT_EVIDENCE
+                        + covered[step.expected_outputs[0]].sha256,
+                    )
+                )
+                continue
         missing.extend(uncovered)
         checks.append(
             VerificationCheck(
@@ -312,12 +412,19 @@ def verify_task(db, *, run_id: UUID, assessment: TaskAssessment) -> Verification
             )
         )
 
+    result_only_evidence: list[str] = []
+    for step in plan.steps:
+        if step.id in verified and step.is_result_only:
+            ref = operation_result_reference(step.id, db, run_id)
+            if ref not in result_only_evidence:
+                result_only_evidence.append(ref)
     evidence_refs = tuple(
         dict.fromkeys(
             [
                 _ARTIFACT_EVIDENCE + covered[name].sha256
                 for name in sorted(covered)
             ]
+            + result_only_evidence
         )
     )
     passed = not missing and all(check.passed for check in checks)

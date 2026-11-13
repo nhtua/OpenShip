@@ -1167,20 +1167,15 @@ def submit_turn(
     if execution is not None and (agentic_task or getattr(execution, "connector_refs", ())):
         queued_ids = db.query(ConversationInboxEntry.message_id).filter(
             ConversationInboxEntry.conversation_id == conv.id,
-            ConversationInboxEntry.disposition == "queued",
-            ConversationInboxEntry.status.in_(("queued", "failed")),
+            ConversationInboxEntry.status.in_(("awaiting", "queued", "failed")),
         )
         history_query = db.query(Message.id).filter(
             Message.conversation_id == conv.id, ~Message.id.in_(queued_ids)
         )
-        if agentic_task and not getattr(execution, "connector_refs", ()):
-            history_query = history_query.order_by(Message.created_at.desc(), Message.id.desc()).limit(20)
-            admitted_context_ids = tuple(reversed([row[0] for row in history_query.all()]))
-        else:
-            admitted_context_ids = tuple(
-                row[0]
-                for row in history_query.order_by(Message.created_at.asc(), Message.id.asc()).all()
-            )
+        admitted_context_ids = tuple(
+            row[0]
+            for row in history_query.order_by(Message.created_at.asc(), Message.id.asc()).all()
+        )
     selection = json.dumps(
         {
             "profile_id": provider_profile_id,
@@ -1222,8 +1217,37 @@ def submit_turn(
     db.flush()
 
     if admitted_context_ids or agentic_task:
+        updates = {"admitted_context_message_ids": (*admitted_context_ids, msg.id)}
+        if agentic_task:
+            from .tasks.contracts import ConversationArtifact
+            from .tasks.models import TaskPlanRecord, TaskRecord
+
+            artifacts = db.query(Artifact).filter_by(
+                project_id=conv.project_id, conversation_id=conv.id,
+                status="ready", mutability="immutable",
+            ).order_by(Artifact.created_at.asc(), Artifact.id.asc()).all()
+            updates["conversation_artifacts"] = tuple(
+                ConversationArtifact(id=item.id, name=item.display_name, media_type=item.media_type,
+                                     size_bytes=item.size_bytes, sha256=item.sha256)
+                for item in artifacts
+            )
+            tasks = db.query(TaskRecord).filter(
+                TaskRecord.project_id == conv.project_id,
+                TaskRecord.conversation_id == conv.id,
+                TaskRecord.run_id != run.id,
+            ).order_by(TaskRecord.created_at.asc(), TaskRecord.id.asc()).all()
+            previous_tasks = []
+            for task in tasks:
+                plan = db.query(TaskPlanRecord).filter_by(run_id=task.run_id, revision=task.current_revision).one_or_none()
+                previous_tasks.append(json.dumps({
+                    "run_id": str(task.run_id), "status": task.status,
+                    "context": json.loads(task.context_json),
+                    "verified_outputs": json.loads(task.verified_outputs_json),
+                    "plan": json.loads(plan.plan_json) if plan else None,
+                }, ensure_ascii=False))
+            updates["prior_task_context"] = tuple(previous_tasks)
         execution = execution.model_copy(
-            update={"admitted_context_message_ids": (*admitted_context_ids, msg.id)}
+            update=updates
         )
         run.execution_configuration = execution.model_dump_json()
 

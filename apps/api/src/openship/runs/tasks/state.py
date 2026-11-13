@@ -914,6 +914,7 @@ def record_verification(
         db.flush()
         return _project(db, task)
 
+    latest = attempts[-1] if attempts else None
     if latest is None or latest.status != "succeeded":
         raise TaskStateError(
             "verification_conflict",
@@ -952,11 +953,26 @@ def record_verification(
                 "a published artifact is missing, unready or belongs to another scope",
             )
         rows.append(row)
-    if not rows:
-        raise TaskStateError(
-            "verification_conflict",
-            "a passing verdict requires published evidence to record",
-        )
+    if step.is_result_only:
+        # A result-only local step commits its own result as durable evidence
+        # instead of publishing a new artifact. The recorder independently
+        # re-validates the committed result against the stored artifact it
+        # references, so a forged or stale verdict cannot be recorded.
+        from .verification import _result_only_evidence
+
+        result_ok, _reason = _result_only_evidence(operation, db)
+        if not result_ok:
+            raise TaskStateError(
+                "verification_conflict",
+                "a passing result-only verdict requires committed evidence that "
+                "still matches the stored artifact",
+            )
+    else:
+        if not rows:
+            raise TaskStateError(
+                "verification_conflict",
+                "a passing verdict requires published evidence to record",
+            )
 
     # Recording a passing verdict is not authority for the bytes behind it:
     # the verification module is what proves the stored bytes still match the

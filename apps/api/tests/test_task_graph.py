@@ -717,12 +717,16 @@ def test_copilot_no_dispatch_before_exact_confirmation(monkeypatch):
 
 
 def test_auto_announces_plan_then_downloads_executes_and_verifies(monkeypatch):
-    lane = Lane(monkeypatch, mode="auto", behaviors=_journey())
+    lane = Lane(
+        monkeypatch,
+        mode="auto",
+        behaviors=[*_journey(), _prose("The chart and averages are ready.")],
+    )
     outcome = lane.invoke()
 
     capability_calls = _calls(lane)
     assert capability_calls == ["download_file", "python_execute"]
-    assert outcome["assistant_response"] == "Task completed; all plan steps were verified."
+    assert outcome["assistant_response"] == "The chart and averages are ready."
     assert outcome["cursor"]["verification_recorded"] == ["fetch", "analyze"]
 
     durable = _durable(lane.run_id)
@@ -748,17 +752,155 @@ def test_auto_announces_plan_then_downloads_executes_and_verifies(monkeypatch):
     assert durable["decisions"] == []
 
 
+def test_follow_up_reads_prior_weather_artifact_and_answers(monkeypatch):
+    """A new worker turn must use saved bytes, not merely see a filename.
+
+    The first graph uses its existing simulated download/sandbox gateway, which
+    publishes actual bytes to the artifact store. The follow-up goes through
+    real admission, worker, task graph and workspace gateway. Only model
+    responses are scripted; no live provider or network is needed.
+    """
+    from src.openship.auth.models import User
+    from src.openship.chat.models import Message
+    from src.openship.runs.service import submit_turn
+    from src.openship.runs.worker import Worker
+    from tests.test_task_admission import (
+        _agentic_profiles,
+        _no_managed_search_connectors,
+    )
+
+    monkeypatch.setitem(PUBLISHED_OUTPUTS, "python_execute", (
+        (CHART, "analysis_output", "image/png", CHART_BYTES),
+        (AVERAGES, "analysis_output", "application/json", b'{"averages": {"mean": 1.75}}'),
+    ))
+    lane = Lane(monkeypatch, mode="auto", behaviors=_journey())
+    outcome = lane.invoke()
+    assert outcome["assistant_response"] == "Task completed; all plan steps were verified."
+    with TestSessionLocal() as db:
+        weather = db.query(Artifact).filter_by(originating_run_id=lane.run_id, display_name="averages.json").one()
+        artifact_id = weather.id
+        run = db.get(Run, lane.run_id)
+        run.status = "completed"
+        db.add_all([
+            Message(conversation_id=lane.conversation_id, run_id=run.id, role="user", content="Draw a weather chart from the supplied observations."),
+            Message(conversation_id=lane.conversation_id, run_id=run.id, role="assistant", content=outcome["assistant_response"]),
+        ])
+        db.commit()
+
+    _agentic_profiles(monkeypatch)
+    _no_managed_search_connectors(monkeypatch)
+    monkeypatch.setattr(settings, "tool_enabled_ids", "workspace_list_files,workspace_read_file")
+    plan = _plan_payload()
+    plan["plan"]["steps"] = [{
+        "id": "read", "intent": "Read the saved averages", "depends_on": [],
+        "capability": "workspace_read_file", "profile_id": None,
+        "expected_outputs": [], "completion_checks": ["the saved averages were read"],
+    }]
+    transport = serve_requests(monkeypatch, [
+        _answer(_assessment_payload()), _answer(plan),
+        _call("read-weather", "workspace_read_file", {"artifact_id": str(artifact_id), "offset": 0, "max_bytes": 1000}),
+        _prose("The average temperature is 1.75."),
+    ])
+    with TestSessionLocal() as db:
+        db.get(User, lane.user_id).agent_mode = "auto"
+        db.flush()
+        followup = submit_turn(db, user_id=lane.user_id, conversation_id=str(lane.conversation_id),
+            content="What was the average temperature in that chart?", client_request_id=str(uuid.uuid4()), enable_tools=True)
+        followup_id = followup.id
+        db.commit()
+        others = db.query(RunJob).filter(RunJob.run_id != followup_id).all()
+        for job in others:
+            job.owner_id = "prior-lane"
+            job.lease_until = datetime.now(UTC) + timedelta(minutes=5)
+        db.commit()
+        claim = claim_next(db, worker_id="weather-followup", lease_seconds=600)
+    assert claim is not None and claim.run_id == followup_id
+    Worker(worker_id="weather-followup", session_factory=TestSessionLocal, checkpointer=None).process_job(claim)
+    with TestSessionLocal() as db:
+        read = db.query(ToolOperation).filter_by(run_id=followup_id, capability_id="workspace_read_file").one_or_none()
+        assert read is not None, (
+            db.get(Run, followup_id).status,
+            [(m.role, m.content) for m in db.query(Message).filter_by(run_id=followup_id).all()],
+            transport.requests,
+        )
+        assert read.status == "succeeded"
+        assert "1.75" in read.result_json
+        assert read.output_artifact_ids == "[]"
+        progress = read_progress(db, followup_id)
+        assert progress.verified_steps == ("read",)
+        assert progress.status == "completed"
+        assert progress.verified_outputs == ()
+        answer = db.query(Message).filter_by(run_id=followup_id, role="assistant").one()
+        assert "1.75" in answer.content
+    assert transport.requests == 4
+    assert any(
+        message["role"] == "tool" and "1.75" in message["content"]
+        for message in transport.seen[-1]["messages"]
+    )
+
+
+def test_completed_task_synthesizes_answer_from_tool_results_and_reuses_it(monkeypatch):
+    from src.openship.runs.transcript import read_transcript
+
+    lane = Lane(monkeypatch, behaviors=[
+        *_journey(), _prose("The saved averages are 3.5; chart.png is ready."),
+    ])
+    first = lane.invoke()
+    assert first["assistant_response"] == "The saved averages are 3.5; chart.png is ready."
+    final_request = lane.transport.seen[-1]
+    assert any(message["role"] == "tool" for message in final_request["messages"])
+    assert final_request.get("tool_choice") in (None, "none")
+    assert not final_request.get("tools")
+    before = _durable(lane.run_id)
+    with TestSessionLocal() as db:
+        transcript_before = read_transcript(db, lane.run_id)
+    lane.rehold()
+    second = lane.invoke()
+    assert second["assistant_response"] == first["assistant_response"]
+    assert lane.transport.requests == 5
+    after = _durable(lane.run_id)
+    assert len(after["operations"]) == len(before["operations"]) == 2
+    with TestSessionLocal() as db:
+        assert read_transcript(db, lane.run_id) == transcript_before
+
+
+def test_simple_follow_up_answers_without_a_plan_or_tool_call(monkeypatch):
+    assessment = _assessment_payload()
+    assessment["assessment"].update(
+        classification="informational", explanation="You are welcome!",
+    )
+    lane = Lane(monkeypatch, behaviors=[_answer(assessment)])
+    lane.state["messages"] = [
+        {"role": "user", "content": "Explain what a bar chart is."},
+        {"role": "assistant", "content": "A bar chart compares categories."},
+        {"role": "user", "content": "Thanks!"},
+    ]
+    result = lane.invoke()
+    assert result["assistant_response"] == "You are welcome!"
+    assert lane.transport.requests == 1
+    assert lane.gateway.calls == []
+    durable = _durable(lane.run_id)
+    assert durable["plan"] is None
+    assert durable["operations"] == []
+    assert "A bar chart compares categories." in json.dumps(lane.transport.seen[0])
+
+
 def test_one_confirmation_allows_multiple_steps(monkeypatch):
-    lane = Lane(monkeypatch, mode="copilot", behaviors=_journey())
+    lane = Lane(
+        monkeypatch,
+        mode="copilot",
+        behaviors=[*_journey(), _prose("The chart and averages are ready.")],
+    )
     assert lane.invoke()["parked"] == "plan_confirmation"
     assert len(lane.gateway.calls) == 0
 
     lane.confirm_pending()
     lane.resume_queue("copilot-worker")
-    lane.invoke()
+    outcome = lane.invoke()
 
     capability_calls = _calls(lane)
     assert capability_calls == ["download_file", "python_execute"]
+    assert outcome["assistant_response"] == "The chart and averages are ready."
     durable = _durable(lane.run_id)
     # Both steps ran on one plan revision under a single confirmation: the run
     # never re-asked, replanned or parked again on its own.
@@ -767,12 +909,17 @@ def test_one_confirmation_allows_multiple_steps(monkeypatch):
     assert len(durable["attempts"]) == 2
     assert durable["progress"].verified_steps == ("fetch", "analyze")
     assert durable["progress"].status == "completed"
-    assert lane.transport.requests == 4
+    assert lane.transport.requests == 5
 
 
 def test_committed_download_replayed_without_refetch_after_restart(monkeypatch):
-    lane = Lane(monkeypatch, mode="auto", behaviors=_journey())
-    lane.invoke()
+    lane = Lane(
+        monkeypatch,
+        mode="auto",
+        behaviors=[*_journey(), _prose("The chart and averages are ready.")],
+    )
+    first = lane.invoke()
+    assert first["assistant_response"] == "The chart and averages are ready."
     before_crash = _durable(lane.run_id)
     assert _dispatch_counts(before_crash["operations"]) == {
         "download_file": 1,
@@ -783,9 +930,11 @@ def test_committed_download_replayed_without_refetch_after_restart(monkeypatch):
 
     # A restarted worker re-reads the same lease and re-invokes the graph with
     # no usable checkpoint: everything it acts on is what the records already
-    # say, so nothing already attempted is re-run and nothing re-decided.
+    # say, so nothing already attempted is re-run and nothing re-decided. The
+    # committed final answer is reused instead of being regenerated.
     lane.rehold()
     outcome = lane.invoke()
+    assert outcome["assistant_response"] == "The chart and averages are ready."
 
     after_restart = _durable(lane.run_id)
     assert {row.id for row in after_restart["operations"]} == downloaded_before
@@ -806,7 +955,7 @@ def test_committed_download_replayed_without_refetch_after_restart(monkeypatch):
     assert after_restart["task_status"] == "completed"
     assert after_restart["plan"].revision == before_crash["plan"].revision
     assert len(lane.gateway.calls) == 2
-    assert lane.transport.requests == 4
+    assert lane.transport.requests == 5
 
 
 def test_assistant_final_text_does_not_complete_missing_outputs(monkeypatch):
@@ -1013,7 +1162,7 @@ def test_assessment_and_plan_see_prior_conversation_not_system_prompt(monkeypatc
         assert "TITLE GENERATION SECRET" not in body
 
 
-def test_step_request_receives_bounded_recent_conversation(monkeypatch):
+def test_task_stages_receive_full_prior_conversation(monkeypatch):
     lane = Lane(monkeypatch, behaviors=_journey())
     lane.state["messages"] = [
         {"role": "system", "content": "hidden system"},
@@ -1024,11 +1173,46 @@ def test_step_request_receives_bounded_recent_conversation(monkeypatch):
 
     lane.invoke()
 
-    body = json.dumps(lane.transport.seen[2]["messages"], ensure_ascii=False)
-    assert "most recent context" in body
-    assert "older-0-" not in body
-    assert "hidden system" not in body
-    assert len(body.encode("utf-8")) < 30000
+    for request in lane.transport.seen[:3]:
+        body = json.dumps(request["messages"], ensure_ascii=False)
+        assert "most recent context" in body
+        assert "older-0-" + "é" * 3000 in body
+        assert "hidden system" not in body
+
+
+def test_context_limit_failure_is_not_silently_replaced_by_fallback(monkeypatch):
+    from src.openship.providers.errors import ProviderError
+
+    lane = Lane(monkeypatch, behaviors=[])
+    def reject(*args, **kwargs):
+        raise ProviderError("context_limit_exceeded")
+    monkeypatch.setattr("src.openship.runs.task_graph.assess_task", reject)
+    with pytest.raises(ProviderError) as error:
+        lane.invoke()
+    assert error.value.code == "context_limit_exceeded"
+
+
+def test_task_assessment_plan_and_step_see_saved_artifact_inventory(monkeypatch):
+    from src.openship.runs.tasks.contracts import ConversationArtifact
+
+    lane = Lane(monkeypatch, behaviors=_journey())
+    artifact = ConversationArtifact(id=uuid.uuid4(), name="forecast.csv", media_type="text/plain", size_bytes=12, sha256="a" * 64)
+    lane.execution = lane.execution.model_copy(update={"conversation_artifacts": (artifact,)})
+    lane.state["execution_configuration"] = lane.execution.model_dump_json()
+    lane.invoke()
+    for request in lane.transport.seen[:3]:
+        body = json.dumps(request["messages"])
+        assert "forecast.csv" in body
+        assert str(artifact.id) in body
+
+
+def test_task_stages_see_recorded_prior_task_results(monkeypatch):
+    lane = Lane(monkeypatch, behaviors=_journey())
+    lane.execution = lane.execution.model_copy(update={"prior_task_context": ('{"plan":"analyze forecast","status":"completed"}',)})
+    lane.state["execution_configuration"] = lane.execution.model_dump_json()
+    lane.invoke()
+    for request in lane.transport.seen[:3]:
+        assert "analyze forecast" in json.dumps(request["messages"])
 
 
 def test_initial_clarification_parks_without_a_prior_plan(monkeypatch):

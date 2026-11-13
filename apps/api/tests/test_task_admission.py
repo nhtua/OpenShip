@@ -144,6 +144,72 @@ def test_v5_admission_pins_prior_messages_without_connectors(client, authorized_
         assert str(later.id) not in json.loads(run.execution_configuration)["admitted_context_message_ids"]
 
 
+def test_v5_admission_pins_more_than_twenty_prior_messages(client, authorized_client, monkeypatch):
+    _agentic_profiles(monkeypatch)
+    _no_managed_search_connectors(monkeypatch)
+    conversation_id = _conversation(client, authorized_client)
+    with SessionLocal() as db:
+        prior = [Message(conversation_id=uuid.UUID(conversation_id), role="user", content=f"history-{i}") for i in range(25)]
+        db.add_all(prior)
+        db.commit()
+        prior_ids = {str(item.id) for item in prior}
+    response = client.post(f"/api/runs/{conversation_id}/turns", json=_turn(conversation_id, str(uuid.uuid4()), enable_tools=True), headers=authorized_client)
+    assert response.status_code == 202, response.text
+    with SessionLocal() as db:
+        run = db.get(Run, uuid.UUID(response.json()["id"]))
+        ids = json.loads(run.execution_configuration)["admitted_context_message_ids"]
+        assert prior_ids <= set(ids)
+
+
+def test_v5_admission_pins_same_conversation_artifact_inventory(client, authorized_client, monkeypatch):
+    from src.openship.artifacts.models import Artifact
+    _agentic_profiles(monkeypatch)
+    _no_managed_search_connectors(monkeypatch)
+    conversation_id = _conversation(client, authorized_client)
+    other_id = _conversation(client, authorized_client)
+    with SessionLocal() as db:
+        conv = db.get(Conversation, uuid.UUID(conversation_id))
+        artifact = Artifact(project_id=conv.project_id, conversation_id=conv.id, kind="upload",
+            media_type="text/plain", display_name="weather-data.txt", size_bytes=10,
+            sha256="a" * 64, relative_storage_key=f"{uuid.uuid4()}/content", status="ready", source="upload")
+        db.add(artifact)
+        other = db.get(Conversation, uuid.UUID(other_id))
+        db.add(Artifact(project_id=other.project_id, conversation_id=other.id, kind="upload",
+            media_type="text/plain", display_name="other-conversation.txt", size_bytes=10,
+            sha256="b" * 64, relative_storage_key=f"{uuid.uuid4()}/content", status="ready", source="upload"))
+        db.commit()
+        artifact_id = str(artifact.id)
+    response = client.post(f"/api/runs/{conversation_id}/turns", json=_turn(conversation_id, str(uuid.uuid4()), enable_tools=True), headers=authorized_client)
+    assert response.status_code == 202, response.text
+    with SessionLocal() as db:
+        run = db.get(Run, uuid.UUID(response.json()["id"]))
+        snapshot = json.loads(run.execution_configuration)
+        assert any(item["id"] == artifact_id and item["name"] == "weather-data.txt" for item in snapshot["conversation_artifacts"])
+        assert all(item["name"] != "other-conversation.txt" for item in snapshot["conversation_artifacts"])
+
+
+def test_v5_admission_pins_prior_completed_task(client, authorized_client, monkeypatch):
+    _agentic_profiles(monkeypatch)
+    _no_managed_search_connectors(monkeypatch)
+    conversation_id = _conversation(client, authorized_client)
+    with SessionLocal() as db:
+        conv = db.get(Conversation, uuid.UUID(conversation_id))
+        previous = Run(conversation_id=conv.id, project_id=conv.project_id, status="completed", graph_version=5)
+        db.add(previous)
+        db.flush()
+        db.add(TaskRecord(run_id=previous.id, project_id=conv.project_id, conversation_id=conv.id,
+                          initiator_id=conv.user_id, status="completed", current_revision=0,
+                          context_json='{"original_intent":"analyze weather"}', verified_outputs_json='["forecast.csv"]'))
+        db.commit()
+    response = client.post(f"/api/runs/{conversation_id}/turns", json=_turn(conversation_id, str(uuid.uuid4()), enable_tools=True), headers=authorized_client)
+    assert response.status_code == 202, response.text
+    with SessionLocal() as db:
+        run = db.get(Run, uuid.UUID(response.json()["id"]))
+        context = json.loads(run.execution_configuration)["prior_task_context"]
+        assert "analyze weather" in str(context)
+        assert "forecast.csv" in str(context)
+
+
 def test_stale_new_submission_creates_nothing(
     client, authorized_client, monkeypatch
 ):

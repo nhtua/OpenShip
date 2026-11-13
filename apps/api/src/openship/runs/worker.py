@@ -99,8 +99,7 @@ def _conversation_history(
 
     not_admitted = db.query(ConversationInboxEntry.message_id).filter(
         ConversationInboxEntry.conversation_id == conversation.id,
-        ConversationInboxEntry.disposition == "queued",
-        ConversationInboxEntry.status.in_(("queued", "failed")),
+        ConversationInboxEntry.status.in_(("awaiting", "queued", "failed")),
     )
     history_query = db.query(Message).filter(
         Message.conversation_id == conversation.id,

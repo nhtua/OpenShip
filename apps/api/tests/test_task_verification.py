@@ -307,6 +307,113 @@ def test_verified_step_records_only_honest_evidence(monkeypatch, tmp_path):
         assert render_action.step_id is None
 
 
+def _saved_read(monkeypatch, tmp_path):
+    """A real stored input and a committed, digest-backed read-only result."""
+    from src.openship.capabilities.contracts import canonical_digest
+    from src.openship.capabilities.definitions import get_tool_definition_by_id
+    from src.openship.workspace.service import ensure_workspace
+
+    store = _store(monkeypatch, tmp_path)
+    manifest = get_tool_definition_by_id("workspace_read_file").manifest
+    capability = CapabilityRef(
+        id=manifest.id, version=manifest.version, manifest_digest=manifest.manifest_digest,
+    )
+    with TestSessionLocal() as db:
+        user, _project, conversation, run, claim = _identity(db)
+        producer = _operation(db, run, user.id)
+        artifact = _publish(db, store, run, producer, name=AVERAGES,
+                            media_type="application/json", data=AVERAGE_BYTES)
+        workspace = ensure_workspace(db, user.id, conversation.id, store)
+        save_plan(db, claim, TaskPlan(
+            revision=1, intent="Read the saved average.", status="validated",
+            available_capabilities=(capability,),
+            steps=(TaskStep(id="read", intent="Read the saved average.",
+                            capability=capability, expected_outputs=(),
+                            completion_checks=("The saved JSON was read.",)),),
+        ), expected_revision=0)
+        result = {
+            "workspace_id": str(workspace.id), "artifact_id": str(artifact.id),
+            "version_id": str(artifact.id), "sha256": artifact.sha256,
+            "media_type": artifact.media_type, "size_bytes": artifact.size_bytes,
+            "offset": 0, "content": AVERAGE_BYTES.decode(), "next_offset": None,
+        }
+        operation = ToolOperation(
+            run_id=run.id,
+            project_id=run.project_id,
+            conversation_id=conversation.id,
+            principal_id=user.id,
+            logical_call_id="model:0:read",
+            capability_id=capability.id,
+            capability_version=capability.version,
+            manifest_digest=capability.manifest_digest,
+            arguments_json=json.dumps({
+                "artifact_id": str(artifact.id), "offset": 0, "max_bytes": 1000,
+            }),
+            arguments_digest="a" * 64,
+            request_digest="e" * 64,
+            input_artifact_refs=json.dumps([{
+                "id": str(artifact.id), "sha256": artifact.sha256,
+                "size_bytes": artifact.size_bytes, "media_type": artifact.media_type,
+            }]),
+            configuration_revision="1",
+            execution_bundle_digest="f" * 64,
+            status="succeeded",
+            result_json=json.dumps(result),
+            result_digest=canonical_digest(result),
+            output_artifact_ids="[]",
+        )
+        db.add(operation)
+        db.flush()
+        _attempt(db, claim, "read", operation)
+        db.commit()
+        return claim, operation.id, artifact.id
+
+
+def test_read_only_step_verifies_without_publishing_a_new_artifact(monkeypatch, tmp_path):
+    claim, _operation_id, _artifact_id = _saved_read(monkeypatch, tmp_path)
+    with TestSessionLocal() as db:
+        report = verify_step(db, run_id=claim.run_id, step_id="read", assessment=_assessment())
+        assert report.passed
+        assert report.evidence_refs
+        progress = record_verification(db, claim, step_id="read", report=report)
+        assert progress.verified_steps == ("read",)
+        assert progress.verified_outputs == ()
+        assert progress.status == "completed"
+        assert verify_task(db, run_id=claim.run_id, assessment=_assessment()).passed
+
+
+@pytest.mark.parametrize("damage", ["digest", "content", "scope", "missing", "stored_bytes"])
+def test_read_only_verification_rejects_invalid_evidence(monkeypatch, tmp_path, damage):
+    from src.openship.capabilities.contracts import canonical_digest
+    from src.openship.runs.tasks.models import TaskStepAttempt
+
+    claim, operation_id, artifact_id = _saved_read(monkeypatch, tmp_path)
+    with TestSessionLocal() as db:
+        operation = db.get(ToolOperation, operation_id)
+        artifact = db.get(Artifact, artifact_id)
+        if damage in {"digest", "content"}:
+            result = json.loads(operation.result_json)
+            result["content"] = '{"averages": {"mean": 999}}'
+            operation.result_json = json.dumps(result)
+            if damage == "content":
+                operation.result_digest = canonical_digest(result)
+                db.query(TaskStepAttempt).filter_by(operation_id=operation_id).one().result_digest = operation.result_digest
+        elif damage == "scope":
+            artifact.conversation_id = uuid.uuid4()
+        elif damage == "missing":
+            artifact.status = "unavailable"
+        else:
+            _tamper(LocalArtifactStore(settings.artifact_root, settings.artifact_storage_id),
+                    artifact.relative_storage_key)
+        db.commit()
+        report = verify_step(db, run_id=claim.run_id, step_id="read", assessment=_assessment())
+        assert not report.passed
+        with pytest.raises(TaskStateError):
+            record_verification(db, claim, step_id="read",
+                                report=report.model_copy(update={"passed": True}))
+        assert read_progress(db, claim.run_id).verified_steps == ()
+
+
 def test_zero_exit_without_chart_is_not_completion(monkeypatch, tmp_path):
     store = _store(monkeypatch, tmp_path)
     with TestSessionLocal() as db:

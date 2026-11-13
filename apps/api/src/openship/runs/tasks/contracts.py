@@ -131,8 +131,19 @@ class TaskStep(FrozenModel):
     depends_on: tuple[str, ...] = Field(default=(), max_length=8)
     capability: CapabilityRef | None = None
     profile_id: ProfileId | None = None
-    expected_outputs: tuple[str, ...] = Field(min_length=1, max_length=8)
+    expected_outputs: tuple[str, ...] = Field(default=(), max_length=8)
     completion_checks: tuple[str, ...] = Field(min_length=1, max_length=8)
+
+    @property
+    def is_result_only(self) -> bool:
+        """A result-only step commits its own result but publishes no new artifact.
+
+        Read-only local steps (for example reading a saved conversation file) fall
+        in this category: the committed operation's result is the durable evidence,
+        not a newly published artifact. Producer steps must still declare at least
+        one expected output so their artifact side effects are verified.
+        """
+        return not self.expected_outputs
 
     @field_validator("intent")
     @classmethod
@@ -694,6 +705,14 @@ class TaskDecisionCommand(FrozenModel):
         return self
 
 
+class ConversationArtifact(FrozenModel):
+    id: UUID
+    name: str
+    media_type: str
+    size_bytes: int
+    sha256: str
+
+
 class ExecutionConfigV5(FrozenModel):
     """Task graph v5 extends the maintained v4 execution snapshot."""
 
@@ -705,6 +724,8 @@ class ExecutionConfigV5(FrozenModel):
     connector_refs: tuple[ConnectorRef, ...] = ()
     credential_binding_refs: tuple[str, ...] = ()
     admitted_context_message_ids: tuple[UUID, ...] = ()
+    conversation_artifacts: tuple[ConversationArtifact, ...] = ()
+    prior_task_context: tuple[str, ...] = ()
     preferred_search_kind: Literal["brave", "tavily"] | None = None
     aws_read_catalog_digest: str = Field(pattern=SHA256_PATTERN)
     limits: ExecutionLimits = Field(default_factory=ExecutionLimits)

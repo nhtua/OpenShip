@@ -137,6 +137,26 @@ def test_pinned_context_includes_clarification_replies():
     assert [message.content for message in history] == ["the morning CSV"]
 
 
+def test_unassigned_follow_up_does_not_leak_into_running_turn():
+    from src.openship.chat.models import Message
+    from src.openship.runs.inbox.models import ConversationInboxEntry
+    from src.openship.runs.worker import _conversation_history
+
+    with TestSessionLocal() as db:
+        _user, _project, conversation, run, _claim = _identity(db)
+        primary = Message(conversation_id=conversation.id, run_id=run.id, role="user", content="current")
+        later = Message(conversation_id=conversation.id, role="user", content="future")
+        db.add_all([primary, later])
+        db.flush()
+        db.add(ConversationInboxEntry(conversation_id=conversation.id, message_id=later.id,
+            client_request_id=str(uuid.uuid4()), request_digest="a" * 64, sequence=99,
+            disposition=None, status="awaiting", request_json="{}"))
+        db.flush()
+        history = _conversation_history(db, conversation=conversation, user_msg=primary, run=run,
+            admitted_context_ids=(primary.id, later.id))
+        assert "future" not in [item.content for item in history]
+
+
 def test_a_cannot_bypass_recovery_and_retains_root_budget(monkeypatch):
     """A re-admits the same root and never answers or re-funds it."""
     with TestSessionLocal() as db:
